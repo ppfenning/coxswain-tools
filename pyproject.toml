@@ -25,3 +25,7 @@ include = ["agent_tools*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The harness runs `pytest -q` in a worktree of this repo with an interpreter
+# that has the main checkout installed editable. Without this the worktree's
+# tests would import the main checkout's package, not the patched one.
+pythonpath = ["."]

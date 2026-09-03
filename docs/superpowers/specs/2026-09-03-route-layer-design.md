@@ -36,6 +36,10 @@ Derived, never configured: `intake_dir = workspace_dir/intake`,
 `work_dir = workspace_dir/work`, `runs_dir = workspace_dir/runs`. Paths are
 expanded at the edge (`~` and env vars); the pure core sees strings.
 
+The file is a flat YAML subset — `key: scalar` and `key: [a, b]` — parsed
+by a small stdlib function, so this package keeps its empty dependency
+list. A nested key or an unknown key is a parse error naming the line.
+
 `--profile PATH` overrides the location on every subcommand, and
 `AGENT_TOOLS_PROFILE` does the same for a shell.
 
@@ -108,8 +112,15 @@ The argv is
 ```
 
 with `epic` adding `--initiative DIR --repo PATH` and `decompose` adding
-`--idea FILE --initiative-id ID`. Any extra arguments after `--` pass
-through untouched.
+`--idea FILE --initiative-id ID`. Both add `--workdir <workspace_dir>`, so
+the apply arms land work items and state in the workspace. Any extra
+arguments after `--` pass through untouched.
+
+The child's `PATH` is the parent's with two entries prepended when they
+exist: `<repo>/.venv/bin` (for `epic`) and `<harness_dir>/.venv/bin`. The
+cartridge's check arm runs its commands with `shell=True` in a worktree and
+inherits this environment; that is how `pytest -q` resolves to the target
+repository's own interpreter without any check naming a path.
 
 The run id is `<initiative or initiative-id>-<n>`, `n` the smallest integer
 not already used by a file in `runs_dir` with that prefix. The process starts
