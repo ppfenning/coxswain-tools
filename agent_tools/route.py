@@ -20,6 +20,9 @@ __all__ = [
     "render_context",
     "context_document",
     "status_rows",
+    "intake_entries",
+    "run_entries",
+    "initiative_summaries",
 ]
 
 _PROFILE_FIELDS = (
@@ -457,3 +460,94 @@ def parse_frontmatter(text: str) -> tuple:
         else with_leading_blank_stripped
     )
     return fields, body
+
+
+def _intake_entry(filename: str, text: str) -> dict:
+    fields, body = parse_frontmatter(text)
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    entry_id = fields.get("id", stem)
+    body_lines = [line.strip() for line in body.split("\n") if line.strip()]
+    first_body_line = body_lines[0] if body_lines else entry_id
+    return {"id": entry_id, "title": fields.get("title", first_body_line)}
+
+
+def intake_entries(files: dict) -> list:
+    """Rows for the intake queue, the `intake` input `render_context` and
+    `context_document` already accept: one `{"id", "title"}` per file in
+    `files` (filename -> text, as the caller listed the intake dir), sorted
+    by filename. A filename under a `consumed/` prefix has already been
+    handled and is skipped. `id` comes from frontmatter's `id` field, or the
+    filename's stem when frontmatter has none; `title` comes from
+    frontmatter's `title` field, or the first non-empty body line, or `id`
+    when the body is empty too.
+    """
+    return [
+        _intake_entry(filename, files[filename])
+        for filename in sorted(files)
+        if not filename.startswith("consumed/")
+    ]
+
+
+def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict) -> dict:
+    stripped = pid_text.strip()
+    pid = int(stripped) if stripped.isdigit() else None
+    return {
+        "id": run_id,
+        "pid": pid,
+        "alive": alive.get(run_id, False) if pid is not None else False,
+        "started": started.get(run_id),
+    }
+
+
+def run_entries(pids: dict, alive: dict, started: dict) -> list:
+    """Rows for the runs list, the `runs` input `render_context` and
+    `context_document` already accept: one `{"id", "pid", "alive",
+    "started"}` per run id in `pids` (pidfile text the caller already read),
+    sorted by id. A pidfile whose text is not a plain integer — a partial
+    write, a stray hand edit — is treated as unreadable: `pid` comes back
+    `None` and `alive` comes back `False` regardless of what the caller
+    passed in `alive` for that id.
+    """
+    return [_run_entry(run_id, pids[run_id], alive, started) for run_id in sorted(pids)]
+
+
+def _ready_unblocked(item: dict, done_ids: set) -> bool:
+    return item["state"] == "ready" and all(need in done_ids for need in item["needs"])
+
+
+def _initiative_summary(initiative_id: str, own_items: list):
+    done_ids = {item["id"] for item in own_items if item["state"] == "done"}
+    ready_phases = sorted(
+        {item["phase"] for item in own_items if _ready_unblocked(item, done_ids)}
+    )
+    if not ready_phases:
+        return None
+    phase = ready_phases[0]
+    ready_count = sum(
+        1
+        for item in own_items
+        if item["phase"] == phase and _ready_unblocked(item, done_ids)
+    )
+    return {"id": initiative_id, "phase": phase, "ready": ready_count}
+
+
+def initiative_summaries(items: list) -> list:
+    """One row per initiative with a task ready to run, the `initiatives`
+    input `render_context` and `context_document` already accept: `items`
+    are work items with at least `id`, `initiative`, `phase`, `state`,
+    `needs`, each parsed with `parse_frontmatter` by the caller. Each row is
+    `{"id": <initiative>, "phase": <sorted-first phase holding a ready,
+    unblocked task>, "ready": <count of such tasks in that phase>}`.
+    "Unblocked" means every id in `needs` names a task, anywhere in the same
+    initiative, whose state is "done". An initiative with no ready,
+    unblocked task is omitted. Sorted by initiative id.
+    """
+    initiative_ids = sorted({item["initiative"] for item in items})
+    summaries = [
+        _initiative_summary(
+            initiative_id,
+            [item for item in items if item["initiative"] == initiative_id],
+        )
+        for initiative_id in initiative_ids
+    ]
+    return [summary for summary in summaries if summary is not None]

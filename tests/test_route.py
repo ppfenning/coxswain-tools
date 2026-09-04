@@ -555,3 +555,98 @@ def test_parse_frontmatter_misparses_a_bare_value_that_happens_to_start_with_a_q
     text = f"---\nid: x\n{bare_line}---\n\nShip it.\n"
     fields, _ = route.parse_frontmatter(text)
     assert fields["title"] != '"draft" ship it'
+
+
+def test_intake_entries_sorts_by_filename_and_skips_consumed_prefix():
+    # Filenames supplied out of order and one already-consumed file: the
+    # sort and the skip are both live rules, not accidents of dict order.
+    files = {
+        "2026-09-03-later.md": "---\nid: later\ntitle: Later\n---\n\nBody.\n",
+        "2026-09-01-earlier.md": "---\nid: earlier\ntitle: Earlier\n---\n\nBody.\n",
+        "consumed/2026-08-01-old.md": "---\nid: old\ntitle: Old\n---\n\nBody.\n",
+    }
+    entries = route.intake_entries(files)
+    assert entries == [
+        {"id": "earlier", "title": "Earlier"},
+        {"id": "later", "title": "Later"},
+    ]
+
+
+def test_intake_entries_falls_back_to_stem_and_first_body_line_when_frontmatter_is_absent():
+    files = {"2026-09-02-no-frontmatter.md": "\n\nFirst real line.\nSecond line.\n"}
+    entries = route.intake_entries(files)
+    assert entries == [
+        {"id": "2026-09-02-no-frontmatter", "title": "First real line."}
+    ]
+
+
+def test_run_entries_sorts_by_id_and_treats_a_non_integer_pidfile_as_dead():
+    # Ids supplied out of order and one pidfile whose text is not an
+    # integer — a partial write — must come back pid None, alive False even
+    # though the caller's own `alive` map says True.
+    pids = {"r2": "222", "r1": "not-a-pid"}
+    alive = {"r1": True, "r2": True}
+    started = {"r1": "2026-09-04T00:00:00", "r2": "2026-09-04T00:01:00"}
+    entries = route.run_entries(pids, alive, started)
+    assert entries == [
+        {"id": "r1", "pid": None, "alive": False, "started": "2026-09-04T00:00:00"},
+        {"id": "r2", "pid": 222, "alive": True, "started": "2026-09-04T00:01:00"},
+    ]
+
+
+def test_initiative_summaries_picks_the_sorted_first_phase_with_a_ready_task():
+    # Two phases both hold a ready, unblocked task; the alphabetically
+    # first phase name must win, not first-in-list or last-in-list.
+    items = [
+        {"id": "a1", "initiative": "alpha", "phase": "zzz-later", "state": "ready", "needs": []},
+        {"id": "a2", "initiative": "alpha", "phase": "aaa-first", "state": "ready", "needs": []},
+    ]
+    summaries = route.initiative_summaries(items)
+    assert summaries == [{"id": "alpha", "phase": "aaa-first", "ready": 1}]
+
+
+def test_initiative_summaries_excludes_a_task_whose_needs_are_not_all_done():
+    # The one ready task in this initiative needs a task that is not done,
+    # so it must not be counted, and the initiative must not appear at all.
+    items = [
+        {"id": "b1", "initiative": "beta", "phase": "build", "state": "ready", "needs": ["b0"]},
+        {"id": "b0", "initiative": "beta", "phase": "build", "state": "in-progress", "needs": []},
+    ]
+    assert route.initiative_summaries(items) == []
+
+
+def test_initiative_summaries_ready_is_a_count_not_a_flag():
+    # Two ready, unblocked tasks share the winning phase and a third ready
+    # task sits in a losing phase; a literal 1 in place of a real count
+    # would pass every other case in this file but fails here.
+    items = [
+        {"id": "g1", "initiative": "gamma", "phase": "build", "state": "ready", "needs": []},
+        {"id": "g2", "initiative": "gamma", "phase": "build", "state": "ready", "needs": []},
+        {"id": "g3", "initiative": "gamma", "phase": "later", "state": "ready", "needs": []},
+    ]
+    summaries = route.initiative_summaries(items)
+    assert summaries == [{"id": "gamma", "phase": "build", "ready": 2}]
+
+
+def test_initiative_summaries_sorts_rows_by_initiative_id():
+    # Six initiatives, each with one ready, unblocked task, supplied in
+    # reverse order. Grouping them with a bare set (no `sorted`) would come
+    # back in whatever order Python's per-process hash randomisation gives
+    # a six-element string set, which matches this exact ascending order by
+    # chance on 1 run in 720 — this is a real pin, not a coin flip.
+    items = [
+        {"id": f"{name[0]}1", "initiative": name, "phase": "build", "state": "ready", "needs": []}
+        for name in ["zulu", "yankee", "xray", "whiskey", "victor", "alpha"]
+    ]
+    summaries = route.initiative_summaries(items)
+    assert [row["id"] for row in summaries] == [
+        "alpha", "victor", "whiskey", "xray", "yankee", "zulu",
+    ]
+
+
+def test_intake_entries_falls_back_to_id_when_frontmatter_has_no_title_and_body_is_empty():
+    # Frontmatter with an id but no title, and no body line at all: title
+    # must fall back to id, not raise on an empty body_lines list.
+    files = {"any-name.md": "---\nid: notitle\n---\n\n"}
+    entries = route.intake_entries(files)
+    assert entries == [{"id": "notitle", "title": "notitle"}]
