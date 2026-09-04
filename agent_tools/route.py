@@ -4,9 +4,19 @@ returns plain values."""
 
 from __future__ import annotations
 
+import os
 import re
 
-__all__ = ["ProfileError", "parse_profile", "slugify", "next_run_id"]
+__all__ = [
+    "ProfileError",
+    "parse_profile",
+    "slugify",
+    "next_run_id",
+    "initiative_files",
+    "intake_file",
+    "harness_argv",
+    "child_env",
+]
 
 _KNOWN_KEYS = {
     "team",
@@ -98,3 +108,161 @@ def next_run_id(existing_names, prefix: str) -> str:
     while n in taken:
         n += 1
     return f"{prefix}-{n}"
+
+
+class _Raw(str):
+    """Marks a frontmatter value this module wrote itself as a literal YAML
+    fragment (`needs: []`, `surfaces: []`) that must be emitted verbatim.
+
+    Never wrap a caller-supplied string in this: a value's *shape* is not
+    evidence of its meaning. An earlier version of `_yaml_scalar` treated
+    any bracketed value as a raw list, which meant a title like
+    `[draft] ship it` was emitted bare as `title: [draft] ship it` — a real
+    YAML reader parses that as a flow sequence, not the string it looks
+    like. Only the caller who wrote the literal can know it is one; that
+    is what wrapping it in `_Raw` at the call site records.
+    """
+
+
+def _yaml_scalar(value: str) -> str:
+    """Quote a frontmatter value that would otherwise read as something
+    other than the plain string it is.
+
+    Wrong belief this guards against: that emitting `key: {value}` verbatim
+    is safe because a title or repo is "just text". A title with a colon
+    (this very task's own title, `route.py: initiative_files`) or a `#`
+    turns `title: route.py: initiative_files` into a line a real YAML
+    reader parses as a nested mapping or a truncated comment, not the
+    string it looks like. `_Raw` values pass through unquoted; every other
+    value is a scalar regardless of what it looks like.
+    """
+    if isinstance(value, _Raw):
+        return str(value)
+    starts_like_yaml_flow = value.startswith("[") or value.startswith("{")
+    if (
+        value == ""
+        or ":" in value
+        or "#" in value
+        or value != value.strip()
+        or starts_like_yaml_flow
+    ):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
+def _frontmatter(fields, body: str) -> str:
+    """Render `---`-delimited frontmatter followed by a body, spec §3.
+
+    `fields` is an ordered iterable of (key, value) pairs; each value is
+    quoted by `_yaml_scalar` when left bare it would change meaning (a
+    colon, a `#`, surrounding whitespace, or emptiness), never otherwise.
+    """
+    header = "\n".join(f"{key}: {_yaml_scalar(value)}" for key, value in fields)
+    return f"---\n{header}\n---\n\n{body}\n"
+
+
+def _slug_or_raise(title: str) -> str:
+    """`slugify`'s own docstring hands the empty-slug case to any caller
+    that uses the result as a path segment (spec §3, `work/<slug>/...`).
+    A title of pure punctuation would otherwise slugify to `""`, and
+    `work/{slug}/...` would collapse to `work/initiative.md` — a write to
+    the top of the work store, past spec §3's existing-path refusal, since
+    that path is genuinely new. This is the guard slugify asked for.
+    """
+    slug = slugify(title)
+    if not slug:
+        raise ValueError(f"title {title!r} has no alphanumeric characters to slugify")
+    return slug
+
+
+def initiative_files(title: str, body: str, repo: str, phase: str = "build") -> dict:
+    """Content for a one-task initiative (spec §3, `route file` without
+    `--intake`): `work/<slug>/initiative.md` and
+    `work/<slug>/<phase>/<slug>.md`, keyed by path relative to the work
+    store. `body` falls back to `title` when empty. No filesystem writes
+    happen here — the caller applies the mapping.
+    """
+    slug = _slug_or_raise(title)
+    text = body if body else title
+    initiative_text = _frontmatter(
+        [("id", slug), ("title", title), ("repo", repo)], text
+    )
+    task_text = _frontmatter(
+        [
+            ("id", slug),
+            ("phase", phase),
+            ("state", "ready"),
+            ("needs", _Raw("[]")),
+            ("surfaces", _Raw("[]")),
+            ("title", title),
+        ],
+        text,
+    )
+    return {
+        f"work/{slug}/initiative.md": initiative_text,
+        f"work/{slug}/{phase}/{slug}.md": task_text,
+    }
+
+
+def intake_file(title: str, body: str, repo: str, date: str) -> dict:
+    """Content for `route file --intake` (spec §3):
+    `intake/<date>-<slug>.md`, same frontmatter shape as the initiative
+    file. `date` arrives as a string (e.g. `2026-09-03`) so this stays
+    pure — no clock reads here.
+    """
+    slug = _slug_or_raise(title)
+    text = body if body else title
+    file_text = _frontmatter([("id", slug), ("title", title), ("repo", repo)], text)
+    return {f"intake/{date}-{slug}.md": file_text}
+
+
+def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
+    """Build the harness command line, spec §4, from a parsed `profile`
+    and the graph-specific `needs` (`initiative`/`repo` for `epic`,
+    `idea`/`initiative_id` for `decompose`). Pure: no Popen, no env reads.
+    """
+    harness_dir = profile["harness_dir"]
+    workspace_dir = profile["workspace_dir"]
+    argv = [
+        f"{harness_dir}/.venv/bin/python",
+        f"{harness_dir}/shell.py",
+        graph,
+        "--team",
+        profile["team"],
+        "--cartridges-dir",
+        profile["cartridges_dir"],
+    ]
+    for root in profile.get("skills_roots", []):
+        argv += ["--skills-root", root]
+    argv += [
+        "--provider-profile",
+        profile["provider_profile"],
+        "--runs-dir",
+        f"{workspace_dir}/runs",
+        "--assume",
+        profile["assume"],
+        "--run-id",
+        run_id,
+    ]
+    if graph == "epic":
+        argv += ["--initiative", needs["initiative"], "--repo", needs["repo"]]
+    elif graph == "decompose":
+        argv += ["--idea", needs["idea"], "--initiative-id", needs["initiative_id"]]
+    argv += ["--workdir", workspace_dir]
+    return argv
+
+
+def child_env(environ: dict, *, harness_dir: str = "", repo: str = "") -> dict:
+    """The harness child's environment, spec §4: `environ` with
+    `<repo>/.venv/bin` and `<harness_dir>/.venv/bin` prepended to `PATH`
+    when given, in that order. Every other key is untouched; `environ`
+    itself is never mutated.
+    """
+    env = dict(environ)
+    prefixes = [p for p in (f"{repo}/.venv/bin" if repo else "",
+                             f"{harness_dir}/.venv/bin" if harness_dir else "") if p]
+    if prefixes:
+        rest = env.get("PATH", "")
+        env["PATH"] = os.pathsep.join(prefixes + ([rest] if rest else []))
+    return env
