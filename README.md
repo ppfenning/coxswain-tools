@@ -43,10 +43,25 @@ agent-tools hud say TEXT [--persona P] [--voice V]      speak a line through the
 agent-tools hud inbox show|arm|clear                    read, wait for, or clear directives
 agent-tools hud cast                                    the seats the HUD's org ring shows
 agent-tools plan serve DIR [--check] [--no-open]        lint, serve through the local bridge, open in Brave
+agent-tools route context [--json]                      what a session reads at start: team, queued intake, runs in flight, initiatives with ready work; exits 0 even with no profile
+agent-tools route status [--json]                       every run with a pidfile or a log: alive or exited, started, the log's outcome lines
+agent-tools route file --repo PATH --title TEXT [--body FILE|-] [--phase NAME] [--intake]   write a one-task initiative, or with --intake an intake item; exit 2 if a target path exists or the profile is missing
+agent-tools route launch epic --initiative DIR [--repo PATH] [--fix-attempts N] [--dry-run]   start the harness detached with a pidfile and log; exit 2 on a missing profile or harness venv, a missing initiative.md, a dirty repo, or a live run of the same initiative
+agent-tools route launch decompose --idea FILE --initiative-id ID [--dry-run]   start the harness detached; exit 2 on a missing profile, harness venv, or idea file
 ```
 
 Every command that reads a record is pure over parsed data and unit-tested
 against fixtures; every command that writes is dry-run unless `--apply`.
+
+The `route` group reads one profile, `~/.config/agent-tools/profile.yaml`:
+`team`, `cartridges_dir`, `skills_roots`, `provider_profile`, `harness_dir`,
+`workspace_dir`, and `assume`, the gate answer detached runs are started
+with. `--profile PATH` overrides the location for one command,
+`AGENT_TOOLS_PROFILE` overrides it for a shell, and the default path is read
+when neither is set. Without a profile, `route context` prints one line and
+exits 0; `file`, `launch` and `status` exit 2 and name the path they looked
+for. `--dry-run` on either `launch` prints the argv, the pidfile and the log
+path and starts nothing.
 
 ## Why this exists
 
