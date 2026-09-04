@@ -447,3 +447,111 @@ def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
         "summary": None,
         "usage": None,
     }
+
+
+def test_parse_frontmatter_returns_empty_fields_when_there_is_no_leading_fence():
+    text = "Just a plain file.\nNo frontmatter here.\n"
+    assert route.parse_frontmatter(text) == ({}, text)
+
+
+def test_parse_frontmatter_returns_empty_fields_when_the_fence_never_closes():
+    text = "---\ntitle: Fix the Bug\nNo closing fence follows.\n"
+    assert route.parse_frontmatter(text) == ({}, text)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Fix the Bug",
+        "route.py: initiative_files #wip",
+        "  Fix the Bug  ",
+        "[draft] ship it",
+        '"draft" ship it',
+    ],
+)
+def test_parse_frontmatter_round_trips_every_title_shape_initiative_files_can_emit(title):
+    files = route.initiative_files(title, "Ship it.", "repo-url")
+    task_text = next(v for k, v in files.items() if k.endswith(".md") and "/build/" in k)
+    fields, _ = route.parse_frontmatter(task_text)
+    assert fields["title"] == title
+    assert fields["needs"] == []
+    assert fields["surfaces"] == []
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Fix the Bug",
+        "route.py: initiative_files #wip",
+        "  Fix the Bug  ",
+        "[draft] ship it",
+        '"draft" ship it',
+    ],
+)
+def test_parse_frontmatter_round_trips_every_title_shape_intake_file_can_emit(title):
+    files = route.intake_file(title, "Ship it.", "repo-url", "2026-09-04")
+    text = next(iter(files.values()))
+    fields, _ = route.parse_frontmatter(text)
+    assert fields["title"] == title
+
+
+def test_parse_frontmatter_splits_a_non_empty_list_on_commas():
+    # The contract's list form is "flat list of comma-separated bare
+    # items", not just the `[]` case every needs/surfaces assertion above
+    # exercises. Returning `[inner]` in place of the comma split keeps
+    # every other list assertion in this file green, so this is the one
+    # test that pins the split and the per-item strip.
+    text = "---\nneeds: [a, b]\n---\n\nx\n"
+    fields, _ = route.parse_frontmatter(text)
+    assert fields["needs"] == ["a", "b"]
+
+
+def test_parse_frontmatter_round_trips_an_empty_string_field():
+    # `title`'s own empty string is unreachable through these builders —
+    # `_slug_or_raise` refuses it before any frontmatter is written — but
+    # `repo` carries no such guard, so it is what exercises _yaml_scalar's
+    # `value == ""` branch end to end here.
+    files = route.initiative_files("Fix the Bug", "Ship it.", "")
+    initiative_text = files["work/fix-the-bug/initiative.md"]
+    fields, _ = route.parse_frontmatter(initiative_text)
+    assert fields["repo"] == ""
+
+
+def test_parse_frontmatter_recovers_the_body_after_the_closing_fence():
+    # Exercises the blank-line strip and the trailing-newline strip on
+    # their own: swapping either for a bare `after_closing` return still
+    # passes every test above (they only check `fields`), so this is the
+    # one assertion that would catch that regression.
+    files = route.initiative_files("Fix the Bug", "Ship it.", "repo-url")
+    task_text = files["work/fix-the-bug/build/fix-the-bug.md"]
+    _, body = route.parse_frontmatter(task_text)
+    assert body == "Ship it."
+
+
+def test_parse_frontmatter_never_raises_on_a_header_line_with_no_colon_space():
+    # A stray line inside the fence with no `": "` separator — a bad hand
+    # edit, a YAML block-list item, a bare comment — is not a line this
+    # module ever wrote. The contract says parse_frontmatter never raises
+    # on any input, not just well-formed frontmatter, and the next phase's
+    # list builders will read whatever is actually on disk.
+    text = "---\nnotes\nid: x\n---\n\nbody\n"
+    fields, body = route.parse_frontmatter(text)
+    assert fields == {"id": "x"}
+    assert body == "body"
+
+
+def test_parse_frontmatter_misparses_a_bare_value_that_happens_to_start_with_a_quote():
+    # Parser-side property, not a writer guard: this never calls
+    # initiative_files or _yaml_scalar. It hand-builds the frontmatter line
+    # the writer would emit for a `"`-leading title *if* it did not quote
+    # it, to show why the writer must — parse_frontmatter has no way to
+    # tell that unquoted value apart from a real quoted scalar, so it
+    # slices the wrong substring back out. The actual guard against a
+    # writer regression is the '"draft" ship it' case in the two
+    # parametrised round-trip tests above: revert the _yaml_scalar
+    # addition and the writer emits this same bare line, so that case's
+    # `fields["title"] == title` assertion fails.
+    bare_line = 'title: "draft" ship it\n'
+    text = f"---\nid: x\n{bare_line}---\n\nShip it.\n"
+    fields, _ = route.parse_frontmatter(text)
+    assert fields["title"] != '"draft" ship it'

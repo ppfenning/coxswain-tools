@@ -14,6 +14,7 @@ __all__ = [
     "next_run_id",
     "initiative_files",
     "intake_file",
+    "parse_frontmatter",
     "harness_argv",
     "child_env",
     "render_context",
@@ -152,12 +153,21 @@ def _yaml_scalar(value: str) -> str:
     if isinstance(value, _Raw):
         return str(value)
     starts_like_yaml_flow = value.startswith("[") or value.startswith("{")
+    # `'` is quoted for the same reason as `"`: a value that already looks
+    # quoted must not be handed to a YAML reader bare. This half has no
+    # round-trip test below. `parse_frontmatter` has no single-quoted value
+    # form, so a title starting with `'` parses as the bare string whether
+    # or not this line quotes it, and a test that failed on its removal
+    # would have to assert the writer's output shape, which this task
+    # rules out.
+    starts_like_a_quote = value.startswith('"') or value.startswith("'")
     if (
         value == ""
         or ":" in value
         or "#" in value
         or value != value.strip()
         or starts_like_yaml_flow
+        or starts_like_a_quote
     ):
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
@@ -374,3 +384,76 @@ def child_env(environ: dict, *, harness_dir: str = "", repo: str = "") -> dict:
         rest = env.get("PATH", "")
         env["PATH"] = os.pathsep.join(prefixes + ([rest] if rest else []))
     return env
+
+
+def _unquote(raw: str) -> str:
+    """Reverse `_yaml_scalar`'s double-quoted branch: `raw` is the quoted
+    scalar including its outer quotes. Undo in the opposite order to the
+    encode (quotes first, then backslashes) — encoding doubles backslashes
+    before it escapes quotes, so decoding must collapse the quote escape
+    before the backslash escape or a literal `\\"` collapses to the wrong
+    character.
+    """
+    inner = raw[1:-1]
+    quotes_undone = inner.replace('\\"', '"')
+    return quotes_undone.replace("\\\\", "\\")
+
+
+def _parse_list(raw: str) -> list:
+    """Reverse the flat-list branch: `raw` is `[...]`, comma-separated bare
+    items, `[]` for empty. Not a YAML parser — no quoted or nested items.
+    """
+    inner = raw[1:-1].strip()
+    return [] if inner == "" else [item.strip() for item in inner.split(",")]
+
+
+def _parse_field(line: str):
+    """One `key: value` header line back to `(key, value)`, dispatching on
+    the value's first character the same three ways `_yaml_scalar` and the
+    list literals write them. A line with no `": "` separator — a stray
+    comment, a block-list item, a hand edit — is not a line this module
+    ever wrote, so it is not a field: `None` tells the caller to drop it
+    rather than raise, which is what "never raises" requires of every line
+    in the fence, not just the well-formed ones.
+    """
+    parts = line.split(": ", 1)
+    if len(parts) != 2:
+        return None
+    key, raw = parts
+    if raw.startswith('"'):
+        return key, _unquote(raw)
+    if raw.startswith("["):
+        return key, _parse_list(raw)
+    return key, raw
+
+
+def parse_frontmatter(text: str) -> tuple:
+    """The inverse of `_frontmatter`: `(fields, body)` from `---`-delimited
+    text of the shape `_frontmatter` writes. `text` with no leading `---`
+    line, or with an opening `---` and no closing one, comes back as
+    `({}, text)` unchanged — this never raises. This round-trips only the
+    three value shapes `_yaml_scalar` and the list literals produce; it is
+    not a general YAML parser and does not try to be.
+    """
+    opening = "---\n"
+    if not text.startswith(opening):
+        return {}, text
+    after_opening = text[len(opening):]
+    closing = "\n---\n"
+    close_index = after_opening.find(closing)
+    if close_index == -1:
+        return {}, text
+    header_block = after_opening[:close_index]
+    after_closing = after_opening[close_index + len(closing):]
+    header_lines = [line for line in header_block.split("\n") if line]
+    parsed_fields = [_parse_field(line) for line in header_lines]
+    fields = dict(field for field in parsed_fields if field is not None)
+    with_leading_blank_stripped = (
+        after_closing[1:] if after_closing.startswith("\n") else after_closing
+    )
+    body = (
+        with_leading_blank_stripped[:-1]
+        if with_leading_blank_stripped.endswith("\n")
+        else with_leading_blank_stripped
+    )
+    return fields, body
