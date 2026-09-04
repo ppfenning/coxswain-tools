@@ -16,7 +16,20 @@ __all__ = [
     "intake_file",
     "harness_argv",
     "child_env",
+    "render_context",
+    "context_document",
+    "status_rows",
 ]
+
+_PROFILE_FIELDS = (
+    "team",
+    "cartridges_dir",
+    "skills_roots",
+    "provider_profile",
+    "harness_dir",
+    "workspace_dir",
+    "assume",
+)
 
 _KNOWN_KEYS = {
     "team",
@@ -251,6 +264,101 @@ def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
         argv += ["--idea", needs["idea"], "--initiative-id", needs["initiative_id"]]
     argv += ["--workdir", workspace_dir]
     return argv
+
+
+def render_context(profile_or_none, intake, runs, initiatives) -> str:
+    """The human-readable layout `agent-tools route context` prints, spec
+    §2. `profile_or_none` is a parsed profile dict or None; `intake`,
+    `runs`, `initiatives` are already-gathered lists — this function lists
+    a directory or reads a pidfile for none of it, that is the CLI's job.
+
+    `intake` items are `{"id", "title"}`; `runs` are
+    `{"id", "pid", "alive", "started"}`; `initiatives` are
+    `{"id", "phase", "ready"}` (ready task count) — the exact shapes spec
+    §2 names for the renderer's inputs.
+    """
+    if profile_or_none is None:
+        return (
+            "routing: no profile at ~/.config/agent-tools/profile.yaml; "
+            "the harness is not configured on this machine"
+        )
+    team = profile_or_none.get("team", "")
+    lines = [
+        f"routing: team {team}; work requests go through the route-work "
+        "skill, questions stay inline"
+    ]
+    if intake:
+        titles = ", ".join(f'"{item["title"]}"' for item in intake)
+        lines.append(f"intake: {len(intake)} queued — {titles}")
+    else:
+        lines.append("intake: 0 queued")
+    if runs:
+        described = ", ".join(
+            f'{r["id"]} (pid {r["pid"]}, since {r["started"]})' for r in runs
+        )
+        lines.append(f"runs: {len(runs)} in flight — {described}")
+    else:
+        lines.append("runs: 0 in flight")
+    if initiatives:
+        described = ", ".join(
+            f'{i["id"]} ({i["ready"]} tasks ready in phase {i["phase"]})'
+            for i in initiatives
+        )
+        lines.append(f"ready: {described}")
+    else:
+        lines.append("ready: none")
+    return "\n".join(lines)
+
+
+def context_document(profile_or_none, intake, runs, initiatives) -> dict:
+    """The `--json` shape for `agent-tools route context`, spec §2: the
+    same facts as `render_context`, keyed on exactly the profile fields
+    `parse_profile` produces so the no-profile case (every profile field
+    None) renders cleanly rather than omitting keys a caller would have
+    to guard for.
+    """
+    doc = {
+        field: (profile_or_none.get(field) if profile_or_none else None)
+        for field in _PROFILE_FIELDS
+    }
+    doc["intake"] = intake
+    doc["runs"] = runs
+    doc["initiatives"] = initiatives
+    return doc
+
+
+def status_rows(entries) -> list:
+    """Format the rows `agent-tools route status` prints, spec §5, from a
+    pre-gathered list of run entries. Each entry is
+    `{"id", "pid", "alive", "started", "quarantined", "reused", "summary",
+    "usage"}` — `pid`/`alive`/`started` from the CLI's own pidfile read,
+    the rest already produced by `epic.summarize_log` on the run's log.
+    `pid` is None for a run with no pidfile at all, which this renders as
+    a distinct "no pidfile" state rather than a crash. Order is preserved
+    from `entries`; no pidfile is read and `epic.alive` is not called here.
+    """
+    rows = []
+    for entry in entries:
+        pid = entry.get("pid")
+        if pid is None:
+            state = "no pidfile"
+        elif entry.get("alive"):
+            state = "alive"
+        else:
+            state = "exited"
+        rows.append(
+            {
+                "id": entry["id"],
+                "pid": pid,
+                "state": state,
+                "started": entry.get("started"),
+                "quarantined": entry.get("quarantined", []),
+                "reused": entry.get("reused", []),
+                "summary": entry.get("summary"),
+                "usage": entry.get("usage"),
+            }
+        )
+    return rows
 
 
 def child_env(environ: dict, *, harness_dir: str = "", repo: str = "") -> dict:
