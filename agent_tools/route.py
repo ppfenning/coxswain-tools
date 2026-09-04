@@ -20,6 +20,8 @@ __all__ = [
     "render_context",
     "context_document",
     "status_rows",
+    "render_status",
+    "status_entries",
     "intake_entries",
     "run_entries",
     "initiative_summaries",
@@ -374,6 +376,49 @@ def status_rows(entries) -> list:
             }
         )
     return rows
+
+
+def _status_line(row: dict) -> str:
+    head = (
+        f"{row['id']}: {row['state']}"
+        if row["pid"] is None
+        else f"{row['id']}: {row['state']} (pid {row['pid']}, started {row['started']})"
+    )
+    tails = (
+        ["; ".join(row[key]) for key in ("quarantined", "reused") if row.get(key)]
+        + [row[key] for key in ("summary", "usage") if row.get(key)]
+    )
+    return " ".join([head, *tails])
+
+
+def render_status(rows: list) -> str:
+    """The human-readable text `agent-tools route status` prints, spec §5,
+    from `status_rows`' output. One line per row: a run with no pidfile
+    states only its id and state, since `pid` and `started` are both
+    `None` for that row and printing them would show the word "None"
+    twice for no reason. `quarantined`, `reused`, `summary` and `usage`
+    are appended only when the row carries them, so a quiet run stays
+    one line.
+    """
+    return "\n".join(_status_line(row) for row in rows)
+
+
+def status_entries(runs: list, summaries: dict) -> list:
+    """The entries `status_rows` expects, assembled from what the CLI has
+    already read: `runs` is `run_entries`' output (one `{"id", "pid",
+    "alive", "started"}` per id with a pidfile), `summaries` is `id ->
+    epic.summarize_log`'s output for whatever log text the CLI found for
+    that id, `{}` where there was none. One entry per id in the union of
+    both, sorted by id; an id with a log but no pidfile gets the pid-less
+    shape `run_entries` would have given it: `pid` `None`, `alive`
+    `False`, `started` `None`.
+    """
+    by_id = {row["id"]: row for row in runs}
+    no_pidfile = {"pid": None, "alive": False, "started": None}
+    return [
+        {"id": run_id, **by_id.get(run_id, no_pidfile), **summaries.get(run_id, {})}
+        for run_id in sorted(set(by_id) | set(summaries))
+    ]
 
 
 def child_env(environ: dict, *, harness_dir: str = "", repo: str = "") -> dict:

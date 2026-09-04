@@ -171,6 +171,55 @@ def _route_context(a: argparse.Namespace) -> int:
     return 0
 
 
+def _run_alive(pid):
+    """`epic.alive`, guarded: pid 0 or negative is never dispatched to
+    `os.kill` (pid 0 signals the caller's whole process group, not a run),
+    and a pidfile large enough to overflow `os.kill`'s pid_t reads as dead
+    rather than crashing the session.
+    """
+    if pid is None or pid <= 0:
+        return False
+    try:
+        return epic.alive(pid)
+    except OverflowError:
+        return False
+
+
+def _status_rows_for(runs_dir: Path) -> list:
+    pids = {p.stem: t for p in sorted(runs_dir.glob("*.pid")) if (t := _read_text_or_none(p)) is not None}
+    alive = {run_id: _run_alive(route.parse_pid(t)) for run_id, t in pids.items()}
+    started = {run_id: _mtime_iso(runs_dir / f"{run_id}.pid") for run_id in pids}
+    runs = route.run_entries(pids, alive, started)
+    summaries = {p.stem: epic.summarize_log(_read_text_or_none(p) or "") for p in runs_dir.glob("*.log")}
+    return route.status_rows(route.status_entries(runs, summaries))
+
+
+def _route_status(a: argparse.Namespace) -> int:
+    profile_path = _profile_path(a)
+    text = _read_text_or_none(profile_path)
+    if text is None:
+        print(f"routing: no profile at {profile_path}")
+        return 2
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError as exc:
+        print(f"routing: profile unreadable: {exc}")
+        return 2
+    workspace = profile.get("workspace_dir", "")
+    if not workspace:
+        print(f"routing: workspace_dir not set in profile {profile_path}")
+        return 2
+    # Past this point a stray pidfile — hand-edited, absurdly large — must
+    # not take the session down with it (spec §2); charter A6 puts
+    # exceptions at the edge, matching _route_context's guard above.
+    try:
+        rows = _status_rows_for(Path(workspace).expanduser() / "runs")
+        print(json.dumps(rows, indent=2) if a.json else route.render_status(rows))
+    except Exception as exc:  # noqa: BLE001 — edge guard, see comment above
+        print(f"routing: status unavailable ({type(exc).__name__}: {exc})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agent-tools", description=__doc__)
     sub = p.add_subparsers(dest="group", required=True)
@@ -195,6 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("route", help="file work for the harness, and see what is queued or running").add_subparsers(dest="cmd", required=True)
     ctx = r.add_parser("context"); ctx.add_argument("--profile"); ctx.add_argument("--json", action="store_true"); ctx.set_defaults(fn=_route_context)
+    st = r.add_parser("status"); st.add_argument("--profile"); st.add_argument("--json", action="store_true"); st.set_defaults(fn=_route_status)
     return p
 
 

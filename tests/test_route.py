@@ -665,6 +665,66 @@ def test_parse_pid_returns_none_for_garbage():
     assert route.parse_pid("garbage") is None
 
 
+def test_render_status_no_pidfile_row_omits_pid_and_started():
+    rows = [{"id": "r1", "pid": None, "state": "no pidfile", "started": None,
+             "quarantined": [], "reused": [], "summary": None, "usage": None}]
+    assert route.render_status(rows) == "r1: no pidfile"
+
+
+def test_render_status_quiet_row_with_a_pid_stays_one_line():
+    rows = [{"id": "r2", "pid": 123, "state": "alive", "started": "2026-09-04T00:00:00+00:00",
+             "quarantined": [], "reused": [], "summary": None, "usage": None}]
+    assert route.render_status(rows) == "r2: alive (pid 123, started 2026-09-04T00:00:00+00:00)"
+
+
+def test_render_status_appends_quarantined_reused_summary_and_usage():
+    rows = [{"id": "r3", "pid": None, "state": "no pidfile", "started": None,
+             "quarantined": ["quarantined task: a — reason"], "reused": ["reused b from run-1"],
+             "summary": "epic run-2: done", "usage": "usage: 1 call"}]
+    assert route.render_status(rows) == (
+        "r3: no pidfile quarantined task: a — reason reused b from run-1 epic run-2: done usage: 1 call"
+    )
+
+
+def test_render_status_joins_multiple_rows_with_one_newline_each():
+    rows = [
+        {"id": "a", "pid": None, "state": "no pidfile", "started": None,
+         "quarantined": [], "reused": [], "summary": None, "usage": None},
+        {"id": "b", "pid": 7, "state": "exited", "started": "t",
+         "quarantined": [], "reused": [], "summary": None, "usage": None},
+    ]
+    assert route.render_status(rows) == "a: no pidfile\nb: exited (pid 7, started t)"
+
+
+def test_status_entries_keeps_a_pid_bearing_run_untouched_when_it_has_no_log():
+    runs = [{"id": "run1", "pid": 123, "alive": True, "started": "t1"}]
+    assert route.status_entries(runs, {}) == [{"id": "run1", "pid": 123, "alive": True, "started": "t1"}]
+
+
+def test_status_entries_merges_a_pid_bearing_run_with_its_log_summary():
+    runs = [{"id": "run1", "pid": 123, "alive": True, "started": "t1"}]
+    summaries = {"run1": {"quarantined": ["quarantined task: a"], "reused": [], "summary": "epic run-1", "usage": None}}
+    assert route.status_entries(runs, summaries) == [
+        {"id": "run1", "pid": 123, "alive": True, "started": "t1",
+         "quarantined": ["quarantined task: a"], "reused": [], "summary": "epic run-1", "usage": None}
+    ]
+
+
+def test_status_entries_gives_a_log_only_id_the_pid_less_shape():
+    summaries = {"run2": {"quarantined": [], "reused": [], "summary": "epic run-2", "usage": None}}
+    assert route.status_entries([], summaries) == [
+        {"id": "run2", "pid": None, "alive": False, "started": None,
+         "quarantined": [], "reused": [], "summary": "epic run-2", "usage": None}
+    ]
+
+
+def test_status_entries_sorts_the_union_of_run_and_log_ids():
+    runs = [{"id": "b", "pid": 1, "alive": True, "started": "t"}]
+    summaries = {"a": {}, "c": {}}
+    ids = [entry["id"] for entry in route.status_entries(runs, summaries)]
+    assert ids == ["a", "b", "c"]
+
+
 def test_work_item_passes_full_frontmatter_through():
     fields = {"id": "t1", "phase": "1-build", "state": "ready", "needs": ["t0"]}
     item = route.work_item(fields, initiative="demo", phase_dir="9-ignored", stem="ignored")
