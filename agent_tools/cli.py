@@ -6,6 +6,8 @@ import argparse
 import datetime
 import json
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -220,6 +222,162 @@ def _route_status(a: argparse.Namespace) -> int:
     return 0
 
 
+_PROFILE_KEYS_FOR_LAUNCH = ("workspace_dir", "harness_dir", "team", "cartridges_dir", "provider_profile")
+
+
+def _resolve_profile_or_refuse(a: argparse.Namespace):
+    """Resolve the profile for `file`/`launch`, spec §7: unlike `context`,
+    a missing profile or a profile missing a key `route.harness_argv` needs
+    is a hard refusal here (exit 2), since both subcommands need real paths
+    to write to or launch against, not a one-liner to print and carry on.
+
+    Returns `(profile, None)` on success, `(None, 2)` after printing the
+    reason.
+    """
+    profile_path = _profile_path(a)
+    text = _read_text_or_none(profile_path)
+    if text is None:
+        print(f"routing: no profile at {profile_path}")
+        return None, 2
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError as exc:
+        print(f"routing: profile unreadable: {exc}")
+        return None, 2
+    for key in _PROFILE_KEYS_FOR_LAUNCH:
+        if not profile.get(key):
+            print(f"routing: {key} not set in profile {profile_path}")
+            return None, 2
+    return profile, None
+
+
+def _route_file(a: argparse.Namespace) -> int:
+    profile, rc = _resolve_profile_or_refuse(a)
+    if rc is not None:
+        return rc
+    if a.body == "-":
+        body = sys.stdin.read()
+    elif a.body:
+        body = _read_text_or_none(Path(a.body))
+        if body is None:
+            print(f"routing: cannot read body file {a.body}")
+            return 2
+    else:
+        body = ""
+    try:
+        if a.intake:
+            date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+            mapping = route.intake_file(a.title, body, a.repo, date)
+        else:
+            mapping = route.initiative_files(a.title, body, a.repo, phase=a.phase)
+    except ValueError as exc:
+        print(f"routing: {exc}")
+        return 2
+    ws = Path(profile["workspace_dir"]).expanduser()
+    targets = {rel: ws / rel for rel in mapping}
+    existing = [str(path) for path in targets.values() if path.exists()]
+    if existing:
+        print(f"routing: refusing to overwrite existing path(s): {', '.join(existing)}")
+        return 2
+    for rel, path in targets.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(mapping[rel], encoding="utf-8")
+        print(str(path))
+    return 0
+
+
+def _harness_ready_or_refuse(harness_dir: str):
+    """spec §4/§7: `launch` refuses before anything starts when the
+    harness venv is not where the profile says. Returns 2 after printing
+    the reason, or `None` when the venv is ready.
+    """
+    shell_py = Path(harness_dir) / "shell.py"
+    venv_python = Path(harness_dir) / ".venv" / "bin" / "python"
+    if not shell_py.exists() or not venv_python.exists():
+        print(f"routing: harness venv missing at {harness_dir}; install it (see the harness README)")
+        return 2
+    return None
+
+
+def _route_launch(a: argparse.Namespace) -> int:
+    profile, rc = _resolve_profile_or_refuse(a)
+    if rc is not None:
+        return rc
+    harness_dir = profile.get("harness_dir", "")
+    venv_rc = _harness_ready_or_refuse(harness_dir)
+    if venv_rc is not None:
+        return venv_rc
+    runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+
+    if a.graph == "epic":
+        initiative_dir = Path(a.initiative)
+        initiative_md = initiative_dir / "initiative.md"
+        text = _read_text_or_none(initiative_md)
+        if text is None:
+            print(f"routing: no initiative.md at {initiative_md}")
+            return 2
+        fields, _ = route.parse_frontmatter(text)
+        repo = a.repo or fields.get("repo")
+        if not repo:
+            print(f"routing: no --repo given and no repo: in {initiative_md}")
+            return 2
+        try:
+            status = subprocess.run(
+                ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"routing: cannot read git status for {repo}: {exc}")
+            return 2
+        if status.stdout.strip():
+            print(f"routing: {repo} has uncommitted changes:\n{status.stdout}")
+            return 2
+        prefix = initiative_dir.name
+        live_pattern = re.compile(rf"^{re.escape(prefix)}-(\d+)\.pid$")
+        for pidfile in sorted(runs_dir.glob(f"{prefix}-*.pid")):
+            if not live_pattern.fullmatch(pidfile.name):
+                continue
+            pid_text = _read_text_or_none(pidfile)
+            pid = route.parse_pid(pid_text) if pid_text is not None else None
+            if _run_alive(pid):
+                print(f"routing: {pidfile.stem} for initiative {prefix} is already running (pid {pid})")
+                return 2
+        run_id = route.next_run_id([p.name for p in runs_dir.iterdir()], prefix)
+        needs = {"initiative": a.initiative, "repo": repo}
+        if a.fix_attempts is not None:
+            needs["fix_attempts"] = a.fix_attempts
+        env_repo = repo
+    else:  # decompose
+        idea_path = Path(a.idea)
+        if not idea_path.exists():
+            print(f"routing: no idea file at {idea_path}")
+            return 2
+        run_id = route.next_run_id([p.name for p in runs_dir.iterdir()], a.initiative_id)
+        needs = {"idea": a.idea, "initiative_id": a.initiative_id}
+        env_repo = ""
+
+    argv = route.harness_argv(profile, a.graph, run_id, **needs)
+    env = route.child_env(dict(os.environ), harness_dir=harness_dir, repo=env_repo)
+    log_path = runs_dir / f"{run_id}.log"
+    pid_path = runs_dir / f"{run_id}.pid"
+
+    if a.dry_run:
+        print(f"dry-run: {' '.join(argv)}")
+        print(f"pid {pid_path}")
+        print(f"log {log_path}")
+        return 0
+
+    with open(log_path, "ab") as log:
+        proc = subprocess.Popen(
+            argv, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+        )
+    pid_path.write_text(str(proc.pid))
+    print(f"run {run_id}")
+    print(f"pid {pid_path}")
+    print(f"log {log_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agent-tools", description=__doc__)
     sub = p.add_subparsers(dest="group", required=True)
@@ -245,6 +403,13 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("route", help="file work for the harness, and see what is queued or running").add_subparsers(dest="cmd", required=True)
     ctx = r.add_parser("context"); ctx.add_argument("--profile"); ctx.add_argument("--json", action="store_true"); ctx.set_defaults(fn=_route_context)
     st = r.add_parser("status"); st.add_argument("--profile"); st.add_argument("--json", action="store_true"); st.set_defaults(fn=_route_status)
+    f = r.add_parser("file"); f.add_argument("--profile"); f.add_argument("--repo", required=True); f.add_argument("--title", required=True)
+    f.add_argument("--body"); f.add_argument("--phase", default="build"); f.add_argument("--intake", action="store_true"); f.set_defaults(fn=_route_file)
+    lc = r.add_parser("launch").add_subparsers(dest="graph", required=True)
+    ep = lc.add_parser("epic"); ep.add_argument("--profile"); ep.add_argument("--initiative", required=True); ep.add_argument("--repo")
+    ep.add_argument("--fix-attempts", type=int, default=None); ep.add_argument("--dry-run", action="store_true"); ep.set_defaults(fn=_route_launch, graph="epic")
+    de = lc.add_parser("decompose"); de.add_argument("--profile"); de.add_argument("--idea", required=True); de.add_argument("--initiative-id", required=True)
+    de.add_argument("--dry-run", action="store_true"); de.set_defaults(fn=_route_launch, graph="decompose")
     return p
 
 
