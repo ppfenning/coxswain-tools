@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from agent_tools import route
@@ -296,3 +298,152 @@ def test_child_env_omits_a_prefix_that_is_not_given():
     environ = {"PATH": "/usr/bin"}
     env = route.child_env(environ, harness_dir="/opt/agent-graphs", repo="")
     assert env["PATH"] == "/opt/agent-graphs/.venv/bin:/usr/bin"
+
+
+FIXTURE_PROFILE = {
+    "team": "acme",
+    "cartridges_dir": "/opt/cartridges",
+    "skills_roots": ["/opt/skills-a", "/opt/skills-b"],
+    "provider_profile": "/opt/providers/acme.yaml",
+    "harness_dir": "/opt/agent-graphs",
+    "workspace_dir": "/home/acme/workspace",
+    "assume": "a",
+}
+
+FIXTURE_INTAKE = [
+    {"id": "ship-it", "title": "ship it"},
+    {"id": "fix-ci", "title": "fix ci"},
+]
+
+FIXTURE_RUNS = [
+    {"id": "widget-1", "pid": 4242, "alive": True, "started": "14:02"},
+]
+
+FIXTURE_INITIATIVES = [
+    {"id": "widget", "phase": "build", "ready": 3},
+]
+
+
+def test_render_context_with_profile_matches_spec_layout():
+    text = route.render_context(
+        FIXTURE_PROFILE, FIXTURE_INTAKE, FIXTURE_RUNS, FIXTURE_INITIATIVES
+    )
+    assert text == (
+        "routing: team acme; work requests go through the route-work skill, "
+        "questions stay inline\n"
+        'intake: 2 queued — "ship it", "fix ci"\n'
+        "runs: 1 in flight — widget-1 (pid 4242, since 14:02)\n"
+        "ready: widget (3 tasks ready in phase build)"
+    )
+
+
+def test_render_context_with_profile_and_no_activity():
+    text = route.render_context(FIXTURE_PROFILE, [], [], [])
+    assert text == (
+        "routing: team acme; work requests go through the route-work skill, "
+        "questions stay inline\n"
+        "intake: 0 queued\n"
+        "runs: 0 in flight\n"
+        "ready: none"
+    )
+
+
+def test_render_context_without_profile_is_the_one_liner():
+    text = route.render_context(None, [], [], [])
+    assert text == (
+        "routing: no profile at ~/.config/agent-tools/profile.yaml; the "
+        "harness is not configured on this machine"
+    )
+
+
+def test_context_document_keys_on_exactly_the_profile_fields():
+    doc = route.context_document(
+        FIXTURE_PROFILE, FIXTURE_INTAKE, FIXTURE_RUNS, FIXTURE_INITIATIVES
+    )
+    assert doc["team"] == "acme"
+    assert doc["cartridges_dir"] == "/opt/cartridges"
+    assert doc["skills_roots"] == ["/opt/skills-a", "/opt/skills-b"]
+    assert doc["provider_profile"] == "/opt/providers/acme.yaml"
+    assert doc["harness_dir"] == "/opt/agent-graphs"
+    assert doc["workspace_dir"] == "/home/acme/workspace"
+    assert doc["assume"] == "a"
+    assert doc["intake"] == FIXTURE_INTAKE
+    assert doc["runs"] == FIXTURE_RUNS
+    assert doc["initiatives"] == FIXTURE_INITIATIVES
+    assert json.loads(json.dumps(doc)) == doc
+
+
+def test_context_document_without_profile_has_the_same_keys_as_none():
+    doc = route.context_document(None, [], [], [])
+    for field in (
+        "team",
+        "cartridges_dir",
+        "skills_roots",
+        "provider_profile",
+        "harness_dir",
+        "workspace_dir",
+        "assume",
+    ):
+        assert doc[field] is None
+    assert doc["intake"] == []
+    assert doc["runs"] == []
+    assert doc["initiatives"] == []
+    assert json.loads(json.dumps(doc)) == doc
+
+
+def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
+    entries = [
+        {
+            "id": "widget-1",
+            "pid": 4242,
+            "alive": True,
+            "started": "14:02",
+            "quarantined": [],
+            "reused": [],
+            "summary": None,
+            "usage": None,
+        },
+        {
+            "id": "widget-2",
+            "pid": 4300,
+            "alive": False,
+            "started": "13:10",
+            "quarantined": ["quarantined task foo"],
+            "reused": [],
+            "summary": "epic done",
+            "usage": "usage $0.42",
+        },
+        {"id": "widget-3", "pid": None, "alive": None, "started": None},
+    ]
+    rows = route.status_rows(entries)
+    assert [r["id"] for r in rows] == ["widget-1", "widget-2", "widget-3"]
+    assert rows[0] == {
+        "id": "widget-1",
+        "pid": 4242,
+        "state": "alive",
+        "started": "14:02",
+        "quarantined": [],
+        "reused": [],
+        "summary": None,
+        "usage": None,
+    }
+    assert rows[1] == {
+        "id": "widget-2",
+        "pid": 4300,
+        "state": "exited",
+        "started": "13:10",
+        "quarantined": ["quarantined task foo"],
+        "reused": [],
+        "summary": "epic done",
+        "usage": "usage $0.42",
+    }
+    assert rows[2] == {
+        "id": "widget-3",
+        "pid": None,
+        "state": "no pidfile",
+        "started": None,
+        "quarantined": [],
+        "reused": [],
+        "summary": None,
+        "usage": None,
+    }
