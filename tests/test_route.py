@@ -105,3 +105,194 @@ def test_next_run_id_matches_real_runs_dir_filenames_not_bare_ids():
     assert new_id == "myinit-3"
     assert new_id + ".log" not in existing
     assert new_id + ".pid" not in existing
+
+
+def test_initiative_files_returns_the_initiative_and_task_paths_and_text():
+    files = route.initiative_files(
+        "Fix the Bug", "Do the thing.", "git@example.com:acme/widget.git", phase="build"
+    )
+    assert set(files) == {
+        "work/fix-the-bug/initiative.md",
+        "work/fix-the-bug/build/fix-the-bug.md",
+    }
+    assert files["work/fix-the-bug/initiative.md"] == (
+        "---\n"
+        "id: fix-the-bug\n"
+        "title: Fix the Bug\n"
+        'repo: "git@example.com:acme/widget.git"\n'
+        "---\n"
+        "\n"
+        "Do the thing.\n"
+    )
+    assert files["work/fix-the-bug/build/fix-the-bug.md"] == (
+        "---\n"
+        "id: fix-the-bug\n"
+        "phase: build\n"
+        "state: ready\n"
+        "needs: []\n"
+        "surfaces: []\n"
+        "title: Fix the Bug\n"
+        "---\n"
+        "\n"
+        "Do the thing.\n"
+    )
+
+
+def test_initiative_files_quotes_a_title_containing_yaml_metacharacters():
+    # The colon and the `#` are both in the *title* here, not the body, so
+    # this exercises both branches of _yaml_scalar's quoting predicate
+    # (a bare `#` reads as a comment to this module's own parse_profile).
+    files = route.initiative_files(
+        "route.py: initiative_files #wip", "Ship it.", "repo-url"
+    )
+    slug = route.slugify("route.py: initiative_files #wip")
+    initiative_text = files[f"work/{slug}/initiative.md"]
+    task_text = files[f"work/{slug}/build/{slug}.md"]
+    assert 'title: "route.py: initiative_files #wip"' in initiative_text
+    assert 'title: "route.py: initiative_files #wip"' in task_text
+    # needs/surfaces stay bare list literals, not quoted strings.
+    assert "needs: []" in task_text
+    assert "surfaces: []" in task_text
+
+
+def test_initiative_files_quotes_a_bracketed_title_instead_of_treating_it_as_raw_yaml():
+    # A title that merely *looks* like a YAML list must not be classified
+    # as one by its shape — only this module's own needs/surfaces literals
+    # are raw. Unquoted, a real YAML reader would parse `[draft] ship it`
+    # as a flow sequence, not the title string.
+    files = route.initiative_files("[draft] ship it", "Ship it.", "repo-url")
+    slug = route.slugify("[draft] ship it")
+    initiative_text = files[f"work/{slug}/initiative.md"]
+    assert 'title: "[draft] ship it"' in initiative_text
+
+
+def test_initiative_files_refuses_a_title_that_slugifies_to_empty():
+    # slugify's own docstring hands this guard to callers using the slug
+    # as a path segment; a bare "work/initiative.md" write is the wrong
+    # write into the work store this guard exists to prevent.
+    with pytest.raises(ValueError):
+        route.initiative_files("!!!", "body", "repo-url")
+
+
+def test_initiative_files_defaults_phase_to_build_and_body_to_title():
+    files = route.initiative_files("Fix the Bug", "", "repo-url")
+    task_text = files["work/fix-the-bug/build/fix-the-bug.md"]
+    assert "phase: build\n" in task_text
+    assert task_text.endswith("\nFix the Bug\n")
+
+
+def test_intake_file_returns_the_dated_path_and_text():
+    files = route.intake_file(
+        "Fix the Bug", "Do the thing.", "git@example.com:acme/widget.git", "2026-09-03"
+    )
+    assert set(files) == {"intake/2026-09-03-fix-the-bug.md"}
+    assert files["intake/2026-09-03-fix-the-bug.md"] == (
+        "---\n"
+        "id: fix-the-bug\n"
+        "title: Fix the Bug\n"
+        'repo: "git@example.com:acme/widget.git"\n'
+        "---\n"
+        "\n"
+        "Do the thing.\n"
+    )
+
+
+def test_intake_file_quotes_a_title_containing_yaml_metacharacters():
+    files = route.intake_file(
+        "route.py: initiative_files #wip", "Ship it.", "repo-url", "2026-09-03"
+    )
+    slug = route.slugify("route.py: initiative_files #wip")
+    text = files[f"intake/2026-09-03-{slug}.md"]
+    assert 'title: "route.py: initiative_files #wip"' in text
+
+
+def test_intake_file_refuses_a_title_that_slugifies_to_empty():
+    with pytest.raises(ValueError):
+        route.intake_file("!!!", "body", "repo-url", "2026-09-03")
+
+
+def test_harness_argv_builds_the_epic_command_line():
+    profile = route.parse_profile(VALID_PROFILE)
+    argv = route.harness_argv(
+        profile, "epic", "myinit-1", initiative="/work/myinit", repo="/repos/widget"
+    )
+    assert argv == [
+        "/opt/agent-graphs/.venv/bin/python",
+        "/opt/agent-graphs/shell.py",
+        "epic",
+        "--team",
+        "acme",
+        "--cartridges-dir",
+        "/opt/cartridges",
+        "--skills-root",
+        "/opt/skills-a",
+        "--skills-root",
+        "/opt/skills-b",
+        "--provider-profile",
+        "/opt/providers/acme.yaml",
+        "--runs-dir",
+        "/home/acme/workspace/runs",
+        "--assume",
+        "y",
+        "--run-id",
+        "myinit-1",
+        "--initiative",
+        "/work/myinit",
+        "--repo",
+        "/repos/widget",
+        "--workdir",
+        "/home/acme/workspace",
+    ]
+
+
+def test_harness_argv_builds_the_decompose_command_line():
+    profile = route.parse_profile(VALID_PROFILE)
+    argv = route.harness_argv(
+        profile,
+        "decompose",
+        "myidea-1",
+        idea="/intake/myidea.md",
+        initiative_id="myidea",
+    )
+    assert argv == [
+        "/opt/agent-graphs/.venv/bin/python",
+        "/opt/agent-graphs/shell.py",
+        "decompose",
+        "--team",
+        "acme",
+        "--cartridges-dir",
+        "/opt/cartridges",
+        "--skills-root",
+        "/opt/skills-a",
+        "--skills-root",
+        "/opt/skills-b",
+        "--provider-profile",
+        "/opt/providers/acme.yaml",
+        "--runs-dir",
+        "/home/acme/workspace/runs",
+        "--assume",
+        "y",
+        "--run-id",
+        "myidea-1",
+        "--idea",
+        "/intake/myidea.md",
+        "--initiative-id",
+        "myidea",
+        "--workdir",
+        "/home/acme/workspace",
+    ]
+
+
+def test_child_env_prepends_both_venv_bins_and_leaves_other_keys_untouched():
+    environ = {"PATH": "/usr/bin:/bin", "HOME": "/home/acme", "LANG": "C.UTF-8"}
+    env = route.child_env(environ, harness_dir="/opt/agent-graphs", repo="/repos/widget")
+    assert env["PATH"] == "/repos/widget/.venv/bin:/opt/agent-graphs/.venv/bin:/usr/bin:/bin"
+    assert env["HOME"] == "/home/acme"
+    assert env["LANG"] == "C.UTF-8"
+    assert environ["PATH"] == "/usr/bin:/bin"  # input untouched
+
+
+def test_child_env_omits_a_prefix_that_is_not_given():
+    environ = {"PATH": "/usr/bin"}
+    env = route.child_env(environ, harness_dir="/opt/agent-graphs", repo="")
+    assert env["PATH"] == "/opt/agent-graphs/.venv/bin:/usr/bin"
