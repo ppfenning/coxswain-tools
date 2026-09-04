@@ -285,6 +285,22 @@ def test_harness_argv_builds_the_decompose_command_line():
     ]
 
 
+def test_harness_argv_appends_fix_attempts_for_epic_when_given():
+    profile = route.parse_profile(VALID_PROFILE)
+    argv = route.harness_argv(
+        profile, "epic", "myinit-1", initiative="/work/myinit", repo="/repos/widget", fix_attempts=3,
+    )
+    assert argv[argv.index("--repo") + 2 :] == ["--fix-attempts", "3", "--workdir", "/home/acme/workspace"]
+
+
+def test_harness_argv_omits_fix_attempts_for_epic_when_absent():
+    profile = route.parse_profile(VALID_PROFILE)
+    argv = route.harness_argv(
+        profile, "epic", "myinit-1", initiative="/work/myinit", repo="/repos/widget",
+    )
+    assert "--fix-attempts" not in argv
+
+
 def test_child_env_prepends_both_venv_bins_and_leaves_other_keys_untouched():
     environ = {"PATH": "/usr/bin:/bin", "HOME": "/home/acme", "LANG": "C.UTF-8"}
     env = route.child_env(environ, harness_dir="/opt/agent-graphs", repo="/repos/widget")

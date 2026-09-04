@@ -277,6 +277,8 @@ def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
     ]
     if graph == "epic":
         argv += ["--initiative", needs["initiative"], "--repo", needs["repo"]]
+        if needs.get("fix_attempts") is not None:
+            argv += ["--fix-attempts", str(needs["fix_attempts"])]
     elif graph == "decompose":
         argv += ["--idea", needs["idea"], "--initiative-id", needs["initiative_id"]]
     argv += ["--workdir", workspace_dir]
