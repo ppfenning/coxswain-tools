@@ -650,3 +650,33 @@ def test_intake_entries_falls_back_to_id_when_frontmatter_has_no_title_and_body_
     files = {"any-name.md": "---\nid: notitle\n---\n\n"}
     entries = route.intake_entries(files)
     assert entries == [{"id": "notitle", "title": "notitle"}]
+
+
+def test_parse_pid_reads_a_plain_digit_string():
+    assert route.parse_pid("4821") == 4821
+
+
+def test_parse_pid_returns_none_for_an_empty_string():
+    assert route.parse_pid("") is None
+    assert route.parse_pid("   ") is None
+
+
+def test_parse_pid_returns_none_for_garbage():
+    assert route.parse_pid("garbage") is None
+
+
+def test_work_item_passes_full_frontmatter_through():
+    fields = {"id": "t1", "phase": "1-build", "state": "ready", "needs": ["t0"]}
+    item = route.work_item(fields, initiative="demo", phase_dir="9-ignored", stem="ignored")
+    assert item == {"id": "t1", "initiative": "demo", "phase": "1-build", "state": "ready", "needs": ["t0"]}
+
+
+def test_work_item_defaults_every_field_from_the_path_when_frontmatter_is_empty():
+    item = route.work_item({}, initiative="demo", phase_dir="1-build", stem="task")
+    assert item == {"id": "task", "initiative": "demo", "phase": "1-build", "state": "todo", "needs": []}
+
+
+def test_work_item_initiative_argument_wins_over_a_frontmatter_key():
+    fields = {"initiative": "wrong"}
+    item = route.work_item(fields, initiative="demo", phase_dir="1-build", stem="task")
+    assert item["initiative"] == "demo"

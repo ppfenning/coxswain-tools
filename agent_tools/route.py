@@ -23,6 +23,8 @@ __all__ = [
     "intake_entries",
     "run_entries",
     "initiative_summaries",
+    "parse_pid",
+    "work_item",
 ]
 
 _PROFILE_FIELDS = (
@@ -551,3 +553,29 @@ def initiative_summaries(items: list) -> list:
         for initiative_id in initiative_ids
     ]
     return [summary for summary in summaries if summary is not None]
+
+
+def parse_pid(text: str) -> int | None:
+    """A pidfile's text to a pid, or `None` when it isn't one: stripped,
+    digit-only text becomes an int; anything else — empty, garbage, a
+    partial write — is not a pid this module will hand to `os.kill`.
+    """
+    stripped = text.strip()
+    return int(stripped) if stripped.isdigit() else None
+
+
+def work_item(fields: dict, *, initiative: str, phase_dir: str, stem: str) -> dict:
+    """A work item row for `initiative_summaries`, filled in from the path
+    the caller read it from wherever frontmatter left a gap: `id` falls
+    back to `stem`, `phase` to `phase_dir`, `state` to `"todo"`, `needs` to
+    `[]`. `initiative` always comes from the argument — the directory name
+    is the initiative, never a frontmatter claim to the contrary.
+    """
+    return {
+        **fields,
+        "id": fields.get("id", stem),
+        "initiative": initiative,
+        "phase": fields.get("phase", phase_dir),
+        "state": fields.get("state", "todo"),
+        "needs": fields.get("needs", []),
+    }

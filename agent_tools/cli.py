@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
+import os
 import sys
 from pathlib import Path
 
-from agent_tools import cleanup, epic, hud, plan, records
+from agent_tools import cleanup, epic, hud, plan, records, route
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -92,6 +94,83 @@ def _plan_serve(a: argparse.Namespace) -> int:
     print(plan.serve(a.dir, kind=a.kind, open_browser=not a.no_open)); return 0
 
 
+DEFAULT_PROFILE = "~/.config/agent-tools/profile.yaml"
+
+
+def _profile_path(a: argparse.Namespace) -> Path:
+    return Path(a.profile or os.environ.get("AGENT_TOOLS_PROFILE") or DEFAULT_PROFILE).expanduser()
+
+
+def _read_text_or_none(p: Path):
+    try:
+        return p.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _mtime_iso(p: Path):
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()
+
+
+def _gather_context(profile_path: Path):
+    """Read the profile and the workspace; return (profile_or_none, reason, intake, runs, initiatives)."""
+    text = _read_text_or_none(profile_path)
+    if text is None:
+        return None, f"no profile at {profile_path}", [], [], []
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError as exc:
+        return None, f"profile unreadable: {exc}", [], [], []
+    workspace = profile.get("workspace_dir", "")
+    if not workspace:
+        return profile, "workspace_dir not set in profile", [], [], []
+    ws = Path(workspace).expanduser()
+    intake_files = {p.name: t for p in sorted((ws / "intake").glob("*.md")) if (t := _read_text_or_none(p)) is not None}
+    pid_paths = sorted((ws / "runs").glob("*.pid"))
+    pids = {p.stem: t for p in pid_paths if (t := _read_text_or_none(p)) is not None}
+    alive = {rid: (pid := route.parse_pid(t)) is not None and epic.alive(pid) for rid, t in pids.items()}
+    started = {rid: _mtime_iso(ws / "runs" / f"{rid}.pid") for rid in pids}
+    # the initiative id is the DIRECTORY name: work/<initiative>/<phase>/<task>.md;
+    # the edge only reads and names the path parts — route.work_item normalises
+    items = [
+        route.work_item(fields, initiative=task_path.parent.parent.name, phase_dir=task_path.parent.name, stem=task_path.stem)
+        for task_path in sorted((ws / "work").glob("*/*/*.md"))
+        if task_path.name != "initiative.md"
+        for text in [_read_text_or_none(task_path)] if text is not None
+        for fields in [route.parse_frontmatter(text)[0]]
+    ]
+    return (profile, "",
+            route.intake_entries(intake_files),
+            route.run_entries(pids, alive, started),
+            route.initiative_summaries(items))
+
+
+def _route_context(a: argparse.Namespace) -> int:
+    # The edge is allowed to catch everything: this command must never take a
+    # session down with it (spec §2). Charter A6 puts exceptions at the edge.
+    try:
+        profile, reason, intake, runs, initiatives = _gather_context(_profile_path(a))
+        if a.json:
+            doc = route.context_document(profile, intake, runs, initiatives)
+            if reason:
+                doc["reason"] = reason
+            print(json.dumps(doc, indent=2))
+        elif reason:
+            # nothing was read, so print no counts: an unread workspace must not
+            # look like an empty one
+            first_line = route.render_context(profile, [], [], []).partition("\n")[0]
+            print(f"{first_line} ({reason})")
+        else:
+            print(route.render_context(profile, intake, runs, initiatives))
+    except Exception as exc:  # noqa: BLE001 — edge guard, see comment above
+        print(f"routing: context unavailable ({type(exc).__name__}: {exc})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agent-tools", description=__doc__)
     sub = p.add_subparsers(dest="group", required=True)
@@ -113,6 +192,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     pl = sub.add_parser("plan", help="visual plans through the local bridge").add_subparsers(dest="cmd", required=True)
     s = pl.add_parser("serve"); s.add_argument("dir"); s.add_argument("--kind", default="plan"); s.add_argument("--check", action="store_true"); s.add_argument("--no-open", action="store_true"); s.set_defaults(fn=_plan_serve)
+
+    r = sub.add_parser("route", help="file work for the harness, and see what is queued or running").add_subparsers(dest="cmd", required=True)
+    ctx = r.add_parser("context"); ctx.add_argument("--profile"); ctx.add_argument("--json", action="store_true"); ctx.set_defaults(fn=_route_context)
     return p
 
 
