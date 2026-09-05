@@ -59,6 +59,7 @@ cox setup install --root DIR --team T --workspace DIR [--plugins] [--hook] [--fo
 cox install --root DIR [--manifest PATH] [--provider NAME] [--with FLAG] [--team T] [--workspace DIR] [--dry-run]   the plan over coxswain's manifest.toml: clone, fetch, skip or refuse per component, then setup_install, doctor, desktop; --dry-run only prints it, otherwise it runs each step and exits 0 only if every step ran clean
 cox upgrade --root DIR [--manifest PATH] [--provider NAME] [--with FLAG] [--team T] [--workspace DIR] [--to VERSION] [--dry-run]   same plan as install, but refuses (exit 2, naming the directory) if any present checkout is dirty; --to overrides every component's pinned tag for this run
 cox versions [--root DIR] [--manifest PATH]     pinned vs. installed tag per component, and status: ok, drift, missing, extra
+cox release VERSION --dry-run [--manifest PATH]   the lockstep plan: tag every component, bump the manifest, notes, tag_self; exit 2 on refuse (bad semver, an existing tag, a non-increasing version); without --dry-run, pushing tags is not implemented yet
 ```
 
 Every command that reads a record is pure over parsed data and unit-tested

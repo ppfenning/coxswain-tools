@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from typing import Optional
 import datetime
 import json
 import os
@@ -13,7 +14,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from agent_tools import cleanup, doctor, epic, hud, install, install_exec, plan, provenance, records, route, setup_install, setup_screen
+from agent_tools import cleanup, doctor, epic, hud, install, install_exec, plan, provenance, records, release, route, setup_install, setup_screen
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -838,6 +839,47 @@ def _versions(a: argparse.Namespace) -> int:
     return 0
 
 
+def _remote_tags(repo: str) -> Optional[list[str]]:
+    """The tags on `repo`'s GitHub remote, or None when git could not read the
+    remote. None is not `[]`: the planner refuses on None, so an unreachable or
+    misnamed remote can never look like a clean one."""
+    result = subprocess.run(["git", "ls-remote", "--tags", f"https://github.com/{repo}.git"],
+                             capture_output=True, text=True)
+    return None if result.returncode != 0 else release.parse_ls_remote(result.stdout)
+
+
+_RELEASE_DETAIL = {
+    "refuse": lambda step: step["detail"],
+    "tag": lambda step: f"{step['repo']} -> {step['tag']}",
+    "bump_manifest": lambda step: f"{step['from']} -> {step['to']}",
+    "notes": lambda step: step["path"],
+    "tag_self": lambda step: step["tag"],
+}
+
+
+def _release_detail(step: dict) -> str:
+    """One line of detail per step kind; an unknown kind shows itself rather than raising."""
+    fmt = _RELEASE_DETAIL.get(step["kind"])
+    return fmt(step) if fmt is not None else str(step)
+
+
+def _release(a: argparse.Namespace) -> int:
+    if not a.dry_run:
+        print("pushing tags is not implemented yet; use --dry-run")
+        return 2
+    manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
+    manifest = _load_manifest(manifest_path)
+    if manifest is None:
+        print(f"refusing: no manifest at {manifest_path}")
+        return 2
+    existing_tags = {name: _remote_tags(spec["repo"]) for name, spec in manifest.get("components", {}).items()
+                      if spec.get("repo")}
+    steps = release.release_plan(manifest, a.version, existing_tags)
+    for step in steps:
+        print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
+    return 2 if any(step["kind"] == "refuse" for step in steps) else 0
+
+
 def _setup_tui(a: argparse.Namespace) -> int:
     if not sys.stdin.isatty():
         print("setup: needs a terminal; use setup doctor / setup install / cartridge init directly")
@@ -895,6 +937,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     ver = sub.add_parser("versions", help="component versions against the manifest")
     ver.add_argument("--root"); ver.add_argument("--manifest"); ver.set_defaults(fn=_versions)
+
+    rel = sub.add_parser("release", help="the lockstep tag/bump-manifest/notes plan across coxswain's manifest")
+    rel.add_argument("version"); rel.add_argument("--manifest"); rel.add_argument("--dry-run", action="store_true")
+    rel.set_defaults(fn=_release)
 
     setup_p = sub.add_parser("setup", help="does this machine's profile actually work")
     setup_p.add_argument("--profile")
