@@ -85,7 +85,8 @@ def test_context_text_with_full_profile_lists_initiative_and_runs(tmp_path, caps
     assert rc == 0
     assert "demo" in out
     assert "Do the thing" in out
-    assert "run1" in out and "run2" in out
+    assert "runs: 1 in flight" in out
+    assert "run1" in out and "run2" not in out
 
 
 def test_context_with_work_item_missing_frontmatter_still_exits_zero_and_not_ready(tmp_path, capsys):
