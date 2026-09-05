@@ -119,12 +119,20 @@ def sections(items: list[Row]) -> dict[str, list[Row]]:
 
 
 @dataclass(frozen=True)
+class Effect:
+    kind: str
+    payload: dict
+
+
+@dataclass(frozen=True)
 class State:
     rows: tuple[Row, ...]
     cursor: int
     pending: dict[str, object]
     message: str
     editing: str | None = None  # the key `e` selected; apply_text writes there, not at the cursor
+    team: str = ""  # carried so apply_probe can rebuild rows with the same editability rule
+    effects: tuple[Effect, ...] = ()
 
 
 def _editable_indexes(rows: tuple[Row, ...]) -> list[int]:
@@ -217,17 +225,67 @@ def _undo(state: State) -> State:
     return replace(state, pending=_without(state.pending, row.key), message=f"{row.key} reverted")
 
 
+def _set_nested(node: dict, parts: list[str], value: object) -> dict:
+    if len(parts) == 1:
+        return {**node, parts[0]: value}
+    return {**node, parts[0]: _set_nested(node.get(parts[0], {}), parts[1:], value)}
+
+
+def _nested(pending: dict[str, object]) -> dict:
+    """`pending`'s dotted keys as the nested shape `write_fragment`'s `edits` wants."""
+    return functools.reduce(lambda acc, item: _set_nested(acc, item[0].split("."), item[1]), pending.items(), {})
+
+
+def _write(state: State) -> State:
+    if not state.pending:
+        return replace(state)
+    effects = (
+        Effect("write_fragment", {"edits": _nested(state.pending)}),
+        Effect("run_probe", {}),
+    )
+    return replace(state, effects=effects)
+
+
+def _refresh(state: State) -> State:
+    return replace(state, effects=(Effect("run_probe", {}),))
+
+
+def apply_probe(state: State, probe: dict) -> State:
+    """The write landed in `edited.yaml`; the freshly probed rows come back
+    with layer `edited`, which `rows()` already treats as editable."""
+    return replace(state, rows=tuple(rows(probe, state.team)), pending={}, effects=())
+
+
+def frame(state: State, width: int) -> list[str]:
+    """The lines the screen draws. Pure text: no curses, no colour."""
+
+    def line(row: Row) -> str:
+        pending = row.key in state.pending
+        value = state.pending[row.key] if pending else row.value
+        marker = "*" if pending else " "
+        tag = f"[{row.layer}]" if row.editable else f"(read-only: {row.layer})"
+        return f"{marker} {row.key} = {value} {tag}"[:width]
+
+    grouped = sections(list(state.rows))
+    body = [text for section in grouped for text in ([section[:width]] + [line(row) for row in grouped[section]])]
+    return body + [state.message[:width]]
+
+
 _HANDLERS = {
     "j": lambda s: _move(s, 1),
     "k": lambda s: _move(s, -1),
     "space": _space,
     "e": _edit,
     "u": _undo,
-    "w": lambda s: replace(s),  # piece 3 turns pending into an effect here
+    "w": _write,
+    "r": _refresh,
     "q": lambda s: replace(s),
 }
 
 
 def step(state: State, key: str) -> State:
+    """Effects are one-shot: cleared before dispatch, so only `w` and `r`
+    (the two handlers that name `effects` in their own return) leave any
+    behind, and a keypress in between never repeats a stale write or probe."""
     handler = _HANDLERS.get(key, lambda s: replace(s, message=f"unknown key {key}"))
-    return handler(state)
+    return handler(replace(state, effects=()))

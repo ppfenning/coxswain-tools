@@ -1,6 +1,6 @@
 import functools
 
-from agent_tools.editor_model import Row, State, apply_text, rows, sections, step
+from agent_tools.editor_model import Effect, Row, State, apply_probe, apply_text, frame, rows, sections, step
 from agent_tools.provenance import attribute
 
 
@@ -346,3 +346,82 @@ def test_cycling_a_choice_row_whose_value_is_none_does_not_raise():
     state = State(rows=(row,), cursor=0, pending={}, message="")
     after = step(state, "space")
     assert after.pending["policy.review_tier"] == "1"
+
+
+def test_step_w_with_pending_yields_write_fragment_then_run_probe_and_keeps_pending():
+    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={"crew.builder.enabled": True}, message="")
+    after = step(state, "w")
+    assert after.effects == (
+        Effect("write_fragment", {"edits": {"crew": {"builder": {"enabled": True}}}}),
+        Effect("run_probe", {}),
+    )
+    assert after.pending == {"crew.builder.enabled": True}
+
+
+def test_a_keypress_after_w_clears_the_stale_effects_but_keeps_pending():
+    state = State(rows=(_TOGGLE_ROW, _READONLY_ROW), cursor=0, pending={"crew.builder.enabled": True}, message="")
+    written = step(state, "w")
+    after = step(written, "j")
+    assert after.effects == ()
+    assert after.pending == {"crew.builder.enabled": True}
+
+
+def test_step_r_returns_a_run_probe_effect():
+    state = State(rows=(), cursor=0, pending={}, message="")
+    after = step(state, "r")
+    assert after.effects == (Effect("run_probe", {}),)
+
+
+def test_apply_probe_with_an_edited_provenance_keeps_the_row_editable():
+    state = State(
+        rows=(_TOGGLE_ROW,),
+        cursor=0,
+        pending={"crew.builder.enabled": True},
+        message="",
+        team="acme",
+    )
+    new_probe = {
+        "resolved": {"crew": {"builder": {"enabled": True}}},
+        "provenance": {"crew.builder.enabled": "edited"},
+    }
+    after = apply_probe(state, new_probe)
+    assert after.pending == {}
+    assert after.effects == ()
+    row = after.rows[0]
+    assert row.layer == "edited"
+    assert row.editable is True
+
+
+def test_apply_probe_rebuilds_rows_using_the_states_own_team_not_the_default():
+    state = State(rows=(), cursor=0, pending={}, message="", team="acme")
+    probe = {
+        "resolved": {"policy": {"review_tier": "2"}},
+        "provenance": {"policy.review_tier": "acme"},
+    }
+    row = apply_probe(state, probe).rows[0]
+    assert row.layer == "acme"
+    assert row.editable is True
+
+
+def test_frame_marks_a_pending_row_and_fits_width():
+    state = State(rows=(_TOGGLE_ROW, _READONLY_ROW), cursor=0, pending={"crew.builder.enabled": True}, message="ok")
+    lines = frame(state, width=60)
+    pending_line = next(line for line in lines if "crew.builder.enabled" in line)
+    assert pending_line.startswith("*")
+    readonly_line = next(line for line in lines if "crew.builder.skills" in line)
+    assert "read-only" in readonly_line
+    assert lines[-1] == "ok"
+
+
+def test_frame_shows_the_pending_value_not_the_stale_row_value():
+    row = Row(key="crew.builder.enabled", value=False, layer="acme", editable=True, kind="toggle")
+    state = State(rows=(row,), cursor=0, pending={"crew.builder.enabled": True}, message="")
+    pending_line = next(line for line in frame(state, width=60) if "crew.builder.enabled" in line)
+    assert "= True " in pending_line
+    assert "= False " not in pending_line
+
+
+def test_frame_truncates_every_line_to_width():
+    state = State(rows=(_TOGGLE_ROW, _READONLY_ROW), cursor=0, pending={"crew.builder.enabled": True}, message="ok")
+    lines = frame(state, width=10)
+    assert all(len(line) <= 10 for line in lines)
