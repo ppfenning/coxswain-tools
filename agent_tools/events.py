@@ -1,9 +1,8 @@
 """A typed event stream from run records: log lines, trace filenames, usage json.
-
-Pure parsers only — no filesystem, no clock. `seq` is the event's position in
-its own source (the log's line number; the trace's attempt number times 1000;
-10**9 for the one event a usage file yields) so ordering never depends on when
-a parser happened to run.
+Pure throughout: no filesystem, no clock, and `poll` takes state in and returns state out.
+`merge(*streams)` concatenates streams in the order given, keeping each stream's own `seq` order intact.
+Callers use the fixed order `merge(log, trace, usage)`; that order is the only cross-source guarantee, and it lands `run_exited_cost` last.
+Events from different sources are otherwise not comparable, so nothing here ever interleaves them by seq or by a clock.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["Event", "from_log", "from_trace_names", "from_usage"]
+__all__ = ["Event", "from_log", "from_trace_names", "from_usage", "merge", "poll"]
 
 
 @dataclass(frozen=True)
@@ -72,3 +71,47 @@ def from_usage(run: str, usage: Mapping[str, Any]) -> Event:
     """Pure: the one run_exited_cost event a usage file's summary carries."""
     summary = usage.get("summary") or {}
     return Event(run, "run_exited_cost", 10**9, {"cost_usd": summary.get("cost_usd"), "turns": summary.get("turns")})
+
+
+def merge(*streams: Sequence[Event]) -> list[Event]:
+    """Pure: concatenates streams in the order given. Each stream keeps its own
+    order; streams are never interleaved with each other. Call it as
+    `merge(log, trace, usage)` for the fixed source order this module promises."""
+    return [event for stream in streams for event in stream]
+
+
+def poll(
+    run: str,
+    state: Mapping[str, Any],
+    new_log_lines: Sequence[str],
+    new_trace_names: Sequence[str],
+    usage: Mapping[str, Any] | None,
+) -> tuple[list[Event], dict]:
+    """Pure: folds a new batch of log lines, trace names and an optional usage
+    file into `state`, returning the events that batch adds and the next state.
+    `run_exited` and `run_exited_cost` are each emitted at most once, tracked
+    separately, so a usage file landing after the log's exit line is not lost."""
+    seen_lines = state["log_lines_seen"]
+    log_batch = [
+        Event(e.run, e.kind, e.seq + seen_lines, e.detail)
+        for e in from_log(run, new_log_lines)
+        if not (e.kind == "run_started" and seen_lines > 0)
+    ]
+    already_exited = state["emitted_exit"]
+    log_events = [e for e in log_batch if not (e.kind == "run_exited" and already_exited)]
+    emitted_exit = already_exited or any(e.kind == "run_exited" for e in log_batch)
+
+    seen_names = state["trace_names_seen"]
+    unseen_names = [n for n in new_trace_names if n not in seen_names]
+    trace_events = from_trace_names(run, unseen_names)
+
+    cost_events = [from_usage(run, usage)] if usage is not None and not state["emitted_cost"] else []
+    emitted_cost = state["emitted_cost"] or bool(cost_events)
+
+    new_state = {
+        "log_lines_seen": seen_lines + len(new_log_lines),
+        "trace_names_seen": frozenset(seen_names) | frozenset(new_trace_names),
+        "emitted_exit": emitted_exit,
+        "emitted_cost": emitted_cost,
+    }
+    return merge(log_events, trace_events, cost_events), new_state
