@@ -1127,8 +1127,28 @@ def _setup_tui(a: argparse.Namespace) -> int:
     return setup_screen.main(*_setup_fields(a))
 
 
+def _bare_group(parser: argparse.ArgumentParser):
+    """Default `fn` for a group parser whose subcommand is optional: an
+    operator who runs the group alone sees that group's own help and a exit
+    code of 2, not a traceback or silence."""
+    def _fn(_a: argparse.Namespace) -> int:
+        parser.print_help()
+        return 2
+    return _fn
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cox", description=__doc__)
+    p = argparse.ArgumentParser(
+        prog="cox",
+        description=__doc__,
+        epilog=(
+            "examples:\n"
+            "  bare cox opens the coxswain session\n"
+            "  cox setup doctor checks this machine\n"
+            "  cox route launch epic runs a filed initiative"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     # dest="launcher_profile", not "profile": eight subparsers below declare
     # their own `--profile` with default None, and argparse copies a matched
     # subparser's namespace back over the parent's, so a shared dest would
@@ -1138,39 +1158,76 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--print-argv", action="store_true", help="bare cox: print the claude argv and cwd instead of exec'ing it")
     sub = p.add_subparsers(dest="group", required=False)
 
-    runs = sub.add_parser("runs", help="what a harness run recorded, and cleaning up after it").add_subparsers(dest="cmd", required=True)
-    u = runs.add_parser("usage"); u.add_argument("run_id"); u.add_argument("--runs-dir", default="runs"); u.add_argument("--json", action="store_true"); u.set_defaults(fn=_runs_usage)
-    t = runs.add_parser("trace"); t.add_argument("run_id"); t.add_argument("--runs-dir", default="runs"); t.add_argument("--role"); t.add_argument("-v", "--verbose", action="store_true"); t.set_defaults(fn=_runs_trace)
-    c = runs.add_parser("clean"); c.add_argument("run_id"); c.add_argument("--repo", required=True); c.add_argument("--worktree-root", default="~/worktrees"); c.add_argument("--apply", action="store_true"); c.set_defaults(fn=_runs_clean)
-    la = runs.add_parser("land"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task")
+    runs_p = sub.add_parser(
+        "runs", help="what a harness run recorded, and cleaning up after it",
+        description="What a harness run recorded, and cleaning up after it.",
+        epilog="examples:\n  cox runs land <run> --repo PATH --apply\n  cox runs usage <run> --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    runs_p.set_defaults(fn=_bare_group(runs_p))
+    runs = runs_p.add_subparsers(dest="cmd", required=False)
+    u = runs.add_parser("usage", help="usage stats and cost for one run"); u.add_argument("run_id"); u.add_argument("--runs-dir", default="runs"); u.add_argument("--json", action="store_true"); u.set_defaults(fn=_runs_usage)
+    t = runs.add_parser("trace", help="the tool-call trace for one run"); t.add_argument("run_id"); t.add_argument("--runs-dir", default="runs"); t.add_argument("--role"); t.add_argument("-v", "--verbose", action="store_true"); t.set_defaults(fn=_runs_trace)
+    c = runs.add_parser("clean", help="delete a run's worktree and branches locally"); c.add_argument("run_id"); c.add_argument("--repo", required=True); c.add_argument("--worktree-root", default="~/worktrees"); c.add_argument("--apply", action="store_true"); c.set_defaults(fn=_runs_clean)
+    la = runs.add_parser("land", help="merge a run's branch into the target repo"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task")
     la.add_argument("--worktree-root", default="~/worktrees"); la.add_argument("--apply", action="store_true"); la.add_argument("--no-merge", action="store_true"); la.set_defaults(fn=_runs_land)
-    se = runs.add_parser("series"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
-    ev = runs.add_parser("events"); ev.add_argument("--runs-dir", default="runs"); ev.add_argument("--follow", action="store_true"); ev.add_argument("--json", action="store_true"); ev.set_defaults(fn=_runs_events)
+    se = runs.add_parser("series", help="per-run summary rows across a runs directory"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
+    ev = runs.add_parser("events", help="poll a run's log for structured events"); ev.add_argument("--runs-dir", default="runs"); ev.add_argument("--follow", action="store_true"); ev.add_argument("--json", action="store_true"); ev.set_defaults(fn=_runs_events)
 
-    e = sub.add_parser("epic", help="watch a detached run").add_subparsers(dest="cmd", required=True)
-    w = e.add_parser("watch"); w.add_argument("pidfile"); w.add_argument("--log"); w.add_argument("--max-seconds", type=float, default=570); w.add_argument("--interval", type=float, default=20); w.add_argument("--json", action="store_true"); w.set_defaults(fn=_epic_watch)
+    epic_p = sub.add_parser(
+        "epic", help="watch a detached run",
+        description="Watch a detached run.",
+        epilog="examples:\n  cox epic watch RUN.pid --log RUN.log\n  cox epic watch RUN.pid --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    epic_p.set_defaults(fn=_bare_group(epic_p))
+    e = epic_p.add_subparsers(dest="cmd", required=False)
+    w = e.add_parser("watch", help="poll a detached run's pidfile until it exits"); w.add_argument("pidfile"); w.add_argument("--log"); w.add_argument("--max-seconds", type=float, default=570); w.add_argument("--interval", type=float, default=20); w.add_argument("--json", action="store_true"); w.set_defaults(fn=_epic_watch)
 
-    h = sub.add_parser("hud", help="the voice HUD's HTTP contracts").add_subparsers(dest="cmd", required=True)
+    hud_p = sub.add_parser(
+        "hud", help="the voice HUD's HTTP contracts",
+        description="The voice HUD's HTTP contracts.",
+        epilog="examples:\n  cox hud say \"starting the build\" --persona pat\n  cox hud inbox show",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    hud_p.set_defaults(fn=_bare_group(hud_p))
+    h = hud_p.add_subparsers(dest="cmd", required=False)
+    hud_help = {"ops": "post a batch of HUD operations", "say": "speak one line through the HUD voice",
+                "inbox": "show, arm, or clear the HUD inbox", "cast": "broadcast an announcement to the HUD"}
     for name, fn in (("ops", _hud_ops), ("say", _hud_say), ("inbox", _hud_inbox), ("cast", _hud_cast)):
-        sp = h.add_parser(name); sp.add_argument("--base", default=hud.DEFAULT_BASE); sp.set_defaults(fn=fn)
+        sp = h.add_parser(name, help=hud_help[name]); sp.add_argument("--base", default=hud.DEFAULT_BASE); sp.set_defaults(fn=fn)
         if name == "ops": sp.add_argument("file", help="JSON list of items, or - for stdin")
         if name == "say": sp.add_argument("text"); sp.add_argument("--persona"); sp.add_argument("--voice")
         if name == "inbox": sp.add_argument("action", choices=["show", "arm", "clear"]); sp.add_argument("--max-seconds", type=float, default=600)
 
-    pl = sub.add_parser("plan", help="visual plans through the local bridge").add_subparsers(dest="cmd", required=True)
-    s = pl.add_parser("serve"); s.add_argument("dir"); s.add_argument("--kind", default="plan"); s.add_argument("--check", action="store_true"); s.add_argument("--no-open", action="store_true"); s.set_defaults(fn=_plan_serve)
+    plan_p = sub.add_parser(
+        "plan", help="visual plans through the local bridge",
+        description="Visual plans through the local bridge.",
+        epilog="examples:\n  cox plan serve work/<id> --kind plan\n  cox plan serve work/<id> --check",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    plan_p.set_defaults(fn=_bare_group(plan_p))
+    pl = plan_p.add_subparsers(dest="cmd", required=False)
+    s = pl.add_parser("serve", help="serve a visual plan through the local bridge"); s.add_argument("dir"); s.add_argument("--kind", default="plan"); s.add_argument("--check", action="store_true"); s.add_argument("--no-open", action="store_true"); s.set_defaults(fn=_plan_serve)
 
-    r = sub.add_parser("route", help="file work for the harness, and see what is queued or running").add_subparsers(dest="cmd", required=True)
-    ctx = r.add_parser("context"); ctx.add_argument("--profile"); ctx.add_argument("--json", action="store_true"); ctx.set_defaults(fn=_route_context)
-    st = r.add_parser("status"); st.add_argument("--profile"); st.add_argument("--json", action="store_true"); st.set_defaults(fn=_route_status)
-    f = r.add_parser("file"); f.add_argument("--profile"); f.add_argument("--repo", required=True); f.add_argument("--title", required=True)
+    route_p = sub.add_parser(
+        "route", help="file work for the harness, and see what is queued or running",
+        description="File work for the harness, and see what is queued or running.",
+        epilog="examples:\n  cox route launch epic --initiative work/<id> --repo PATH\n  cox route status --profile PATH",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    route_p.set_defaults(fn=_bare_group(route_p))
+    r = route_p.add_subparsers(dest="cmd", required=False)
+    ctx = r.add_parser("context", help="the routing profile's resolved context"); ctx.add_argument("--profile"); ctx.add_argument("--json", action="store_true"); ctx.set_defaults(fn=_route_context)
+    st = r.add_parser("status", help="what is queued or running for this profile"); st.add_argument("--profile"); st.add_argument("--json", action="store_true"); st.set_defaults(fn=_route_status)
+    f = r.add_parser("file", help="file a new ticket for the harness"); f.add_argument("--profile"); f.add_argument("--repo", required=True); f.add_argument("--title", required=True)
     f.add_argument("--body"); f.add_argument("--phase", default="build"); f.add_argument("--intake", action="store_true"); f.set_defaults(fn=_route_file)
-    lc = r.add_parser("launch").add_subparsers(dest="graph", required=True)
-    ep = lc.add_parser("epic"); ep.add_argument("--profile"); ep.add_argument("--initiative", required=True); ep.add_argument("--repo")
+    lc = r.add_parser("launch", help="run one of the harness's graphs directly").add_subparsers(dest="graph", required=True)
+    ep = lc.add_parser("epic", help="launch the epic graph against a filed initiative"); ep.add_argument("--profile"); ep.add_argument("--initiative", required=True); ep.add_argument("--repo")
     ep.add_argument("--fix-attempts", type=int, default=None); ep.add_argument("--dry-run", action="store_true"); ep.set_defaults(fn=_route_launch, graph="epic")
-    de = lc.add_parser("decompose"); de.add_argument("--profile"); de.add_argument("--idea", required=True); de.add_argument("--initiative-id", required=True)
+    de = lc.add_parser("decompose", help="launch the decompose graph against an idea"); de.add_argument("--profile"); de.add_argument("--idea", required=True); de.add_argument("--initiative-id", required=True)
     de.add_argument("--dry-run", action="store_true"); de.set_defaults(fn=_route_launch, graph="decompose")
-    co = lc.add_parser("cos"); co.add_argument("--profile"); co.add_argument("--dry-run", action="store_true")
+    co = lc.add_parser("cos", help="launch the cos graph"); co.add_argument("--profile"); co.add_argument("--dry-run", action="store_true")
     co.set_defaults(fn=_route_launch, graph="cos")
 
     ins = sub.add_parser("install", help="clone/update coxswain components against the manifest")
@@ -1188,7 +1245,10 @@ def build_parser() -> argparse.ArgumentParser:
     ver = sub.add_parser("versions", help="component versions against the manifest")
     ver.add_argument("--root"); ver.add_argument("--manifest"); ver.set_defaults(fn=_versions)
 
-    dev = sub.add_parser("dev", description="maintainer commands for the Coxswain repositories; not needed to use Coxswain").add_subparsers(dest="cmd", required=True)
+    dev = sub.add_parser(
+        "dev", help="maintainer commands for the Coxswain repositories",
+        description="maintainer commands for the Coxswain repositories; not needed to use Coxswain",
+    ).add_subparsers(dest="cmd", required=True)
     rel = dev.add_parser("release", help="the lockstep tag/bump-manifest/notes plan across coxswain's manifest, or (without --dry-run) tags and pushes every component")
     rel.add_argument("version"); rel.add_argument("--manifest"); rel.add_argument("--dry-run", action="store_true")
     rel.add_argument("--root", default="."); rel.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
@@ -1200,12 +1260,17 @@ def build_parser() -> argparse.ArgumentParser:
     old_rel.add_argument("rest", nargs=argparse.REMAINDER)
     old_rel.set_defaults(fn=_release_moved)
 
-    setup_p = sub.add_parser("setup", help="does this machine's profile actually work")
+    setup_p = sub.add_parser(
+        "setup", help="does this machine's profile actually work",
+        description="Does this machine's profile actually work.",
+        epilog="examples:\n  cox setup doctor --profile PATH\n  cox setup install --root PATH --team NAME --workspace PATH",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     setup_p.add_argument("--profile")
     setup_p.set_defaults(fn=_setup_tui)
     su = setup_p.add_subparsers(dest="cmd", required=False)
-    sd = su.add_parser("doctor"); sd.add_argument("--profile"); sd.add_argument("--json", action="store_true"); sd.set_defaults(fn=_setup_doctor)
-    si = su.add_parser("install")
+    sd = su.add_parser("doctor", help="check this machine's profile against what it needs"); sd.add_argument("--profile"); sd.add_argument("--json", action="store_true"); sd.set_defaults(fn=_setup_doctor)
+    si = su.add_parser("install", help="clone components and write a profile for this machine")
     si.add_argument("--root", required=True); si.add_argument("--team", required=True); si.add_argument("--workspace", required=True)
     si.add_argument("--provider-profile"); si.add_argument("--skills-root"); si.add_argument("--assume", default="a", choices=("a", "r"))
     si.add_argument("--plugins", action="store_true"); si.add_argument("--hook", action="store_true")
