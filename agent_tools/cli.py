@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_tools import cleanup, doctor, epic, hud, plan, records, route, setup_install
+from agent_tools import cleanup, doctor, epic, hud, plan, records, route, setup_install, setup_screen
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -627,6 +627,28 @@ def _setup_install(a: argparse.Namespace) -> int:
     return 0
 
 
+def _setup_fields(a: argparse.Namespace) -> tuple[str, str, str]:
+    """(root, team, workspace) to prefill the TUI with, from the profile
+    when it resolves, else empty strings — never a hard refusal here."""
+    text = _read_text_or_none(_profile_path(a))
+    if text is None:
+        return "", "", ""
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError:
+        return "", "", ""
+    harness_dir = profile.get("harness_dir", "")
+    root = str(Path(harness_dir).parent) if harness_dir else ""
+    return root, profile.get("team", ""), profile.get("workspace_dir", "")
+
+
+def _setup_tui(a: argparse.Namespace) -> int:
+    if not sys.stdin.isatty():
+        print("setup: needs a terminal; use setup doctor / setup install / cartridge init directly")
+        return 2
+    return setup_screen.main(*_setup_fields(a))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agent-tools", description=__doc__)
     sub = p.add_subparsers(dest="group", required=True)
@@ -661,7 +683,10 @@ def build_parser() -> argparse.ArgumentParser:
     de = lc.add_parser("decompose"); de.add_argument("--profile"); de.add_argument("--idea", required=True); de.add_argument("--initiative-id", required=True)
     de.add_argument("--dry-run", action="store_true"); de.set_defaults(fn=_route_launch, graph="decompose")
 
-    su = sub.add_parser("setup", help="does this machine's profile actually work").add_subparsers(dest="cmd", required=True)
+    setup_p = sub.add_parser("setup", help="does this machine's profile actually work")
+    setup_p.add_argument("--profile")
+    setup_p.set_defaults(fn=_setup_tui)
+    su = setup_p.add_subparsers(dest="cmd", required=False)
     sd = su.add_parser("doctor"); sd.add_argument("--profile"); sd.add_argument("--json", action="store_true"); sd.set_defaults(fn=_setup_doctor)
     si = su.add_parser("install")
     si.add_argument("--root", required=True); si.add_argument("--team", required=True); si.add_argument("--workspace", required=True)
