@@ -113,6 +113,8 @@ def test_land_branches_asks_git_for_no_merges_rather_than_sniffing_subjects(monk
 def repo(tmp_path):
     root = tmp_path / "repo"; root.mkdir()
     sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    sp.run(["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True)
+    sp.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
     (root / "f").write_text("x"); sp.run(["git", "-C", str(root), "add", "-A"], check=True, env=_ENV)
     sp.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True, env=_ENV)
     sp.run(["git", "-C", str(root), "checkout", "-qb", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
