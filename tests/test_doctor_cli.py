@@ -127,7 +127,15 @@ def test_json_output_parses_and_ok_matches_the_exit_code(tmp_path, monkeypatch, 
 
 _FAKE_CORE_OK = {
     "core/__init__.py": "",
-    "core/cartridge.py": "class CartridgeError(Exception):\n    pass\n\ndef load(team, cartridges_dir, *, skill_index):\n    return {'team': team}\n",
+    "core/cartridge.py": (
+        "class CartridgeError(Exception):\n"
+        "    pass\n\n"
+        "def load(team, cartridges_dir, *, skill_index):\n"
+        "    return {'team': team}\n\n"
+        "def layers(team, cartridges_dir, *, skill_index):\n"
+        "    return [('base', {'policy': {'review_tier': '1'}}),\n"
+        "            (team, {'policy': {'review_tier': '2'}})]\n"
+    ),
     "core/skills.py": "def index_from_roots(roots):\n    return {f'local-skills:{i}': [r] for i, r in enumerate(roots, 1)}\n",
 }
 _WRAPPER = """#!/bin/sh
@@ -203,6 +211,47 @@ def test_a_failing_skill_index_fails_skills_and_names_itself_on_the_cartridge_ro
     assert rows["skills"]["ok"] is False
     assert "skill index failed" in rows["cartridge"]["detail"] and "bad plugin manifest" in rows["cartridge"]["detail"]
     assert rc == 1
+
+
+def test_the_probe_reports_provenance_for_each_key_the_fixed_layers_set(tmp_path, monkeypatch):
+    _, cartridges_dir, skills_a, skills_b, harness_dir = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OK)
+    facts = _run_core_probe(str(harness_dir / ".venv" / "bin" / "python"), str(cartridges_dir), "acme",
+                             [str(skills_a), str(skills_b)])
+    assert facts["provenance"] == {"policy.review_tier": "acme"}
+
+
+def test_a_layers_failure_surfaces_as_provenance_error_with_the_exception_text(tmp_path, monkeypatch):
+    fake = dict(_FAKE_CORE_OK)
+    fake["core/cartridge.py"] = (
+        "class CartridgeError(Exception):\n"
+        "    pass\n\n"
+        "def load(team, cartridges_dir, *, skill_index):\n"
+        "    return {'team': team}\n\n"
+        "def layers(team, cartridges_dir, *, skill_index):\n"
+        "    raise RuntimeError('extends chain broke')\n"
+    )
+    _, cartridges_dir, skills_a, skills_b, harness_dir = _real_probe_setup(tmp_path, monkeypatch, fake)
+    facts = _run_core_probe(str(harness_dir / ".venv" / "bin" / "python"), str(cartridges_dir), "acme",
+                             [str(skills_a), str(skills_b)])
+    assert "provenance" not in facts
+    assert facts["provenance_error"] == "RuntimeError: extends chain broke"
+
+
+def test_an_empty_layers_list_is_a_loader_contract_violation_not_a_clean_result(tmp_path, monkeypatch):
+    fake = dict(_FAKE_CORE_OK)
+    fake["core/cartridge.py"] = (
+        "class CartridgeError(Exception):\n"
+        "    pass\n\n"
+        "def load(team, cartridges_dir, *, skill_index):\n"
+        "    return {'team': team}\n\n"
+        "def layers(team, cartridges_dir, *, skill_index):\n"
+        "    return []\n"
+    )
+    _, cartridges_dir, skills_a, skills_b, harness_dir = _real_probe_setup(tmp_path, monkeypatch, fake)
+    facts = _run_core_probe(str(harness_dir / ".venv" / "bin" / "python"), str(cartridges_dir), "acme",
+                             [str(skills_a), str(skills_b)])
+    assert "provenance" not in facts
+    assert facts["provenance_error"] == "the loader returned no layers"
 
 
 def test_a_trailing_yaml_comment_on_the_provider_command_is_not_part_of_the_command(tmp_path, monkeypatch, capsys):
