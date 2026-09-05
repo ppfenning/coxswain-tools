@@ -9,7 +9,7 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-__all__ = ["DEFAULT_BASE", "get", "post", "post_ops", "say", "inbox", "clear_inbox", "wait_for_inbox", "cast"]
+__all__ = ["DEFAULT_BASE", "cast", "clear_inbox", "get", "inbox", "post", "post_ops", "say", "wait_for_inbox"]
 
 DEFAULT_BASE = "http://127.0.0.1:8123"
 

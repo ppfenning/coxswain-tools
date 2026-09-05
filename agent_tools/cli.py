@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from typing import Optional
 import dataclasses
 import datetime
 import json
@@ -15,7 +14,25 @@ import sys
 import tomllib
 from pathlib import Path
 
-from agent_tools import cleanup, doctor, epic, hud, install, install_exec, land, plan, provenance, records, release, route, runs as runs_module, runs_top, runs_top_screen, setup_install, setup_screen
+from agent_tools import (
+    cleanup,
+    doctor,
+    epic,
+    hud,
+    install,
+    install_exec,
+    land,
+    plan,
+    provenance,
+    records,
+    release,
+    route,
+    runs_top,
+    runs_top_screen,
+    setup_install,
+    setup_screen,
+)
+from agent_tools import runs as runs_module
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -100,7 +117,7 @@ def _runs_clean(a: argparse.Namespace) -> int:
     return 0
 
 
-def _land_record(run_id: str, task: Optional[str]) -> tuple[dict, str] | None:
+def _land_record(run_id: str, task: str | None) -> tuple[dict, str] | None:
     tasks_root = Path("runs") / run_id / "tasks"
     matches = sorted(tasks_root.glob(f"*/{task}.json" if task else "*/*.json"))
     if len(matches) != 1:
@@ -234,7 +251,7 @@ def _epic_watch(a: argparse.Namespace) -> int:
 
 
 def _hud_ops(a: argparse.Namespace) -> int:
-    items = json.load(sys.stdin if a.file == "-" else open(a.file))
+    items = json.load(sys.stdin) if a.file == "-" else json.loads(Path(a.file).read_text())
     print(json.dumps(hud.post_ops(items if isinstance(items, list) else items.get("items", []), base=a.base)))
     return 0
 
@@ -289,7 +306,7 @@ def _mtime_iso(p: Path):
         mtime = p.stat().st_mtime
     except OSError:
         return None
-    return datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()
+    return datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC).isoformat()
 
 
 def _gather_context(profile_path: Path):
@@ -342,7 +359,7 @@ def _route_context(a: argparse.Namespace) -> int:
             print(f"{first_line} ({reason})")
         else:
             print(route.render_context(profile, intake, runs, initiatives))
-    except Exception as exc:  # noqa: BLE001 — edge guard, see comment above
+    except Exception as exc:
         print(f"routing: context unavailable ({type(exc).__name__}: {exc})")
     return 0
 
@@ -406,7 +423,7 @@ def _route_status(a: argparse.Namespace) -> int:
     try:
         rows = _status_rows_for(Path(workspace).expanduser() / "runs")
         print(json.dumps(rows, indent=2) if a.json else route.render_status(rows))
-    except Exception as exc:  # noqa: BLE001 — edge guard, see comment above
+    except Exception as exc:
         print(f"routing: status unavailable ({type(exc).__name__}: {exc})")
     return 0
 
@@ -455,7 +472,7 @@ def _route_file(a: argparse.Namespace) -> int:
         body = ""
     try:
         if a.intake:
-            date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+            date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
             mapping = route.intake_file(a.title, body, a.repo, date)
         else:
             mapping = route.initiative_files(a.title, body, a.repo, phase=a.phase)
@@ -730,23 +747,23 @@ def _install_facts(a: argparse.Namespace) -> dict:
     claude_settings_path = str(Path("~/.claude/settings.json").expanduser())
     python_exists = {repo: (Path(root) / repo / ".venv" / "bin" / "python").exists()
                       for repo in setup_install.REPOS}
-    return dict(
-        root=root,
-        team=a.team,
-        workspace=a.workspace,
-        provider_profile=a.provider_profile or f"{root}/agent-cartridges/providers/claude-code.yaml",
-        skills_root=a.skills_root or f"{root}/agent-cartridges/skills-plugins",
-        uv_on_path=shutil.which("uv") is not None,
-        python_exists=python_exists,
-        claude_on_path=shutil.which("claude") is not None,
-        profile_exists=Path(setup_install.profile_path(config_dir)).exists(),
-        force_profile=a.force_profile,
-        plugins=a.plugins,
-        hook=a.hook,
-        config_dir=config_dir,
-        claude_settings_path=claude_settings_path,
-        assume=a.assume,
-    )
+    return {
+        "root": root,
+        "team": a.team,
+        "workspace": a.workspace,
+        "provider_profile": a.provider_profile or f"{root}/agent-cartridges/providers/claude-code.yaml",
+        "skills_root": a.skills_root or f"{root}/agent-cartridges/skills-plugins",
+        "uv_on_path": shutil.which("uv") is not None,
+        "python_exists": python_exists,
+        "claude_on_path": shutil.which("claude") is not None,
+        "profile_exists": Path(setup_install.profile_path(config_dir)).exists(),
+        "force_profile": a.force_profile,
+        "plugins": a.plugins,
+        "hook": a.hook,
+        "config_dir": config_dir,
+        "claude_settings_path": claude_settings_path,
+        "assume": a.assume,
+    }
 
 
 def _install_run(step: dict) -> str | None:
@@ -985,7 +1002,7 @@ def _versions(a: argparse.Namespace) -> int:
     return 0
 
 
-def _remote_tags(repo: str) -> Optional[list[str]]:
+def _remote_tags(repo: str) -> list[str] | None:
     """The tags on `repo`'s GitHub remote, or None when git could not read the
     remote. None is not `[]`: the planner refuses on None, so an unreachable or
     misnamed remote can never look like a clean one."""
@@ -1093,7 +1110,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     return 0
 
 
-def _maintainer_remote_url(directory: str) -> Optional[str]:
+def _maintainer_remote_url(directory: str) -> str | None:
     """`git -C <directory> remote get-url origin`, or None when git could
     not read it — an unreadable remote is not a maintainer's checkout."""
     result = subprocess.run(["git", "-C", directory, "remote", "get-url", "origin"],

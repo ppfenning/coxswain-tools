@@ -7,6 +7,7 @@ a fake stdscr.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import time
@@ -16,7 +17,7 @@ from agent_tools import events as events_module
 from agent_tools import runs_top
 from agent_tools.records import load_trace
 
-__all__ = ["facts", "rows_now", "draw", "loop", "main"]
+__all__ = ["draw", "facts", "loop", "main", "rows_now"]
 
 _STALE_SECONDS = 600
 _TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)$")
@@ -131,10 +132,8 @@ def draw(stdscr, rows: list) -> None:
     for i, line in enumerate(lines[:height]):
         row = ordered[i - 1] if 0 < i <= len(ordered) else None
         attr = _attr(row, has_color) if row is not None else curses.A_NORMAL
-        try:
+        with contextlib.suppress(curses.error):
             stdscr.addnstr(i, 0, line, width, attr)
-        except curses.error:
-            pass
     stdscr.refresh()
 
 

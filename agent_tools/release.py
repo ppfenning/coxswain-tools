@@ -7,13 +7,13 @@ runs the git commands at the edge."""
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping, Optional
 
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$")
 
 
-def _parse_semver(version: str) -> Optional[tuple[int, int, int, Optional[int]]]:
+def _parse_semver(version: str) -> tuple[int, int, int, int | None] | None:
     """`(major, minor, patch, beta_n)` with `beta_n` `None` for a release,
     or `None` when `version` does not match `X.Y.Z` or `X.Y.Z-beta.N`."""
     m = _VERSION_RE.match(version)
@@ -23,14 +23,14 @@ def _parse_semver(version: str) -> Optional[tuple[int, int, int, Optional[int]]]
     return (int(major), int(minor), int(patch), int(beta) if beta is not None else None)
 
 
-def _sort_key(parsed: tuple[int, int, int, Optional[int]]) -> tuple:
+def _sort_key(parsed: tuple[int, int, int, int | None]) -> tuple:
     """A beta sorts below its own release: `None` (release) must compare
     greater than any integer beta number at the same major.minor.patch."""
     major, minor, patch, beta = parsed
     return (major, minor, patch, 0 if beta is not None else 1, beta if beta is not None else 0)
 
 
-def _refuse(component: Optional[str], detail: str) -> list[dict]:
+def _refuse(component: str | None, detail: str) -> list[dict]:
     return [{"kind": "refuse", "component": component, "detail": detail}]
 
 
@@ -47,7 +47,7 @@ def parse_ls_remote(text: str) -> list[str]:
     return [ref[len("refs/tags/"):] for ref in refs if ref.startswith("refs/tags/") and not ref.endswith("^{}")]
 
 
-def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, Optional[list[str]]]) -> list[dict]:
+def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, list[str] | None]) -> list[dict]:
     """Steps in order: `tag` for each `repo` component, one `bump_manifest`,
     one `notes`, one `tag_self`. A single `refuse` step, naming the reason,
     when `version` is not valid semver-with-optional-beta, when the tag
@@ -95,7 +95,7 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, Op
     return tag_steps + [bump_step, notes_step, tag_self_step]
 
 
-def component_dir(root: str, name: str, overrides: Optional[Mapping[str, str]] = None) -> str:
+def component_dir(root: str, name: str, overrides: Mapping[str, str] | None = None) -> str:
     """The directory `cox install` would have cloned `name` into under
     `root`, unless `overrides` names a different path for that component —
     a developer machine's `--checkout name=path`."""
