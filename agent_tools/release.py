@@ -34,6 +34,12 @@ def _refuse(component: Optional[str], detail: str) -> list[dict]:
     return [{"kind": "refuse", "component": component, "detail": detail}]
 
 
+def is_maintainer_remote(url: str) -> bool:
+    """True when `url` names the ppfenning/coxswain umbrella — the one
+    checkout a lockstep release is allowed to run against."""
+    return "ppfenning/coxswain" in url
+
+
 def parse_ls_remote(text: str) -> list[str]:
     """Tag names from `git ls-remote --tags` output, peeled `^{}` refs skipped.
     Pure: the edge fetches the text, this decides what it means."""

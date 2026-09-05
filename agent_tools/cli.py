@@ -1083,11 +1083,29 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     return 0
 
 
+def _maintainer_remote_url(directory: str) -> Optional[str]:
+    """`git -C <directory> remote get-url origin`, or None when git could
+    not read it — an unreadable remote is not a maintainer's checkout."""
+    result = subprocess.run(["git", "-C", directory, "remote", "get-url", "origin"],
+                             capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _release_moved(a: argparse.Namespace) -> int:
+    print("moved: use cox dev release")
+    return 2
+
+
 def _release(a: argparse.Namespace) -> int:
     manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
         print(f"refusing: no manifest at {manifest_path}")
+        return 2
+    checkout = str(manifest_path.resolve().parent)
+    remote = _maintainer_remote_url(checkout)
+    if remote is None or not release.is_maintainer_remote(remote):
+        print(f"refuse: {checkout} is not a ppfenning/coxswain checkout (cox dev release runs on a maintainer's machine)")
         return 2
     existing_tags = {name: _remote_tags(spec["repo"]) for name, spec in manifest.get("components", {}).items()
                       if spec.get("repo")}
@@ -1170,11 +1188,17 @@ def build_parser() -> argparse.ArgumentParser:
     ver = sub.add_parser("versions", help="component versions against the manifest")
     ver.add_argument("--root"); ver.add_argument("--manifest"); ver.set_defaults(fn=_versions)
 
-    rel = sub.add_parser("release", help="the lockstep tag/bump-manifest/notes plan across coxswain's manifest, or (without --dry-run) tags and pushes every component")
+    dev = sub.add_parser("dev", description="maintainer commands for the Coxswain repositories; not needed to use Coxswain").add_subparsers(dest="cmd", required=True)
+    rel = dev.add_parser("release", help="the lockstep tag/bump-manifest/notes plan across coxswain's manifest, or (without --dry-run) tags and pushes every component")
     rel.add_argument("version"); rel.add_argument("--manifest"); rel.add_argument("--dry-run", action="store_true")
     rel.add_argument("--root", default="."); rel.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
     rel.add_argument("--umbrella")
     rel.set_defaults(fn=_release)
+
+    old_rel = sub.add_parser("release", help=argparse.SUPPRESS)
+    # swallow every flag the old form took, so the hint prints instead of argparse erroring
+    old_rel.add_argument("rest", nargs=argparse.REMAINDER)
+    old_rel.set_defaults(fn=_release_moved)
 
     setup_p = sub.add_parser("setup", help="does this machine's profile actually work")
     setup_p.add_argument("--profile")
