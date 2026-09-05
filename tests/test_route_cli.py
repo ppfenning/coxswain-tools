@@ -124,7 +124,7 @@ def _mtime_utc(path):
     # mismatch instead of passing on both sides of the same helper.
     import datetime
 
-    return datetime.datetime.fromtimestamp(path.stat().st_mtime, tz=datetime.timezone.utc).isoformat()
+    return datetime.datetime.fromtimestamp(path.stat().st_mtime, tz=datetime.UTC).isoformat()
 
 
 def _expected_status_rows(ws):
@@ -213,7 +213,7 @@ def test_file_writes_initiative_files_at_expected_paths(tmp_path, capsys):
 
 def test_file_intake_writes_the_intake_file_with_todays_date(tmp_path, capsys):
     profile, ws = _write_file_profile(tmp_path)
-    expected_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    expected_date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     rc = main(["route", "file", "--profile", str(profile), "--repo", "/repos/widget", "--title", "Fix the thing", "--intake"])
     out = capsys.readouterr().out
     assert rc == 0

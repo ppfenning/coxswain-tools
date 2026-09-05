@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-__all__ = ["alive", "watch", "summarize_log"]
+__all__ = ["alive", "summarize_log", "watch"]
 
 _LINE = re.compile(r"^\s*(quarantined task|quarantined phase|reused|epic |  usage)", re.M)
 

@@ -12,22 +12,22 @@ from agent_tools.setup_install import (
 
 
 def _plan(**overrides):
-    kwargs = dict(
-        root="/root",
-        team="acme",
-        workspace="/root/workspace",
-        provider_profile="claude",
-        skills_root="/root/skills",
-        uv_on_path=True,
-        python_exists={"agent-cartridges": False, "agent-graphs": False, "agent-tools": False},
-        claude_on_path=True,
-        profile_exists=False,
-        force_profile=False,
-        plugins=True,
-        hook=True,
-        config_dir="/config",
-        claude_settings_path="/home/.claude/settings.json",
-    )
+    kwargs = {
+        "root": "/root",
+        "team": "acme",
+        "workspace": "/root/workspace",
+        "provider_profile": "claude",
+        "skills_root": "/root/skills",
+        "uv_on_path": True,
+        "python_exists": {"agent-cartridges": False, "agent-graphs": False, "agent-tools": False},
+        "claude_on_path": True,
+        "profile_exists": False,
+        "force_profile": False,
+        "plugins": True,
+        "hook": True,
+        "config_dir": "/config",
+        "claude_settings_path": "/home/.claude/settings.json",
+    }
     kwargs.update(overrides)
     return install_plan(**kwargs)
 

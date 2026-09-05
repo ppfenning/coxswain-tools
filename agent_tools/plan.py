@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-__all__ = ["serve", "check"]
+__all__ = ["check", "serve"]
 
 BRIDGE = ["npx", "-y", "@agent-native/core@latest", "plan", "local"]
 
@@ -21,7 +21,7 @@ def serve(plan_dir: Path | str, *, kind: str = "plan", open_browser: bool = True
     plan_dir = Path(plan_dir)
     url_file = plan_dir / ".plan-url"
     url_file.unlink(missing_ok=True)
-    log = open(plan_dir / ".plan-serve.log", "w")
+    log = open(plan_dir / ".plan-serve.log", "w")  # noqa: SIM115 — the handle outlives this call: it is the served process's log
     subprocess.Popen([*BRIDGE, "serve", "--dir", str(plan_dir), "--kind", kind],
                      stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
     deadline = time.monotonic() + wait

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from agent_tools.events import Event
 
-__all__ = ["Row", "row", "render", "highlight"]
+__all__ = ["Row", "highlight", "render", "row"]
 
 _COLUMNS = ("PHASE", "NODE", "ATT", "TURNS", "COST", "VERDICT", "STATUS")
 _NO_RUNS = "no runs in flight"
@@ -80,7 +80,7 @@ def render(rows: list[Row], width: int) -> list[str]:
                 r.node,
                 str(r.attempt),
                 str(r.turns),
-                "$%.2f" % r.cost_usd,
+                f"${r.cost_usd:.2f}",
                 r.verdict,
                 r.status,
             ]

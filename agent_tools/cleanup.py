@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-__all__ = ["plan_cleanup", "apply_cleanup", "git_worktrees", "git_branches"]
+__all__ = ["apply_cleanup", "git_branches", "git_worktrees", "plan_cleanup"]
 
 
 def _git(repo: Path, *args: str) -> str:

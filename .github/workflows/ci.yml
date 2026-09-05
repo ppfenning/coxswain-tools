@@ -11,3 +11,5 @@ jobs:
       - run: pytest -q
       - name: nothing names an employer
         run: python3 .github/check_clean.py
+      - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
+        run: pip install ruff==0.16.6 && ruff check .

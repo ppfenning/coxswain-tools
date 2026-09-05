@@ -9,23 +9,23 @@ import re
 
 __all__ = [
     "ProfileError",
-    "parse_profile",
-    "slugify",
-    "next_run_id",
-    "initiative_files",
-    "intake_file",
-    "parse_frontmatter",
-    "harness_argv",
     "child_env",
-    "render_context",
     "context_document",
-    "status_rows",
-    "render_status",
-    "status_entries",
-    "intake_entries",
-    "run_entries",
+    "harness_argv",
+    "initiative_files",
     "initiative_summaries",
+    "intake_entries",
+    "intake_file",
+    "next_run_id",
+    "parse_frontmatter",
     "parse_pid",
+    "parse_profile",
+    "render_context",
+    "render_status",
+    "run_entries",
+    "slugify",
+    "status_entries",
+    "status_rows",
     "work_item",
 ]
 
@@ -105,8 +105,7 @@ def slugify(title: str) -> str:
     this pure core does not refuse or substitute.
     """
     slug = re.sub(r"[^a-z0-9]+", "-", title.strip().lower()).strip("-")
-    slug = slug[:48].strip("-")
-    return slug
+    return slug[:48].strip("-")
 
 
 def next_run_id(existing_names, prefix: str) -> str:

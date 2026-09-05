@@ -6,6 +6,7 @@ with no terminal and `key_name` stays testable with plain integer codes.
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -68,18 +69,14 @@ def loop(stdscr, screen: dict, *, runner=run_action) -> None:
     """The curses read/draw/act cycle over the pure model in `setup_tui`."""
     import curses
 
-    try:
+    with contextlib.suppress(curses.error):  # no real terminal behind stdscr, e.g. under test
         curses.curs_set(0)
-    except curses.error:
-        pass  # no real terminal behind stdscr, e.g. under test
     while not screen["quit"]:
         stdscr.clear()
         height, width = stdscr.getmaxyx()
         for row, line in enumerate(render(screen, width, height)):
-            try:
+            with contextlib.suppress(curses.error):
                 stdscr.addnstr(row, 0, line, width)
-            except curses.error:
-                pass
         stdscr.refresh()
         screen, actions = handle(screen, key_name(stdscr.getch()))
         for action in actions:

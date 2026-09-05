@@ -7,7 +7,7 @@ requested `team`/`workspace`) so `execute` never has to re-derive it."""
 
 from __future__ import annotations
 
-from typing import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 Runner = Callable[[list, str | None], tuple]
 

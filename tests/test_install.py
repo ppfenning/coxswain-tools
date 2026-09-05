@@ -134,7 +134,8 @@ def _git_repo(path, tag=None, dirty=False):
     """A real checkout at `path`: init, one commit, an optional exact tag,
     and an optional uncommitted edit afterward."""
     path.mkdir(parents=True, exist_ok=True)
-    run = lambda *argv: subprocess.run(argv, cwd=path, check=True, capture_output=True, text=True)
+    def run(*argv):
+        return subprocess.run(argv, cwd=path, check=True, capture_output=True, text=True)
     run("git", "init", "-q")
     run("git", "config", "user.email", "a@b.c")
     run("git", "config", "user.name", "t")
