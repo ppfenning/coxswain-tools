@@ -1,13 +1,17 @@
 """Pure YAML fragment handling for the cartridge editor.
 
 A fragment is the small, hand-edited YAML file that gets merged over
-``cartridge.yaml``. This module only ever works on strings and plain data;
-it never touches a filesystem path. The merge rules mirror the ones the
-cartridge loader documents: edits win, lists replace wholesale, and the
-``context`` key concatenates instead of replacing.
+``cartridge.yaml``. Everything but ``write_fragment`` only ever works on
+strings and plain data; ``write_fragment`` is the one edge, and it is the
+only place in this module that touches a filesystem path. The merge rules
+mirror the ones the cartridge loader documents: edits win, lists replace
+wholesale, and the ``context`` key concatenates instead of replacing.
 """
 
 from __future__ import annotations
+
+import os
+from pathlib import Path
 
 import yaml
 
@@ -60,3 +64,24 @@ def round_trips(text: str) -> bool:
         # forever. Treat anything the guard cannot safely compare as a
         # fragment that does not round-trip.
         return False
+
+
+def write_fragment(team_dir: Path, edits: dict) -> Path:
+    fragment_dir = team_dir / "cartridge.d"
+    path = fragment_dir / "edited.yaml"
+    existing: dict = {}
+    if path.exists():
+        text = path.read_text()
+        if not round_trips(text):
+            raise FragmentError(
+                "edited.yaml was not written by the editor or was hand-edited "
+                "in a way that would not survive a rewrite; refusing to "
+                "overwrite"
+            )
+        existing = load_fragment(text)
+    merged = merge_edits(existing, edits)
+    fragment_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = fragment_dir / "edited.yaml.tmp"
+    tmp_path.write_text(dump_fragment(merged))
+    os.replace(tmp_path, path)
+    return path
