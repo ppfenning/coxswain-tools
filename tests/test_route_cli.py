@@ -375,12 +375,48 @@ def test_launch_dry_run_prints_argv_and_starts_nothing(tmp_path, capsys):
     assert not (harness_dir / "recorded_argv.json").exists()
 
 
+def test_launch_cos_dry_run_prints_argv_pid_log_and_trace(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main(["route", "launch", "cos", "--dry-run", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "dry-run:" in out and "cos" in out
+    assert "pid " in out
+    assert "log " in out
+    assert "trace " in out
+    assert not (ws / "runs" / "cos-1.pid").exists()
+
+
 def test_launch_refuses_a_missing_profile(tmp_path, capsys):
     missing = tmp_path / "no-such-profile.yaml"
     rc = main(["route", "launch", "epic", "--profile", str(missing), "--initiative", str(tmp_path / "x")])
     out = capsys.readouterr().out
     assert rc == 2
     assert "no profile" in out
+
+
+def test_launch_cos_refuses_a_missing_profile(tmp_path, capsys):
+    missing = tmp_path / "no-such-profile.yaml"
+    rc = main(["route", "launch", "cos", "--profile", str(missing)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "no profile" in out
+
+
+def test_launch_cos_refuses_when_a_cos_run_is_already_live(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "runs" / "cos-1.pid").write_text(str(os.getpid()))  # alive: the test process itself
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    rc = main(["route", "launch", "cos", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "already running" in out
 
 
 def test_launch_refuses_a_bad_graph_name(tmp_path, capsys):

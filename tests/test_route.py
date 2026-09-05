@@ -285,6 +285,15 @@ def test_harness_argv_builds_the_decompose_command_line():
     ]
 
 
+def test_harness_argv_builds_the_cos_command_line():
+    profile = route.parse_profile(VALID_PROFILE)
+    argv = route.harness_argv(profile, "cos", "cos-1")
+    assert "cos" in argv
+    assert "--runs-dir" in argv
+    assert "--max-parallel" in argv
+    assert "--initiative" not in argv
+
+
 def test_harness_argv_appends_fix_attempts_for_epic_when_given():
     profile = route.parse_profile(VALID_PROFILE)
     argv = route.harness_argv(

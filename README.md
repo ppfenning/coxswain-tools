@@ -50,6 +50,7 @@ agent-tools route status [--json]                       every run with a pidfile
 agent-tools route file --repo PATH --title TEXT [--body FILE|-] [--phase NAME] [--intake]   write a one-task initiative, or with --intake an intake item; exit 2 if a target path exists or the profile is missing
 agent-tools route launch epic --initiative DIR [--repo PATH] [--fix-attempts N] [--dry-run]   start the harness detached with a pidfile and log, and AGENT_GRAPHS_TRACE_DIR set to `<runs_dir>/<run-id>-trace` so every node writes a trace; exit 2 on a missing profile or harness venv, a missing initiative.md, a dirty repo, or a live run of the same initiative
 agent-tools route launch decompose --idea FILE --initiative-id ID [--dry-run]   start the harness detached; exit 2 on a missing profile, harness venv, or idea file
+agent-tools route launch cos [--dry-run]   start the chief of staff detached: it reads intake and runs, dispatches within the bound, and consumes what it dispatched
 agent-tools setup   a small terminal UI over setup doctor, setup install and cartridge init (needs a terminal)
 agent-tools setup doctor [--profile PATH] [--json]      read-only: profile, paths, harness venv, cartridge, skills, provider, workspace — a table and an exit code
 agent-tools setup install --root DIR --team T --workspace DIR [--plugins] [--hook] [--force-profile] [--dry-run]   venvs, agent-tools on PATH, the profile, optionally the provider plugin and a session-start hook; dry-run prints the plan
