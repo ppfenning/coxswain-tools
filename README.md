@@ -65,7 +65,16 @@ cox setup install --root DIR --team T --workspace DIR [--plugins] [--hook] [--fo
 cox install --root DIR [--manifest PATH] [--provider NAME] [--with FLAG] [--team T] [--workspace DIR] [--dry-run]   the plan over coxswain's manifest.toml: clone, fetch, skip or refuse per component, then setup_install, doctor, desktop; --dry-run only prints it, otherwise it runs each step and exits 0 only if every step ran clean
 cox upgrade --root DIR [--manifest PATH] [--provider NAME] [--with FLAG] [--team T] [--workspace DIR] [--to VERSION] [--dry-run]   same plan as install, but refuses (exit 2, naming the directory) if any present checkout is dirty; --to overrides every component's pinned tag for this run
 cox versions [--root DIR] [--manifest PATH]     pinned vs. installed tag per component, and status: ok, drift, missing, extra
-cox release VERSION [--dry-run] [--manifest PATH] [--root DIR] [--checkout NAME=PATH] [--umbrella PATH]   the lockstep plan: tag every component, bump the manifest (skipped on a first cut of the declared version), notes, tag_self; exit 2 on refuse (bad semver, an existing tag, a lesser version); without --dry-run, executes only a first-cut plan — tags and pushes every component and the umbrella in turn, refusing before tagging anything if a checkout is dirty, off its default branch, the release note is missing, or the plan still carries a bump_manifest step (bump and commit the manifest by hand first)
+```
+
+## Maintainers
+
+`cox dev` holds commands a maintainer of the coxswain repositories runs; nothing
+here is needed to use Coxswain. `cox release` is a one-release alias that prints
+`moved: use cox dev release` and exits 2.
+
+```
+cox dev release VERSION [--dry-run] [--manifest PATH] [--root DIR] [--checkout NAME=PATH] [--umbrella PATH]   the lockstep plan: tag every component, bump the manifest (skipped on a first cut of the declared version), notes, tag_self; exit 2 on refuse (bad semver, an existing tag, a lesser version, or a checkout that is not a ppfenning/coxswain remote); without --dry-run, executes only a first-cut plan — tags and pushes every component and the umbrella in turn, refusing before tagging anything if a checkout is dirty, off its default branch, the release note is missing, or the plan still carries a bump_manifest step (bump and commit the manifest by hand first)
 ```
 
 Every command that reads a record is pure over parsed data and unit-tested
