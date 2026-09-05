@@ -48,6 +48,10 @@ def test_install_plan_orders_venv_steps_with_graphs_carrying_the_cartridges_dep(
     assert argvs[5] == ["uv", "pip", "install", "-q", "-e", ".[dev]"]
     assert runs[5]["cwd"] == "/root/agent-tools"
     assert argvs[6] == ["uv", "tool", "install", "-q", "-e", "/root/agent-tools"]
+    assert argvs[7] == ["uv", "tool", "install", "-q", "-e", "/root/agent-cartridges"]
+    cartridge_tool_installs = [a for a in argvs if a[-1] == "/root/agent-cartridges"
+                                and a[:3] == ["uv", "tool", "install"]]
+    assert len(cartridge_tool_installs) == 1
 
 
 def test_existing_venvs_skip_uv_venv_but_still_run_pip_install():
@@ -210,8 +214,8 @@ def test_profile_cartridges_dir_is_workspace_based_not_the_repo_checkout():
 def test_tool_install_step_is_warn_only():
     steps = _plan()
     tool_install = [s for s in steps if s["op"] == "run" and s["argv"][:2] == ["uv", "tool"]]
-    assert len(tool_install) == 1
-    assert tool_install[0]["warn_only"] is True
+    assert len(tool_install) == 2
+    assert all(step["warn_only"] is True for step in tool_install)
 
 
 def test_assume_flows_into_the_written_profile():

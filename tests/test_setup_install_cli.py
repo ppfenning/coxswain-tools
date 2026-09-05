@@ -137,7 +137,10 @@ exit 0
     rc = _run(_base_argv(install_env))
     assert rc == 0
     out = capsys.readouterr().out
-    assert "warn:" in out and "tool install" in out
+    warn_lines = [line for line in out.splitlines() if line.startswith("warn:")]
+    assert len(warn_lines) == 2
+    assert any("agent-tools" in line for line in warn_lines)
+    assert any("agent-cartridges" in line for line in warn_lines)
     profile_path = install_env["home"] / ".config" / "agent-tools" / "profile.yaml"
     assert profile_path.exists()
 
