@@ -139,6 +139,7 @@ def test_write_fragment_leaves_no_temp_file_behind(tmp_path):
 
 def test_a_syntax_broken_fragment_is_refused_as_a_fragment_error():
     import pytest
+
     from agent_tools.fragments import FragmentError, load_fragment
     with pytest.raises(FragmentError):
         load_fragment("key: [unclosed")

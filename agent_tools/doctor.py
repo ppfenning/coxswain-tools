@@ -4,7 +4,7 @@ phase) builds a Facts mapping and hands it to `checks`."""
 
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 from agent_tools import records, route
 

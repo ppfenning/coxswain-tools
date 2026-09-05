@@ -8,8 +8,17 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-__all__ = ["usage_summary", "trace_summary", "load_usage", "load_trace", "format_table",
-           "series_row", "series", "series_totals", "series_new_lines"]
+__all__ = [
+    "format_table",
+    "load_trace",
+    "load_usage",
+    "series",
+    "series_new_lines",
+    "series_row",
+    "series_totals",
+    "trace_summary",
+    "usage_summary",
+]
 
 
 def load_usage(path: Path | str) -> dict[str, Any]:

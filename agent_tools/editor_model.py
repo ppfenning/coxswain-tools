@@ -283,7 +283,7 @@ _HANDLERS = {
     "u": _undo,
     "w": _write,
     "r": _refresh,
-    "q": lambda s: replace(s),
+    "q": replace,
 }
 
 

@@ -2,10 +2,10 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from conftest import strip_ansi
 
 from agent_tools import epic
 from agent_tools.cli import build_parser, main
-from conftest import strip_ansi
 
 LOG = """
   quarantined task: a — reason

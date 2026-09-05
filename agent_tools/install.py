@@ -4,7 +4,7 @@ prints and `cox versions` tabulates. No filesystem, subprocess or clock here
 
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 
 def _known_flags(manifest: Mapping) -> set[str]:

@@ -1,7 +1,7 @@
 import pytest
+from conftest import strip_ansi
 
 from agent_tools.cli import build_parser, main
-from conftest import strip_ansi
 
 
 def _choice_help(action):
