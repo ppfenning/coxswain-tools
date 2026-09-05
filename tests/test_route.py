@@ -316,6 +316,26 @@ def test_child_env_omits_a_prefix_that_is_not_given():
     assert env["PATH"] == "/opt/agent-graphs/.venv/bin:/usr/bin"
 
 
+def test_child_env_sets_trace_dir_and_still_prepends_path():
+    environ = {"PATH": "/usr/bin"}
+    env = route.child_env(environ, harness_dir="/opt/agent-graphs", trace_dir="/runs/x-1-trace")
+    assert env["AGENT_GRAPHS_TRACE_DIR"] == "/runs/x-1-trace"
+    assert env["PATH"] == "/opt/agent-graphs/.venv/bin:/usr/bin"
+
+
+def test_child_env_without_trace_dir_leaves_the_key_untouched():
+    absent = route.child_env({"PATH": "/usr/bin"})
+    assert "AGENT_GRAPHS_TRACE_DIR" not in absent
+    present = route.child_env({"PATH": "/usr/bin", "AGENT_GRAPHS_TRACE_DIR": "/old"})
+    assert present["AGENT_GRAPHS_TRACE_DIR"] == "/old"
+
+
+def test_child_env_replaces_a_callers_pre_set_trace_dir():
+    environ = {"PATH": "/usr/bin", "AGENT_GRAPHS_TRACE_DIR": "/old"}
+    env = route.child_env(environ, trace_dir="/runs/x-1-trace")
+    assert env["AGENT_GRAPHS_TRACE_DIR"] == "/runs/x-1-trace"
+
+
 FIXTURE_PROFILE = {
     "team": "acme",
     "cartridges_dir": "/opt/cartridges",
