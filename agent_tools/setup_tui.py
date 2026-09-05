@@ -19,6 +19,14 @@ MENU = ["doctor", "install (dry run)", "install", "init cartridge", "quit"]
 _FIELD_ORDER = ("root", "team", "workspace")
 _FOCUS_ORDER = ("menu", "field:root", "field:team", "field:workspace")
 _TOGGLE_KEYS = {"p": "plugins", "h": "hook", "f": "force_profile"}
+_DESCRIPTIONS = {
+    "doctor": "check this machine, read-only",
+    "install (dry run)": "print the plan, change nothing",
+    "install": "venvs, profile, plugin, hook",
+    "init cartridge": "a team cartridge under the workspace",
+    "quit": "",
+}
+_FOOTER = "↑↓ move · Tab fields · Enter run · p/h/f toggles · q quit"
 
 
 def initial(root: str, team: str, workspace: str) -> dict:
@@ -132,26 +140,52 @@ def with_output(screen: dict, lines: list[str], returncode: int) -> dict:
     return {**screen, "output": list(lines), "status": f"exit {returncode}"}
 
 
+def _title_bar(width: int) -> str:
+    label = " agent-tools setup "
+    if len(label) >= width:
+        return label[:width]
+    left = (width - len(label)) // 2
+    right = width - len(label) - left
+    return ("─" * left) + label + ("─" * right)
+
+
 def _toggle_line(toggles: dict) -> str:
-    return "[{}] plugins  [{}] hook  [{}] force-profile".format(
+    return "[{}] plugins (p)   [{}] hook (h)   [{}] force-profile (f)".format(
         "x" if toggles["plugins"] else " ",
         "x" if toggles["hook"] else " ",
         "x" if toggles["force_profile"] else " ",
     )
 
 
-def _blocks(screen: dict) -> tuple[list[str], list[str], list[str], list[str]]:
-    """(title, field_lines, toggle_lines, menu_lines): the four sections
-    `render` lays out, least-protected first. `menu` itself is never
-    dropped."""
+def _field_lines(fields: dict, focused: str) -> list[str]:
+    label_width = max(len(name) for name in _FIELD_ORDER)
+    return [
+        f"{'▸ ' if focused == f'field:{name}' else '  '}"
+        f"{name.rjust(label_width)} : {fields[name] or '(empty)'}"
+        for name in _FIELD_ORDER
+    ]
+
+
+def _menu_lines(menu: list[str], cursor: int) -> list[str]:
+    item_width = max(len(item) for item in menu)
+    return [
+        f"{'▸ ' if cursor == i else '  '}{item.ljust(item_width)}  {_DESCRIPTIONS[item]}"
+        for i, item in enumerate(menu)
+    ]
+
+
+def _blocks(screen: dict, width: int) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+    """(title, field_lines, toggle_lines, rule, menu_lines): the sections
+    `render` lays out above the output area, least-protected first. `menu`
+    itself is never dropped."""
     fields, focused = screen["fields"], screen["focus"]
-    title = ["agent-tools setup"]
-    field_lines = [f"{'>' if focused == f'field:{name}' else ' '} {name}: {fields[name]}"
-                   for name in _FIELD_ORDER]
-    toggle_lines = [_toggle_line(screen["toggles"])]
-    menu_lines = [f"{'>' if screen['cursor'] == i else ' '} {item}"
-                  for i, item in enumerate(screen["menu"])]
-    return title, field_lines, toggle_lines, menu_lines
+    return (
+        [_title_bar(width)],
+        _field_lines(fields, focused),
+        [_toggle_line(screen["toggles"])],
+        ["─" * width],
+        _menu_lines(screen["menu"], screen["cursor"]),
+    )
 
 
 def _fit(lines: list[str], n: int) -> list[str]:
@@ -160,22 +194,27 @@ def _fit(lines: list[str], n: int) -> list[str]:
 
 
 def render(screen: dict, width: int, height: int) -> list[str]:
-    """Exactly `height` lines, each at most `width` chars. The status line
-    is always last; the menu (all five items, cursor marker included) is
+    """Exactly `height` lines, each at most `width` chars. The footer is
+    always last; the menu (all five items, cursor marker included) is
     always kept when `height` allows five plus one lines. Above that
-    floor, the title, the field lines and the toggles line are dropped
-    in that order before the output tail shrinks. Never raises."""
+    floor, the title, the field lines, the toggles line and the rule
+    above the menu are dropped in that order, then the rule and header
+    above the output tail, before the tail itself shrinks. Never raises."""
     if height <= 0:
         return []
-    title, field_lines, toggle_lines, menu_lines = _blocks(screen)
-    content_budget = max(0, height - 1)
+    title, field_lines, toggle_lines, rule, menu_lines = _blocks(screen, width)
+    content_budget = max(0, height - 1)  # last line is the footer
     menu = menu_lines[:min(len(menu_lines), content_budget)]
     available = max(0, content_budget - len(menu))
-    optional = [title, field_lines, toggle_lines]
+    optional = [title, field_lines, toggle_lines, rule]
     while optional and sum(len(group) for group in optional) > available:
         optional.pop(0)
     fixed = [line for group in optional for line in group]
-    tail_budget = max(0, available - len(fixed))
+    bottom_budget = max(0, available - len(fixed))
+    status = screen["status"]
+    header = "output" + (f" · {status}" if status else "")
+    bottom_head = (["─" * width, header])[:bottom_budget]
+    tail_budget = max(0, bottom_budget - len(bottom_head))
     tail = list(screen["output"])[-tail_budget:] if tail_budget else []
-    lines = _fit(fixed + menu + tail, content_budget) + [screen["status"]]
+    lines = _fit(fixed + menu + bottom_head + tail, content_budget) + [_FOOTER]
     return [line[:width] for line in lines[:height]]
