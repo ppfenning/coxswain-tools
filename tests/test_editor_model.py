@@ -1,4 +1,6 @@
-from agent_tools.editor_model import rows, sections
+import functools
+
+from agent_tools.editor_model import Row, State, apply_text, rows, sections, step
 from agent_tools.provenance import attribute
 
 
@@ -168,6 +170,160 @@ def test_a_probe_with_resolved_but_no_provenance_key_treats_rows_as_unknown_and_
     assert row.editable is False
 
 
+_TOGGLE_ROW = Row(key="crew.builder.enabled", value=False, layer="acme", editable=True, kind="toggle")
+_READONLY_ROW = Row(key="crew.builder.skills", value="x", layer="base", editable=False, kind="text")
+_CHOICE_ROW = Row(
+    key="policy.review_tier",
+    value="1",
+    layer="acme",
+    editable=True,
+    kind="choice",
+    choices=("1", "2", "3"),
+)
+_TEXT_ROW = Row(key="policy.build_budget_usd_max", value="5", layer="acme", editable=True, kind="text")
+
+
+def test_step_j_skips_a_read_only_row_between_two_editable_rows():
+    state = State(rows=(_TOGGLE_ROW, _READONLY_ROW, _CHOICE_ROW), cursor=0, pending={}, message="")
+    after = step(state, "j")
+    assert after.cursor == 2
+
+
+def test_step_j_from_a_read_only_row_moves_forward_to_the_next_editable_row():
+    state = State(rows=(_TOGGLE_ROW, _READONLY_ROW, _CHOICE_ROW), cursor=1, pending={}, message="")
+    after = step(state, "j")
+    assert after.cursor == 2
+
+
+def test_step_k_from_a_read_only_row_moves_backward_to_the_previous_editable_row():
+    state = State(rows=(_TOGGLE_ROW, _READONLY_ROW, _CHOICE_ROW), cursor=1, pending={}, message="")
+    after = step(state, "k")
+    assert after.cursor == 0
+
+
+def test_step_j_past_the_last_editable_row_holds_at_that_row():
+    state = State(rows=(_TOGGLE_ROW, _CHOICE_ROW, _READONLY_ROW), cursor=2, pending={}, message="")
+    after = step(state, "j")
+    assert after.cursor == 1
+
+
+def test_step_space_toggles_a_toggle_row_and_toggling_again_clears_pending():
+    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={}, message="")
+    once = step(state, "space")
+    assert once.pending == {"crew.builder.enabled": True}
+    twice = step(once, "space")
+    assert twice.pending == {}
+
+
+def test_step_space_cycles_a_choice_row_through_its_own_declared_values():
+    state = State(rows=(_CHOICE_ROW,), cursor=0, pending={}, message="")
+    after = step(state, "space")
+    assert after.pending == {_CHOICE_ROW.key: _CHOICE_ROW.choices[1]}
+
+
+def test_step_space_preserves_an_int_typed_choice_values_type():
+    int_choice_row = Row(
+        key="policy.review_tier",
+        value=1,
+        layer="acme",
+        editable=True,
+        kind="choice",
+        choices=("1", "2", "3"),
+    )
+    state = State(rows=(int_choice_row,), cursor=0, pending={}, message="")
+    after = step(state, "space")
+    assert after.pending == {"policy.review_tier": 2}
+    assert isinstance(after.pending["policy.review_tier"], int)
+
+
+def test_step_space_on_a_choice_row_clears_pending_after_a_full_cycle():
+    state = State(rows=(_CHOICE_ROW,), cursor=0, pending={}, message="")
+    final = functools.reduce(lambda s, _: step(s, "space"), range(len(_CHOICE_ROW.choices)), state)
+    assert final.pending == {}
+
+
+def test_step_space_on_a_read_only_row_is_refused_and_leaves_state_unchanged_but_for_message():
+    state = State(rows=(_READONLY_ROW,), cursor=0, pending={}, message="")
+    after = step(state, "space")
+    assert after.rows == state.rows
+    assert after.cursor == state.cursor
+    assert after.pending == state.pending
+    assert after.message != state.message
+
+
+def test_step_space_on_a_read_only_row_does_not_mutate_the_input_pending_dict():
+    state = State(rows=(_READONLY_ROW,), cursor=0, pending={"x": 1}, message="")
+    before = dict(state.pending)
+    step(state, "space")
+    assert state.pending == before
+
+
+def test_step_e_refuses_a_non_text_row_and_leaves_pending_untouched():
+    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={}, message="")
+    after = step(state, "e")
+    assert after.pending == {}
+    assert after.message == "crew.builder.enabled cannot be edited"
+
+
+def test_step_e_on_an_editable_text_row_sets_an_editing_message():
+    state = State(rows=(_TEXT_ROW,), cursor=0, pending={}, message="")
+    after = step(state, "e")
+    assert after.message == f"editing {_TEXT_ROW.key}"
+    assert after.pending == {}
+
+
+def _state_with_text_row():
+    return State(rows=(_TEXT_ROW, _CHOICE_ROW), cursor=0, pending={}, message="")
+
+
+def test_apply_text_writes_to_the_row_e_selected_even_after_the_cursor_moves():
+    state = _state_with_text_row()
+    picked = step(state, "e")
+    assert picked.editing is not None
+    moved = step(picked, "j")
+    after = apply_text(moved, "new")
+    assert after.pending[picked.editing] == "new" and after.editing is None
+
+
+def test_apply_text_without_e_is_refused():
+    state = _state_with_text_row()
+    after = apply_text(state, "new")
+    assert after.pending == state.pending and "press e" in after.message
+
+
+def test_apply_text_sets_a_pending_text_value():
+    state = State(rows=(_TEXT_ROW,), cursor=0, pending={}, message="")
+    after = apply_text(step(state, "e"), "new")
+    assert after.pending == {"policy.build_budget_usd_max": "new"}
+
+
+def test_apply_text_on_a_read_only_row_is_refused_and_does_not_write_pending():
+    state = State(rows=(_READONLY_ROW,), cursor=0, pending={}, message="")
+    after = apply_text(step(state, "e"), "x")
+    assert after.pending == {}
+
+
+def test_step_u_drops_the_cursor_rows_pending_edit():
+    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={"crew.builder.enabled": True}, message="")
+    after = step(state, "u")
+    assert after.pending == {}
+
+
+def test_step_w_and_q_return_a_new_but_equal_state():
+    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={}, message="")
+    after_w = step(state, "w")
+    after_q = step(state, "q")
+    assert after_w == state and after_w is not state
+    assert after_q == state and after_q is not state
+
+
+def test_every_key_on_an_empty_state_is_refused_not_a_crash():
+    state = State(rows=(), cursor=0, pending={}, message="")
+    keys = ("j", "k", "space", "e", "u", "w", "q")
+    assert all(step(state, key).pending == {} for key in keys)
+    assert apply_text(state, "x").pending == {}
+
+
 def test_sections_groups_rows_by_their_leading_key_segment():
     probe = {
         "resolved": {
@@ -183,3 +339,10 @@ def test_sections_groups_rows_by_their_leading_key_segment():
     grouped = sections(rows(probe, team="acme"))
     assert {row.key for row in grouped["crew"]} == {"crew.builder.enabled", "crew.builder.skills"}
     assert {row.key for row in grouped["policy"]} == {"policy.review_tier"}
+
+
+def test_cycling_a_choice_row_whose_value_is_none_does_not_raise():
+    row = Row(key="policy.review_tier", value=None, layer="pat", editable=True, kind="choice", choices=("1", "2", "3"))
+    state = State(rows=(row,), cursor=0, pending={}, message="")
+    after = step(state, "space")
+    assert after.pending["policy.review_tier"] == "1"
