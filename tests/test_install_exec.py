@@ -45,7 +45,7 @@ def test_refuse_stops_before_any_later_step_runs():
     results = install_exec.execute(steps, root="/root", run=run)
     assert calls == []
     assert results[0]["exit"] == 2 and results[0]["output"] == "harness checkout is dirty"
-    assert results[1]["exit"] is None and results[1]["commands"] is None
+    assert results[1]["exit"] is None and results[1]["commands"] == []
 
 
 def test_a_failing_clone_stops_the_rest_and_marks_them_not_run():
