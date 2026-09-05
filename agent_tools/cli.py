@@ -14,7 +14,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from agent_tools import cleanup, doctor, epic, hud, install, install_exec, plan, provenance, records, release, route, setup_install, setup_screen
+from agent_tools import cleanup, doctor, epic, hud, install, install_exec, land, plan, provenance, records, release, route, setup_install, setup_screen
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -76,6 +76,131 @@ def _runs_clean(a: argparse.Namespace) -> int:
         print(line)
     if not a.apply:
         print("(dry run — pass --apply to do it)")
+    return 0
+
+
+def _land_record(run_id: str, task: Optional[str]) -> tuple[dict, str] | None:
+    tasks_root = Path("runs") / run_id / "tasks"
+    matches = sorted(tasks_root.glob(f"*/{task}.json" if task else "*/*.json"))
+    if len(matches) != 1:
+        return None
+    path = matches[0]
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record.setdefault("run", run_id)
+    record.setdefault("task", path.stem)
+    record.setdefault("phase", path.parent.name)
+    return record, str(path)
+
+
+def _land_branches(repo: Path, record: dict, default_branch: str) -> dict[str, list[str]]:
+    """Commit subjects ahead of `default_branch`, per candidate branch, with
+    merge commits already excluded by `git` itself (`--no-merges`) rather
+    than guessed from a subject's wording."""
+    candidates = [f"agents/{record['run']}/{record['task']}", f"epic/{record.get('initiative')}/{record['phase']}"]
+    branches: dict[str, list[str]] = {}
+    for b in candidates:
+        out = subprocess.run(["git", "-C", str(repo), "log", "--no-merges", "--format=%s", f"{default_branch}..{b}"], capture_output=True, text=True)
+        if out.returncode == 0:
+            branches[b] = [line for line in out.stdout.splitlines() if line]
+    return branches
+
+
+def _land_enrich(steps: list[dict], *, path: str, worktree_root: str) -> list[dict]:
+    """Steps enriched with what only the edge knows: the record's own file
+    path for `mark_done`, and the configured worktree root for `clean`."""
+    def enrich(step: dict) -> dict:
+        if step["kind"] == "mark_done":
+            return {**step, "path": path}
+        if step["kind"] == "clean":
+            return {**step, "worktree_root": worktree_root}
+        return step
+    return [enrich(s) for s in steps]
+
+
+def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
+    kind = step["kind"]
+    if kind == "pick_branch":
+        return True, f"{step['branch']} ({step['commit_subject']})"
+    if kind == "cherry_pick":
+        co = subprocess.run(["git", "-C", str(repo), "checkout", "-b", step["onto"], step["from"]], capture_output=True, text=True)
+        if co.returncode != 0:
+            return False, co.stderr.strip() or co.stdout.strip()
+        # The branch was chosen because it is exactly one commit ahead of
+        # `from`, so that range names the commit without matching on the
+        # subject text, which a second commit could share.
+        rev = subprocess.run(["git", "-C", str(repo), "rev-list", f"{step['from']}..{step['branch']}"], capture_output=True, text=True)
+        shas = [s for s in rev.stdout.split() if s]
+        if rev.returncode != 0 or len(shas) != 1:
+            return False, f"expected exactly one commit ahead of {step['from']} on {step['branch']}, found {len(shas)}"
+        cp = subprocess.run(["git", "-C", str(repo), "cherry-pick", shas[0]], capture_output=True, text=True)
+        if cp.returncode != 0:
+            subprocess.run(["git", "-C", str(repo), "cherry-pick", "--abort"], capture_output=True, text=True)
+            return False, cp.stderr.strip() or cp.stdout.strip()
+        return True, f"cherry-picked {shas[0][:8]} onto {step['onto']}"
+    if kind == "checks":
+        r = subprocess.run(step["command"].split(), cwd=repo, capture_output=True, text=True)
+        return r.returncode == 0, step["command"]
+    if kind == "push":
+        r = subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", step["branch"]], capture_output=True, text=True)
+        return r.returncode == 0, (step["branch"] if r.returncode == 0 else r.stderr.strip() or r.stdout.strip())
+    if kind == "pr_create":
+        r = subprocess.run(["gh", "pr", "create", "--title", step["title"], "--body", step["body"]], cwd=repo, capture_output=True, text=True)
+        return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
+    if kind == "wait_checks":
+        r = subprocess.run(["gh", "pr", "checks", "--watch", "--fail-fast"], cwd=repo, capture_output=True, text=True)
+        return r.returncode == 0, ("green" if r.returncode == 0 else r.stdout.strip() or r.stderr.strip())
+    if kind == "merge":
+        r = subprocess.run(["gh", "pr", "merge", "--squash", "--delete-branch"], cwd=repo, capture_output=True, text=True)
+        return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
+    if kind == "clean":
+        p = cleanup.plan_cleanup(run_id=step["run"], worktrees=cleanup.git_worktrees(repo), branches=cleanup.git_branches(repo), worktree_root=step["worktree_root"])
+        return True, "; ".join(cleanup.apply_cleanup(repo, p, dry_run=False))
+    if kind == "mark_done":
+        record_path = Path(step["path"])
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record_path.write_text(json.dumps({**record, "landed": True}, indent=2), encoding="utf-8")
+        return True, f"{step['task']} marked landed at {record_path}"
+    return False, f"unknown step {kind!r}"
+
+
+def _repo_is_dirty(repo: Path) -> bool:
+    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True)
+    return bool(status.stdout.strip())
+
+
+def _runs_land(a: argparse.Namespace) -> int:
+    repo = Path(a.repo).expanduser()
+    found = _land_record(a.run_id, a.task)
+    if found is None:
+        print(f"land: expected exactly one task record under runs/{a.run_id}/tasks, found something else")
+        return 2
+    record, path = found
+    default_branch = "main"
+    branches = _land_branches(repo, record, default_branch)
+    steps = _land_enrich(land.land_plan(record, branches, default_branch), path=path, worktree_root=a.worktree_root)
+    if not a.apply:
+        print(json.dumps(steps, indent=2))
+        return 2 if any(s["kind"] == "refuse" for s in steps) else 0
+    if _repo_is_dirty(repo):
+        print(f"land: refusing, {repo} is dirty")
+        return 2
+    pr_branch = next((s["onto"] for s in steps if s["kind"] == "cherry_pick"), None)
+    if pr_branch is not None and pr_branch in cleanup.git_branches(repo):
+        print(f"land: refusing, branch {pr_branch} already exists in {repo}")
+        return 2
+    for i, step in enumerate(steps):
+        if step["kind"] == "refuse":
+            print(f"refused: {step['reason']}")
+            return 2
+        ok, detail = _execute_land_step(repo, step)
+        print(f"{step['kind']}: {detail}")
+        if not ok:
+            remaining = [s["kind"] for s in steps[i + 1:]]
+            print("stopped; remaining: " + ", ".join(remaining))
+            return 1
+        if step["kind"] == "wait_checks" and a.no_merge:
+            print("stopping after wait_checks (--no-merge)")
+            return 0
     return 0
 
 
@@ -895,6 +1020,8 @@ def build_parser() -> argparse.ArgumentParser:
     u = runs.add_parser("usage"); u.add_argument("run_id"); u.add_argument("--runs-dir", default="runs"); u.add_argument("--json", action="store_true"); u.set_defaults(fn=_runs_usage)
     t = runs.add_parser("trace"); t.add_argument("run_id"); t.add_argument("--runs-dir", default="runs"); t.add_argument("--role"); t.add_argument("-v", "--verbose", action="store_true"); t.set_defaults(fn=_runs_trace)
     c = runs.add_parser("clean"); c.add_argument("run_id"); c.add_argument("--repo", required=True); c.add_argument("--worktree-root", default="~/worktrees"); c.add_argument("--apply", action="store_true"); c.set_defaults(fn=_runs_clean)
+    la = runs.add_parser("land"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task")
+    la.add_argument("--worktree-root", default="~/worktrees"); la.add_argument("--apply", action="store_true"); la.add_argument("--no-merge", action="store_true"); la.set_defaults(fn=_runs_land)
     se = runs.add_parser("series"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
 
     e = sub.add_parser("epic", help="watch a detached run").add_subparsers(dest="cmd", required=True)
