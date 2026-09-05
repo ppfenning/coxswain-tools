@@ -1,5 +1,10 @@
+import tomllib
+from pathlib import Path
+
+import pytest
+
 from agent_tools import epic
-from agent_tools.cli import build_parser
+from agent_tools.cli import build_parser, main
 
 LOG = """
   quarantined task: a — reason
@@ -27,3 +32,16 @@ def test_every_subcommand_parses():
     for argv in (["runs", "usage", "r"], ["runs", "trace", "r", "--role", "build"], ["runs", "clean", "r", "--repo", "."],
                  ["epic", "watch", "pid"], ["hud", "ops", "-"], ["hud", "say", "hi"], ["hud", "inbox", "arm"], ["hud", "cast"], ["plan", "serve", "d"]):
         assert p.parse_args(argv).fn
+
+
+def test_cox_and_agent_tools_scripts_resolve_to_the_same_callable():
+    data = tomllib.loads(Path(__file__).resolve().parent.parent.joinpath("pyproject.toml").read_text())
+    scripts = data["project"]["scripts"]
+    assert scripts["cox"] == scripts["agent-tools"]
+
+
+def test_help_usage_names_cox(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.startswith("usage: cox")

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-tools"
 version = "0.1.0"
-description = "Deterministic tools the agent seats call instead of spending tokens: run records, traces, cleanup, the HUD, plans."
+description = "Provides the `cox` command, the coxswain's operator tools: run records, traces, cleanup, the HUD, plans. `agent-tools` is kept as an alias for one release."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
@@ -15,6 +15,7 @@ dependencies = []
 dev = ["pytest"]
 
 [project.scripts]
+cox = "agent_tools.cli:main"
 agent-tools = "agent_tools.cli:main"
 
 [project.urls]

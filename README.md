@@ -35,25 +35,27 @@ uv tool install -e .            # `agent-tools` on PATH for every seat
 
 ## Commands
 
+`agent-tools` still works this release as an alias for `cox`.
+
 ```
-agent-tools runs usage RUN [--runs-dir runs] [--json]   cost, turns, cache share — by role and by model
-agent-tools runs trace RUN [--role build] [-v]          per node: turns, cost, tools, reads, whole-file reads, commands
-agent-tools runs clean RUN --repo PATH [--apply]        the run's worktrees and scratch branches; phase branches kept; dry-run by default
-agent-tools epic watch PIDFILE [--log LOG]              block until a detached run exits (or the cap), then the outcome lines
-agent-tools hud ops FILE|-                              replace the HUD's ops list (id, label, status, persona?, detail?)
-agent-tools hud say TEXT [--persona P] [--voice V]      speak a line through the HUD
-agent-tools hud inbox show|arm|clear                    read, wait for, or clear directives
-agent-tools hud cast                                    the seats the HUD's org ring shows
-agent-tools plan serve DIR [--check] [--no-open]        lint, serve through the local bridge, open in Brave
-agent-tools route context [--json]                      what a session reads at start: team, queued intake, runs in flight, initiatives with ready work; exits 0 even with no profile
-agent-tools route status [--json]                       every run with a pidfile or a log: alive or exited, started, the log's outcome lines
-agent-tools route file --repo PATH --title TEXT [--body FILE|-] [--phase NAME] [--intake]   write a one-task initiative, or with --intake an intake item; exit 2 if a target path exists or the profile is missing
-agent-tools route launch epic --initiative DIR [--repo PATH] [--fix-attempts N] [--dry-run]   start the harness detached with a pidfile and log, and AGENT_GRAPHS_TRACE_DIR set to `<runs_dir>/<run-id>-trace` so every node writes a trace; exit 2 on a missing profile or harness venv, a missing initiative.md, a dirty repo, or a live run of the same initiative
-agent-tools route launch decompose --idea FILE --initiative-id ID [--dry-run]   start the harness detached; exit 2 on a missing profile, harness venv, or idea file
-agent-tools route launch cos [--dry-run]   start the chief of staff detached: it reads intake and runs, dispatches within the bound, and consumes what it dispatched
-agent-tools setup   a small terminal UI over setup doctor, setup install and cartridge init (needs a terminal)
-agent-tools setup doctor [--profile PATH] [--json]      read-only: profile, paths, harness venv, cartridge, skills, provider, workspace — a table and an exit code
-agent-tools setup install --root DIR --team T --workspace DIR [--plugins] [--hook] [--force-profile] [--dry-run]   venvs, agent-tools on PATH, the profile, optionally the provider plugin and a session-start hook; dry-run prints the plan
+cox runs usage RUN [--runs-dir runs] [--json]   cost, turns, cache share — by role and by model
+cox runs trace RUN [--role build] [-v]          per node: turns, cost, tools, reads, whole-file reads, commands
+cox runs clean RUN --repo PATH [--apply]        the run's worktrees and scratch branches; phase branches kept; dry-run by default
+cox epic watch PIDFILE [--log LOG]              block until a detached run exits (or the cap), then the outcome lines
+cox hud ops FILE|-                              replace the HUD's ops list (id, label, status, persona?, detail?)
+cox hud say TEXT [--persona P] [--voice V]      speak a line through the HUD
+cox hud inbox show|arm|clear                    read, wait for, or clear directives
+cox hud cast                                    the seats the HUD's org ring shows
+cox plan serve DIR [--check] [--no-open]        lint, serve through the local bridge, open in Brave
+cox route context [--json]                      what a session reads at start: team, queued intake, runs in flight, initiatives with ready work; exits 0 even with no profile
+cox route status [--json]                       every run with a pidfile or a log: alive or exited, started, the log's outcome lines
+cox route file --repo PATH --title TEXT [--body FILE|-] [--phase NAME] [--intake]   write a one-task initiative, or with --intake an intake item; exit 2 if a target path exists or the profile is missing
+cox route launch epic --initiative DIR [--repo PATH] [--fix-attempts N] [--dry-run]   start the harness detached with a pidfile and log, and AGENT_GRAPHS_TRACE_DIR set to `<runs_dir>/<run-id>-trace` so every node writes a trace; exit 2 on a missing profile or harness venv, a missing initiative.md, a dirty repo, or a live run of the same initiative
+cox route launch decompose --idea FILE --initiative-id ID [--dry-run]   start the harness detached; exit 2 on a missing profile, harness venv, or idea file
+cox route launch cos [--dry-run]   start the chief of staff detached: it reads intake and runs, dispatches within the bound, and consumes what it dispatched
+cox setup   a small terminal UI over setup doctor, setup install and cartridge init (needs a terminal)
+cox setup doctor [--profile PATH] [--json]      read-only: profile, paths, harness venv, cartridge, skills, provider, workspace — a table and an exit code
+cox setup install --root DIR --team T --workspace DIR [--plugins] [--hook] [--force-profile] [--dry-run]   venvs, agent-tools on PATH, the profile, optionally the provider plugin and a session-start hook; dry-run prints the plan
 ```
 
 Every command that reads a record is pure over parsed data and unit-tested
