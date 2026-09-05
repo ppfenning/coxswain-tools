@@ -1,4 +1,4 @@
-from agent_tools.events import Event, from_log, from_trace_names, from_usage
+from agent_tools.events import Event, from_log, from_trace_names, from_usage, merge, poll
 
 
 def test_run_started_is_the_first_line():
@@ -69,3 +69,78 @@ def test_seq_increases_with_line_number():
     seqs = [e.seq for e in events]
     assert seqs == sorted(seqs)
     assert len(seqs) == len(set(seqs))
+
+
+def _state(log_lines_seen=0, trace_names_seen=frozenset(), emitted_exit=False, emitted_cost=False):
+    return {
+        "log_lines_seen": log_lines_seen,
+        "trace_names_seen": trace_names_seen,
+        "emitted_exit": emitted_exit,
+        "emitted_cost": emitted_cost,
+    }
+
+
+def test_merge_keeps_each_streams_own_order_and_places_usage_last():
+    log = [Event("run1", "verdict", 3, {}), Event("run1", "verdict", 1, {})]
+    trace = [Event("run1", "node_started", 1000, {})]
+    usage = [Event("run1", "run_exited_cost", 10**9, {})]
+    assert merge(log, trace, usage) == [log[0], log[1], trace[0], usage[0]]
+
+
+def test_a_retry_keeps_the_logs_own_order():
+    log_events = from_log(
+        "run1",
+        [
+            "run1 started",
+            "  build -> revise",
+            "some fix line",
+        ],
+    )
+    events = merge(log_events, from_trace_names("run1", ["build-2.jsonl"]))
+    kinds = [e.kind for e in events]
+    assert kinds == ["run_started", "verdict", "node_started"]
+
+
+def test_poll_twice_with_growing_inputs_emits_each_event_once():
+    state0 = _state()
+    events1, state1 = poll(
+        "run1", state0, ["run1 started", "review_charter verdict: approve"], ["build-1.jsonl"], None
+    )
+    assert [e.kind for e in events1] == ["run_started", "verdict", "node_started"]
+
+    events2, state2 = poll(
+        "run1",
+        state1,
+        ["quarantined task: t1 — bad", "epic run1: 1 phase(s) complete, 1 task(s) landed, 1 task(s) quarantined"],
+        ["build-1.jsonl", "build-2.jsonl"],
+        None,
+    )
+    assert [e.kind for e in events2] == ["task_quarantined", "run_exited", "node_started"]
+    assert state2["emitted_exit"] is True
+    assert state2["log_lines_seen"] == 4
+    assert state2["trace_names_seen"] == frozenset({"build-1.jsonl", "build-2.jsonl"})
+
+
+def test_usage_arriving_after_the_exit_line_still_emits_the_cost_event():
+    state0 = _state()
+    _, state1 = poll(
+        "run1",
+        state0,
+        ["run1 started", "epic run1: 1 phase(s) complete, 0 task(s) landed, 0 task(s) quarantined"],
+        [],
+        None,
+    )
+    assert state1["emitted_exit"] is True
+    assert state1["emitted_cost"] is False
+
+    usage = {"summary": {"cost_usd": 4.5, "turns": 3}}
+    events2, state2 = poll("run1", state1, [], [], usage)
+    assert [e.kind for e in events2] == ["run_exited_cost"]
+    assert state2["emitted_cost"] is True
+
+
+def test_an_empty_poll_returns_no_events_and_the_same_state():
+    state0 = _state(log_lines_seen=2, trace_names_seen=frozenset({"build-1.jsonl"}), emitted_exit=True)
+    events, state1 = poll("run1", state0, [], [], None)
+    assert events == []
+    assert state1 == state0
