@@ -1,0 +1,98 @@
+"""The effect runner for the cartridge editor: the only place that touches
+a subprocess, writes a fragment, or rewrites the profile file.
+`editor_model.py` decides which `Effect` to run; this module only runs the
+one it is handed. No curses here — that edge is the next task.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+from agent_tools.editor_model import Effect
+from agent_tools.fragments import FragmentError, write_fragment
+from agent_tools.route import parse_profile
+from agent_tools.setup_screen import resolved_argv
+
+
+def _write_fragment(effect: Effect, ctx: dict, write) -> dict:
+    team_dir = Path(ctx["cartridges_dir"]) / ctx["team"]
+    try:
+        write(team_dir, effect.payload["edits"])
+    except (FragmentError, OSError) as exc:
+        return {"provenance_error": str(exc)}
+    return {}
+
+
+def _launch(argv: list[str], run):
+    """Runs `argv`; a binary that cannot launch is a value, never an exception
+    out of the loop (`setup_screen.run_action` makes the same promise)."""
+    try:
+        return run(argv, capture_output=True, text=True), None
+    except OSError as exc:
+        return None, f"{argv[0]}: {exc}"
+
+
+def _run_probe(ctx: dict, run) -> dict:
+    result, failure = _launch(list(ctx["probe_argv"]), run)
+    if failure is not None:
+        return {"provenance_error": failure}
+    if result.returncode != 0:
+        return {"provenance_error": result.stderr or f"probe exited {result.returncode}"}
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return {"provenance_error": str(exc)}
+
+
+def _init_cartridge(effect: Effect, ctx: dict, run) -> dict:
+    name = effect.payload["name"]
+    venv_cartridge = f"{ctx.get('root', '')}/agent-cartridges/.venv/bin/cartridge"
+    argv = resolved_argv(["cartridge", "init", name, "--cartridges-dir", str(ctx["cartridges_dir"]),
+                          "--extends", effect.payload["extends"]],
+                         cartridge_on_path=shutil.which("cartridge") is not None,
+                         venv_cartridge_exists=Path(venv_cartridge).exists(), venv_cartridge=venv_cartridge)
+    result, failure = _launch(argv, run)
+    if failure is not None:
+        return {"returncode": 127, "team": name, "output": failure}
+    output = "\n".join(((result.stdout or "") + (result.stderr or "")).splitlines()[-5:])
+    return {"returncode": result.returncode, "team": name, "output": output}
+
+
+def _set_profile_team(effect: Effect, ctx: dict) -> dict:
+    team = effect.payload["team"]
+    path = Path(ctx["profile_path"])
+    lines = path.read_text().splitlines() if path.exists() else []
+    rewritten = [f"team: {team}" if line.startswith("team:") else line for line in lines]
+    if not any(line.startswith("team:") for line in lines):
+        rewritten.append(f"team: {team}")
+    path.write_text("\n".join(rewritten) + "\n")
+    return {"returncode": 0, "team": team}
+
+
+def run_effect(effect: Effect, ctx: dict, *, run=subprocess.run, write=write_fragment) -> dict:
+    """Runs one `Effect`, chosen by the caller; every branch returns."""
+    if effect.kind == "write_fragment":
+        return _write_fragment(effect, ctx, write)
+    if effect.kind == "run_probe":
+        return _run_probe(ctx, run)
+    if effect.kind == "init_cartridge":
+        return _init_cartridge(effect, ctx, run)
+    if effect.kind == "set_profile_team":
+        return _set_profile_team(effect, ctx)
+    return {"provenance_error": f"unknown effect kind {effect.kind!r}"}
+
+
+def _expanded(value, home: str):
+    if isinstance(value, str) and (value == "~" or value.startswith("~/")):
+        return home + value[1:]
+    if isinstance(value, list):
+        return [_expanded(item, home) for item in value]
+    return value
+
+
+def profile_fields(text: str, home: str) -> dict:
+    """Profile fields, `~` expanded against `home` — never `$HOME`/`expanduser()`."""
+    return {key: _expanded(value, home) for key, value in parse_profile(text).items()}
