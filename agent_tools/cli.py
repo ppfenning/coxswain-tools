@@ -7,11 +7,12 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from agent_tools import cleanup, epic, hud, plan, records, route
+from agent_tools import cleanup, doctor, epic, hud, plan, records, route
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -405,6 +406,121 @@ def _route_launch(a: argparse.Namespace) -> int:
     return 0
 
 
+_CORE_PROBE_SCRIPT = '''
+import json, sys
+
+cartridges_dir, team, *roots = sys.argv[1:]
+out = {"import": None, "load": None, "indexed": {}}
+try:
+    import core.cartridge as cartridge_mod
+    import core.skills as skills_mod
+except Exception as exc:
+    out["import"] = f"{type(exc).__name__}: {exc}"
+else:
+    loader = getattr(cartridge_mod, "load", None) or getattr(cartridge_mod, "load_cartridge", None)
+    if loader is None:
+        cls = getattr(cartridge_mod, "Cartridge", None)
+        loader = getattr(cls, "load", None) if cls is not None else None
+    if loader is None:
+        public = [n for n in dir(cartridge_mod) if not n.startswith("_")]
+        out["load"] = f"no loader found on core.cartridge; has: {public}"
+    else:
+        try:
+            loader(cartridges_dir, team)
+        except Exception as exc:
+            out["load"] = f"{type(exc).__name__}: {exc}"
+    try:
+        out["indexed"] = skills_mod.index_from_roots(roots)
+    except Exception as exc:
+        out["indexed"] = {}
+print(json.dumps(out))
+'''
+
+
+def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roots: list) -> dict:
+    """One `python -c` call into the harness venv (spec: setup doctor). Any
+    failure to get parseable JSON back is folded into `core_import` as the
+    stderr tail, never raised."""
+    try:
+        proc = subprocess.run(
+            [python_path, "-c", _CORE_PROBE_SCRIPT, cartridges_dir, team, *skills_roots],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"core_import": str(exc)}
+    try:
+        parsed = json.loads(proc.stdout)
+    except ValueError:
+        tail = (proc.stderr or "").strip().splitlines()
+        return {"core_import": tail[-1] if tail else f"core probe exited {proc.returncode} with no JSON"}
+    return {"core_import": parsed.get("import"), "cartridge_load": parsed.get("load"),
+            "skill_roots_indexed": parsed.get("indexed", {})}
+
+
+def _provider_command(text) -> str | None:
+    if text is None:
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("command:"):
+            return stripped.partition(":")[2].strip().strip("\"'") or None
+    return None
+
+
+def _provider_facts(provider_profile_path: str) -> dict:
+    command = _provider_command(_read_text_or_none(Path(provider_profile_path)))
+    if command is None:
+        return {"provider_command": None, "provider_on_path": False}
+    facts = {"provider_command": command, "provider_on_path": shutil.which(command) is not None}
+    if facts["provider_on_path"]:
+        try:
+            proc = subprocess.run([command, "--version"], capture_output=True, text=True, timeout=20)
+            lines = (proc.stdout or proc.stderr or "").strip().splitlines()
+            facts["provider_version"] = lines[0] if lines else ""
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return facts
+
+
+def _workspace_facts(workspace_dir: str) -> dict:
+    ws = Path(workspace_dir).expanduser()
+    return {"workspace_dirs": {name: (ws / name).exists() for name in ("work", "runs", "intake")}}
+
+
+def _gather_doctor_facts(profile_path: Path) -> dict:
+    """Gathers exactly the Facts keys `doctor.checks` reads; never refuses on
+    a missing or unparseable profile, since reporting that is the doctor's
+    job (unlike `_resolve_profile_or_refuse`, which is for `file`/`launch`)."""
+    text = _read_text_or_none(profile_path)
+    facts: dict = {"profile_path": str(profile_path), "profile_text": text}
+    if text is None:
+        return facts
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError:
+        return facts
+    singles = [profile.get(k, "") for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir")]
+    roots = list(profile.get("skills_roots") or [])
+    facts["paths_exist"] = {p: Path(p).expanduser().exists() for p in (*singles, *roots) if p}
+    harness_dir = profile.get("harness_dir", "")
+    venv_python = Path(harness_dir).expanduser() / ".venv" / "bin" / "python"
+    facts["harness_python_exists"] = venv_python.exists()
+    if facts["harness_python_exists"]:
+        facts.update(_run_core_probe(str(venv_python), profile.get("cartridges_dir", ""), profile.get("team", ""), roots))
+    if profile.get("provider_profile"):
+        facts.update(_provider_facts(profile["provider_profile"]))
+    if profile.get("workspace_dir"):
+        facts.update(_workspace_facts(profile["workspace_dir"]))
+    return facts
+
+
+def _setup_doctor(a: argparse.Namespace) -> int:
+    rows = doctor.checks(_gather_doctor_facts(_profile_path(a)))
+    rc = doctor.exit_code(rows)
+    print(json.dumps({"rows": rows, "ok": rc == 0}, indent=2) if a.json else doctor.render(rows))
+    return rc
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agent-tools", description=__doc__)
     sub = p.add_subparsers(dest="group", required=True)
@@ -438,6 +554,9 @@ def build_parser() -> argparse.ArgumentParser:
     ep.add_argument("--fix-attempts", type=int, default=None); ep.add_argument("--dry-run", action="store_true"); ep.set_defaults(fn=_route_launch, graph="epic")
     de = lc.add_parser("decompose"); de.add_argument("--profile"); de.add_argument("--idea", required=True); de.add_argument("--initiative-id", required=True)
     de.add_argument("--dry-run", action="store_true"); de.set_defaults(fn=_route_launch, graph="decompose")
+
+    su = sub.add_parser("setup", help="does this machine's profile actually work").add_subparsers(dest="cmd", required=True)
+    sd = su.add_parser("doctor"); sd.add_argument("--profile"); sd.add_argument("--json", action="store_true"); sd.set_defaults(fn=_setup_doctor)
     return p
 
 
