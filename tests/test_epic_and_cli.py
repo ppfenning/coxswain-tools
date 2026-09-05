@@ -5,6 +5,7 @@ import pytest
 
 from agent_tools import epic
 from agent_tools.cli import build_parser, main
+from conftest import strip_ansi
 
 LOG = """
   quarantined task: a — reason
@@ -40,8 +41,10 @@ def test_cox_and_agent_tools_scripts_resolve_to_the_same_callable():
     assert scripts["cox"] == scripts["agent-tools"]
 
 
-def test_help_usage_names_cox(capsys):
+def test_help_usage_names_cox(capsys, monkeypatch):
+    monkeypatch.setenv("PYTHON_COLORS", "0")
+    monkeypatch.setenv("NO_COLOR", "1")
     with pytest.raises(SystemExit) as exc:
         main(["--help"])
     assert exc.value.code == 0
-    assert capsys.readouterr().out.startswith("usage: cox")
+    assert strip_ansi(capsys.readouterr().out).startswith("usage: cox")
