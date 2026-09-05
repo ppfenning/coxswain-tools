@@ -166,15 +166,28 @@ def test_render_returns_exactly_height_lines_within_width_on_a_tiny_terminal():
     assert all(len(line) <= 20 for line in lines)
 
 
+def test_render_shows_a_title_bar_and_the_footer_last():
+    lines = render(_screen(), 80, 24)
+    assert "agent-tools setup" in lines[0]
+    assert "q quit" in lines[-1]
+
+
 def test_render_marks_the_focused_field_and_the_menu_cursor():
     lines = render(_screen(focus="field:team", cursor=2), 80, 24)
-    assert any(line.startswith(">") and "team:" in line for line in lines)
-    assert any(line.startswith(">") and MENU[2] in line for line in lines)
+    assert any(line.startswith("▸") and "team :" in line for line in lines)
+    assert any(line.startswith("▸") and MENU[2] in line and "venvs, profile, plugin, hook" in line
+               for line in lines)
 
 
-def test_render_on_a_tiny_terminal_still_shows_the_cursor_and_the_status_last():
-    screen_with_cursor_2 = {**after(["DOWN", "DOWN"], _screen()), "status": "ready"}
+def test_render_shows_the_exit_status_in_the_output_header_after_with_output():
+    screen = with_output(_screen(), ["line one"], 0)
+    lines = render(screen, 80, 24)
+    assert any("output" in line and "exit 0" in line for line in lines)
+
+
+def test_render_on_a_tiny_terminal_still_shows_the_cursor_and_the_footer_last():
+    screen_with_cursor_2 = after(["DOWN", "DOWN"], _screen())
     lines = render(screen_with_cursor_2, 20, 8)
     assert len(lines) == 8
-    assert any(line.startswith(">") and MENU[2] in line for line in lines)
-    assert lines[-1] == "ready"
+    assert any(line.startswith("▸") and MENU[2] in line for line in lines)
+    assert "↑↓ move" in lines[-1]

@@ -6,7 +6,9 @@ with no terminal and `key_name` stays testable with plain integer codes.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
+from pathlib import Path
 
 from agent_tools.setup_tui import handle, initial, render, with_output
 
@@ -33,14 +35,32 @@ def key_name(ch: int) -> str:
     return ""
 
 
-def run_action(action: dict) -> tuple[list[str], int]:
-    """Runs one action `handle` returned and reports its output back."""
+def resolved_argv(argv: list[str], *, cartridge_on_path: bool, venv_cartridge_exists: bool,
+                   venv_cartridge: str) -> list[str]:
+    """The argv `run_action` should actually execute: `cartridge` on PATH
+    wins outright; a `cartridge` missing from PATH falls back to the venv
+    binary only if it exists; anything else passes through unchanged."""
+    if argv[0] == "cartridge" and not cartridge_on_path and venv_cartridge_exists:
+        return [venv_cartridge, *argv[1:]]
+    return list(argv)
+
+
+def run_action(action: dict, *, root: str = "") -> tuple[list[str], int]:
+    """Runs one action `handle` returned and reports its output back.
+    `cartridge` is a console script that lives only in agent-cartridges'
+    own venv; if PATH does not have it, fall back to the venv binary
+    under `root` rather than let a missing-PATH entry read as a missing
+    folder."""
+    venv_cartridge = f"{root}/agent-cartridges/.venv/bin/cartridge"
+    argv = resolved_argv(action["argv"], cartridge_on_path=shutil.which("cartridge") is not None,
+                          venv_cartridge_exists=Path(venv_cartridge).exists(),
+                          venv_cartridge=venv_cartridge)
     try:
-        result = subprocess.run(action["argv"], capture_output=True, text=True)
+        result = subprocess.run(argv, capture_output=True, text=True)
     except OSError as exc:
         # A missing binary (`cartridge` is installed warn-only) is a line on the
         # screen, never an exception out of the curses loop.
-        return [f"{action['argv'][0]}: {exc}"], 127
+        return [f"{argv[0]}: {exc}"], 127
     return (result.stdout + result.stderr).splitlines(), result.returncode
 
 
@@ -63,7 +83,7 @@ def loop(stdscr, screen: dict, *, runner=run_action) -> None:
         stdscr.refresh()
         screen, actions = handle(screen, key_name(stdscr.getch()))
         for action in actions:
-            lines, returncode = runner(action)
+            lines, returncode = runner(action, root=screen["fields"]["root"])
             screen = with_output(screen, lines, returncode)
 
 
