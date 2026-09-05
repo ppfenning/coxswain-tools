@@ -160,8 +160,8 @@ def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umb
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
     umbrella_dir = tmp_path / "coxswain"
-    (umbrella_dir / "releases").mkdir(parents=True)
-    (umbrella_dir / "releases" / "0.1.0.md").write_text("notes")
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("notes")
     calls, fake_run = _fake_git_run()
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
@@ -215,8 +215,8 @@ def test_cli_release_execute_stops_at_the_first_failed_tag(tmp_path, monkeypatch
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
     umbrella_dir = tmp_path / "coxswain"
-    (umbrella_dir / "releases").mkdir(parents=True)
-    (umbrella_dir / "releases" / "0.1.0.md").write_text("notes")
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("notes")
     harness_dir = str(tmp_path / "harness")
     calls, fake_run = _fake_git_run(fail=(harness_dir, "tag"))
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
