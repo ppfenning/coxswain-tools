@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from typing import Optional
+import dataclasses
 import datetime
 import json
 import os
@@ -14,7 +15,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from agent_tools import cleanup, doctor, epic, hud, install, install_exec, land, plan, provenance, records, release, route, setup_install, setup_screen
+from agent_tools import cleanup, doctor, epic, hud, install, install_exec, land, plan, provenance, records, release, route, runs as runs_module, setup_install, setup_screen
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -50,6 +51,16 @@ def _runs_series(a: argparse.Namespace) -> int:
         if new_lines:
             with p.open("a", encoding="utf-8") as fh:
                 fh.write("".join(line + "\n" for line in new_lines))
+    return 0
+
+
+def _runs_events(a: argparse.Namespace) -> int:
+    for ev in runs_module.events(Path(a.runs_dir), follow=a.follow):
+        if a.json:
+            print(json.dumps(dataclasses.asdict(ev)), flush=True)
+        else:
+            detail = " ".join(f"{k}={v}" for k, v in ev.detail.items())
+            print(f"{ev.run} {ev.kind} {detail}".rstrip(), flush=True)
     return 0
 
 
@@ -1023,6 +1034,7 @@ def build_parser() -> argparse.ArgumentParser:
     la = runs.add_parser("land"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task")
     la.add_argument("--worktree-root", default="~/worktrees"); la.add_argument("--apply", action="store_true"); la.add_argument("--no-merge", action="store_true"); la.set_defaults(fn=_runs_land)
     se = runs.add_parser("series"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
+    ev = runs.add_parser("events"); ev.add_argument("--runs-dir", default="runs"); ev.add_argument("--follow", action="store_true"); ev.add_argument("--json", action="store_true"); ev.set_defaults(fn=_runs_events)
 
     e = sub.add_parser("epic", help="watch a detached run").add_subparsers(dest="cmd", required=True)
     w = e.add_parser("watch"); w.add_argument("pidfile"); w.add_argument("--log"); w.add_argument("--max-seconds", type=float, default=570); w.add_argument("--interval", type=float, default=20); w.add_argument("--json", action="store_true"); w.set_defaults(fn=_epic_watch)
