@@ -51,12 +51,11 @@ def test_refuse_on_an_existing_tag_names_all_colliding_components():
 
 
 @pytest.mark.parametrize("current, version", [
-    ("0.2.0", "0.2.0"),          # equal
     ("0.2.0", "0.1.0"),          # lesser
     ("0.1.0-beta.2", "0.1.0-beta.1"),  # beta.1 does not beat beta.2
     ("0.1.0", "0.1.0-beta.1"),   # a beta never beats its own release
 ])
-def test_refuse_on_a_non_increasing_version(current, version):
+def test_refuse_on_a_lesser_version(current, version):
     assert release.release_plan(_manifest(current), version, {})[0]["kind"] == "refuse"
 
 
@@ -112,10 +111,113 @@ def test_cli_release_dry_run_prints_every_step_and_exits_zero(tmp_path, capsys, 
         assert line in out
 
 
-def test_cli_release_without_dry_run_refuses_and_exits_two(capsys):
-    rc = cli.main(["release", "0.2.0"])
+def test_first_cut_of_the_declared_version_yields_tag_notes_tag_self_with_no_bump():
+    steps = release.release_plan(_manifest("0.2.0"), "0.2.0", _no_tags(_manifest("0.2.0")))
+    assert [s["kind"] for s in steps] == ["tag", "tag", "notes", "tag_self"]
+    assert steps[-1] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
+
+
+def test_equal_version_with_an_existing_tag_still_refuses():
+    existing = {**_no_tags(_manifest("0.2.0")), "harness": ["v0.2.0"]}
+    step = release.release_plan(_manifest("0.2.0"), "0.2.0", existing)[0]
+    assert step["kind"] == "refuse" and "harness" in step["detail"]
+
+
+def test_component_dir_tag_argv_and_push_argv_shape():
+    assert release.component_dir("/root", "harness") == "/root/harness"
+    assert release.component_dir("/root", "harness", {"harness": "/dev/harness"}) == "/dev/harness"
+    assert release.tag_argv("/dev/harness", "0.2.0") == ["git", "-C", "/dev/harness", "tag", "-a", "v0.2.0", "-m", "coxswain 0.2.0"]
+    assert release.push_argv("/dev/harness", "0.2.0") == ["git", "-C", "/dev/harness", "push", "origin", "v0.2.0"]
+
+
+def _fake_git_run(dirty=(), fail=None, off_branch=()):
+    """`fail`, when given, is `(directory, kind)` for the one call that
+    should return non-zero — everything else in a clean, on-branch tree."""
+    calls: list = []
+
+    def run(argv, cwd):
+        calls.append(argv)
+        if fail and argv[2] == fail[0] and argv[3] == fail[1]:
+            return (1, f"{fail[1]} failed")
+        if argv[3] == "status":
+            return (0, "M f\n") if argv[2] in dirty else (0, "")
+        if argv[3] == "rev-parse":
+            return (0, "feature/x\n") if argv[2] in off_branch else (0, "main\n")
+        if argv[3] == "symbolic-ref":
+            return (0, "refs/remotes/origin/main\n")
+        return (0, "")
+    return calls, run
+
+
+def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umbrella(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "releases").mkdir(parents=True)
+    (umbrella_dir / "releases" / "0.1.0.md").write_text("notes")
+    calls, fake_run = _fake_git_run()
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 0
+    tag_push = [c for c in calls if c[3] in ("tag", "push")]
+    assert tag_push == [
+        ["git", "-C", str(tmp_path / "harness"), "tag", "-a", "v0.1.0", "-m", "coxswain 0.1.0"],
+        ["git", "-C", str(tmp_path / "harness"), "push", "origin", "v0.1.0"],
+        ["git", "-C", str(tmp_path / "cartridges"), "tag", "-a", "v0.1.0", "-m", "coxswain 0.1.0"],
+        ["git", "-C", str(tmp_path / "cartridges"), "push", "origin", "v0.1.0"],
+        ["git", "-C", str(umbrella_dir), "tag", "-a", "v0.1.0", "-m", "coxswain 0.1.0"],
+        ["git", "-C", str(umbrella_dir), "push", "origin", "v0.1.0"],
+    ]
+
+
+def test_cli_release_execute_refuses_before_any_tag_or_push_when_a_checkout_is_dirty(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    calls, fake_run = _fake_git_run(dirty={str(tmp_path / "harness")})
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 2
-    assert capsys.readouterr().out.strip() == "pushing tags is not implemented yet; use --dry-run"
+    assert not any(c[3] in ("tag", "push") for c in calls)
+
+
+def test_cli_release_execute_refuses_a_plan_that_still_carries_a_bump_manifest_step(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    calls, fake_run = _fake_git_run()
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    rc = cli.main(["release", "0.2.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 2
+    assert calls == []
+
+
+def test_cli_release_execute_refuses_before_any_tag_or_push_when_the_release_note_is_missing(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    calls, fake_run = _fake_git_run()
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 2
+    assert not any(c[3] in ("tag", "push") for c in calls)
+
+
+def test_cli_release_execute_stops_at_the_first_failed_tag(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "releases").mkdir(parents=True)
+    (umbrella_dir / "releases" / "0.1.0.md").write_text("notes")
+    harness_dir = str(tmp_path / "harness")
+    calls, fake_run = _fake_git_run(fail=(harness_dir, "tag"))
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 2
+    tag_push = [c for c in calls if c[3] in ("tag", "push")]
+    assert tag_push == [["git", "-C", harness_dir, "tag", "-a", "v0.1.0", "-m", "coxswain 0.1.0"]]
 
 
 def test_cli_release_missing_manifest_fails_gracefully_not_a_traceback(tmp_path, capsys):
@@ -141,3 +243,15 @@ def test_release_plan_refuses_when_a_remote_could_not_be_read():
 def test_parse_ls_remote_is_pure_and_skips_peeled_refs():
     text = "aaa\trefs/tags/v0.1.0\nbbb\trefs/tags/v0.1.0^{}\nccc\trefs/heads/main\nddd\trefs/tags/v0.2.0\n"
     assert release.parse_ls_remote(text) == ["v0.1.0", "v0.2.0"]
+
+
+def test_cli_release_execute_refuses_before_any_tag_when_a_checkout_is_not_on_its_default_branch(tmp_path, monkeypatch, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    calls, fake_run = _fake_git_run(off_branch={str(tmp_path / "harness")})
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 2
+    assert "is on feature/x, not main" in capsys.readouterr().out
+    assert not any(c[3] in ("tag", "push") for c in calls)
