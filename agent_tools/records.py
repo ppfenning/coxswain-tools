@@ -8,7 +8,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-__all__ = ["usage_summary", "trace_summary", "load_usage", "load_trace", "format_table"]
+__all__ = ["usage_summary", "trace_summary", "load_usage", "load_trace", "format_table",
+           "series_row", "series", "series_totals", "series_new_lines"]
 
 
 def load_usage(path: Path | str) -> dict[str, Any]:
@@ -90,6 +91,112 @@ def trace_summary(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "whole_file_reads": whole_reads,
         "commands": commands,
     }
+
+
+def _earliest_manifest(manifests: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """Pure: the manifest a series row's date/sha/profile come from, chosen without regard to
+    glob order. A manifest carrying `ts` always outranks one that does not; ties (including
+    every undated manifest) break on the manifest's own sorted-key JSON, not on list position."""
+    if not manifests:
+        return None
+    return sorted(manifests, key=lambda m: (0 if m.get("ts") else 1, str(m.get("ts") or ""), json.dumps(m, sort_keys=True)))[0]
+
+
+def _usage_figures(usage: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Pure: calls/turns/cost_usd/cache_share from a usage record, whether or not it carries a
+    precomputed `summary` — derived through usage_summary() when `calls` is present so a usage
+    file with only `calls` (the repository's own fixture shape) and one with a matching
+    precomputed `summary` give the same figures."""
+    if not usage:
+        return {"calls": 0, "turns": 0, "cost_usd": 0.0, "cache_share": 0.0}
+    if usage.get("calls"):
+        s = usage_summary(usage)
+        return {"calls": s["calls"], "turns": s["turns"], "cost_usd": s["cost_usd"],
+                "cache_share": round(s.get("cache_read_share") or 0.0, 2)}
+    summary = usage.get("summary") or {}
+    cost_usd = round(float(summary.get("cost_usd") or 0.0), 4)
+    input_total = int(summary.get("input_total") or 0)
+    cache_read_tokens = int(summary.get("cache_read_tokens") or 0)
+    cache_share = round(cache_read_tokens / input_total, 2) if input_total else 0.0
+    return {"calls": int(summary.get("calls") or 0), "turns": int(summary.get("turns") or 0),
+            "cost_usd": cost_usd, "cache_share": cache_share}
+
+
+def series_row(run_id: str, usage: Mapping[str, Any] | None, manifests: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Pure: one steward-pass row for a run, from its usage summary and its phase manifests."""
+    calls_list = list((usage or {}).get("calls") or [])
+    figures = _usage_figures(usage)
+    earliest = _earliest_manifest(manifests)
+    date = earliest.get("ts", "")[:10] if earliest and earliest.get("ts") else ""
+    cartridge_sha = (earliest.get("cartridge_sha") or "")[:12] if earliest else ""
+    provider_profile = earliest.get("provider_profile") or "" if earliest else ""
+    tasks_landed = sum(int((m.get("totals") or {}).get("completed") or 0) for m in manifests)
+    quarantined = sum(int((m.get("totals") or {}).get("quarantined") or 0) for m in manifests)
+    review_calls = sum(1 for c in calls_list if str(c.get("role") or "").startswith("review") or c.get("role") == "arbitrate")
+    return {
+        "run": run_id,
+        "date": date,
+        "cartridge_sha": cartridge_sha,
+        "provider_profile": provider_profile,
+        "calls": figures["calls"],
+        "turns": figures["turns"],
+        "cost_usd": figures["cost_usd"],
+        "cache_share": figures["cache_share"],
+        "tasks_landed": tasks_landed,
+        "quarantined": quarantined,
+        "review_rounds": round(review_calls / tasks_landed, 2) if tasks_landed else 0.0,
+        "cost_per_landed": round(figures["cost_usd"] / tasks_landed, 2) if tasks_landed else None,
+    }
+
+
+def series(files: Mapping[str, str]) -> list[dict[str, Any]]:
+    """Pure: one row per run, grouping a runs-dir's usage files and phase manifests by run id.
+    A file that fails to parse, or parses to something other than a mapping, is skipped, not raised —
+    same contract as load_trace's bad lines."""
+    by_run: dict[str, dict[str, Any]] = defaultdict(lambda: {"usage": None, "manifests": []})
+    for name, text in files.items():
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if name.endswith(".usage.json"):
+            by_run[name[: -len(".usage.json")]]["usage"] = parsed
+        elif ":" in name:
+            by_run[name.split(":", 1)[0]]["manifests"].append(parsed)
+    rows = [series_row(run_id, entry["usage"], entry["manifests"]) for run_id, entry in by_run.items()]
+    return sorted(rows, key=lambda r: (r["date"], r["run"]))
+
+
+def series_totals(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Pure: totals across a series() result."""
+    cost_usd = round(sum(float(r.get("cost_usd") or 0.0) for r in rows), 4)
+    tasks_landed = sum(int(r.get("tasks_landed") or 0) for r in rows)
+    return {
+        "runs": len(rows),
+        "cost_usd": cost_usd,
+        "tasks_landed": tasks_landed,
+        "quarantined": sum(int(r.get("quarantined") or 0) for r in rows),
+        "cost_per_landed": round(cost_usd / tasks_landed, 2) if tasks_landed else None,
+        "runs_landing_nothing": sum(1 for r in rows if not r.get("tasks_landed")),
+    }
+
+
+def series_new_lines(existing: str, rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Pure: one JSON line per row whose run id is not already present in an append file's JSONL text.
+    A malformed or non-mapping line in `existing` is skipped, not raised, when reading what is already there."""
+    present: set[Any] = set()
+    for line in existing.splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "run" in obj:
+            present.add(obj["run"])
+    return [json.dumps(r) for r in rows if r.get("run") not in present]
 
 
 def format_table(rows: Iterable[Mapping[str, Any]], columns: Sequence[str]) -> str:
