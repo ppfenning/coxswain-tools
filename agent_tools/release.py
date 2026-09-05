@@ -82,7 +82,10 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     current_parsed = _parse_semver(current) if current is not None else None
     tag_steps = [{"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
                  for name, spec in repo_components]
-    notes_step = {"kind": "notes", "component": "notes", "path": f"releases/{version}.md"}
+    # The release notes are a page of the docs site, so they live under `docs/`
+    # with every other page. A copy at the repository root would be a second
+    # source of truth for the same text and would drift on the first edit.
+    notes_step = {"kind": "notes", "component": "notes", "path": f"docs/releases/{version}.md"}
     tag_self_step = {"kind": "tag_self", "component": "coxswain", "tag": new_tag}
 
     if current_parsed is not None:

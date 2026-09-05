@@ -42,7 +42,7 @@ def test_step_order_for_a_two_component_manifest():
     assert steps[0] == {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}
     assert steps[1] == {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"}
     assert steps[2] == {"kind": "bump_manifest", "component": "manifest", "from": "0.1.0", "to": "0.2.0"}
-    assert steps[3] == {"kind": "notes", "component": "notes", "path": "releases/0.2.0.md"}
+    assert steps[3] == {"kind": "notes", "component": "notes", "path": "docs/releases/0.2.0.md"}
     assert steps[4] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
 
 
@@ -113,7 +113,7 @@ def test_cli_release_dry_run_prints_every_step_and_exits_zero(tmp_path, capsys, 
     out = capsys.readouterr().out
     assert rc == 0
     for line in ("tag harness: org/harness -> v0.2.0", "tag cartridges: org/cartridges -> v0.2.0",
-                 "bump_manifest manifest: 0.1.0 -> 0.2.0", "notes notes: releases/0.2.0.md",
+                 "bump_manifest manifest: 0.1.0 -> 0.2.0", "notes notes: docs/releases/0.2.0.md",
                  "tag_self coxswain: v0.2.0"):
         assert line in out
 
@@ -160,8 +160,8 @@ def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umb
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
     umbrella_dir = tmp_path / "coxswain"
-    (umbrella_dir / "releases").mkdir(parents=True)
-    (umbrella_dir / "releases" / "0.1.0.md").write_text("notes")
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("notes")
     calls, fake_run = _fake_git_run()
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
@@ -215,8 +215,8 @@ def test_cli_release_execute_stops_at_the_first_failed_tag(tmp_path, monkeypatch
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
     umbrella_dir = tmp_path / "coxswain"
-    (umbrella_dir / "releases").mkdir(parents=True)
-    (umbrella_dir / "releases" / "0.1.0.md").write_text("notes")
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("notes")
     harness_dir = str(tmp_path / "harness")
     calls, fake_run = _fake_git_run(fail=(harness_dir, "tag"))
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
