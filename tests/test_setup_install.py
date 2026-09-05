@@ -188,8 +188,33 @@ def test_profile_write_step_carries_derived_paths_not_the_bare_root():
     steps = _plan(root="/r", workspace="/w", skills_root="/r/agent-cartridges/skills-plugins")
     writes = [s for s in steps if s["op"] == "write"]
     text = writes[0]["text"]
-    assert "cartridges_dir: /r/agent-cartridges" in text
+    assert "cartridges_dir: /w/cartridges" in text
     assert "harness_dir: /r/agent-graphs" in text
     assert "skills_roots: [/r/agent-cartridges/skills-plugins]" in text
     assert "harness_dir: /r\n" not in text
     assert not any(line == "harness_dir: /r" for line in text.splitlines())
+
+
+def test_profile_cartridges_dir_is_workspace_based_not_the_repo_checkout():
+    # The repo checkout at root/agent-cartridges is what pip installs edit
+    # and the plugin marketplace registers; the profile field the routing
+    # layer reads is a workspace path, and the two must not be conflated.
+    steps = _plan(root="/root", workspace="/root/workspace")
+    writes = [s for s in steps if s["op"] == "write"]
+    assert "cartridges_dir: /root/workspace/cartridges" in writes[0]["text"]
+    runs = [s for s in steps if s["op"] == "run"]
+    graphs_install = [r for r in runs if r.get("cwd") == "/root/agent-graphs" and "pip" in r["argv"]]
+    assert graphs_install[0]["argv"][-1] == "/root/agent-cartridges"
+
+
+def test_tool_install_step_is_warn_only():
+    steps = _plan()
+    tool_install = [s for s in steps if s["op"] == "run" and s["argv"][:2] == ["uv", "tool"]]
+    assert len(tool_install) == 1
+    assert tool_install[0]["warn_only"] is True
+
+
+def test_assume_flows_into_the_written_profile():
+    steps = _plan(assume="r")
+    writes = [s for s in steps if s["op"] == "write"]
+    assert "assume: r" in writes[0]["text"]

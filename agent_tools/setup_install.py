@@ -15,8 +15,14 @@ from __future__ import annotations
 
 import re
 
-_REPOS = ("agent-cartridges", "agent-graphs", "agent-tools")
+REPOS = ("agent-cartridges", "agent-graphs", "agent-tools")
 _HOOK_COMMAND = "agent-tools route context 2>/dev/null || true"
+
+
+def profile_path(config_dir: str) -> str:
+    """Where the profile lives under `config_dir`. The one place this path
+    is formatted; the edge asks here rather than restating it."""
+    return f"{config_dir}/agent-tools/profile.yaml"
 
 
 def _unsafe_scalar(value: str) -> bool:
@@ -94,31 +100,36 @@ def install_plan(
     hook: bool,
     config_dir: str,
     claude_settings_path: str,
+    assume: str = "a",
 ) -> list:
     """Ordered setup steps for a checkout at `root` holding
     agent-cartridges, agent-graphs and agent-tools side by side.
     `config_dir` and `claude_settings_path` are pre-resolved by the
-    caller; this core never expands `~` or touches the filesystem."""
+    caller; this core never expands `~` or touches the filesystem.
+    `cartridges_dir` here is the checkout `-e` installs and the plugin
+    marketplace registers; the profile's own `cartridges_dir` field is a
+    workspace path (`profile_cartridges_dir`), a different thing that
+    happens to share a name in the field the routing layer reads."""
     cartridges_dir = f"{root}/agent-cartridges"
     harness_dir = f"{root}/agent-graphs"
+    profile_cartridges_dir = f"{workspace}/cartridges"
     steps: list = []
 
     if not uv_on_path:
         steps.append({"op": "skip", "what": "venvs",
                       "why": "uv is not on PATH; install it from https://astral.sh/uv"})
     else:
-        for repo in _REPOS:
+        for repo in REPOS:
             steps.extend(_repo_steps(repo, root, python_exists, cartridges_dir))
         steps.append({"op": "run",
                       "argv": ["uv", "tool", "install", "-q", "-e", f"{root}/agent-tools"],
-                      "why": "put agent-tools on PATH"})
+                      "why": "put agent-tools on PATH", "warn_only": True})
 
-    profile_path = f"{config_dir}/agent-tools/profile.yaml"
     if not profile_exists or force_profile:
-        text = profile_text(team=team, cartridges_dir=cartridges_dir,
+        text = profile_text(team=team, cartridges_dir=profile_cartridges_dir,
                              skills_root=skills_root, provider_profile=provider_profile,
-                             harness_dir=harness_dir, workspace=workspace)
-        steps.append({"op": "write", "path": profile_path, "text": text,
+                             harness_dir=harness_dir, workspace=workspace, assume=assume)
+        steps.append({"op": "write", "path": profile_path(config_dir), "text": text,
                       "why": "write the routing layer's profile"})
     else:
         steps.append({"op": "skip", "what": "profile",
