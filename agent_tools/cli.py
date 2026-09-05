@@ -412,32 +412,29 @@ import json, sys
 cartridges_dir, team, *roots = sys.argv[1:]
 out = {"import": None, "load": None, "indexed": {}}
 try:
-    import core.cartridge as cartridge_mod
-    import core.skills as skills_mod
+    from core.cartridge import load
+    from core.skills import index_from_roots
 except Exception as exc:
     out["import"] = f"{type(exc).__name__}: {exc}"
-else:
-    loader = getattr(cartridge_mod, "load", None) or getattr(cartridge_mod, "load_cartridge", None)
-    if loader is None:
-        cls = getattr(cartridge_mod, "Cartridge", None)
-        loader = getattr(cls, "load", None) if cls is not None else None
-    if loader is None:
-        public = [n for n in dir(cartridge_mod) if not n.startswith("_")]
-        out["load"] = f"no loader found on core.cartridge; has: {public}"
-    else:
-        try:
-            loader(cartridges_dir, team)
-        except Exception as exc:
-            out["load"] = f"{type(exc).__name__}: {exc}"
-    try:
-        out["indexed"] = skills_mod.index_from_roots(roots)
-    except Exception as exc:
-        out["indexed"] = {}
+    print(json.dumps(out)); raise SystemExit(0)
+try:
+    index = index_from_roots(roots)
+    out["indexed"] = {root: len(index_from_roots([root])) for root in roots}
+except Exception as exc:
+    # An empty mapping would read downstream as "no roots configured"; a zero
+    # per root fails the skills row honestly, and the cartridge row names why.
+    out["indexed"] = {root: 0 for root in roots}
+    out["load"] = f"skill index failed: {type(exc).__name__}: {exc}"
+    print(json.dumps(out)); raise SystemExit(0)
+try:
+    load(team, cartridges_dir, skill_index=index)
+except Exception as exc:
+    out["load"] = f"{type(exc).__name__}: {exc}"
 print(json.dumps(out))
 '''
 
 
-def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roots: list) -> dict:
+def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roots: list, raw_roots: list | None = None) -> dict:
     """One `python -c` call into the harness venv (spec: setup doctor). Any
     failure to get parseable JSON back is folded into `core_import` as the
     stderr tail, never raised."""
@@ -453,8 +450,13 @@ def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roo
     except ValueError:
         tail = (proc.stderr or "").strip().splitlines()
         return {"core_import": tail[-1] if tail else f"core probe exited {proc.returncode} with no JSON"}
+    indexed = parsed.get("indexed", {}) or {}
+    if raw_roots and len(raw_roots) == len(skills_roots):
+        # The probe saw expanded paths; the core keys its skills row by the
+        # profile's own strings, so map the counts back by position.
+        indexed = {raw: indexed.get(exp, 0) for raw, exp in zip(raw_roots, skills_roots)}
     return {"core_import": parsed.get("import"), "cartridge_load": parsed.get("load"),
-            "skill_roots_indexed": parsed.get("indexed", {})}
+            "skill_roots_indexed": indexed}
 
 
 def _provider_command(text) -> str | None:
@@ -501,16 +503,20 @@ def _gather_doctor_facts(profile_path: Path) -> dict:
         return facts
     singles = [profile.get(k, "") for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir")]
     roots = list(profile.get("skills_roots") or [])
-    facts["paths_exist"] = {p: Path(p).expanduser().exists() for p in (*singles, *roots) if p}
-    harness_dir = profile.get("harness_dir", "")
-    venv_python = Path(harness_dir).expanduser() / ".venv" / "bin" / "python"
+    # Every profile path is expanded ONCE, here; `paths_exist` keeps the raw
+    # strings as keys (doctor.py's contract) but tests the expanded path.
+    expand = lambda p: str(Path(p).expanduser()) if p else ""  # noqa: E731
+    facts["paths_exist"] = {p: Path(expand(p)).exists() for p in (*singles, *roots) if p}
+    harness_dir = expand(profile.get("harness_dir", ""))
+    venv_python = Path(harness_dir) / ".venv" / "bin" / "python" if harness_dir else Path("/nonexistent")
     facts["harness_python_exists"] = venv_python.exists()
     if facts["harness_python_exists"]:
-        facts.update(_run_core_probe(str(venv_python), profile.get("cartridges_dir", ""), profile.get("team", ""), roots))
+        facts.update(_run_core_probe(str(venv_python), expand(profile.get("cartridges_dir", "")), profile.get("team", ""),
+                                     [expand(r) for r in roots], raw_roots=roots))
     if profile.get("provider_profile"):
-        facts.update(_provider_facts(profile["provider_profile"]))
+        facts.update(_provider_facts(expand(profile["provider_profile"])))
     if profile.get("workspace_dir"):
-        facts.update(_workspace_facts(profile["workspace_dir"]))
+        facts.update(_workspace_facts(expand(profile["workspace_dir"])))
     return facts
 
 

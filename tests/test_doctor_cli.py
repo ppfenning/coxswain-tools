@@ -121,3 +121,61 @@ def test_json_output_parses_and_ok_matches_the_exit_code(tmp_path, monkeypatch, 
     doc = json.loads(capsys.readouterr().out)
     assert doc["ok"] == (rc == 0)
     assert isinstance(doc["rows"], list) and doc["rows"]
+
+
+# ── the probe text itself is executed against a fake `core` package ─────────
+
+_FAKE_CORE_OK = {
+    "core/__init__.py": "",
+    "core/cartridge.py": "class CartridgeError(Exception):\n    pass\n\ndef load(team, cartridges_dir, *, skill_index):\n    return {'team': team}\n",
+    "core/skills.py": "def index_from_roots(roots):\n    return {f'local-skills:{i}': [r] for i, r in enumerate(roots, 1)}\n",
+}
+_WRAPPER = """#!/bin/sh
+PYTHONPATH={pkg} exec {python} "$@"
+"""
+
+
+def _real_probe_setup(tmp_path, monkeypatch, fake_core):
+    profile, cartridges_dir, skills_a, skills_b, harness_dir = _good_setup(tmp_path, monkeypatch)
+    pkg = tmp_path / "fakepkg"
+    for rel, text in fake_core.items():
+        (pkg / rel).parent.mkdir(parents=True, exist_ok=True)
+        (pkg / rel).write_text(text)
+    # A wrapper that runs the REAL interpreter with the fake package on PYTHONPATH,
+    # so `_CORE_PROBE_SCRIPT` is executed rather than stubbed.
+    _write_executable(harness_dir / ".venv" / "bin" / "python", _WRAPPER.format(pkg=pkg, python=sys.executable))
+    return profile
+
+
+def _rows(capsys):
+    return {r["check"]: r for r in json.loads(capsys.readouterr().out)["rows"]}
+
+
+def test_the_probe_runs_the_real_cartridge_api_and_passes(tmp_path, monkeypatch, capsys):
+    profile = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OK)
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    rows = _rows(capsys)
+    assert rows["core importable"]["ok"] and rows["cartridge"]["ok"] and rows["skills"]["ok"], rows
+    assert rc == 0
+
+
+def test_a_cartridge_load_error_reaches_the_cartridge_row_verbatim(tmp_path, monkeypatch, capsys):
+    fake = dict(_FAKE_CORE_OK)
+    fake["core/cartridge.py"] = "class CartridgeError(Exception):\n    pass\n\ndef load(team, cartridges_dir, *, skill_index):\n    raise CartridgeError(\"no cartridge for 'acme'\")\n"
+    profile = _real_probe_setup(tmp_path, monkeypatch, fake)
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    rows = _rows(capsys)
+    assert rows["cartridge"]["ok"] is False and "no cartridge for 'acme'" in rows["cartridge"]["detail"]
+    assert rows["skills"]["ok"], "the index still worked"
+    assert rc == 1
+
+
+def test_a_failing_skill_index_fails_skills_and_names_itself_on_the_cartridge_row(tmp_path, monkeypatch, capsys):
+    fake = dict(_FAKE_CORE_OK)
+    fake["core/skills.py"] = "def index_from_roots(roots):\n    raise RuntimeError('bad plugin manifest')\n"
+    profile = _real_probe_setup(tmp_path, monkeypatch, fake)
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    rows = _rows(capsys)
+    assert rows["skills"]["ok"] is False
+    assert "skill index failed" in rows["cartridge"]["detail"] and "bad plugin manifest" in rows["cartridge"]["detail"]
+    assert rc == 1
