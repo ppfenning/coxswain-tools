@@ -42,7 +42,7 @@ def test_step_order_for_a_two_component_manifest():
     assert steps[0] == {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}
     assert steps[1] == {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"}
     assert steps[2] == {"kind": "bump_manifest", "component": "manifest", "from": "0.1.0", "to": "0.2.0"}
-    assert steps[3] == {"kind": "notes", "component": "notes", "path": "releases/0.2.0.md"}
+    assert steps[3] == {"kind": "notes", "component": "notes", "path": "docs/releases/0.2.0.md"}
     assert steps[4] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
 
 
@@ -113,7 +113,7 @@ def test_cli_release_dry_run_prints_every_step_and_exits_zero(tmp_path, capsys, 
     out = capsys.readouterr().out
     assert rc == 0
     for line in ("tag harness: org/harness -> v0.2.0", "tag cartridges: org/cartridges -> v0.2.0",
-                 "bump_manifest manifest: 0.1.0 -> 0.2.0", "notes notes: releases/0.2.0.md",
+                 "bump_manifest manifest: 0.1.0 -> 0.2.0", "notes notes: docs/releases/0.2.0.md",
                  "tag_self coxswain: v0.2.0"):
         assert line in out
 
