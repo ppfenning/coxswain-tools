@@ -1025,7 +1025,14 @@ def _setup_tui(a: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cox", description=__doc__)
-    sub = p.add_subparsers(dest="group", required=True)
+    # dest="launcher_profile", not "profile": eight subparsers below declare
+    # their own `--profile` with default None, and argparse copies a matched
+    # subparser's namespace back over the parent's, so a shared dest would
+    # let `cox --profile P route status` silently lose P to that default.
+    p.add_argument("--profile", dest="launcher_profile", help="bare cox: the profile to launch claude against")
+    p.add_argument("--no-plugin", action="store_true", help="bare cox: start claude without --plugin-dir")
+    p.add_argument("--print-argv", action="store_true", help="bare cox: print the claude argv and cwd instead of exec'ing it")
+    sub = p.add_subparsers(dest="group", required=False)
 
     runs = sub.add_parser("runs", help="what a harness run recorded, and cleaning up after it").add_subparsers(dest="cmd", required=True)
     u = runs.add_parser("usage"); u.add_argument("run_id"); u.add_argument("--runs-dir", default="runs"); u.add_argument("--json", action="store_true"); u.set_defaults(fn=_runs_usage)
@@ -1095,8 +1102,107 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _plugin_root(skills_roots, name: str = "coxswain"):
+    """First skills root carrying `<root>/<name>/.claude-plugin/plugin.json`,
+    or None if none of them do."""
+    for root in skills_roots:
+        candidate = Path(root).expanduser() / name
+        if (candidate / ".claude-plugin" / "plugin.json").exists():
+            return candidate
+    return None
+
+
+def _launcher_argv(plugin_root, skills_roots, no_plugin: bool, extra_args: list[str]):
+    """spec §7: the argv for a bare `cox` — real Claude Code with the
+    coxswain plugin loaded, unless `no_plugin` or no skills root carries one.
+    Takes the already-resolved `plugin_root` (a Path, or None if none of
+    `skills_roots` carries one) as data: no filesystem probe here, so this is
+    testable with literals. `extra_args` are appended as given — the caller's
+    own `--` already did the job of separating them from cox's own flags, so
+    none is re-inserted here. Returns (argv, warning); warning is the
+    one-line fallback notice, or None when a plugin was found or none was
+    asked for."""
+    plugin_flag = [] if no_plugin or plugin_root is None else ["--plugin-dir", str(plugin_root)]
+    warning = None if no_plugin or plugin_root is not None else f"coxswain plugin not found under {skills_roots}; starting plain claude"
+    return ["claude", *plugin_flag, *extra_args], warning
+
+
+def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
+    """Bare `cox` (spec §7): a real Claude Code session with the coxswain
+    plugin loaded and the profile's workspace as cwd. Resolves the profile
+    the same way `setup doctor` does, via `_profile_path`, off the dedicated
+    `launcher_profile` dest. A missing profile is the usual help, exit 2 —
+    this launcher needs a real workspace to run in, not a one-liner; an
+    unreadable one or a missing `workspace_dir` gets the same one-line reason
+    `route`'s own commands print, not swallowed into that help text."""
+    profile_path = _profile_path(argparse.Namespace(profile=a.launcher_profile))
+    text = _read_text_or_none(profile_path)
+    if text is None:
+        build_parser().print_help()
+        return 2
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError as exc:
+        print(f"routing: profile unreadable: {exc}")
+        return 2
+    workspace = profile.get("workspace_dir", "")
+    if not workspace:
+        print(f"routing: workspace_dir not set in profile {profile_path}")
+        return 2
+    if shutil.which("claude") is None:
+        print("claude not found on PATH")
+        return 2
+    skills_roots = profile.get("skills_roots") or []
+    plugin_root = None if a.no_plugin else _plugin_root(skills_roots)
+    argv, warning = _launcher_argv(plugin_root, skills_roots, a.no_plugin, extra_args)
+    if warning:
+        print(warning)
+    cwd = str(Path(workspace).expanduser())
+    if a.print_argv:
+        print(argv)
+        print(cwd)
+        return 0
+    os.chdir(cwd)
+    os.execvp(argv[0], argv)
+    return 0
+
+
+_TOP_OPTIONS_WITH_VALUE = ("--profile",)
+_TOP_FLAGS = ("--no-plugin", "--print-argv")
+
+
+def _bare_launcher_split(args: list[str]):
+    """Splits a bare-`cox` invocation's `-- EXTRA...` tail off before the real
+    parser sees it: the top-level subparsers action is a PARSER-style
+    positional and would otherwise try to consume the first extra token as an
+    (invalid) subcommand name. Returns (head, tail) only when `args`, up to
+    any `--`, holds nothing but the launcher's own top-level options; returns
+    None the moment a subcommand token (or anything else) appears, so `main`
+    leaves that invocation, `--` and all, to the ordinary parser untouched —
+    an existing subcommand's own `--` semantics (e.g. `hud say -- -text`)
+    are not this function's to change."""
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok == "--":
+            return args[:i], args[i + 1 :]
+        if tok in _TOP_OPTIONS_WITH_VALUE:
+            i += 1
+            if i >= len(args):
+                return None
+        elif tok not in _TOP_FLAGS:
+            return None
+        i += 1
+    return args, []
+
+
 def main(argv: list[str] | None = None) -> int:
-    a = build_parser().parse_args(argv)
+    args = sys.argv[1:] if argv is None else list(argv)
+    split = _bare_launcher_split(args)
+    head, tail = split if split is not None else (args, [])
+    a = build_parser().parse_args(head)
+    if not hasattr(a, "fn"):
+        return _launcher(a, tail)
     return a.fn(a)
 
 
