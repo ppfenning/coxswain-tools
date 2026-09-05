@@ -1,11 +1,13 @@
 import pytest
 
 from agent_tools.fragments import (
+    HEADER,
     FragmentError,
     dump_fragment,
     load_fragment,
     merge_edits,
     round_trips,
+    write_fragment,
 )
 
 
@@ -95,3 +97,48 @@ def test_round_trips_false_for_a_self_referential_anchor():
     # this fragment as one that does not round-trip.
     text = "a: &a\n  self: *a\n"
     assert round_trips(text) is False
+
+
+def test_write_fragment_creates_the_file_with_the_header(tmp_path):
+    team_dir = tmp_path / "pat"
+    path = write_fragment(team_dir, {"team": "pat"})
+    assert path == team_dir / "cartridge.d" / "edited.yaml"
+    text = path.read_text()
+    assert text.startswith(HEADER)
+    assert load_fragment(text) == {"team": "pat"}
+
+
+def test_write_fragment_merges_and_keeps_earlier_edits(tmp_path):
+    team_dir = tmp_path / "pat"
+    write_fragment(team_dir, {"context": ["base.md"], "cast": {"builder": "codex"}})
+    path = write_fragment(team_dir, {"context": ["extra.md"], "cast": {"reviewer": "claude"}})
+    assert load_fragment(path.read_text()) == {
+        "context": ["base.md", "extra.md"],
+        "cast": {"builder": "codex", "reviewer": "claude"},
+    }
+
+
+def test_write_fragment_refuses_a_hand_written_file_with_an_anchor(tmp_path):
+    team_dir = tmp_path / "pat"
+    fragment_dir = team_dir / "cartridge.d"
+    fragment_dir.mkdir(parents=True)
+    path = fragment_dir / "edited.yaml"
+    original = "a: &a\n  self: *a\n"
+    path.write_text(original)
+    with pytest.raises(FragmentError):
+        write_fragment(team_dir, {"team": "pat"})
+    assert path.read_text() == original
+
+
+def test_write_fragment_leaves_no_temp_file_behind(tmp_path):
+    team_dir = tmp_path / "pat"
+    path = write_fragment(team_dir, {"team": "pat"})
+    remaining = {p.name for p in path.parent.iterdir()}
+    assert remaining == {"edited.yaml"}
+
+
+def test_a_syntax_broken_fragment_is_refused_as_a_fragment_error():
+    import pytest
+    from agent_tools.fragments import FragmentError, load_fragment
+    with pytest.raises(FragmentError):
+        load_fragment("key: [unclosed")
