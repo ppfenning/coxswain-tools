@@ -1,0 +1,173 @@
+"""Curses edge for `cox runs top`: reads the facts a running harness leaves on
+disk, maps them through the pure `runs_top` model, and draws the result.
+`curses` is imported inside each function that needs it, so this module
+imports on a machine with no terminal and the pure pieces stay testable with
+a fake stdscr.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import time
+from pathlib import Path
+
+from agent_tools import events as events_module
+from agent_tools import runs_top
+from agent_tools.records import load_trace
+
+__all__ = ["facts", "rows_now", "draw", "loop", "main"]
+
+_STALE_SECONDS = 600
+_TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)$")
+_MANIFEST_NAME = re.compile(r"^[^:]+:(.+)\.json$")
+
+
+def _default_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _read_pid(path: Path):
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _phases(root: Path, run: str) -> list[str]:
+    paths = sorted(root.glob(f"{run}:*.json"), key=lambda p: p.stat().st_mtime)
+    names = (_MANIFEST_NAME.match(p.name) for p in paths)
+    return [m.group(1) for m in names if m]
+
+
+def _call(path: Path) -> dict | None:
+    """The `result` line's cost and turns for one trace file, or None when
+    the name does not fit `<node>-<n>.jsonl` or the file has no result line.
+    A file that fails to parse is skipped by `load_trace`, never raised."""
+    m = _TRACE_NAME.match(path.stem)
+    if not m:
+        return None
+    try:
+        trace_events = load_trace(path)
+    except OSError:
+        return None
+    result = next((e for e in trace_events if e.get("type") == "result"), None)
+    if result is None:
+        return None
+    return {"node": m.group(1), "attempt": int(m.group(2)),
+            "cost_usd": result.get("total_cost_usd", 0.0), "turns": result.get("num_turns", 0)}
+
+
+def _read_lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
+
+
+def _fact(root: Path, run: str, alive: bool) -> dict:
+    lines = _read_lines(root / f"{run}.log")
+    trace_dir = root / f"{run}-trace"
+    trace_paths = sorted(trace_dir.glob("*.jsonl")) if trace_dir.exists() else []
+    names = [p.name for p in trace_paths]
+    events = events_module.from_log(run, lines) + events_module.from_trace_names(run, names)
+    calls = [c for c in (_call(p) for p in trace_paths) if c is not None]
+    return {"run": run, "alive": alive, "phases": _phases(root, run), "events": events, "calls": calls}
+
+
+def facts(runs_dir, now_alive=_default_alive) -> list[dict]:
+    """Every run still worth a line on screen: a `.pid` that probes alive,
+    plus a `.log` whose `.pid` is missing or dead but was touched in the
+    last ten minutes, so a run that just exited stays on screen briefly."""
+    root = Path(runs_dir)
+    pids = {p.stem: _read_pid(p) for p in root.glob("*.pid")}
+    alive = {run for run, pid in pids.items() if pid is not None and now_alive(pid)}
+    now = time.time()
+    recent = {
+        p.stem for p in root.glob("*.log")
+        if p.stem not in alive and now - p.stat().st_mtime <= _STALE_SECONDS
+    }
+    return [_fact(root, run, run in alive) for run in sorted(alive | recent)]
+
+
+def rows_now(runs_dir) -> list[runs_top.Row]:
+    return [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"]) for f in facts(runs_dir)]
+
+
+def _has_colors() -> bool:
+    import curses
+
+    try:
+        return curses.has_colors()
+    except curses.error:
+        return False  # no real terminal behind stdscr, e.g. under test
+
+
+def _attr(row, has_color: bool):
+    import curses
+
+    label = runs_top.highlight(row)
+    if label == "alert":
+        return (curses.color_pair(1) if has_color else 0) | curses.A_BOLD
+    if label == "dim":
+        return curses.A_DIM
+    return curses.A_NORMAL
+
+
+def draw(stdscr, rows: list) -> None:
+    import curses
+
+    stdscr.clear()
+    height, width = stdscr.getmaxyx()
+    lines = runs_top.render(rows, width)
+    ordered = sorted(rows, key=lambda r: (not r.alive, r.run))
+    has_color = _has_colors()
+    if has_color:
+        try:
+            curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
+        except curses.error:
+            has_color = False
+    for i, line in enumerate(lines[:height]):
+        row = ordered[i - 1] if 0 < i <= len(ordered) else None
+        attr = _attr(row, has_color) if row is not None else curses.A_NORMAL
+        try:
+            stdscr.addnstr(i, 0, line, width, attr)
+        except curses.error:
+            pass
+    stdscr.refresh()
+
+
+def loop(stdscr, runs_dir, interval: float, tick=rows_now) -> int:
+    import curses
+
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass  # no real terminal behind stdscr, e.g. under test
+    stdscr.timeout(int(interval * 1000))
+    while True:
+        draw(stdscr, tick(runs_dir))
+        ch = stdscr.getch()
+        if ch in (ord("q"), ord("Q")):
+            return 0
+        # curses.KEY_RESIZE and a plain timeout both fall through here: either
+        # way the next iteration redraws against the current rows and size.
+
+
+def main(runs_dir, interval: float) -> int:
+    import curses
+    import signal
+
+    def _hangup(signum, frame):
+        raise KeyboardInterrupt
+
+    previous = signal.signal(signal.SIGHUP, _hangup)
+    try:
+        return curses.wrapper(lambda stdscr: loop(stdscr, runs_dir, interval))
+    except KeyboardInterrupt:
+        # A closed window sends SIGHUP; raising through the wrapper lets it
+        # restore the terminal before this function returns.
+        return 0
+    finally:
+        signal.signal(signal.SIGHUP, previous)
