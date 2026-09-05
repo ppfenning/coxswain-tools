@@ -13,7 +13,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from agent_tools import cleanup, doctor, epic, hud, install, plan, provenance, records, route, setup_install, setup_screen
+from agent_tools import cleanup, doctor, epic, hud, install, install_exec, plan, provenance, records, route, setup_install, setup_screen
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -727,10 +727,56 @@ def _manifest_provider_command(manifest: dict, provider: str) -> str:
     return manifest.get("providers", {}).get(provider, {}).get("command", provider)
 
 
+def _real_run(argv: list, cwd: str | None) -> tuple:
+    """The subprocess wrapper `install_exec.execute` calls at the edge;
+    stdout and stderr are folded together since the caller only prints."""
+    result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+    return result.returncode, result.stdout + result.stderr
+
+
+def _manifest_at_version(manifest: dict, to: str | None) -> dict:
+    """The manifest as given, unless `to` names a version: then every
+    component's `tag` is overridden to `to`, so `--to VERSION` reaches
+    `install.plan` as the pin every component is judged and cloned
+    against, rather than being accepted and silently ignored."""
+    if to is None:
+        return manifest
+    components = {name: {**spec, "tag": to} for name, spec in manifest.get("components", {}).items()}
+    return {**manifest, "components": components}
+
+
+def _install_execute(steps: list, manifest: dict, options: dict, root: Path) -> int:
+    """Runs a planned install/upgrade for real: enrich the planner's steps
+    with the repo/tag/team/workspace `install_exec` needs, execute them,
+    report one ok/FAILED/skipped/refused line per step, then the versions
+    table built from checkouts gathered again after execution — the facts
+    gathered before a single step ran are not evidence of what landed.
+    A `refuse` step is reported as `refused`, not `FAILED` — it never
+    called `run` and its non-zero exit is a decision, not a command that
+    broke. Exits 0 only when every step that ran, ran clean."""
+    exec_steps = install_exec.from_plan(steps, manifest=manifest, options=options)
+    results = install_exec.execute(exec_steps, root=str(root), run=_real_run)
+    for result in results:
+        step = result["step"]
+        label = f"{step['kind']} {step.get('component', '')}".strip()
+        if step["kind"] == "skip" or result["exit"] is None:
+            print(f"skipped: {label}")
+        elif step["kind"] == "refuse":
+            print(f"refused: {label}: {result['output']}")
+        elif result["exit"] == 0:
+            print(f"ok: {label}")
+        else:
+            print(f"FAILED: {label}")
+            for line in (result["output"] or "").rstrip().splitlines():
+                print(f"    {line}")
+    post_facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {}))}
+    display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s}
+               for c, p, i, s in install.rows(manifest, post_facts)]
+    print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status"]))
+    return 0 if all(result["exit"] in (0, None) for result in results) else 2
+
+
 def _install(a: argparse.Namespace) -> int:
-    if not a.dry_run:
-        print("executing steps is not implemented yet; use --dry-run")
-        return 2
     manifest_path = Path(a.manifest) if a.manifest else Path(a.root) / "coxswain" / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
@@ -746,7 +792,35 @@ def _install(a: argparse.Namespace) -> int:
     steps = install.plan(manifest, facts, options)
     for step in steps:
         print(f"{step['kind']} {step['component']}: {step['detail']}")
-    return 2 if any(step["kind"] == "refuse" for step in steps) else 0
+    if a.dry_run:
+        return 2 if any(step["kind"] == "refuse" for step in steps) else 0
+    return _install_execute(steps, manifest, options, root)
+
+
+def _upgrade(a: argparse.Namespace) -> int:
+    manifest_path = Path(a.manifest) if a.manifest else Path(a.root) / "coxswain" / "manifest.toml"
+    manifest = _load_manifest(manifest_path)
+    if manifest is None:
+        print(f"refusing: no manifest at {manifest_path}")
+        return 2
+    manifest = _manifest_at_version(manifest, a.to)
+    root = Path(a.root)
+    facts = {
+        "root": str(root),
+        "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
+        "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, a.provider)) is not None,
+    }
+    dirty = sorted(name for name, checkout in facts["checkouts"].items() if checkout.get("dirty"))
+    if dirty:
+        print(f"refusing: {root / dirty[0]} is dirty; refusing to upgrade it")
+        return 2
+    options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team, "workspace": a.workspace}
+    steps = install.plan(manifest, facts, options)
+    for step in steps:
+        print(f"{step['kind']} {step['component']}: {step['detail']}")
+    if a.dry_run:
+        return 2 if any(step["kind"] == "refuse" for step in steps) else 0
+    return _install_execute(steps, manifest, options, root)
 
 
 def _versions(a: argparse.Namespace) -> int:
@@ -812,6 +886,12 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("--with", action="append", default=None, dest="with_", metavar="FLAG")
     ins.add_argument("--team"); ins.add_argument("--workspace"); ins.add_argument("--dry-run", action="store_true")
     ins.set_defaults(fn=_install)
+
+    up = sub.add_parser("upgrade", help="fetch and check out newer pinned versions; refuses dirty checkouts")
+    up.add_argument("--root", required=True); up.add_argument("--manifest"); up.add_argument("--provider", default="claude-code")
+    up.add_argument("--with", action="append", default=None, dest="with_", metavar="FLAG")
+    up.add_argument("--team"); up.add_argument("--workspace"); up.add_argument("--to"); up.add_argument("--dry-run", action="store_true")
+    up.set_defaults(fn=_upgrade)
 
     ver = sub.add_parser("versions", help="component versions against the manifest")
     ver.add_argument("--root"); ver.add_argument("--manifest"); ver.set_defaults(fn=_versions)

@@ -158,12 +158,12 @@ def test_cli_install_dry_run_lists_clones_and_exits_zero(tmp_path, capsys):
     assert "clone harness" in out and "clone cartridges" in out and "doctor" in out
 
 
-def test_cli_install_without_dry_run_refuses_and_exits_two(tmp_path, capsys):
+def test_cli_install_without_dry_run_and_no_manifest_refuses_and_exits_two(tmp_path, capsys):
     rc = cli.main(["install", "--root", str(tmp_path), "--manifest", str(tmp_path / "manifest.toml"),
                    "--provider", "claude-code"])
     out = capsys.readouterr().out
     assert rc == 2
-    assert out.strip() == "executing steps is not implemented yet; use --dry-run"
+    assert "refusing: no manifest at" in out
 
 
 def test_cli_install_unknown_with_flag_exits_two(tmp_path, capsys):
