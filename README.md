@@ -27,9 +27,11 @@ names an employer, a tracker, or a person — CI refuses it.
 
 See [`docs/getting-started.md`](docs/getting-started.md) for the full setup, from cloning all three repositories to a verified first run.
 
+Not yet on PyPI: once the first tag ships, this package will be `coxswain-tools`, installable as `pip install coxswain-tools` or `uv tool install coxswain-tools`.
+
 ```bash
-git clone https://github.com/ppfenning/agent-tools ~/repos/agent-tools
-cd ~/repos/agent-tools && uv venv && uv pip install -e ".[dev]"
+git clone https://github.com/ppfenning/coxswain-tools ~/repos/coxswain-tools
+cd ~/repos/coxswain-tools && uv venv && uv pip install -e ".[dev]"
 uv tool install -e .            # `agent-tools` on PATH for every seat
 ```
 
