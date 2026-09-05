@@ -18,6 +18,11 @@ tag = "v0.1.0"
 """
 
 
+def _no_tags(manifest):
+    """Every repo component reachable with no tags — the clean case."""
+    return {name: [] for name, spec in manifest["components"].items() if spec.get("repo")}
+
+
 def _manifest(current="0.1.0"):
     return {"coxswain": {"version": current},
             "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
@@ -25,7 +30,7 @@ def _manifest(current="0.1.0"):
 
 
 def test_step_order_for_a_two_component_manifest():
-    steps = release.release_plan(_manifest(), "0.2.0", {})
+    steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()))
     assert [s["kind"] for s in steps] == ["tag", "tag", "bump_manifest", "notes", "tag_self"]
     assert steps[0] == {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}
     assert steps[1] == {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"}
@@ -60,7 +65,7 @@ def test_refuse_on_a_non_increasing_version(current, version):
     ("0.1.0-beta.1", "0.1.0"),         # a release beats its own beta
 ])
 def test_a_strictly_greater_version_is_accepted(current, version):
-    assert release.release_plan(_manifest(current), version, {})[0]["kind"] != "refuse"
+    assert release.release_plan(_manifest(current), version, _no_tags(_manifest(current)))[0]["kind"] != "refuse"
 
 
 def test_bumped_manifest_text_preserves_comments_and_changes_only_the_values():
