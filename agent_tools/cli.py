@@ -382,14 +382,16 @@ def _route_launch(a: argparse.Namespace) -> int:
         env_repo = ""
 
     argv = route.harness_argv(profile, a.graph, run_id, **needs)
-    env = route.child_env(dict(os.environ), harness_dir=harness_dir, repo=env_repo)
     log_path = runs_dir / f"{run_id}.log"
     pid_path = runs_dir / f"{run_id}.pid"
+    trace_dir = runs_dir / f"{run_id}-trace"
+    env = route.child_env(dict(os.environ), harness_dir=harness_dir, repo=env_repo, trace_dir=str(trace_dir))
 
     if a.dry_run:
         print(f"dry-run: {' '.join(argv)}")
         print(f"pid {pid_path}")
         print(f"log {log_path}")
+        print(f"trace {trace_dir}")
         return 0
 
     with open(log_path, "ab") as log:

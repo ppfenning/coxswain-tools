@@ -369,6 +369,7 @@ def test_launch_dry_run_prints_argv_and_starts_nothing(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "fix-thing-1" in out
+    assert f"trace {ws / 'runs' / 'fix-thing-1-trace'}" in out
     assert not (ws / "runs" / "fix-thing-1.pid").exists()
     assert not (ws / "runs" / "fix-thing-1.log").exists()
     assert not (harness_dir / "recorded_argv.json").exists()
