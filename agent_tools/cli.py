@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_tools import cleanup, doctor, epic, hud, plan, records, route
+from agent_tools import cleanup, doctor, epic, hud, plan, records, route, setup_install
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -530,6 +530,103 @@ def _setup_doctor(a: argparse.Namespace) -> int:
     return rc
 
 
+def _install_facts(a: argparse.Namespace) -> dict:
+    """Gathers exactly what `install_plan` needs and nothing it decides:
+    PATH lookups, each repo's venv, the profile's existence, and the
+    config/settings paths expanded once, here."""
+    root = a.root
+    config_dir = str(Path("~/.config").expanduser())
+    claude_settings_path = str(Path("~/.claude/settings.json").expanduser())
+    python_exists = {repo: (Path(root) / repo / ".venv" / "bin" / "python").exists()
+                      for repo in setup_install.REPOS}
+    return dict(
+        root=root,
+        team=a.team,
+        workspace=a.workspace,
+        provider_profile=a.provider_profile or f"{root}/agent-cartridges/providers/claude-code.yaml",
+        skills_root=a.skills_root or f"{root}/agent-cartridges/skills-plugins",
+        uv_on_path=shutil.which("uv") is not None,
+        python_exists=python_exists,
+        claude_on_path=shutil.which("claude") is not None,
+        profile_exists=Path(setup_install.profile_path(config_dir)).exists(),
+        force_profile=a.force_profile,
+        plugins=a.plugins,
+        hook=a.hook,
+        config_dir=config_dir,
+        claude_settings_path=claude_settings_path,
+        assume=a.assume,
+    )
+
+
+def _install_run(step: dict) -> str | None:
+    argv = " ".join(step["argv"])
+    try:
+        proc = subprocess.run(step["argv"], cwd=step.get("cwd"), capture_output=True, text=True)
+    except OSError as exc:
+        print(f"FAILED: {argv}: {exc}")
+        return f"{argv}: {exc}"
+    if proc.returncode == 0:
+        print(f"run: {argv}")
+        return None
+    tail = "\n".join(proc.stderr.strip().splitlines()[-5:])
+    if step.get("warn_only"):
+        print(f"warn: {argv} exited {proc.returncode}: {tail}")
+        return None
+    print(f"FAILED: {argv} exited {proc.returncode}")
+    print(tail)
+    return f"{argv} exited {proc.returncode}"
+
+
+def _execute_step(step: dict) -> str | None:
+    op = step["op"]
+    if op == "run":
+        return _install_run(step)
+    if op == "write":
+        path = Path(step["path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(step["text"], encoding="utf-8")
+        print(f"write {path}")
+        return None
+    if op == "skip":
+        print(f"skip {step['what']} — {step['why']}")
+        return None
+    if op == "hook":
+        path = Path(step["path"])
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except json.JSONDecodeError as exc:
+            print(f"FAILED: {path} is not valid JSON: {exc}")
+            return f"{path} is not valid JSON: {exc}"
+        new_settings, changed = setup_install.hook_settings(existing)
+        if changed:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(new_settings, indent=2) + "\n", encoding="utf-8")
+            print(f"hook added to {path}")
+        else:
+            print(f"hook already present in {path}")
+        return None
+    if op == "print":
+        print(step["text"])
+        return None
+    return f"unknown step op: {op!r}"
+
+
+def _setup_install(a: argparse.Namespace) -> int:
+    try:
+        steps = setup_install.install_plan(**_install_facts(a))
+    except ValueError as exc:
+        print(f"refusing: {exc}")
+        return 2
+    if a.dry_run:
+        print(setup_install.render_plan(steps))
+        return 0
+    for step in steps:
+        failure = _execute_step(step)
+        if failure is not None:
+            return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agent-tools", description=__doc__)
     sub = p.add_subparsers(dest="group", required=True)
@@ -566,6 +663,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     su = sub.add_parser("setup", help="does this machine's profile actually work").add_subparsers(dest="cmd", required=True)
     sd = su.add_parser("doctor"); sd.add_argument("--profile"); sd.add_argument("--json", action="store_true"); sd.set_defaults(fn=_setup_doctor)
+    si = su.add_parser("install")
+    si.add_argument("--root", required=True); si.add_argument("--team", required=True); si.add_argument("--workspace", required=True)
+    si.add_argument("--provider-profile"); si.add_argument("--skills-root"); si.add_argument("--assume", default="a", choices=("a", "r"))
+    si.add_argument("--plugins", action="store_true"); si.add_argument("--hook", action="store_true")
+    si.add_argument("--force-profile", action="store_true"); si.add_argument("--dry-run", action="store_true")
+    si.set_defaults(fn=_setup_install)
     return p
 
 
