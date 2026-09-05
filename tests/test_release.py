@@ -2,7 +2,7 @@ import tomllib
 
 import pytest
 
-from agent_tools import cli, release, release
+from agent_tools import cli, release
 
 _MANIFEST_TOML = """
 [coxswain]

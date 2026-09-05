@@ -15,7 +15,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from agent_tools import cleanup, doctor, epic, hud, install, install_exec, land, plan, provenance, records, release, route, runs as runs_module, setup_install, setup_screen
+from agent_tools import cleanup, doctor, epic, hud, install, install_exec, land, plan, provenance, records, release, route, runs as runs_module, runs_top, runs_top_screen, setup_install, setup_screen
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -62,6 +62,16 @@ def _runs_events(a: argparse.Namespace) -> int:
             detail = " ".join(f"{k}={v}" for k, v in ev.detail.items())
             print(f"{ev.run} {ev.kind} {detail}".rstrip(), flush=True)
     return 0
+
+
+def _runs_top(a: argparse.Namespace) -> int:
+    if a.once:
+        print("\n".join(runs_top.render(runs_top_screen.rows_now(a.runs_dir), 120)))
+        return 0
+    if not sys.stdin.isatty():
+        print("runs top: needs a terminal; use --once")
+        return 2
+    return runs_top_screen.main(a.runs_dir, a.interval)
 
 
 def _runs_trace(a: argparse.Namespace) -> int:
@@ -1173,6 +1183,7 @@ def build_parser() -> argparse.ArgumentParser:
     la.add_argument("--worktree-root", default="~/worktrees"); la.add_argument("--apply", action="store_true"); la.add_argument("--no-merge", action="store_true"); la.set_defaults(fn=_runs_land)
     se = runs.add_parser("series", help="per-run summary rows across a runs directory"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
     ev = runs.add_parser("events", help="poll a run's log for structured events"); ev.add_argument("--runs-dir", default="runs"); ev.add_argument("--follow", action="store_true"); ev.add_argument("--json", action="store_true"); ev.set_defaults(fn=_runs_events)
+    tp = runs.add_parser("top", help="live table of runs in flight; --once prints it and exits"); tp.add_argument("--runs-dir", default="runs"); tp.add_argument("--interval", type=float, default=3); tp.add_argument("--once", action="store_true"); tp.set_defaults(fn=_runs_top)
 
     epic_p = sub.add_parser(
         "epic", help="watch a detached run",
