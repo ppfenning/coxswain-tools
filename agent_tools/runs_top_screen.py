@@ -140,10 +140,8 @@ def draw(stdscr, rows: list) -> None:
 def loop(stdscr, runs_dir, interval: float, tick=rows_now) -> int:
     import curses
 
-    try:
+    with contextlib.suppress(curses.error):  # no real terminal behind stdscr, e.g. under test
         curses.curs_set(0)
-    except curses.error:
-        pass  # no real terminal behind stdscr, e.g. under test
     stdscr.timeout(int(interval * 1000))
     while True:
         draw(stdscr, tick(runs_dir))

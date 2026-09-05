@@ -69,10 +69,8 @@ def loop(stdscr, screen: dict, *, runner=run_action) -> None:
     """The curses read/draw/act cycle over the pure model in `setup_tui`."""
     import curses
 
-    try:
+    with contextlib.suppress(curses.error):  # no real terminal behind stdscr, e.g. under test
         curses.curs_set(0)
-    except curses.error:
-        pass  # no real terminal behind stdscr, e.g. under test
     while not screen["quit"]:
         stdscr.clear()
         height, width = stdscr.getmaxyx()
