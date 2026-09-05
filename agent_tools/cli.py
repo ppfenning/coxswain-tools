@@ -410,7 +410,7 @@ _CORE_PROBE_SCRIPT = '''
 import json, sys
 
 cartridges_dir, team, *roots = sys.argv[1:]
-out = {"import": None, "load": None, "indexed": {}}
+out = {"import": None, "load": None, "indexed": {}, "resolved": None, "skill_index": {}}
 try:
     from core.cartridge import load
     from core.skills import index_from_roots
@@ -420,6 +420,7 @@ except Exception as exc:
 try:
     index = index_from_roots(roots)
     out["indexed"] = {root: len(index_from_roots([root])) for root in roots}
+    out["skill_index"] = {name: [str(p) for p in paths] for name, paths in index.items()}
 except Exception as exc:
     # An empty mapping would read downstream as "no roots configured"; a zero
     # per root fails the skills row honestly, and the cartridge row names why.
@@ -427,7 +428,7 @@ except Exception as exc:
     out["load"] = f"skill index failed: {type(exc).__name__}: {exc}"
     print(json.dumps(out)); raise SystemExit(0)
 try:
-    load(team, cartridges_dir, skill_index=index)
+    out["resolved"] = load(team, cartridges_dir, skill_index=index)
 except Exception as exc:
     out["load"] = f"{type(exc).__name__}: {exc}"
 print(json.dumps(out))
@@ -456,7 +457,8 @@ def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roo
         # profile's own strings, so map the counts back by position.
         indexed = {raw: indexed.get(exp, 0) for raw, exp in zip(raw_roots, skills_roots)}
     return {"core_import": parsed.get("import"), "cartridge_load": parsed.get("load"),
-            "skill_roots_indexed": indexed}
+            "skill_roots_indexed": indexed, "resolved": parsed.get("resolved"),
+            "skill_index": parsed.get("skill_index", {})}
 
 
 def _provider_command(text) -> str | None:

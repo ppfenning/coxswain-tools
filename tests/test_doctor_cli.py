@@ -3,7 +3,7 @@ import os
 import stat
 import sys
 
-from agent_tools.cli import main
+from agent_tools.cli import _run_core_probe, main
 
 _STUB = """#!{python}
 import json
@@ -144,7 +144,7 @@ def _real_probe_setup(tmp_path, monkeypatch, fake_core):
     # A wrapper that runs the REAL interpreter with the fake package on PYTHONPATH,
     # so `_CORE_PROBE_SCRIPT` is executed rather than stubbed.
     _write_executable(harness_dir / ".venv" / "bin" / "python", _WRAPPER.format(pkg=pkg, python=sys.executable))
-    return profile
+    return profile, cartridges_dir, skills_a, skills_b, harness_dir
 
 
 def _rows(capsys):
@@ -152,7 +152,20 @@ def _rows(capsys):
 
 
 def test_the_probe_runs_the_real_cartridge_api_and_passes(tmp_path, monkeypatch, capsys):
-    profile = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OK)
+    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OK)
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    rows = _rows(capsys)
+    assert rows["core importable"]["ok"] and rows["cartridge"]["ok"] and rows["skills"]["ok"], rows
+    assert rc == 0
+
+
+def test_the_probe_reports_the_resolved_cartridge_and_the_skill_index(tmp_path, monkeypatch, capsys):
+    profile, cartridges_dir, skills_a, skills_b, harness_dir = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OK)
+    facts = _run_core_probe(str(harness_dir / ".venv" / "bin" / "python"), str(cartridges_dir), "acme",
+                             [str(skills_a), str(skills_b)])
+    assert facts["resolved"] == {"team": "acme"}
+    assert facts["skill_index"] == {"local-skills:1": [str(skills_a)], "local-skills:2": [str(skills_b)]}
+    # The doctor rows this fixture already produced are unaffected by the new keys.
     rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
     rows = _rows(capsys)
     assert rows["core importable"]["ok"] and rows["cartridge"]["ok"] and rows["skills"]["ok"], rows
@@ -162,7 +175,7 @@ def test_the_probe_runs_the_real_cartridge_api_and_passes(tmp_path, monkeypatch,
 def test_a_cartridge_load_error_reaches_the_cartridge_row_verbatim(tmp_path, monkeypatch, capsys):
     fake = dict(_FAKE_CORE_OK)
     fake["core/cartridge.py"] = "class CartridgeError(Exception):\n    pass\n\ndef load(team, cartridges_dir, *, skill_index):\n    raise CartridgeError(\"no cartridge for 'acme'\")\n"
-    profile = _real_probe_setup(tmp_path, monkeypatch, fake)
+    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, fake)
     rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
     rows = _rows(capsys)
     assert rows["cartridge"]["ok"] is False and "no cartridge for 'acme'" in rows["cartridge"]["detail"]
@@ -170,10 +183,21 @@ def test_a_cartridge_load_error_reaches_the_cartridge_row_verbatim(tmp_path, mon
     assert rc == 1
 
 
+def test_a_cartridge_load_error_gives_resolved_none_but_keeps_the_skill_index(tmp_path, monkeypatch):
+    fake = dict(_FAKE_CORE_OK)
+    fake["core/cartridge.py"] = "class CartridgeError(Exception):\n    pass\n\ndef load(team, cartridges_dir, *, skill_index):\n    raise CartridgeError(\"no cartridge for 'acme'\")\n"
+    _, cartridges_dir, skills_a, skills_b, harness_dir = _real_probe_setup(tmp_path, monkeypatch, fake)
+    facts = _run_core_probe(str(harness_dir / ".venv" / "bin" / "python"), str(cartridges_dir), "acme",
+                             [str(skills_a), str(skills_b)])
+    assert facts["resolved"] is None
+    assert facts["cartridge_load"] == "CartridgeError: no cartridge for 'acme'"
+    assert facts["skill_index"] == {"local-skills:1": [str(skills_a)], "local-skills:2": [str(skills_b)]}
+
+
 def test_a_failing_skill_index_fails_skills_and_names_itself_on_the_cartridge_row(tmp_path, monkeypatch, capsys):
     fake = dict(_FAKE_CORE_OK)
     fake["core/skills.py"] = "def index_from_roots(roots):\n    raise RuntimeError('bad plugin manifest')\n"
-    profile = _real_probe_setup(tmp_path, monkeypatch, fake)
+    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, fake)
     rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
     rows = _rows(capsys)
     assert rows["skills"]["ok"] is False
