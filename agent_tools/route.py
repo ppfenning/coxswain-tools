@@ -281,6 +281,11 @@ def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
             argv += ["--fix-attempts", str(needs["fix_attempts"])]
     elif graph == "decompose":
         argv += ["--idea", needs["idea"], "--initiative-id", needs["initiative_id"]]
+    elif graph == "cos":
+        # `_KNOWN_KEYS` carries no `max_parallel` field, so a profile can
+        # never supply one; the bound is the literal default until the
+        # profile schema grows a key for it.
+        argv += ["--max-parallel", "3"]
     argv += ["--workdir", workspace_dir]
     return argv
 

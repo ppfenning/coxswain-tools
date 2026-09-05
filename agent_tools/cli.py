@@ -213,6 +213,21 @@ def _run_alive(pid):
         return False
 
 
+def _refuse_if_already_running(runs_dir: Path, prefix: str):
+    """spec: at most one live run per `prefix` — the single-writer rule
+    applied to a run-id prefix. Returns the refusal line to print, or
+    None when no pidfile under `prefix` names a live pid."""
+    live_pattern = re.compile(rf"^{re.escape(prefix)}-(\d+)\.pid$")
+    for pidfile in sorted(runs_dir.glob(f"{prefix}-*.pid")):
+        if not live_pattern.fullmatch(pidfile.name):
+            continue
+        pid_text = _read_text_or_none(pidfile)
+        pid = route.parse_pid(pid_text) if pid_text is not None else None
+        if _run_alive(pid):
+            return f"routing: {pidfile.stem} is already running (pid {pid})"
+    return None
+
+
 def _status_rows_for(runs_dir: Path) -> list:
     pids = {p.stem: t for p in sorted(runs_dir.glob("*.pid")) if (t := _read_text_or_none(p)) is not None}
     alive = {run_id: _run_alive(route.parse_pid(t)) for run_id, t in pids.items()}
@@ -359,27 +374,30 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(f"routing: {repo} has uncommitted changes:\n{status.stdout}")
             return 2
         prefix = initiative_dir.name
-        live_pattern = re.compile(rf"^{re.escape(prefix)}-(\d+)\.pid$")
-        for pidfile in sorted(runs_dir.glob(f"{prefix}-*.pid")):
-            if not live_pattern.fullmatch(pidfile.name):
-                continue
-            pid_text = _read_text_or_none(pidfile)
-            pid = route.parse_pid(pid_text) if pid_text is not None else None
-            if _run_alive(pid):
-                print(f"routing: {pidfile.stem} for initiative {prefix} is already running (pid {pid})")
-                return 2
+        already = _refuse_if_already_running(runs_dir, prefix)
+        if already is not None:
+            print(already)
+            return 2
         run_id = route.next_run_id([p.name for p in runs_dir.iterdir()], prefix)
         needs = {"initiative": a.initiative, "repo": repo}
         if a.fix_attempts is not None:
             needs["fix_attempts"] = a.fix_attempts
         env_repo = repo
-    else:  # decompose
+    elif a.graph == "decompose":
         idea_path = Path(a.idea)
         if not idea_path.exists():
             print(f"routing: no idea file at {idea_path}")
             return 2
         run_id = route.next_run_id([p.name for p in runs_dir.iterdir()], a.initiative_id)
         needs = {"idea": a.idea, "initiative_id": a.initiative_id}
+        env_repo = ""
+    else:  # cos
+        already = _refuse_if_already_running(runs_dir, "cos")
+        if already is not None:
+            print(already)
+            return 2
+        run_id = route.next_run_id([p.name for p in runs_dir.iterdir()], "cos")
+        needs = {}
         env_repo = ""
 
     argv = route.harness_argv(profile, a.graph, run_id, **needs)
@@ -684,6 +702,8 @@ def build_parser() -> argparse.ArgumentParser:
     ep.add_argument("--fix-attempts", type=int, default=None); ep.add_argument("--dry-run", action="store_true"); ep.set_defaults(fn=_route_launch, graph="epic")
     de = lc.add_parser("decompose"); de.add_argument("--profile"); de.add_argument("--idea", required=True); de.add_argument("--initiative-id", required=True)
     de.add_argument("--dry-run", action="store_true"); de.set_defaults(fn=_route_launch, graph="decompose")
+    co = lc.add_parser("cos"); co.add_argument("--profile"); co.add_argument("--dry-run", action="store_true")
+    co.set_defaults(fn=_route_launch, graph="cos")
 
     setup_p = sub.add_parser("setup", help="does this machine's profile actually work")
     setup_p.add_argument("--profile")
