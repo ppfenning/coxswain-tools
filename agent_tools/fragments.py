@@ -25,8 +25,17 @@ class FragmentError(Exception):
     """A fragment's top-level YAML document is not a mapping."""
 
 
+def _safe_load(text: str):
+    """yaml.safe_load, with a broken document reported as this module's own error
+    so callers catching FragmentError get every refusal, not a vendor exception."""
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise FragmentError(f"edited.yaml is not valid YAML: {exc}") from None
+
+
 def load_fragment(text: str) -> dict:
-    parsed = yaml.safe_load(text)
+    parsed = _safe_load(text)
     if parsed is None:
         return {}
     if not isinstance(parsed, dict):
