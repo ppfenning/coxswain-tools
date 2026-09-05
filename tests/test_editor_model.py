@@ -1,6 +1,18 @@
 import functools
 
-from agent_tools.editor_model import Effect, Row, State, apply_probe, apply_text, frame, rows, sections, step
+from agent_tools.editor_model import (
+    Effect,
+    Row,
+    State,
+    apply_effect_result,
+    apply_probe,
+    apply_text,
+    fold_effects,
+    frame,
+    rows,
+    sections,
+    step,
+)
 from agent_tools.provenance import attribute
 
 
@@ -276,13 +288,14 @@ def _state_with_text_row():
     return State(rows=(_TEXT_ROW, _CHOICE_ROW), cursor=0, pending={}, message="")
 
 
-def test_apply_text_writes_to_the_row_e_selected_even_after_the_cursor_moves():
+def test_keys_pressed_while_editing_type_into_the_buffer_and_never_redirect_the_target():
     state = _state_with_text_row()
     picked = step(state, "e")
-    assert picked.editing is not None
-    moved = step(picked, "j")
-    after = apply_text(moved, "new")
-    assert after.pending[picked.editing] == "new" and after.editing is None
+    assert picked.editing is not None and picked.buffer == ""
+    typed = step(picked, "j")
+    assert typed.cursor == picked.cursor and typed.buffer == "j"
+    after = apply_text(typed, "new")
+    assert after.pending[picked.editing] == "new" and after.editing is None and after.buffer == ""
 
 
 def test_apply_text_without_e_is_refused():
@@ -425,3 +438,151 @@ def test_frame_truncates_every_line_to_width():
     state = State(rows=(_TOGGLE_ROW, _READONLY_ROW), cursor=0, pending={"crew.builder.enabled": True}, message="ok")
     lines = frame(state, width=10)
     assert all(len(line) <= 10 for line in lines)
+
+
+def test_typing_backspace_then_enter_commits_the_edited_text():
+    editing = step(State(rows=(_TEXT_ROW,), cursor=0, pending={}, message=""), "e")
+    typed = functools.reduce(step, ["a", "b", "BACKSPACE", "c"], editing)
+    after = step(typed, "ENTER")
+    assert after.pending[_TEXT_ROW.key] == "ac"
+    assert after.editing is None
+    assert after.buffer == ""
+
+
+def test_q_while_editing_is_an_ordinary_character_not_a_quit():
+    editing = step(State(rows=(_TEXT_ROW,), cursor=0, pending={}, message=""), "e")
+    after = step(editing, "q")
+    assert after.editing == _TEXT_ROW.key
+    assert after.buffer == "q"
+
+
+def test_esc_cancels_the_edit_and_leaves_the_pending_value_untouched():
+    state = State(rows=(_TEXT_ROW,), cursor=0, pending={_TEXT_ROW.key: "old"}, message="")
+    editing = step(state, "e")
+    typed = step(editing, "x")
+    after = step(typed, "ESC")
+    assert after.editing is None
+    assert after.buffer == ""
+    assert after.pending == {_TEXT_ROW.key: "old"}
+
+
+def test_frame_shows_the_buffer_with_a_trailing_cursor_on_the_row_being_edited():
+    editing = step(State(rows=(_TEXT_ROW,), cursor=0, pending={}, message=""), "e")
+    typed = step(editing, "x")
+    edited_line = next(line for line in frame(typed, width=60) if _TEXT_ROW.key in line)
+    assert edited_line.endswith("x_")
+
+
+def test_apply_effect_result_run_probe_delegates_to_apply_probe():
+    state = State(rows=(), cursor=0, pending={"x": 1}, message="", team="acme")
+    probe = {
+        "resolved": {"policy": {"review_tier": "2"}},
+        "provenance": {"policy.review_tier": "acme"},
+    }
+    after = apply_effect_result(state, Effect("run_probe", {}), probe)
+    assert after.pending == {}
+    assert after.rows[0].layer == "acme"
+
+
+def test_apply_effect_result_write_fragment_refusal_keeps_rows_and_pending_and_prefixes_the_section():
+    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={_TOGGLE_ROW.key: True}, message="")
+    effect = Effect("write_fragment", {"edits": {"crew": {"builder": {"enabled": True}}}})
+    result = {"provenance_error": "base owns this key"}
+    after = apply_effect_result(state, effect, result)
+    assert after.rows == state.rows
+    assert after.pending == state.pending
+    assert after.message == "crew: base owns this key"
+
+
+def test_apply_effect_result_write_fragment_refusal_names_the_section_from_the_effects_own_edits_not_current_pending():
+    # `state.pending` has moved on to a different section by the time the
+    # refusal comes back; the message must still name the section that was
+    # actually written, not whatever is pending now.
+    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={"policy.review_tier": "2"}, message="")
+    effect = Effect("write_fragment", {"edits": {"crew": {"builder": {"enabled": True}}}})
+    after = apply_effect_result(state, effect, {"provenance_error": "base owns this key"})
+    assert after.message == "crew: base owns this key"
+
+
+def test_apply_effect_result_write_fragment_refusal_names_every_section_when_more_than_one_was_written():
+    # the result names no single refused key, so a write spanning two
+    # sections must not blame only the alphabetically first one.
+    state = State(
+        rows=(_TOGGLE_ROW,),
+        cursor=0,
+        pending={"crew.builder.enabled": True, "policy.review_tier": "2"},
+        message="",
+    )
+    effect = Effect(
+        "write_fragment",
+        {"edits": {"crew": {"builder": {"enabled": True}}, "policy": {"review_tier": "2"}}},
+    )
+    after = apply_effect_result(state, effect, {"provenance_error": "refused"})
+    assert after.message == "crew, policy: refused"
+
+
+def test_apply_effect_result_write_fragment_clean_clears_pending_and_queues_run_probe():
+    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={_TOGGLE_ROW.key: True}, message="")
+    after = apply_effect_result(state, Effect("write_fragment", {}), {})
+    assert after.pending == {}
+    assert after.effects == (Effect("run_probe", {}),)
+
+
+def test_apply_effect_result_init_cartridge_success_carries_the_new_team():
+    state = State(rows=(), cursor=0, pending={}, message="", team="")
+    after = apply_effect_result(state, Effect("init_cartridge", {"team": "acme"}), {"returncode": 0, "team": "acme"})
+    assert after.team == "acme"
+
+
+def test_apply_effect_result_init_cartridge_failure_is_a_refusal_message():
+    state = State(rows=(), cursor=0, pending={}, message="", team="")
+    after = apply_effect_result(
+        state, Effect("init_cartridge", {"team": "acme"}), {"returncode": 1, "provenance_error": "boom"}
+    )
+    assert after.team == ""
+    assert "boom" in after.message
+
+
+def test_apply_effect_result_set_profile_team_success_sets_team():
+    state = State(rows=(), cursor=0, pending={}, message="", team="")
+    after = apply_effect_result(state, Effect("set_profile_team", {}), {"returncode": 0, "team": "acme"})
+    assert after.team == "acme"
+
+
+def test_fold_effects_stops_at_the_first_refusal():
+    state = State(rows=(), cursor=0, pending={}, message="", team="")
+    results = [
+        (Effect("init_cartridge", {"team": "acme"}), {"returncode": 1, "provenance_error": "boom"}),
+        (Effect("set_profile_team", {}), {"returncode": 0, "team": "acme"}),
+    ]
+    after = fold_effects(state, results)
+    assert after.team == ""
+    assert "boom" in after.message
+
+
+def test_fold_effects_applies_a_leading_success_before_stopping_at_a_later_refusal():
+    state = State(rows=(), cursor=0, pending={}, message="", team="")
+    results = [
+        (Effect("set_profile_team", {}), {"returncode": 0, "team": "acme"}),
+        (Effect("init_cartridge", {"team": "other"}), {"returncode": 1, "provenance_error": "boom"}),
+        (Effect("set_profile_team", {}), {"returncode": 0, "team": "third"}),
+    ]
+    after = fold_effects(state, results)
+    assert after.team == "acme"
+    assert "boom" in after.message
+
+
+def test_fold_effects_folds_a_clean_write_with_its_paired_probe_into_fresh_rows_and_no_leftover_effect():
+    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={_TOGGLE_ROW.key: True}, message="", team="acme")
+    probe = {
+        "resolved": {"crew": {"builder": {"enabled": True}}},
+        "provenance": {"crew.builder.enabled": "edited"},
+    }
+    results = [
+        (Effect("write_fragment", {"edits": {"crew": {"builder": {"enabled": True}}}}), {}),
+        (Effect("run_probe", {}), probe),
+    ]
+    after = fold_effects(state, results)
+    assert after.pending == {}
+    assert after.effects == ()
+    assert after.rows[0].layer == "edited"

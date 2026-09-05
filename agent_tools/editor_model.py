@@ -131,6 +131,7 @@ class State:
     pending: dict[str, object]
     message: str
     editing: str | None = None  # the key `e` selected; apply_text writes there, not at the cursor
+    buffer: str = ""  # text typed so far while `editing` is set; apply_text reads this on ENTER
     team: str = ""  # carried so apply_probe can rebuild rows with the same editability rule
     effects: tuple[Effect, ...] = ()
 
@@ -203,17 +204,18 @@ def _edit(state: State) -> State:
         return replace(state, message="no row selected")
     if not row.editable or row.kind != "text":
         return replace(state, message=f"{row.key} cannot be edited")
-    return replace(state, editing=row.key, message=f"editing {row.key}")
+    return replace(state, editing=row.key, buffer="", message=f"editing {row.key}")
 
 
 def apply_text(state: State, text: str) -> State:
-    """The edge calls this once it has the text `e` asked for. The target is the
+    """Commits text for the row `e` selected: ENTER's path inside the model, and
+    the one call an edge may make with text it gathered itself. The target is the
     row `e` selected (`state.editing`), never the cursor, so keys pressed between
     the prompt and the reply cannot redirect the text."""
     key = state.editing
     if key is None:
         return replace(state, message="nothing is being edited; press e on a text row first")
-    return replace(state, pending={**state.pending, key: text}, editing=None, message=f"{key} set")
+    return replace(state, pending={**state.pending, key: text}, editing=None, buffer="", message=f"{key} set")
 
 
 def _undo(state: State) -> State:
@@ -260,6 +262,8 @@ def frame(state: State, width: int) -> list[str]:
     """The lines the screen draws. Pure text: no curses, no colour."""
 
     def line(row: Row) -> str:
+        if row.key == state.editing:
+            return f"> {row.key} = {state.buffer}_"[:width]
         pending = row.key in state.pending
         value = state.pending[row.key] if pending else row.value
         marker = "*" if pending else " "
@@ -283,9 +287,70 @@ _HANDLERS = {
 }
 
 
+def _type(state: State, key: str) -> State:
+    """The text-entry state machine: every key while `editing` is set is
+    decided here, never by the edge that merely read it from the terminal."""
+    if key == "ENTER":
+        return replace(apply_text(state, state.buffer), buffer="")
+    if key == "ESC":
+        return replace(state, editing=None, buffer="", message=f"{state.editing} edit cancelled")
+    if key == "BACKSPACE":
+        return replace(state, buffer=state.buffer[:-1])
+    if len(key) == 1:
+        # a plain character, including `q`: while editing there is no quit key
+        return replace(state, buffer=state.buffer + key)
+    return replace(state, message=f"unknown key {key}")
+
+
 def step(state: State, key: str) -> State:
     """Effects are one-shot: cleared before dispatch, so only `w` and `r`
     (the two handlers that name `effects` in their own return) leave any
-    behind, and a keypress in between never repeats a stale write or probe."""
+    behind, and a keypress in between never repeats a stale write or probe.
+    While `state.editing` is set, every key is decided by `_type` instead of
+    the ordinary handlers below."""
+    cleared = replace(state, effects=())
+    if cleared.editing:
+        return _type(cleared, key)
     handler = _HANDLERS.get(key, lambda s: replace(s, message=f"unknown key {key}"))
-    return handler(replace(state, effects=()))
+    return handler(cleared)
+
+
+def _is_refusal(result: dict) -> bool:
+    return "provenance_error" in result or result.get("returncode", 0) != 0
+
+
+def apply_effect_result(state: State, effect: Effect, result: dict) -> State:
+    """The edge ran `effect` and got `result` back; this is the only place
+    that decides what a probe, a write, or an init means for the state, so a
+    refused write can never be shown on a section that write emptied."""
+    if effect.kind == "run_probe":
+        return apply_probe(state, result)
+    if effect.kind == "write_fragment":
+        if "provenance_error" in result:
+            # `edits`'s own top-level keys are already sections (dotted keys nest
+            # under them), so the refused sections come from the write that was
+            # actually attempted, never from `state.pending`, which may have
+            # moved on by the time the result comes back. The result names no
+            # single refused key, so every section the write touched is named,
+            # not just the alphabetically first.
+            written = sorted(effect.payload.get("edits", {}))
+            section = ", ".join(written) if written else effect.kind
+            return replace(state, message=f"{section}: {result['provenance_error']}")
+        return replace(state, pending={}, effects=state.effects + (Effect("run_probe", {}),))
+    if effect.kind == "init_cartridge":
+        if _is_refusal(result):
+            return replace(state, message=result.get("provenance_error", "init_cartridge refused"))
+        return replace(state, team=result.get("team", effect.payload.get("team", state.team)))
+    if effect.kind == "set_profile_team":
+        if result.get("returncode") == 0:
+            return replace(state, team=result["team"])
+        return state
+    return state
+
+
+def fold_effects(state: State, results: list[tuple[Effect, dict]]) -> State:
+    """Applies each result in order, stopping at the first refusal so a
+    failed init never runs the probe that assumed it had succeeded."""
+    kept = list(itertools.takewhile(lambda item: not _is_refusal(item[1]), results))
+    to_apply = kept + results[len(kept) : len(kept) + 1]
+    return functools.reduce(lambda acc, item: apply_effect_result(acc, *item), to_apply, state)
