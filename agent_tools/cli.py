@@ -25,6 +25,31 @@ def _runs_usage(a: argparse.Namespace) -> int:
     return 0
 
 
+_SERIES_COLUMNS = ["run", "date", "cartridge_sha", "provider_profile", "calls", "turns", "cost_usd",
+                   "cache_share", "tasks_landed", "quarantined", "review_rounds", "cost_per_landed"]
+
+
+def _runs_series(a: argparse.Namespace) -> int:
+    d = Path(a.runs_dir)
+    files = {f.name: f.read_text(encoding="utf-8") for pattern in ("*.usage.json", "*:*.json") for f in d.glob(pattern)}
+    rows = records.series(files)
+    totals = records.series_totals(rows)
+    if a.json:
+        print(json.dumps({"rows": rows, "totals": totals}, indent=2))
+    else:
+        print(records.format_table(rows, _SERIES_COLUMNS))
+        print(f"totals: {totals['runs']} runs, ${totals['cost_usd']:.2f}, {totals['tasks_landed']} landed, "
+              f"{totals['quarantined']} quarantined, cost/landed {totals['cost_per_landed']}, "
+              f"{totals['runs_landing_nothing']} landed nothing")
+    if a.append:
+        p = Path(a.append)
+        new_lines = records.series_new_lines(p.read_text(encoding="utf-8") if p.exists() else "", rows)
+        if new_lines:
+            with p.open("a", encoding="utf-8") as fh:
+                fh.write("".join(line + "\n" for line in new_lines))
+    return 0
+
+
 def _runs_trace(a: argparse.Namespace) -> int:
     d = Path(a.runs_dir) / f"{a.run_id}-trace"
     files = sorted(d.glob(f"{a.role}-*.jsonl" if a.role else "*.jsonl"), key=lambda p: (p.stem.rsplit("-", 1)[0], int(p.stem.rsplit("-", 1)[1])))
@@ -386,6 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
     u = runs.add_parser("usage"); u.add_argument("run_id"); u.add_argument("--runs-dir", default="runs"); u.add_argument("--json", action="store_true"); u.set_defaults(fn=_runs_usage)
     t = runs.add_parser("trace"); t.add_argument("run_id"); t.add_argument("--runs-dir", default="runs"); t.add_argument("--role"); t.add_argument("-v", "--verbose", action="store_true"); t.set_defaults(fn=_runs_trace)
     c = runs.add_parser("clean"); c.add_argument("run_id"); c.add_argument("--repo", required=True); c.add_argument("--worktree-root", default="~/worktrees"); c.add_argument("--apply", action="store_true"); c.set_defaults(fn=_runs_clean)
+    se = runs.add_parser("series"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
 
     e = sub.add_parser("epic", help="watch a detached run").add_subparsers(dest="cmd", required=True)
     w = e.add_parser("watch"); w.add_argument("pidfile"); w.add_argument("--log"); w.add_argument("--max-seconds", type=float, default=570); w.add_argument("--interval", type=float, default=20); w.add_argument("--json", action="store_true"); w.set_defaults(fn=_epic_watch)
