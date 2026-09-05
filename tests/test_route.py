@@ -389,6 +389,43 @@ def test_context_document_keys_on_exactly_the_profile_fields():
     assert json.loads(json.dumps(doc)) == doc
 
 
+FIXTURE_RUNS_MIXED = [
+    {"id": "widget-1", "pid": 4242, "alive": True, "started": "14:02"},
+    {"id": "widget-2", "pid": 4243, "alive": False, "started": "13:02"},
+    {"id": "widget-3", "pid": 4244, "alive": False, "started": "12:02"},
+]
+
+
+def test_render_context_counts_only_alive_runs_in_flight():
+    text = route.render_context(
+        FIXTURE_PROFILE, FIXTURE_INTAKE, FIXTURE_RUNS_MIXED, FIXTURE_INITIATIVES
+    )
+    lines = text.splitlines()
+    assert "runs: 1 in flight — widget-1 (pid 4242, since 14:02)" in lines
+    assert "widget-2" not in text
+    assert "widget-3" not in text
+
+
+def test_render_context_all_exited_reports_zero_in_flight():
+    runs = [
+        {"id": "widget-2", "pid": 4243, "alive": False, "started": "13:02"},
+        {"id": "widget-3", "pid": 4244, "alive": False, "started": "12:02"},
+    ]
+    text = route.render_context(FIXTURE_PROFILE, FIXTURE_INTAKE, runs, FIXTURE_INITIATIVES)
+    lines = text.splitlines()
+    assert "runs: 0 in flight" in lines
+    assert "widget-2" not in text
+    assert "widget-3" not in text
+
+
+def test_context_document_adds_a_live_count_of_alive_runs():
+    doc = route.context_document(
+        FIXTURE_PROFILE, FIXTURE_INTAKE, FIXTURE_RUNS_MIXED, FIXTURE_INITIATIVES
+    )
+    assert doc["live"] == 1
+    assert doc["runs"] == FIXTURE_RUNS_MIXED
+
+
 def test_context_document_without_profile_has_the_same_keys_as_none():
     doc = route.context_document(None, [], [], [])
     for field in (

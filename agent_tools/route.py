@@ -285,6 +285,12 @@ def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
     return argv
 
 
+def _alive_runs(runs: list) -> list:
+    """The subset of `runs` still in flight — spec §2's "in flight" count
+    and roster both come from this, not from every entry with a pidfile."""
+    return [r for r in runs if r["alive"]]
+
+
 def render_context(profile_or_none, intake, runs, initiatives) -> str:
     """The human-readable layout `agent-tools route context` prints, spec
     §2. `profile_or_none` is a parsed profile dict or None; `intake`,
@@ -311,11 +317,12 @@ def render_context(profile_or_none, intake, runs, initiatives) -> str:
         lines.append(f"intake: {len(intake)} queued — {titles}")
     else:
         lines.append("intake: 0 queued")
-    if runs:
+    live = _alive_runs(runs)
+    if live:
         described = ", ".join(
-            f'{r["id"]} (pid {r["pid"]}, since {r["started"]})' for r in runs
+            f'{r["id"]} (pid {r["pid"]}, since {r["started"]})' for r in live
         )
-        lines.append(f"runs: {len(runs)} in flight — {described}")
+        lines.append(f"runs: {len(live)} in flight — {described}")
     else:
         lines.append("runs: 0 in flight")
     if initiatives:
@@ -342,6 +349,7 @@ def context_document(profile_or_none, intake, runs, initiatives) -> dict:
     }
     doc["intake"] = intake
     doc["runs"] = runs
+    doc["live"] = len(_alive_runs(runs))
     doc["initiatives"] = initiatives
     return doc
 
