@@ -10,9 +10,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
-from agent_tools import cleanup, doctor, epic, hud, plan, provenance, records, route, setup_install, setup_screen
+from agent_tools import cleanup, doctor, epic, hud, install, plan, provenance, records, route, setup_install, setup_screen
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -685,6 +686,84 @@ def _setup_fields(a: argparse.Namespace) -> tuple[str, str, str]:
     return root, profile.get("team", ""), profile.get("workspace_dir", "")
 
 
+def _load_manifest(path: Path) -> dict | None:
+    """The parsed manifest, or None on a missing or unparseable file — never
+    a traceback; the caller turns None into a named, exit-2 refusal."""
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+
+def _checkout_facts(path: Path) -> dict:
+    """A component's checkout state. Present only when `<path>/.git`
+    exists: `git -C` walks up to the nearest enclosing repository, so a
+    bare directory — or one merely nested inside some other checkout —
+    must never borrow that repository's tag or dirty state."""
+    if not (path / ".git").exists():
+        return {"present": False, "tag": None, "dirty": False}
+    describe = subprocess.run(["git", "-C", str(path), "describe", "--tags", "--exact-match"],
+                               capture_output=True, text=True)
+    tag = describe.stdout.strip() if describe.returncode == 0 else None
+    status = subprocess.run(["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True)
+    return {"present": True, "tag": tag, "dirty": bool(status.stdout.strip())}
+
+
+def _gather_checkout_facts(root: Path, components: dict) -> dict:
+    """Every manifest component, plus any other git checkout actually
+    present under `root` — the `extra` rows `install.rows` can then report."""
+    declared = {name: _checkout_facts(root / name) for name in components}
+    if not root.exists():
+        return declared
+    undeclared = {p.name for p in root.iterdir()
+                  if p.is_dir() and p.name not in components and (p / ".git").exists()}
+    return {**declared, **{name: _checkout_facts(root / name) for name in undeclared}}
+
+
+def _manifest_provider_command(manifest: dict, provider: str) -> str:
+    """The executable to look up on PATH: the manifest's own `command` for
+    this provider when it names one, else the provider key itself."""
+    return manifest.get("providers", {}).get(provider, {}).get("command", provider)
+
+
+def _install(a: argparse.Namespace) -> int:
+    if not a.dry_run:
+        print("executing steps is not implemented yet; use --dry-run")
+        return 2
+    manifest_path = Path(a.manifest) if a.manifest else Path(a.root) / "coxswain" / "manifest.toml"
+    manifest = _load_manifest(manifest_path)
+    if manifest is None:
+        print(f"refusing: no manifest at {manifest_path}")
+        return 2
+    root = Path(a.root)
+    facts = {
+        "root": str(root),
+        "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
+        "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, a.provider)) is not None,
+    }
+    options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team, "workspace": a.workspace}
+    steps = install.plan(manifest, facts, options)
+    for step in steps:
+        print(f"{step['kind']} {step['component']}: {step['detail']}")
+    return 2 if any(step["kind"] == "refuse" for step in steps) else 0
+
+
+def _versions(a: argparse.Namespace) -> int:
+    manifest_path = Path(a.manifest) if a.manifest else Path(a.root or ".") / "coxswain" / "manifest.toml"
+    manifest = _load_manifest(manifest_path)
+    if manifest is None:
+        print(f"refusing: no manifest at {manifest_path}")
+        return 2
+    root = Path(a.root) if a.root else manifest_path.resolve().parent.parent
+    facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
+              "provider_cli_on_path": False}
+    display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s}
+               for c, p, i, s in install.rows(manifest, facts)]
+    print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status"]))
+    return 0
+
+
 def _setup_tui(a: argparse.Namespace) -> int:
     if not sys.stdin.isatty():
         print("setup: needs a terminal; use setup doctor / setup install / cartridge init directly")
@@ -727,6 +806,15 @@ def build_parser() -> argparse.ArgumentParser:
     de.add_argument("--dry-run", action="store_true"); de.set_defaults(fn=_route_launch, graph="decompose")
     co = lc.add_parser("cos"); co.add_argument("--profile"); co.add_argument("--dry-run", action="store_true")
     co.set_defaults(fn=_route_launch, graph="cos")
+
+    ins = sub.add_parser("install", help="clone/update coxswain components against the manifest")
+    ins.add_argument("--root", required=True); ins.add_argument("--manifest"); ins.add_argument("--provider", default="claude-code")
+    ins.add_argument("--with", action="append", default=None, dest="with_", metavar="FLAG")
+    ins.add_argument("--team"); ins.add_argument("--workspace"); ins.add_argument("--dry-run", action="store_true")
+    ins.set_defaults(fn=_install)
+
+    ver = sub.add_parser("versions", help="component versions against the manifest")
+    ver.add_argument("--root"); ver.add_argument("--manifest"); ver.set_defaults(fn=_versions)
 
     setup_p = sub.add_parser("setup", help="does this machine's profile actually work")
     setup_p.add_argument("--profile")

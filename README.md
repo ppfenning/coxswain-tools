@@ -56,6 +56,8 @@ cox route launch cos [--dry-run]   start the chief of staff detached: it reads i
 cox setup   a small terminal UI over setup doctor, setup install and cartridge init (needs a terminal)
 cox setup doctor [--profile PATH] [--json]      read-only: profile, paths, harness venv, cartridge, skills, provider, workspace — a table and an exit code
 cox setup install --root DIR --team T --workspace DIR [--plugins] [--hook] [--force-profile] [--dry-run]   venvs, agent-tools on PATH, the profile, optionally the provider plugin and a session-start hook; dry-run prints the plan
+cox install --root DIR [--manifest PATH] [--provider NAME] [--with FLAG] [--team T] [--workspace DIR] --dry-run   the plan over coxswain's manifest.toml: clone, fetch, skip or refuse per component, then setup_install, doctor, desktop; exit 2 on any refuse; without --dry-run, refuses — executing steps is not implemented yet
+cox versions [--root DIR] [--manifest PATH]     pinned vs. installed tag per component, and status: ok, drift, missing, extra
 ```
 
 Every command that reads a record is pure over parsed data and unit-tested
