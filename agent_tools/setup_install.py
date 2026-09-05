@@ -124,6 +124,10 @@ def install_plan(
         steps.append({"op": "run",
                       "argv": ["uv", "tool", "install", "-q", "-e", f"{root}/agent-tools"],
                       "why": "put agent-tools on PATH", "warn_only": True})
+        steps.append({"op": "run",
+                      "argv": ["uv", "tool", "install", "-q", "-e", cartridges_dir],
+                      "why": "puts the `cartridge` command on PATH beside agent-tools",
+                      "warn_only": True})
 
     if not profile_exists or force_profile:
         text = profile_text(team=team, cartridges_dir=profile_cartridges_dir,

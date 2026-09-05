@@ -4,7 +4,20 @@ import sys
 import pytest
 
 from agent_tools import cli, setup_tui
-from agent_tools.setup_screen import key_name, loop, main, run_action
+from agent_tools.setup_screen import key_name, loop, main, resolved_argv, run_action
+
+
+def test_resolved_argv_falls_back_to_the_venv_binary_only_when_off_path_and_present():
+    argv = ["cartridge", "init", "acme"]
+    venv = "/root/agent-cartridges/.venv/bin/cartridge"
+    assert resolved_argv(argv, cartridge_on_path=False, venv_cartridge_exists=True,
+                          venv_cartridge=venv) == [venv, "init", "acme"]
+    assert resolved_argv(argv, cartridge_on_path=True, venv_cartridge_exists=True,
+                          venv_cartridge=venv) == argv
+    assert resolved_argv(argv, cartridge_on_path=False, venv_cartridge_exists=False,
+                          venv_cartridge=venv) == argv
+    assert resolved_argv(["other"], cartridge_on_path=False, venv_cartridge_exists=True,
+                          venv_cartridge=venv) == ["other"]
 
 
 def test_key_name_maps_curses_codes_to_the_models_key_strings():
@@ -25,6 +38,43 @@ def test_run_action_runs_the_argv_through_a_real_subprocess():
     lines, rc = run_action({"argv": [sys.executable, "-c", "print('hi')"]})
     assert lines == ["hi"]
     assert rc == 0
+
+
+def test_run_action_falls_back_to_the_venv_binary_when_cartridge_is_not_on_path(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent_tools.setup_screen.shutil.which", lambda name: None)
+    marker = tmp_path / "marker"
+    venv_bin = tmp_path / "agent-cartridges" / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    script = venv_bin / "cartridge"
+    script.write_text(f'#!/bin/sh\ntouch {marker}\n', encoding="utf-8")
+    script.chmod(script.stat().st_mode | 0o111)
+
+    lines, rc = run_action({"argv": ["cartridge", "init", "acme"]}, root=str(tmp_path))
+
+    assert rc == 0
+    assert marker.exists()
+
+
+def test_run_action_uses_cartridge_as_is_when_it_is_on_path(tmp_path, monkeypatch):
+    # A venv binary also exists here, so this only passes if PATH wins over it.
+    monkeypatch.setattr("agent_tools.setup_screen.shutil.which", lambda name: "/usr/bin/cartridge")
+    venv_bin = tmp_path / "agent-cartridges" / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    script = venv_bin / "cartridge"
+    script.write_text('#!/bin/sh\ntouch marker\n', encoding="utf-8")
+    script.chmod(script.stat().st_mode | 0o111)
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        raise OSError("not actually run")
+
+    monkeypatch.setattr("agent_tools.setup_screen.subprocess.run", fake_run)
+
+    lines, rc = run_action({"argv": ["cartridge", "init", "acme"]}, root=str(tmp_path))
+
+    assert calls == [["cartridge", "init", "acme"]]
+    assert rc == 127
 
 
 class _FakeStdscr:
@@ -52,15 +102,18 @@ class _FakeStdscr:
 def test_down_down_enter_runs_install_shows_output_and_never_exceeds_the_width():
     curses = pytest.importorskip("curses")
     runs = []
+    roots = []
 
-    def fake_runner(action):
+    def fake_runner(action, *, root=""):
         runs.append(action["argv"])
+        roots.append(root)
         return ["ok minimal"], 0
 
     stdscr = _FakeStdscr([curses.KEY_DOWN, curses.KEY_DOWN, 10, ord("q")])
     loop(stdscr, setup_tui.initial("R", "T", "W"), runner=fake_runner)
 
     assert runs == [["agent-tools", "setup", "install", "--root", "R", "--team", "T", "--workspace", "W"]]
+    assert roots == ["R"]
     assert any("ok minimal" in call[2] for call in stdscr.addnstr_calls)
     assert all(len(call[2]) <= call[3] for call in stdscr.addnstr_calls)
 
@@ -82,7 +135,8 @@ def test_main_returns_0_regardless_of_what_curses_wrapper_or_loop_return(monkeyp
 def test_q_ends_the_loop_without_running_anything():
     runs = []
     stdscr = _FakeStdscr([ord("q")])
-    loop(stdscr, setup_tui.initial("", "", ""), runner=lambda action: runs.append(action) or ([], 0))
+    loop(stdscr, setup_tui.initial("", "", ""),
+         runner=lambda action, **kw: runs.append(action) or ([], 0))
     assert runs == []
 
 
