@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_tools import cleanup, doctor, epic, hud, plan, records, route, setup_install, setup_screen
+from agent_tools import cleanup, doctor, epic, hud, plan, provenance, records, route, setup_install, setup_screen
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -428,7 +428,7 @@ _CORE_PROBE_SCRIPT = '''
 import json, sys
 
 cartridges_dir, team, *roots = sys.argv[1:]
-out = {"import": None, "load": None, "indexed": {}, "resolved": None, "skill_index": {}}
+out = {"import": None, "load": None, "indexed": {}, "resolved": None, "skill_index": {}, "layers": None}
 try:
     from core.cartridge import load
     from core.skills import index_from_roots
@@ -449,6 +449,14 @@ try:
     out["resolved"] = load(team, cartridges_dir, skill_index=index)
 except Exception as exc:
     out["load"] = f"{type(exc).__name__}: {exc}"
+try:
+    from core.cartridge import layers
+    out["layers"] = [[label, resolved] for label, resolved in layers(team, cartridges_dir, skill_index=index)]
+except Exception as exc:
+    # Never an empty list: a chain one layer short must be visibly unknown,
+    # not silently read as "nothing set anything".
+    out["layers"] = None
+    out["layers_error"] = f"{type(exc).__name__}: {exc}"
 print(json.dumps(out))
 '''
 
@@ -474,9 +482,24 @@ def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roo
         # The probe saw expanded paths; the core keys its skills row by the
         # profile's own strings, so map the counts back by position.
         indexed = {raw: indexed.get(exp, 0) for raw, exp in zip(raw_roots, skills_roots)}
-    return {"core_import": parsed.get("import"), "cartridge_load": parsed.get("load"),
-            "skill_roots_indexed": indexed, "resolved": parsed.get("resolved"),
-            "skill_index": parsed.get("skill_index", {})}
+    facts = {"core_import": parsed.get("import"), "cartridge_load": parsed.get("load"),
+             "skill_roots_indexed": indexed, "resolved": parsed.get("resolved"),
+             "skill_index": parsed.get("skill_index", {})}
+    # Exactly one of `provenance`/`provenance_error` is set below, on every
+    # path: a fact dict carrying neither would read as "nothing to report"
+    # rather than "the walk never happened", which is the silent-mislabel
+    # failure this probe exists to rule out.
+    parsed_layers = parsed.get("layers")
+    if parsed_layers is None:
+        facts["provenance_error"] = parsed.get("layers_error") or "the probe exited before the layer walk"
+    elif not parsed_layers:
+        facts["provenance_error"] = "the loader returned no layers"
+    else:
+        try:
+            facts["provenance"] = provenance.attribute([(label, resolved) for label, resolved in parsed_layers])
+        except Exception as exc:
+            facts["provenance_error"] = f"{type(exc).__name__}: {exc}"
+    return facts
 
 
 def _provider_command(text) -> str | None:
