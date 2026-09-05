@@ -42,6 +42,7 @@ cox runs usage RUN [--runs-dir runs] [--json]   cost, turns, cache share — by 
 cox runs trace RUN [--role build] [-v]          per node: turns, cost, tools, reads, whole-file reads, commands
 cox runs clean RUN --repo PATH [--apply]        the run's worktrees and scratch branches; phase branches kept; dry-run by default
 cox runs land RUN --repo PATH [--task T] [--apply] [--no-merge]   plan and land an approved run: pick branch, cherry-pick, PR, merge on green, clean; dry-run by default
+cox runs events [--runs-dir runs] [--follow] [--json]   tail a run's log, trace and usage files as a live event stream
 cox epic watch PIDFILE [--log LOG]              block until a detached run exits (or the cap), then the outcome lines
 cox hud ops FILE|-                              replace the HUD's ops list (id, label, status, persona?, detail?)
 cox hud say TEXT [--persona P] [--voice V]      speak a line through the HUD
