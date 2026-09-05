@@ -37,7 +37,9 @@ uv tool install -e .            # `agent-tools` on PATH for every seat
 
 ## Commands
 
-`agent-tools` still works this release as an alias for `cox`.
+Bare `cox`, with no subcommand, opens the coxswain session: a real Claude Code
+session with the `coxswain` plugin loaded, working directory at the profile's
+`workspace_dir`. `agent-tools` still works this release as an alias for `cox`.
 
 ```
 cox runs usage RUN [--runs-dir runs] [--json]   cost, turns, cache share — by role and by model
