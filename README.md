@@ -25,6 +25,8 @@ names an employer, a tracker, or a person — CI refuses it.
 
 ## Install
 
+See [`docs/getting-started.md`](docs/getting-started.md) for the full setup, from cloning all three repositories to a verified first run.
+
 ```bash
 git clone https://github.com/ppfenning/agent-tools ~/repos/agent-tools
 cd ~/repos/agent-tools && uv venv && uv pip install -e ".[dev]"
