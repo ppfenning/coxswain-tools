@@ -465,7 +465,10 @@ def _provider_command(text) -> str | None:
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("command:"):
-            return stripped.partition(":")[2].strip().strip("\"'") or None
+            # A flat YAML scalar may carry a trailing comment (`command: claude  # ...`);
+            # the command is the first token, never the comment.
+            value = stripped.partition(":")[2].split("#", 1)[0].strip().strip("\"'")
+            return value.split()[0] if value else None
     return None
 
 

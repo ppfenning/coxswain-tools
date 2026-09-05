@@ -179,3 +179,13 @@ def test_a_failing_skill_index_fails_skills_and_names_itself_on_the_cartridge_ro
     assert rows["skills"]["ok"] is False
     assert "skill index failed" in rows["cartridge"]["detail"] and "bad plugin manifest" in rows["cartridge"]["detail"]
     assert rc == 1
+
+
+def test_a_trailing_yaml_comment_on_the_provider_command_is_not_part_of_the_command(tmp_path, monkeypatch, capsys):
+    """The shipped provider profile reads `command: claude   # the binary; must be on PATH`."""
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    (tmp_path / "provider.yaml").write_text("command: fakeprovider            # the binary; must be on PATH and logged in\n")
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    rows = _rows(capsys)
+    assert rows["provider"]["ok"], rows["provider"]
+    assert rc == 0
