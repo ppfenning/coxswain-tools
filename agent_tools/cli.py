@@ -999,10 +999,91 @@ def _release_detail(step: dict) -> str:
     return fmt(step) if fmt is not None else str(step)
 
 
-def _release(a: argparse.Namespace) -> int:
-    if not a.dry_run:
-        print("pushing tags is not implemented yet; use --dry-run")
+def _checkout_ready(directory: str, run) -> tuple[bool, str]:
+    """Clean and on its default branch, or `(False, reason)` — checked
+    before a single tag is made, since a release must never tag some
+    components and stop partway through a checkout that turns out dirty."""
+    status_rc, status_out = run(["git", "-C", directory, "status", "--porcelain"], None)
+    if status_rc != 0:
+        return False, status_out.strip() or f"could not read status for {directory}"
+    if status_out.strip():
+        return False, f"{directory} is dirty"
+    _, branch_out = run(["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], None)
+    current = branch_out.strip()
+    ref_rc, ref_out = run(["git", "-C", directory, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], None)
+    default = ref_out.strip().rsplit("/", 1)[-1] if ref_rc == 0 and ref_out.strip() else "main"
+    if current != default:
+        return False, f"{directory} is on {current}, not {default}"
+    return True, ""
+
+
+def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run) -> int:
+    """Runs `steps` for real, through `run`. Refuses outright, before `run`
+    is ever called, when the plan still carries a `bump_manifest` step: that
+    step only happens by bumping and committing the manifest by hand, so a
+    plan built from a not-yet-bumped manifest must never tag and push —
+    pushed tags cannot be recalled, and a printed line is not the same as
+    the manifest actually saying the new version. Otherwise every checkout
+    that will be tagged — every component, plus the umbrella when
+    `tag_self` is in the plan — and the umbrella's release note are all
+    checked before a single tag is made. Then each `tag` step's tag and
+    push run in turn, and `tag_self` tags and pushes the umbrella. One line
+    per step; the first failure stops the rest."""
+    refusal = next((s for s in steps if s["kind"] == "refuse"), None)
+    if refusal is not None:
+        print(f"refuse {refusal['component']}: {refusal['detail']}")
         return 2
+
+    if any(s["kind"] == "bump_manifest" for s in steps):
+        print("refuse manifest: bump and commit the manifest to this version by hand before executing this release")
+        return 2
+
+    tag_checkouts = [(s["component"], release.component_dir(root, s["component"], overrides))
+                      for s in steps if s["kind"] == "tag"]
+    umbrella_checkouts = [("coxswain", umbrella)] if any(s["kind"] == "tag_self" for s in steps) else []
+    for name, directory in tag_checkouts + umbrella_checkouts:
+        ready, reason = _checkout_ready(directory, run)
+        if not ready:
+            print(f"refuse {name}: {reason}")
+            return 2
+
+    for notes_step in (s for s in steps if s["kind"] == "notes"):
+        if not (Path(umbrella) / notes_step["path"]).exists():
+            print(f"refuse notes: {notes_step['path']} missing under {umbrella}")
+            return 2
+
+    for step in steps:
+        kind = step["kind"]
+        if kind == "tag":
+            directory = release.component_dir(root, step["component"], overrides)
+            tag_rc, tag_out = run(release.tag_argv(directory, version), None)
+            if tag_rc != 0:
+                print(f"FAILED tag {step['component']}: {tag_out.strip()}")
+                return 2
+            push_rc, push_out = run(release.push_argv(directory, version), None)
+            if push_rc != 0:
+                print(f"FAILED push {step['component']}: {push_out.strip()}")
+                return 2
+            print(f"tag {step['component']}: {step['tag']}")
+        elif kind == "notes":
+            print(f"notes notes: {step['path']}")
+        elif kind == "tag_self":
+            self_tag_rc, self_tag_out = run(release.tag_argv(umbrella, version), None)
+            if self_tag_rc != 0:
+                print(f"FAILED tag_self coxswain: {self_tag_out.strip()}")
+                return 2
+            self_push_rc, self_push_out = run(release.push_argv(umbrella, version), None)
+            if self_push_rc != 0:
+                print(f"FAILED push coxswain: {self_push_out.strip()}")
+                return 2
+            print(f"tag_self coxswain: {step['tag']}")
+        else:
+            print(f"FAILED {kind} {step.get('component', '')}: no executor for this step kind")
+            return 2
+    return 0
+
+
+def _release(a: argparse.Namespace) -> int:
     manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
@@ -1011,9 +1092,14 @@ def _release(a: argparse.Namespace) -> int:
     existing_tags = {name: _remote_tags(spec["repo"]) for name, spec in manifest.get("components", {}).items()
                       if spec.get("repo")}
     steps = release.release_plan(manifest, a.version, existing_tags)
-    for step in steps:
-        print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
-    return 2 if any(step["kind"] == "refuse" for step in steps) else 0
+    if a.dry_run:
+        for step in steps:
+            print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
+        return 2 if any(step["kind"] == "refuse" for step in steps) else 0
+    root = a.root or "."
+    overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
+    umbrella = a.umbrella or str(Path(root) / "coxswain")
+    return _release_execute(steps, a.version, root, overrides, umbrella, _real_run)
 
 
 def _setup_tui(a: argparse.Namespace) -> int:
@@ -1084,8 +1170,10 @@ def build_parser() -> argparse.ArgumentParser:
     ver = sub.add_parser("versions", help="component versions against the manifest")
     ver.add_argument("--root"); ver.add_argument("--manifest"); ver.set_defaults(fn=_versions)
 
-    rel = sub.add_parser("release", help="the lockstep tag/bump-manifest/notes plan across coxswain's manifest")
+    rel = sub.add_parser("release", help="the lockstep tag/bump-manifest/notes plan across coxswain's manifest, or (without --dry-run) tags and pushes every component")
     rel.add_argument("version"); rel.add_argument("--manifest"); rel.add_argument("--dry-run", action="store_true")
+    rel.add_argument("--root", default="."); rel.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
+    rel.add_argument("--umbrella")
     rel.set_defaults(fn=_release)
 
     setup_p = sub.add_parser("setup", help="does this machine's profile actually work")
