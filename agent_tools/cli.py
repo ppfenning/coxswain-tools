@@ -1,4 +1,4 @@
-"""`agent-tools`: the seats' deterministic tools, one subcommand per thing a seat would otherwise reason about."""
+"""cox — the coxswain's operator tools (alias: agent-tools, removed next release)."""
 
 from __future__ import annotations
 
@@ -670,7 +670,7 @@ def _setup_tui(a: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="agent-tools", description=__doc__)
+    p = argparse.ArgumentParser(prog="cox", description=__doc__)
     sub = p.add_subparsers(dest="group", required=True)
 
     runs = sub.add_parser("runs", help="what a harness run recorded, and cleaning up after it").add_subparsers(dest="cmd", required=True)
