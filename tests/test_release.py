@@ -29,6 +29,13 @@ def _manifest(current="0.1.0"):
                             "cartridges": {"repo": "org/cartridges", "tag": "v0.1.0"}}}
 
 
+@pytest.fixture(autouse=True)
+def _maintainer_checkout(monkeypatch):
+    """Every `cli.main(["dev", "release", ...])` below runs as if it were on
+    the maintainer's machine, unless a test overrides this to prove the guard."""
+    monkeypatch.setattr(cli, "_maintainer_remote_url", lambda directory: "git@github.com:ppfenning/coxswain.git")
+
+
 def test_step_order_for_a_two_component_manifest():
     steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()))
     assert [s["kind"] for s in steps] == ["tag", "tag", "bump_manifest", "notes", "tag_self"]
@@ -102,7 +109,7 @@ def test_cli_release_dry_run_prints_every_step_and_exits_zero(tmp_path, capsys, 
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
-    rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
+    rc = cli.main(["dev", "release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
     out = capsys.readouterr().out
     assert rc == 0
     for line in ("tag harness: org/harness -> v0.2.0", "tag cartridges: org/cartridges -> v0.2.0",
@@ -158,7 +165,7 @@ def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umb
     calls, fake_run = _fake_git_run()
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
-    rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 0
     tag_push = [c for c in calls if c[3] in ("tag", "push")]
     assert tag_push == [
@@ -177,7 +184,7 @@ def test_cli_release_execute_refuses_before_any_tag_or_push_when_a_checkout_is_d
     calls, fake_run = _fake_git_run(dirty={str(tmp_path / "harness")})
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
-    rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 2
     assert not any(c[3] in ("tag", "push") for c in calls)
 
@@ -188,7 +195,7 @@ def test_cli_release_execute_refuses_a_plan_that_still_carries_a_bump_manifest_s
     calls, fake_run = _fake_git_run()
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
-    rc = cli.main(["release", "0.2.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    rc = cli.main(["dev", "release", "0.2.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 2
     assert calls == []
 
@@ -199,7 +206,7 @@ def test_cli_release_execute_refuses_before_any_tag_or_push_when_the_release_not
     calls, fake_run = _fake_git_run()
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
-    rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 2
     assert not any(c[3] in ("tag", "push") for c in calls)
 
@@ -214,14 +221,14 @@ def test_cli_release_execute_stops_at_the_first_failed_tag(tmp_path, monkeypatch
     calls, fake_run = _fake_git_run(fail=(harness_dir, "tag"))
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
-    rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 2
     tag_push = [c for c in calls if c[3] in ("tag", "push")]
     assert tag_push == [["git", "-C", harness_dir, "tag", "-a", "v0.1.0", "-m", "coxswain 0.1.0"]]
 
 
 def test_cli_release_missing_manifest_fails_gracefully_not_a_traceback(tmp_path, capsys):
-    rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(tmp_path / "manifest.toml")])
+    rc = cli.main(["dev", "release", "0.2.0", "--dry-run", "--manifest", str(tmp_path / "manifest.toml")])
     assert rc == 2 and "refusing" in capsys.readouterr().out
 
 
@@ -229,7 +236,7 @@ def test_cli_release_exits_two_and_names_the_component_on_an_existing_tag(tmp_pa
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: ["v0.2.0"] if repo == "org/harness" else [])
-    rc = cli.main(["release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
+    rc = cli.main(["dev", "release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
     out = capsys.readouterr().out
     assert rc == 2 and "refuse" in out and "harness" in out
 
@@ -251,7 +258,29 @@ def test_cli_release_execute_refuses_before_any_tag_when_a_checkout_is_not_on_it
     calls, fake_run = _fake_git_run(off_branch={str(tmp_path / "harness")})
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
-    rc = cli.main(["release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 2
     assert "is on feature/x, not main" in capsys.readouterr().out
     assert not any(c[3] in ("tag", "push") for c in calls)
+
+
+def test_cox_release_alias_prints_moved_message_and_exits_two(capsys):
+    rc = cli.main(["release", "0.2.0"])
+    assert rc == 2
+    assert capsys.readouterr().out.strip() == "moved: use cox dev release"
+
+
+def test_cli_dev_release_refuses_off_a_non_maintainer_checkout(tmp_path, capsys, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    monkeypatch.setattr(cli, "_maintainer_remote_url", lambda directory: "git@github.com:someone/else.git")
+    rc = cli.main(["dev", "release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert len(out.strip().splitlines()) == 1 and "ppfenning/coxswain" in out
+
+
+def test_cox_release_alias_prints_moved_message_for_the_flagged_form_too(capsys):
+    rc = cli.main(["release", "0.4.0", "--dry-run", "--manifest", "x.toml"])
+    assert rc == 2
+    assert capsys.readouterr().out.strip() == "moved: use cox dev release"
