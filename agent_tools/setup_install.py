@@ -84,6 +84,20 @@ def _repo_steps(repo: str, root: str, python_exists: dict, cartridges_dir: str) 
     return steps
 
 
+def _agent_steps(cast: dict) -> list:
+    """A `write` step for each seat whose `enabled` is true or absent, a
+    `remove` step for each seat whose `enabled` is false."""
+    steps = []
+    for seat, cfg in cast.items():
+        if cfg.get("enabled", True):
+            steps.append({"op": "write", "path": cfg["path"], "text": cfg["text"],
+                          "why": f"install the {seat} seat"})
+        else:
+            steps.append({"op": "remove", "path": cfg["path"],
+                          "why": f"{seat} seat is disabled"})
+    return steps
+
+
 def install_plan(
     *,
     root: str,
@@ -101,6 +115,7 @@ def install_plan(
     config_dir: str,
     claude_settings_path: str,
     assume: str = "a",
+    cast: dict | None = None,
 ) -> list:
     """Ordered setup steps for a checkout at `root` holding
     agent-cartridges, agent-graphs and agent-tools side by side.
@@ -138,6 +153,8 @@ def install_plan(
     else:
         steps.append({"op": "skip", "what": "profile",
                       "why": "exists; pass --force-profile to rewrite"})
+
+    steps.extend(_agent_steps(cast or {}))
 
     if plugins:
         if claude_on_path:
@@ -187,6 +204,8 @@ def render_plan(steps: list) -> str:
             lines.append(f"run{cwd} {' '.join(step['argv'])}")
         elif op == "write":
             lines.append(f"write {step['path']}")
+        elif op == "remove":
+            lines.append(f"remove {step['path']}")
         elif op == "skip":
             lines.append(f"skip {step['what']} — {step['why']}")
         elif op == "hook":

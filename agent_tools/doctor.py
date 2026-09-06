@@ -164,11 +164,32 @@ def _workspace_row(facts: Mapping, cascade: bool) -> dict:
     return {"check": "workspace", "ok": True, "detail": f"{len(dirs)} dirs present"}
 
 
+def _cast_row(facts: Mapping, cascade: bool) -> dict:
+    """A `cast_seats` fact absent from `facts` passes rather than fails,
+    unlike every row above it: the edge that gathers it is not yet wired,
+    and every real invocation today omits it."""
+    if cascade:
+        return _skip("cast")
+    seats = facts.get("cast_seats", _MISSING)
+    if seats is _MISSING:
+        return {"check": "cast", "ok": True, "detail": "not gathered"}
+    if not seats:
+        return {"check": "cast", "ok": True, "detail": "0 seats"}
+    missing = sorted(seat for seat, s in seats.items() if s.get("enabled", True) and not s.get("installed"))
+    if missing:
+        return {"check": "cast", "ok": False, "detail": "missing: " + ", ".join(missing)}
+    present = sorted(seat for seat, s in seats.items() if not s.get("enabled", True) and s.get("installed"))
+    if present:
+        return {"check": "cast", "ok": False, "detail": "present: " + ", ".join(present)}
+    return {"check": "cast", "ok": True, "detail": f"{len(seats)} seats"}
+
+
 def checks(facts: Mapping) -> list[dict]:
     """Judge a Facts mapping. Returns rows `{"check", "ok", "detail"}` in a
     fixed check order: profile, profile paths, harness venv, core
-    importable, cartridge, project overlay, skills, provider, workspace. A fact that was
-    never gathered fails as "not checked"; a profile that fails to parse
+    importable, cartridge, project overlay, skills, provider, workspace,
+    cast. A fact that was never gathered fails as "not checked", except
+    `cast` which passes when ungathered; a profile that fails to parse
     fails every row after it as "skipped: no profile"; an empty collection
     where paths, skill roots or workspace dirs belong fails naming that
     nothing was configured to check, rather than passing vacuously."""
@@ -183,6 +204,7 @@ def checks(facts: Mapping) -> list[dict]:
         _skills_row(facts, cascade, parsed),
         _provider_row(facts, cascade),
         _workspace_row(facts, cascade),
+        _cast_row(facts, cascade),
     ]
 
 
