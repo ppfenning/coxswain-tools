@@ -1,5 +1,7 @@
+import inspect
 from pathlib import Path
 
+from agent_tools import home_screen
 from agent_tools.cli import _bare_launcher_split, _launcher_argv, main
 
 
@@ -105,7 +107,7 @@ def test_the_profile_is_found_through_the_env_var_when_no_flag_is_given(tmp_path
 
 def test_no_arg_off_a_tty_prints_route_status_and_does_not_open_curses(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdout.isatty", lambda: False)
-    monkeypatch.setattr("agent_tools.home_screen.main", lambda: (_ for _ in ()).throw(AssertionError("curses opened")))
+    monkeypatch.setattr("agent_tools.home_screen.main", lambda *a, **k: (_ for _ in ()).throw(AssertionError("curses opened")))
     profile = _profile(tmp_path, tmp_path / "skills")
     monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
     main(["route", "status"])
@@ -114,10 +116,15 @@ def test_no_arg_off_a_tty_prints_route_status_and_does_not_open_curses(tmp_path,
     assert capsys.readouterr().out == expected
 
 
-def test_home_and_bare_tty_both_call_the_home_entry_function(monkeypatch):
+def test_home_and_bare_tty_both_open_the_screen_on_the_profile_workspace(tmp_path, monkeypatch):
+    signature = inspect.signature(home_screen.main)
     calls = []
-    monkeypatch.setattr("agent_tools.home_screen.main", lambda: calls.append(True) or 0)
+    monkeypatch.setattr("agent_tools.home_screen.main", lambda *a, **k: calls.append(signature.bind(*a, **k).arguments) or 0)
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(_profile(tmp_path, tmp_path / "skills")))
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     main([])
     main(["home"])
-    assert len(calls) == 2
+    ws = tmp_path / "workspace"
+    assert [c["runs_dir"] for c in calls] == [ws / "runs", ws / "runs"]
+    assert [c["work_dir"] for c in calls] == [ws / "work", ws / "work"]
+    assert [c["intake_dir"] for c in calls] == [ws / "intake", ws / "intake"]
