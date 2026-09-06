@@ -146,6 +146,15 @@ def test_cli_runs_series_json_includes_the_ceiling_columns_from_disk(tmp_path, c
     assert doc["rows"][0]["tier_ceiling"] == "cheap" and doc["rows"][0]["effort_ceiling"] == "high"
 
 
+def test_cli_runs_series_json_includes_launched_by_from_disk(tmp_path, capsys):
+    _write_run(tmp_path, "run-42", 1.5, 2, "2026-09-01T00:00:00Z")
+    (tmp_path / "run-42.launched.json").write_text(json.dumps({"launched_by": "alice", "at": "2026-09-01T00:00:00Z"}))
+    rc = main(["runs", "series", "--runs-dir", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert doc["rows"][0]["launched_by"] == "alice"
+
+
 def test_cli_runs_series_json_parses(tmp_path, capsys):
     _write_run(tmp_path, "run-1", 1.0, 1, "2026-09-01T00:00:00Z")
     rc = main(["runs", "series", "--runs-dir", str(tmp_path), "--json"])

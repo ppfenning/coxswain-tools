@@ -3,7 +3,7 @@ import os
 import socket
 
 from agent_tools import leader
-from agent_tools.cli import _leader_heartbeat_minutes, main
+from agent_tools.cli import _leader_heartbeat_minutes, _leader_launched_by, main
 
 _NOW = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
 _DEAD_PID = 999999999
@@ -100,6 +100,17 @@ def test_leader_heartbeat_minutes_is_the_documented_default():
     """Cartridge policy resolution is another repository's item (out of scope here);
     this always answers the default until that lands."""
     assert _leader_heartbeat_minutes() == leader.DEFAULT_HEARTBEAT_MINUTES == 10
+
+
+# -- _leader_launched_by: pure, on literals ----------------------------------------
+
+
+def test_leader_launched_by_is_the_holders_session_when_the_lock_is_live():
+    assert _leader_launched_by(_LIVE_RECORD, True, _NOW, 10) == "alice"
+
+
+def test_leader_launched_by_is_none_when_the_lock_is_not_live():
+    assert _leader_launched_by(_STALE_HEARTBEAT_RECORD, True, _NOW, 10) is None
 
 
 # -- CLI: a tmp runs dir under a tmp profile ---------------------------------------
