@@ -606,6 +606,14 @@ def _leader_pid_alive(record: dict | None) -> bool:
     return leader.pid_alive(pid)
 
 
+def _leader_refuse_dead_pid(explicit_pid: int | None) -> int | None:
+    """Refuses only an explicit `--pid`; the `os.getppid()` default is alive by construction."""
+    if explicit_pid is None or leader.pid_alive(explicit_pid):
+        return None
+    print(f"leader pid not alive: {explicit_pid}")
+    return 2
+
+
 def _leader_launched_by(record: dict | None, pid_alive_: bool, now: datetime.datetime, heartbeat_minutes: int) -> str | None:
     """The label to stamp on a run launched right now: the lock's own holder when it
     reads live, `None` when it reads stale or none — never a guess."""
@@ -625,6 +633,9 @@ def _route_leader_take(a: argparse.Namespace) -> int:
         return refuse_rc
     session = a.label or "leader"
     pid, host = _leader_identity(a.pid)
+    refuse_rc = _leader_refuse_dead_pid(a.pid)
+    if refuse_rc is not None:
+        return refuse_rc
     heartbeat_minutes = _leader_heartbeat_minutes()
     with leader.locked(runs_dir):
         record, read_rc = _leader_read_or_refuse(runs_dir)
@@ -649,6 +660,9 @@ def _route_leader_beat(a: argparse.Namespace) -> int:
         return refuse_rc
     session = a.label or "leader"
     pid, host = _leader_identity(a.pid)
+    refuse_rc = _leader_refuse_dead_pid(a.pid)
+    if refuse_rc is not None:
+        return refuse_rc
     with leader.locked(runs_dir):
         record, read_rc = _leader_read_or_refuse(runs_dir)
         if read_rc is not None:
@@ -668,6 +682,9 @@ def _route_leader_release(a: argparse.Namespace) -> int:
         return refuse_rc
     session = a.label or "leader"
     pid, host = _leader_identity(a.pid)
+    refuse_rc = _leader_refuse_dead_pid(a.pid)
+    if refuse_rc is not None:
+        return refuse_rc
     with leader.locked(runs_dir):
         record, read_rc = _leader_read_or_refuse(runs_dir)
         if read_rc is not None:
