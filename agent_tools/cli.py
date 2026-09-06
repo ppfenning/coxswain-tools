@@ -24,6 +24,7 @@ from agent_tools import (
     install,
     install_exec,
     land,
+    pacing,
     plan,
     provenance,
     records,
@@ -33,6 +34,7 @@ from agent_tools import (
     runs_top_screen,
     setup_install,
     setup_screen,
+    usage_window,
 )
 from agent_tools import runs as runs_module
 
@@ -1190,6 +1192,49 @@ def _setup_tui(a: argparse.Namespace) -> int:
     return setup_screen.main(*_setup_fields(a))
 
 
+_USAGE_ASSESS_EXIT = {"go": 0, "go_degraded": 0, "hold": 3, "stop": 4}
+
+
+def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
+    """The cartridge's resolved `policy.pacing`, read from
+    `<runs_dir>/policy.pacing.json` when a landing step has dropped one there;
+    the unmeasured-and-uncapped `usage_window.DEFAULT_POLICY` when the file is
+    absent, unreadable, or not a mapping — same skip-not-raise contract as
+    `records.ceiling_for`'s own `<run_id>.ceiling.json` handling. A key the
+    file omits falls back to the matching `DEFAULT_POLICY` field, not to a
+    guess."""
+    default = usage_window.DEFAULT_POLICY
+    text = _read_text_or_none(runs_dir / "policy.pacing.json")
+    if text is None:
+        return default
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        return default
+    if not isinstance(raw, dict):
+        return default
+    return pacing.Policy(
+        pace_thresholds=tuple(raw.get("pace_thresholds", default.pace_thresholds)),
+        tier_ladder=tuple(raw.get("tier_ladder", default.tier_ladder)),
+        effort_ladder=tuple(raw.get("effort_ladder", default.effort_ladder)),
+        min_headroom_usd=float(raw.get("min_headroom_usd", default.min_headroom_usd)),
+    )
+
+
+def _usage_assess(a: argparse.Namespace) -> int:
+    now = datetime.datetime.now(datetime.UTC)
+    window = usage_window.gather(a.runs_dir, now)
+    policy = _resolved_pacing_policy(Path(a.runs_dir))
+    result = pacing.assess(window, policy, now)
+    if a.json:
+        d = dataclasses.asdict(result)
+        d["hold_until"] = result.hold_until.isoformat() if result.hold_until else None
+        print(json.dumps(d, indent=2))
+    else:
+        print(f"{result.verdict}: {result.reason}")
+    return _USAGE_ASSESS_EXIT[result.verdict]
+
+
 def _bare_group(parser: argparse.ArgumentParser):
     """Default `fn` for a group parser whose subcommand is optional: an
     operator who runs the group alone sees that group's own help and a exit
@@ -1237,6 +1282,16 @@ def build_parser() -> argparse.ArgumentParser:
     se = runs.add_parser("series", help="per-run summary rows across a runs directory"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
     ev = runs.add_parser("events", help="poll a run's log for structured events"); ev.add_argument("--runs-dir", default="runs"); ev.add_argument("--follow", action="store_true"); ev.add_argument("--json", action="store_true"); ev.set_defaults(fn=_runs_events)
     tp = runs.add_parser("top", help="live table of runs in flight; --once prints it and exits"); tp.add_argument("--runs-dir", default="runs"); tp.add_argument("--interval", type=float, default=3); tp.add_argument("--once", action="store_true"); tp.set_defaults(fn=_runs_top)
+
+    usage_p = sub.add_parser(
+        "usage", help="spend pacing against the ceiling for the current window",
+        description="Spend pacing against the ceiling for the current window.",
+        epilog="examples:\n  cox usage assess\n  cox usage assess --json --runs-dir runs",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    usage_p.set_defaults(fn=_bare_group(usage_p))
+    us = usage_p.add_subparsers(dest="cmd", required=False)
+    ua = us.add_parser("assess", help="the pacing verdict for the current spend window"); ua.add_argument("--json", action="store_true"); ua.add_argument("--runs-dir", default="runs"); ua.set_defaults(fn=_usage_assess)
 
     epic_p = sub.add_parser(
         "epic", help="watch a detached run",
