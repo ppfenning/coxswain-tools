@@ -19,6 +19,16 @@ from agent_tools.route import parse_profile
 from agent_tools.setup_screen import key_name, resolved_argv
 
 
+def _present(path: str) -> bool:
+    """Whether a binary is there. A path the process may not read — `/root` on a CI
+    runner — is "not there", never an exception: the same rule `setup_screen.run_action`
+    keeps, that a missing binary is a value on the screen."""
+    try:
+        return Path(path).exists()
+    except OSError:
+        return False
+
+
 def _write_fragment(effect: Effect, ctx: dict, write) -> dict:
     team_dir = Path(ctx["cartridges_dir"]) / ctx["team"]
     try:
@@ -55,7 +65,7 @@ def _init_cartridge(effect: Effect, ctx: dict, run) -> dict:
     argv = resolved_argv(["cartridge", "init", name, "--cartridges-dir", str(ctx["cartridges_dir"]),
                           "--extends", effect.payload["extends"]],
                          cartridge_on_path=shutil.which("cartridge") is not None,
-                         venv_cartridge_exists=Path(venv_cartridge).exists(), venv_cartridge=venv_cartridge)
+                         venv_cartridge_exists=_present(venv_cartridge), venv_cartridge=venv_cartridge)
     result, failure = _launch(argv, run)
     if failure is not None:
         return {"returncode": 127, "team": name, "output": failure}
@@ -154,7 +164,7 @@ def main(fields: dict, *, probe=None) -> int:
            # same on-path/venv-fallback convention `_init_cartridge` uses for `cartridge`.
            "probe_argv": resolved_argv(["cartridge", "probe", "--cartridges-dir", cartridges_dir, "--team", team],
                                         cartridge_on_path=shutil.which("cartridge") is not None,
-                                        venv_cartridge_exists=Path(venv_cartridge).exists(),
+                                        venv_cartridge_exists=_present(venv_cartridge),
                                         venv_cartridge=venv_cartridge)}
     curses.wrapper(lambda stdscr: loop(stdscr, state, ctx))
     return 0

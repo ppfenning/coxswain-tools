@@ -183,7 +183,7 @@ def test_e_then_typed_characters_then_enter_reaches_apply_text_through_step():
     assert state.pending == {"cartridges_dir": "ab"}
 
 
-def test_main_wires_the_real_probe_keys_straight_into_editor_model_rows(monkeypatch):
+def test_main_wires_the_real_probe_keys_straight_into_editor_model_rows(monkeypatch, tmp_path):
     import curses
 
     facts = {"resolved": {"policy": {"review_tier": "2"}}, "provenance": {"policy.review_tier": "acme"}}
@@ -191,9 +191,17 @@ def test_main_wires_the_real_probe_keys_straight_into_editor_model_rows(monkeypa
     monkeypatch.setattr(cartridge_screen, "loop", lambda stdscr, state, ctx, **kw: seen.update(state=state))
     monkeypatch.setattr(curses, "wrapper", lambda fn: fn(None))
 
-    rc = cartridge_screen.main({"root": "/root", "team": "acme", "workspace": "/work"},
+    rc = cartridge_screen.main({"root": str(tmp_path), "team": "acme", "workspace": str(tmp_path / "work")},
                                 probe=lambda *a, **kw: facts)
 
     assert rc == 0
     assert [r.key for r in seen["state"].rows] == ["policy.review_tier"]
     assert seen["state"].rows[0].layer == "acme"
+
+
+def test_a_venv_path_the_process_may_not_read_is_simply_absent(monkeypatch):
+    def denied(self):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(cartridge_screen.Path, "exists", denied)
+    assert cartridge_screen._present("/root/agent-cartridges/.venv/bin/cartridge") is False
