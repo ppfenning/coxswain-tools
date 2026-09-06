@@ -3,7 +3,7 @@ import os
 import socket
 
 from agent_tools import leader
-from agent_tools.cli import _leader_heartbeat_minutes, _leader_launched_by, main
+from agent_tools.cli import _leader_heartbeat_minutes, _leader_identity, _leader_launched_by, main
 
 _NOW = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
 _DEAD_PID = 999999999
@@ -178,3 +178,8 @@ def test_cli_take_then_release_succeeds_for_the_same_session(tmp_path, capsys):
     capsys.readouterr()
     assert main(["route", "leader", "release", "--profile", str(profile), "--label", "cos1"]) == 0
     assert leader.read(runs_dir) is None
+
+
+def test_identity_prefers_an_explicit_pid_over_the_parent():
+    assert _leader_identity(4242)[0] == 4242
+    assert _leader_identity()[0] == os.getppid()
