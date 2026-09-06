@@ -8,7 +8,8 @@ import dataclasses
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from agent_tools import release
+from agent_tools import release, release_check_cli
+from agent_tools.release_check_manifest import check_manifest
 
 
 @dataclasses.dataclass(frozen=True)
@@ -21,7 +22,7 @@ class Drift:
     correction: str
 
 
-CHECKS: tuple[Callable[[Mapping], list[Drift]], ...] = ()
+CHECKS: tuple[Callable[[Mapping], list[Drift]], ...] = (release_check_cli.check_cli_surface, check_manifest)
 
 
 def run_checks(facts: Mapping, checks: tuple[Callable[[Mapping], list[Drift]], ...] | None = None) -> list[Drift]:
