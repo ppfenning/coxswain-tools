@@ -199,6 +199,23 @@ def test_main_wires_the_real_probe_keys_straight_into_editor_model_rows(monkeypa
     assert seen["state"].rows[0].layer == "acme"
 
 
+def test_main_seeds_state_roster_from_the_probes_cast_block(monkeypatch, tmp_path):
+    import curses
+
+    facts = {"resolved": {"cast": {"builder": {"enabled": True, "skills": ["writer"]}}},
+             "provenance": {"crew.builder.enabled": "acme"}}
+    seen = {}
+    monkeypatch.setattr(cartridge_screen, "loop", lambda stdscr, state, ctx, **kw: seen.update(state=state))
+    monkeypatch.setattr(curses, "wrapper", lambda fn: fn(None))
+
+    cartridge_screen.main({"root": str(tmp_path), "team": "acme", "workspace": str(tmp_path / "work")},
+                           probe=lambda *a, **kw: facts)
+
+    assert seen["state"].roster == (editor_model.RosterRow(
+        seat="builder", enabled=True, layer="acme", skills_count=1, context=""
+    ),)
+
+
 def test_a_venv_path_the_process_may_not_read_is_simply_absent(monkeypatch):
     def denied(self):
         raise PermissionError(13, "Permission denied", str(self))
