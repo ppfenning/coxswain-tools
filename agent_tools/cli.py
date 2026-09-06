@@ -32,6 +32,7 @@ from agent_tools import (
     provenance,
     records,
     release,
+    release_check,
     route,
     runs_top,
     runs_top_screen,
@@ -1388,6 +1389,19 @@ def _release(a: argparse.Namespace) -> int:
     return _release_execute(steps, a.version, root, overrides, umbrella, _real_run)
 
 
+def _release_check(a: argparse.Namespace) -> int:
+    manifest_path = Path(a.manifest) if a.manifest else Path("coxswain") / "manifest.toml"
+    manifest = _load_manifest(manifest_path)
+    if manifest is None:
+        print(f"refusing: no manifest at {manifest_path}")
+        return 2
+    facts = release_check.facts_plan(a.root or ".", manifest)
+    drifts = release_check.run_checks(facts)
+    rendered = release_check.render(drifts, len(release_check.CHECKS))
+    print(json.dumps({"checks_run": len(release_check.CHECKS), "drifts": release_check.to_json(drifts)}) if a.json else rendered)
+    return 0
+
+
 def _setup_tui(a: argparse.Namespace) -> int:
     if not sys.stdin.isatty():
         print("setup: needs a terminal; use setup doctor / setup install / cartridge init directly")
@@ -1600,6 +1614,10 @@ def build_parser() -> argparse.ArgumentParser:
     rel.add_argument("--root", default="."); rel.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
     rel.add_argument("--umbrella")
     rel.set_defaults(fn=_release)
+
+    relc = dev.add_parser("release-check", help="gather facts and print drifts between the CLI, the manifest, the docs and the release notes")
+    relc.add_argument("--manifest"); relc.add_argument("--root", default="."); relc.add_argument("--json", action="store_true")
+    relc.set_defaults(fn=_release_check)
 
     old_rel = sub.add_parser("release", help=argparse.SUPPRESS)
     # swallow every flag the old form took, so the hint prints instead of argparse erroring
