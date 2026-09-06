@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Callable, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from agent_tools import route
 
@@ -32,7 +33,7 @@ class SourceConfig:
 @runtime_checkable
 class SourceAdapter(Protocol):
     candidates: Callable[[SourceConfig, Sequence[Mapping]], tuple[Ref, ...]]
-    read: Callable[[Mapping], "Candidate"]
+    read: Callable[[Mapping], Candidate]
     taken: Callable[[str, frozenset[str]], bool]
     mark_argv: Callable[[Ref, str], list[str]]
 
