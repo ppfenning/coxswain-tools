@@ -418,10 +418,13 @@ FIXTURE_PROFILE = {
     "assume": "a",
 }
 
-FIXTURE_INTAKE = [
-    {"id": "ship-it", "title": "ship it"},
-    {"id": "fix-ci", "title": "fix ci"},
-]
+FIXTURE_INTAKE = {
+    "queued": [{"id": "ship-it", "title": "ship it"}],
+    "decomposed": [{"id": "fix-ci", "title": "fix ci"}],
+    "landed": [],
+}
+
+EMPTY_INTAKE_GROUPS = {"queued": [], "decomposed": [], "landed": []}
 
 FIXTURE_RUNS = [
     {"id": "widget-1", "pid": 4242, "alive": True, "started": "14:02"},
@@ -439,18 +442,18 @@ def test_render_context_with_profile_matches_spec_layout():
     assert text == (
         "routing: team acme; work requests go through the route-work skill, "
         "questions stay inline\n"
-        'intake: 2 queued — "ship it", "fix ci"\n'
+        "intake: 1 queued, 1 decomposed, 0 landed\n"
         "runs: 1 in flight — widget-1 (pid 4242, since 14:02)\n"
         "ready: widget (3 tasks ready in phase build)"
     )
 
 
 def test_render_context_with_profile_and_no_activity():
-    text = route.render_context(FIXTURE_PROFILE, [], [], [])
+    text = route.render_context(FIXTURE_PROFILE, EMPTY_INTAKE_GROUPS, [], [])
     assert text == (
         "routing: team acme; work requests go through the route-work skill, "
         "questions stay inline\n"
-        "intake: 0 queued\n"
+        "intake: 0 queued, 0 decomposed, 0 landed\n"
         "runs: 0 in flight\n"
         "ready: none"
     )
@@ -712,8 +715,8 @@ def test_intake_entries_sorts_by_filename_and_skips_consumed_prefix():
     }
     entries = route.intake_entries(files)
     assert entries == [
-        {"id": "earlier", "title": "Earlier"},
-        {"id": "later", "title": "Later"},
+        {"id": "earlier", "title": "Earlier", "initiative": None, "done": False, "path": "intake/2026-09-01-earlier.md"},
+        {"id": "later", "title": "Later", "initiative": None, "done": False, "path": "intake/2026-09-03-later.md"},
     ]
 
 
@@ -721,7 +724,16 @@ def test_intake_entries_falls_back_to_stem_and_first_body_line_when_frontmatter_
     files = {"2026-09-02-no-frontmatter.md": "\n\nFirst real line.\nSecond line.\n"}
     entries = route.intake_entries(files)
     assert entries == [
-        {"id": "2026-09-02-no-frontmatter", "title": "First real line."}
+        {"id": "2026-09-02-no-frontmatter", "title": "First real line.", "initiative": None, "done": False,
+         "path": "intake/2026-09-02-no-frontmatter.md"}
+    ]
+
+
+def test_intake_entries_reads_the_initiative_field_and_the_done_prefix():
+    files = {"done/2026-09-01-old.md": "---\nid: old\ntitle: Old\ninitiative: old\n---\n\nBody.\n"}
+    entries = route.intake_entries(files)
+    assert entries == [
+        {"id": "old", "title": "Old", "initiative": "old", "done": True, "path": "intake/2026-09-01-old.md"}
     ]
 
 
@@ -794,7 +806,7 @@ def test_intake_entries_falls_back_to_id_when_frontmatter_has_no_title_and_body_
     # must fall back to id, not raise on an empty body_lines list.
     files = {"any-name.md": "---\nid: notitle\n---\n\n"}
     entries = route.intake_entries(files)
-    assert entries == [{"id": "notitle", "title": "notitle"}]
+    assert entries == [{"id": "notitle", "title": "notitle", "initiative": None, "done": False, "path": "intake/any-name.md"}]
 
 
 def test_parse_pid_reads_a_plain_digit_string():
@@ -829,6 +841,82 @@ def test_render_status_appends_quarantined_reused_summary_and_usage():
     assert route.render_status(rows) == (
         "r3: no pidfile quarantined task: a — reason reused b from run-1 epic run-2: done usage: 1 call"
     )
+
+
+def test_render_status_appends_intake_groups_with_names_when_given():
+    groups = {
+        "queued": [{"id": "q1", "title": "Q"}],
+        "decomposed": [{"id": "d1", "title": "D"}],
+        "landed": [],
+    }
+    assert route.render_status([], groups) == (
+        "intake queued: 1 — q1\nintake decomposed: 1 — d1\nintake landed: 0"
+    )
+
+
+def test_render_status_omits_intake_section_when_groups_is_none():
+    rows = [{"id": "a", "pid": None, "state": "no pidfile", "started": None,
+             "quarantined": [], "reused": [], "summary": None, "usage": None}]
+    assert route.render_status(rows) == "a: no pidfile"
+
+
+def test_link_intake_adds_both_fields_and_keeps_everything_else():
+    initiative_text = "---\nid: foo\ntitle: Foo\nrepo: acme/foo\n---\n\nDo the foo thing.\n"
+    intake_text = "---\nid: foo\ntitle: Foo\nrepo: acme/foo\n---\n\nDo the foo thing.\n"
+    new_initiative, new_intake = route.link_intake(
+        initiative_text, intake_text, "intake/2026-09-03-foo.md", "foo"
+    )
+    initiative_fields, initiative_body = route.parse_frontmatter(new_initiative)
+    intake_fields, intake_body = route.parse_frontmatter(new_intake)
+    assert initiative_fields == {"id": "foo", "title": "Foo", "repo": "acme/foo", "intake": "intake/2026-09-03-foo.md"}
+    assert intake_fields == {"id": "foo", "title": "Foo", "repo": "acme/foo", "initiative": "foo"}
+    assert initiative_body == "Do the foo thing."
+    assert intake_body == "Do the foo thing."
+
+
+def test_link_intake_updates_an_existing_field_in_place_instead_of_duplicating_it():
+    initiative_text = "---\nid: foo\nintake: intake/old.md\n---\n\nBody.\n"
+    intake_text = "---\nid: foo\ninitiative: foo\n---\n\nBody.\n"
+    new_initiative, new_intake = route.link_intake(initiative_text, intake_text, "intake/new.md", "foo")
+    assert new_initiative.count("intake:") == 1
+    assert new_intake.count("initiative:") == 1
+    assert route.parse_frontmatter(new_initiative)[0]["intake"] == "intake/new.md"
+
+
+def test_initiative_states_is_true_for_an_id_with_no_items_and_false_for_one_not_all_done():
+    items = [
+        {"initiative": "alpha", "state": "done"},
+        {"initiative": "beta", "state": "ready"},
+    ]
+    assert route.initiative_states(["alpha", "beta", "gamma"], items) == {
+        "alpha": True, "beta": False, "gamma": True,
+    }
+
+
+def test_intake_groups_splits_queued_decomposed_landed_and_the_legacy_case():
+    intake = [
+        {"id": "q1", "title": "Q", "initiative": None, "done": False, "path": "intake/q1.md"},
+        {"id": "d1", "title": "D", "initiative": "alpha", "done": False, "path": "intake/d1.md"},
+        {"id": "l1", "title": "L", "initiative": "beta", "done": False, "path": "intake/l1.md"},
+        {"id": "legacy-cited", "title": "Legacy cited", "initiative": None, "done": True,
+         "path": "intake/2026-08-01-legacy-cited.md"},
+        {"id": "legacy-uncited", "title": "Legacy uncited", "initiative": None, "done": True,
+         "path": "intake/2026-08-02-legacy-uncited.md"},
+        # id "ci" is a substring of "decided" in delta's text below, but delta
+        # never cites this row's path: an id-substring match would wrongly
+        # call this decomposed, where a path match correctly calls it landed.
+        {"id": "ci", "title": "Ci", "initiative": None, "done": True, "path": "intake/2026-08-03-ci-notes.md"},
+    ]
+    initiatives = [
+        {"id": "alpha", "done": False, "text": ""},
+        {"id": "beta", "done": True, "text": ""},
+        {"id": "gamma", "done": False, "text": "See intake/2026-08-01-legacy-cited.md for background."},
+        {"id": "delta", "done": False, "text": "The team decided this independently."},
+    ]
+    groups = route.intake_groups(intake, initiatives)
+    assert [e["id"] for e in groups["queued"]] == ["q1"]
+    assert [e["id"] for e in groups["decomposed"]] == ["d1", "legacy-cited"]
+    assert [e["id"] for e in groups["landed"]] == ["l1", "legacy-uncited", "ci"]
 
 
 def test_render_status_joins_multiple_rows_with_one_newline_each():

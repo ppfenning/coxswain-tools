@@ -250,6 +250,15 @@ def intake_file(title: str, body: str, repo: str, date: str) -> dict:
     return {f"intake/{date}-{slug}.md": file_text}
 
 
+def link_intake(initiative_text: str, intake_text: str, intake_path: str, initiative_id: str) -> tuple[str, str]:
+    """`initiative_text`'s `intake` field becomes `intake_path`; `intake_text`'s `initiative` field becomes `initiative_id`; a rerun updates the value in place rather than duplicating the key."""
+    initiative_fields, initiative_body = parse_frontmatter(initiative_text)
+    intake_fields, intake_body = parse_frontmatter(intake_text)
+    new_initiative = _frontmatter({**initiative_fields, "intake": intake_path}.items(), initiative_body)
+    new_intake = _frontmatter({**intake_fields, "initiative": initiative_id}.items(), intake_body)
+    return new_initiative, new_intake
+
+
 def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
     """Build the harness command line, spec §4, from a parsed `profile`
     and the graph-specific `needs` (`initiative`/`repo` for `epic`,
@@ -387,16 +396,12 @@ def _alive_runs(runs: list) -> list:
     return [r for r in runs if r["alive"]]
 
 
-def render_context(profile_or_none, intake, runs, initiatives) -> str:
+def render_context(profile_or_none, intake: dict, runs, initiatives) -> str:
     """The human-readable layout `agent-tools route context` prints, spec
-    §2. `profile_or_none` is a parsed profile dict or None; `intake`,
-    `runs`, `initiatives` are already-gathered lists — this function lists
-    a directory or reads a pidfile for none of it, that is the CLI's job.
-
-    `intake` items are `{"id", "title"}`; `runs` are
-    `{"id", "pid", "alive", "started"}`; `initiatives` are
-    `{"id", "phase", "ready"}` (ready task count) — the exact shapes spec
-    §2 names for the renderer's inputs.
+    §2. `profile_or_none` is a parsed profile dict or None; `intake` is an
+    `intake_groups` result; `runs` and `initiatives` are already-gathered
+    lists — this function lists a directory or reads a pidfile for none of
+    it, that is the CLI's job.
     """
     if profile_or_none is None:
         return (
@@ -406,13 +411,10 @@ def render_context(profile_or_none, intake, runs, initiatives) -> str:
     team = profile_or_none.get("team", "")
     lines = [
         f"routing: team {team}; work requests go through the route-work "
-        "skill, questions stay inline"
+        "skill, questions stay inline",
+        f"intake: {len(intake['queued'])} queued, {len(intake['decomposed'])} decomposed, "
+        f"{len(intake['landed'])} landed",
     ]
-    if intake:
-        titles = ", ".join(f'"{item["title"]}"' for item in intake)
-        lines.append(f"intake: {len(intake)} queued — {titles}")
-    else:
-        lines.append("intake: 0 queued")
     live = _alive_runs(runs)
     if live:
         described = ", ".join(
@@ -497,16 +499,25 @@ def _status_line(row: dict) -> str:
     return " ".join([head, *tails])
 
 
-def render_status(rows: list) -> str:
+def _intake_group_line(name: str, entries: list) -> str:
+    names = ", ".join(entry["id"] for entry in entries)
+    return f"intake {name}: {len(entries)}" + (f" — {names}" if entries else "")
+
+
+def render_status(rows: list, groups: dict | None = None) -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
     `None` for that row and printing them would show the word "None"
     twice for no reason. `quarantined`, `reused`, `summary` and `usage`
     are appended only when the row carries them, so a quiet run stays
-    one line.
+    one line. `groups`, an `intake_groups` result, appends one line per
+    group when given, and nothing when `None`.
     """
-    return "\n".join(_status_line(row) for row in rows)
+    lines = [_status_line(row) for row in rows]
+    if groups is not None:
+        lines += [_intake_group_line(name, groups[name]) for name in ("queued", "decomposed", "landed")]
+    return "\n".join(lines)
 
 
 def status_entries(runs: list, summaries: dict) -> list:
@@ -625,24 +636,55 @@ def _intake_entry(filename: str, text: str) -> dict:
     entry_id = fields.get("id", stem)
     body_lines = [line.strip() for line in body.split("\n") if line.strip()]
     first_body_line = body_lines[0] if body_lines else entry_id
-    return {"id": entry_id, "title": fields.get("title", first_body_line)}
+    return {
+        "id": entry_id,
+        "title": fields.get("title", first_body_line),
+        "initiative": fields.get("initiative"),
+        "done": filename.startswith("done/"),
+        "path": f"intake/{os.path.basename(filename)}",
+    }
 
 
 def intake_entries(files: dict) -> list:
     """Rows for the intake queue, the `intake` input `render_context` and
-    `context_document` already accept: one `{"id", "title"}` per file in
-    `files` (filename -> text, as the caller listed the intake dir), sorted
-    by filename. A filename under a `consumed/` prefix has already been
-    handled and is skipped. `id` comes from frontmatter's `id` field, or the
-    filename's stem when frontmatter has none; `title` comes from
-    frontmatter's `title` field, or the first non-empty body line, or `id`
-    when the body is empty too.
+    `context_document` already accept: one `{"id", "title", "initiative",
+    "done", "path"}` per file in `files` (filename -> text, as the caller
+    listed the intake dir), sorted by filename. A filename under a
+    `consumed/` prefix has already been handled and is skipped. `id` comes
+    from frontmatter's `id` field, or the filename's stem when frontmatter
+    has none; `title` comes from frontmatter's `title` field, or the first
+    non-empty body line, or `id` when the body is empty too.
     """
     return [
         _intake_entry(filename, files[filename])
         for filename in sorted(files)
         if not filename.startswith("consumed/")
     ]
+
+
+def initiative_states(ids: list, items: list) -> dict:
+    """`id -> True` when every item naming it has state `"done"` (vacuously true for an id with none)."""
+    return {i: all(item["state"] == "done" for item in items if item["initiative"] == i) for i in ids}
+
+
+def _intake_group(entry: dict, initiatives_by_id: dict, initiatives: list) -> str:
+    initiative_id = entry.get("initiative")
+    if initiative_id is not None:
+        initiative = initiatives_by_id.get(initiative_id)
+        return "landed" if initiative and initiative["done"] else "decomposed"
+    if not entry.get("done"):
+        return "queued"
+    cited = any(entry["path"] in i.get("text", "") for i in initiatives)
+    return "decomposed" if cited else "landed"
+
+
+def intake_groups(intake: list, initiatives: list) -> dict:
+    """queued has no `initiative`; decomposed names one not yet `done`, or predates the field but is cited by some initiative's text; landed names one `done`, or predates the field and is uncited."""
+    by_id = {i["id"]: i for i in initiatives}
+    return {
+        name: [entry for entry in intake if _intake_group(entry, by_id, initiatives) == name]
+        for name in ("queued", "decomposed", "landed")
+    }
 
 
 def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict) -> dict:

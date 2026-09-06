@@ -97,7 +97,11 @@ def test_context_json_with_full_profile_lists_initiative_and_runs(tmp_path, caps
     assert len(runs) == 2
     assert runs["run1"]["pid"] == os.getpid() and runs["run1"]["alive"] is True
     assert runs["run2"]["pid"] is None and runs["run2"]["alive"] is False
-    assert doc["intake"] == [{"id": "i1", "title": "Do the thing"}]
+    assert doc["intake"] == {
+        "queued": [{"id": "i1", "title": "Do the thing", "initiative": None, "done": False, "path": "intake/one.md"}],
+        "decomposed": [],
+        "landed": [],
+    }
 
 
 def test_context_text_with_full_profile_lists_initiative_and_runs(tmp_path, capsys):
@@ -106,7 +110,7 @@ def test_context_text_with_full_profile_lists_initiative_and_runs(tmp_path, caps
     out = capsys.readouterr().out
     assert rc == 0
     assert "demo" in out
-    assert "Do the thing" in out
+    assert "intake: 1 queued, 0 decomposed, 0 landed" in out
     assert "runs: 1 in flight" in out
     assert "run1" in out and "run2" not in out
 
@@ -202,6 +206,21 @@ def test_status_json_with_profile_matches_status_rows(tmp_path, capsys):
     assert rows == _expected_status_rows(ws)
 
 
+def test_status_json_with_an_intake_dir_carries_runs_and_intake_groups(tmp_path, capsys):
+    profile, ws = _write_runs_workspace(tmp_path)
+    (ws / "intake").mkdir()
+    (ws / "intake" / "2026-09-01-q.md").write_text("---\nid: q\ntitle: Q\n---\n\nBody.\n")
+    rc = main(["route", "status", "--profile", str(profile), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert doc["runs"] == _expected_status_rows(ws)
+    assert doc["intake"] == {
+        "queued": [{"id": "q", "title": "Q", "initiative": None, "done": False, "path": "intake/2026-09-01-q.md"}],
+        "decomposed": [],
+        "landed": [],
+    }
+
+
 def test_status_text_with_profile_lists_alive_dead_and_no_pidfile_runs(tmp_path, capsys):
     profile, ws = _write_runs_workspace(tmp_path)
     rc = main(["route", "status", "--profile", str(profile)])
@@ -283,6 +302,56 @@ def test_file_refuses_a_missing_profile(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 2
     assert "no profile" in out
+
+
+def test_file_from_intake_links_both_ways_retires_the_file_and_status_reports_decomposed(tmp_path, capsys):
+    profile, ws = _write_file_profile(tmp_path)
+    (ws / "intake").mkdir()
+    intake_path = ws / "intake" / "2026-09-01-fix-thing.md"
+    intake_path.write_text("---\nid: fix-thing\ntitle: Fix the thing\nrepo: /repos/widget\n---\n\nDo it.\n")
+    rc = main(["route", "file", "--profile", str(profile), "--from-intake", str(intake_path)])
+    capsys.readouterr()
+    assert rc == 0
+    assert not intake_path.exists()
+    done_path = ws / "intake" / "done" / "2026-09-01-fix-thing.md"
+    assert done_path.exists()
+    assert route.parse_frontmatter(done_path.read_text())[0]["initiative"] == route.slugify("Fix the thing")
+    slug = route.slugify("Fix the thing")
+    initiative_text = (ws / "work" / slug / "initiative.md").read_text()
+    assert route.parse_frontmatter(initiative_text)[0]["intake"] == "intake/2026-09-01-fix-thing.md"
+    rc = main(["route", "status", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "intake decomposed: 1" in out
+
+
+def test_file_from_intake_refuses_a_path_outside_the_workspace_intake_dir(tmp_path, capsys):
+    profile, ws = _write_file_profile(tmp_path)
+    outside = tmp_path / "outside.md"
+    outside.write_text("---\nid: x\ntitle: X\nrepo: /repos/widget\n---\n\nBody.\n")
+    rc = main(["route", "file", "--profile", str(profile), "--from-intake", str(outside)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert outside.exists()
+    assert "must name a file directly under" in out
+
+
+def test_status_reports_landed_once_the_linked_initiatives_one_task_is_done(tmp_path, capsys):
+    profile, ws = _write_file_profile(tmp_path)
+    (ws / "intake").mkdir()
+    intake_path = ws / "intake" / "2026-09-01-fix-thing.md"
+    intake_path.write_text("---\nid: fix-thing\ntitle: Fix the thing\nrepo: /repos/widget\n---\n\nDo it.\n")
+    rc = main(["route", "file", "--profile", str(profile), "--from-intake", str(intake_path)])
+    capsys.readouterr()
+    assert rc == 0
+    slug = route.slugify("Fix the thing")
+    task_path = ws / "work" / slug / "build" / f"{slug}.md"
+    text = task_path.read_text()
+    task_path.write_text(text.replace("state: ready", "state: done"))
+    rc = main(["route", "status", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "intake landed: 1" in out
 
 
 def _write_harness(tmp_path):
