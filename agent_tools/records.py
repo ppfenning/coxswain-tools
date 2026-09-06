@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "ceiling_for",
     "format_table",
     "load_trace",
     "load_usage",
@@ -131,8 +132,27 @@ def _usage_figures(usage: Mapping[str, Any] | None) -> dict[str, Any]:
             "cost_usd": cost_usd, "cache_share": cache_share}
 
 
-def series_row(run_id: str, usage: Mapping[str, Any] | None, manifests: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Pure: one steward-pass row for a run, from its usage summary and its phase manifests."""
+def ceiling_for(run_id: str, files: Mapping[str, str]) -> dict[str, Any] | None:
+    """Pure: the parsed `<run_id>.ceiling.json` among `files`, naming the tier/effort
+    overlay a launch requested and applied (route.overlay, cli launch). None when the
+    file is absent, or fails to parse or parses to something other than a mapping —
+    same skip-not-raise contract as `series`'s own file handling."""
+    text = files.get(f"{run_id}.ceiling.json")
+    if text is None:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def series_row(run_id: str, usage: Mapping[str, Any] | None, manifests: Sequence[Mapping[str, Any]],
+                ceiling: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Pure: one steward-pass row for a run, from its usage summary and its phase manifests.
+    `ceiling` is the run's own parsed ceiling.json (see `ceiling_for`), or None when the
+    run carried no tier/effort overlay; its applied tier/effort become the row's own
+    tier_ceiling/effort_ceiling columns, empty when there was no overlay."""
     calls_list = list((usage or {}).get("calls") or [])
     figures = _usage_figures(usage)
     earliest = _earliest_manifest(manifests)
@@ -142,6 +162,7 @@ def series_row(run_id: str, usage: Mapping[str, Any] | None, manifests: Sequence
     tasks_landed = sum(int((m.get("totals") or {}).get("completed") or 0) for m in manifests)
     quarantined = sum(int((m.get("totals") or {}).get("quarantined") or 0) for m in manifests)
     review_calls = sum(1 for c in calls_list if str(c.get("role") or "").startswith("review") or c.get("role") == "arbitrate")
+    applied = (ceiling or {}).get("applied") or {}
     return {
         "run": run_id,
         "date": date,
@@ -155,6 +176,8 @@ def series_row(run_id: str, usage: Mapping[str, Any] | None, manifests: Sequence
         "quarantined": quarantined,
         "review_rounds": round(review_calls / tasks_landed, 2) if tasks_landed else 0.0,
         "cost_per_landed": round(figures["cost_usd"] / tasks_landed, 2) if tasks_landed else None,
+        "tier_ceiling": applied.get("tier") or "",
+        "effort_ceiling": applied.get("effort") or "",
     }
 
 
@@ -174,7 +197,7 @@ def series(files: Mapping[str, str]) -> list[dict[str, Any]]:
             by_run[name[: -len(".usage.json")]]["usage"] = parsed
         elif ":" in name:
             by_run[name.split(":", 1)[0]]["manifests"].append(parsed)
-    rows = [series_row(run_id, entry["usage"], entry["manifests"]) for run_id, entry in by_run.items()]
+    rows = [series_row(run_id, entry["usage"], entry["manifests"], ceiling_for(run_id, files)) for run_id, entry in by_run.items()]
     return sorted(rows, key=lambda r: (r["date"], r["run"]))
 
 

@@ -37,3 +37,17 @@ def test_format_table_aligns_numbers_right():
     out = records.format_table([{"role": "build", "cost_usd": 1.5, "turns": 40}, {"role": "plan", "cost_usd": 0.25, "turns": 9}], ["role", "cost_usd", "turns"])
     lines = out.splitlines()
     assert lines[0].startswith("role") and lines[1].endswith("40") and lines[2].endswith(" 9")
+
+
+def test_ceiling_for_reads_the_runs_own_ceiling_file():
+    record = {"requested": {"tier": "standard", "effort": "low"}, "applied": {"tier": "standard", "effort": "low"}, "profile": "/runs/r1.provider-profile.yaml"}
+    files = {"r1.ceiling.json": json.dumps(record), "r2.usage.json": "{}"}
+    assert records.ceiling_for("r1", files) == record
+
+
+def test_ceiling_for_is_none_when_the_run_has_no_ceiling_file():
+    assert records.ceiling_for("r1", {"r2.ceiling.json": "{}"}) is None
+
+
+def test_ceiling_for_is_none_for_malformed_json():
+    assert records.ceiling_for("r1", {"r1.ceiling.json": "not json"}) is None

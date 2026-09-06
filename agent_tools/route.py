@@ -17,6 +17,7 @@ __all__ = [
     "intake_entries",
     "intake_file",
     "next_run_id",
+    "overlay",
     "parse_frontmatter",
     "parse_pid",
     "parse_profile",
@@ -287,6 +288,78 @@ def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
         argv += ["--max-parallel", "3"]
     argv += ["--workdir", workspace_dir]
     return argv
+
+
+_TIER_LADDER = ("cheap", "standard", "deep")
+_EFFORT_LADDER = ("low", "high")
+
+
+def _ceiling_error(kind: str, ceiling: str, top) -> str:
+    return f"routing: --{kind}-ceiling {ceiling} exceeds this profile's own {kind} ceiling of {top}"
+
+
+def _profile_top(values, ladder: tuple) -> str | None:
+    """Pure: the highest rung of `ladder` among `values`, or None when no value
+    is on the ladder at all. A profile that names nothing usable has no
+    ceiling to tighten from, and a ceiling that fails open on missing or
+    off-ladder data is not a ceiling."""
+    on_ladder = [v for v in values if v in ladder]
+    return max(on_ladder, key=ladder.index) if on_ladder else None
+
+
+def _tighten(kind: str, top: str | None, requested: str | None, ladder: tuple) -> tuple[str | None, str | None]:
+    """Pure: `(ceiling, error)` for one axis. `requested=None` is a no-op."""
+    if requested is None:
+        return None, None
+    if top is None:
+        return None, _ceiling_error(kind, requested, "unset")
+    if ladder.index(requested) > ladder.index(top):
+        return None, _ceiling_error(kind, requested, top)
+    return requested, None
+
+
+def overlay(profile: dict, tier_ceiling: str | None, effort_ceiling: str | None):
+    """Pure: a same-run, tighten-only overlay on a provider profile.
+
+    A provider profile (`providers/claude-code.yaml`) maps each TIER to a model
+    under `tiers` (`cheap: haiku, standard: sonnet, deep: opus`) and each tier
+    to a thinking effort under `effort` (`cheap: low, standard: high, deep:
+    high`). The profile's own tier ceiling is the highest tier it maps; its
+    effort ceiling is the highest effort it names. Pat, 2026-09-05: the profile
+    is an UPPER LIMIT — a launch may pick at or below it, never above.
+
+    `--tier-ceiling T` rewrites every tier above T to run T's model and T's
+    effort, so `deep` on a `standard` ceiling runs sonnet at standard's effort.
+    `--effort-ceiling E` clamps every tier's effort to E. A request above the
+    profile's own top, or on an axis the profile does not usably declare,
+    returns a one-line refusal string instead of a dict; the edge turns that
+    into exit 2 before any file is written. No flags: `profile` comes back
+    unchanged. Budgets are untouched — a ceiling is about model and effort.
+    """
+    tiers = profile.get("tiers") if isinstance(profile.get("tiers"), dict) else {}
+    efforts = profile.get("effort") if isinstance(profile.get("effort"), dict) else {}
+    tier_top = _profile_top(tiers.keys(), _TIER_LADDER)
+    effort_top = _profile_top(efforts.values(), _EFFORT_LADDER)
+
+    tier_cap, tier_error = _tighten("tier", tier_top, tier_ceiling, _TIER_LADDER)
+    if tier_error is not None:
+        return tier_error
+    effort_cap, effort_error = _tighten("effort", effort_top, effort_ceiling, _EFFORT_LADDER)
+    if effort_error is not None:
+        return effort_error
+    if tier_cap is None and effort_cap is None:
+        return profile
+
+    def capped_tier(tier: str) -> str:
+        above = tier in _TIER_LADDER and tier_cap is not None and _TIER_LADDER.index(tier) > _TIER_LADDER.index(tier_cap)
+        return tier_cap if above else tier
+
+    def capped_effort(value):
+        return effort_cap if effort_cap is not None and value in _EFFORT_LADDER and _EFFORT_LADDER.index(value) > _EFFORT_LADDER.index(effort_cap) else value
+
+    new_tiers = {tier: tiers[capped_tier(tier)] for tier in tiers}
+    new_efforts = {tier: capped_effort(efforts.get(capped_tier(tier), value)) for tier, value in efforts.items()}
+    return {**profile, **({"tiers": new_tiers} if tiers else {}), **({"effort": new_efforts} if efforts else {})}
 
 
 def _alive_runs(runs: list) -> list:

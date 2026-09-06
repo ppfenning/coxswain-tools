@@ -58,3 +58,21 @@ def test_a_width_of_10_does_not_raise():
     rows = [Row("run-1", True, "build", "build", 1, 1, 1.0, "", "running")]
     lines = render(rows, 10)
     assert all(len(line) <= 10 for line in lines)
+
+
+def test_row_with_a_ceiling_carries_the_applied_tier_and_effort():
+    ceiling = {"requested": {"tier": "deep", "effort": None}, "applied": {"tier": "standard", "effort": "high"}, "profile": "p.yaml"}
+    r = row("r1", True, [], [], [], ceiling)
+    assert r.ceiling == "standard/high"
+
+
+def test_row_with_no_ceiling_has_an_empty_ceiling_label():
+    r = row("r1", True, [], [], [])
+    assert r.ceiling == ""
+
+
+def test_render_shows_ceil_column_for_a_row_that_carries_one():
+    rows = [Row("run-1", True, "build", "build", 1, 1, 1.0, "", "running", "standard/high")]
+    lines = render(rows, 60)
+    assert "CEIL" in lines[0]
+    assert "standard/high" in lines[1]

@@ -310,6 +310,69 @@ def test_harness_argv_omits_fix_attempts_for_epic_when_absent():
     assert "--fix-attempts" not in argv
 
 
+# The shape providers/claude-code.yaml actually has: tiers map a tier to a model,
+# effort maps a tier to a thinking effort. The overlay is tested against it.
+_PROFILE = {
+    "command": "claude",
+    "tiers": {"cheap": "haiku", "standard": "sonnet", "deep": "opus"},
+    "effort": {"cheap": "low", "standard": "high", "deep": "high"},
+    "budget_usd": {"cheap": 0.15, "standard": 0.35, "deep": 0.80},
+}
+
+
+def test_overlay_tier_ceiling_runs_every_tier_above_it_as_that_tier():
+    overlaid = route.overlay(_PROFILE, "standard", None)
+    assert overlaid["tiers"] == {"cheap": "haiku", "standard": "sonnet", "deep": "sonnet"}
+    assert overlaid["effort"] == {"cheap": "low", "standard": "high", "deep": "high"}
+    assert overlaid["budget_usd"] == _PROFILE["budget_usd"]  # a ceiling is about model and effort
+
+
+def test_overlay_effort_ceiling_clamps_every_tier():
+    overlaid = route.overlay(_PROFILE, None, "low")
+    assert overlaid["effort"] == {"cheap": "low", "standard": "low", "deep": "low"}
+    assert overlaid["tiers"] == _PROFILE["tiers"]
+
+
+def test_overlay_both_ceilings_compose():
+    overlaid = route.overlay(_PROFILE, "cheap", "low")
+    assert overlaid["tiers"] == {"cheap": "haiku", "standard": "haiku", "deep": "haiku"}
+    assert overlaid["effort"] == {"cheap": "low", "standard": "low", "deep": "low"}
+
+
+def test_overlay_with_no_ceiling_is_a_no_op_and_mutates_nothing():
+    before = {**_PROFILE, "tiers": dict(_PROFILE["tiers"])}
+    assert route.overlay(_PROFILE, None, None) == _PROFILE
+    assert before == _PROFILE
+
+
+def test_overlay_at_the_profiles_own_top_changes_nothing():
+    assert route.overlay(_PROFILE, "deep", "high") == _PROFILE
+
+
+def test_overlay_refuses_a_tier_above_the_profiles_own_top():
+    profile = {**_PROFILE, "tiers": {"cheap": "haiku", "standard": "sonnet"}}
+    result = route.overlay(profile, "deep", None)
+    assert isinstance(result, str) and "deep" in result and "standard" in result
+
+
+def test_overlay_refuses_an_effort_above_the_profiles_own_top():
+    profile = {**_PROFILE, "effort": {"cheap": "low", "standard": "low", "deep": "low"}}
+    result = route.overlay(profile, None, "high")
+    assert isinstance(result, str) and "high" in result and "low" in result
+
+
+def test_overlay_refuses_when_the_profile_declares_no_usable_axis():
+    assert "unset" in route.overlay({"command": "claude"}, "deep", None)
+    assert "unset" in route.overlay({"tiers": {"ultra": "x"}}, "cheap", None)
+    assert "unset" in route.overlay({"effort": "high"}, None, "low")  # a scalar is not the profile's shape
+
+
+def test_overlay_never_raises_on_off_ladder_values():
+    profile = {"tiers": {"cheap": "haiku", "ultra": "x"}, "effort": {"cheap": "max"}}
+    assert route.overlay(profile, "cheap", None)["tiers"] == {"cheap": "haiku", "ultra": "x"}
+    assert "unset" in route.overlay(profile, None, "low")
+
+
 def test_child_env_prepends_both_venv_bins_and_leaves_other_keys_untouched():
     environ = {"PATH": "/usr/bin:/bin", "HOME": "/home/acme", "LANG": "C.UTF-8"}
     env = route.child_env(environ, harness_dir="/opt/agent-graphs", repo="/repos/widget")
