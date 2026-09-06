@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 from dataclasses import dataclass
 
 from agent_tools import runs_top
 
 __all__ = [
+    "Drill",
     "Effect",
     "Facts",
+    "Intake",
+    "Land",
     "Quit",
     "Refuse",
     "Setup",
     "State",
     "Talk",
+    "attention_pane",
     "backlog_pane",
     "frame",
     "leader_pane",
@@ -31,6 +36,7 @@ _SIDE_BY_SIDE_WIDTH = 160
 _COLUMN_COUNT = 3
 OPENING_CONTEXT = "cox route context"
 SETUP_ARGV = ("cox", "setup")
+_ATTENTION_REASONS = {"exited": ("gate", "l"), "quarantined": ("quarantine", "i"), "budget": ("budget stop", "i")}
 
 
 @dataclass(frozen=True)
@@ -48,6 +54,9 @@ class State:
     plugin_dir: str
     leader_liveness: str
     other_holder: str | None
+    selected_run: str | None = None
+    selected_status: str | None = None
+    land_armed: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,16 +80,53 @@ class Refuse:
     holder: str
 
 
-Effect = Talk | Setup | Quit | Refuse
+@dataclass(frozen=True)
+class Drill:
+    run: str
+
+
+@dataclass(frozen=True)
+class Land:
+    run: str
+    apply: bool
+
+
+@dataclass(frozen=True)
+class Intake:
+    pass
+
+
+Effect = Talk | Setup | Quit | Refuse | Drill | Land | Intake
+
+
+def _refused(state: State) -> bool:
+    return state.leader_liveness == "live" and bool(state.other_holder)
 
 
 def step(state: State, key: str) -> tuple[State, Effect | None]:
+    """Only 'l' refuses under a foreign live leader, being the one key that writes; it arms an exited run on its first press, applies on a consecutive press on that same run, and disarms the moment the selection differs from what is armed."""
+    if state.land_armed is not None and state.land_armed != state.selected_run:
+        state = dataclasses.replace(state, land_armed=None)
     if key == "t":
         return state, Talk(state.plugin_dir)
     if key == "s":
         return state, Setup()
     if key == "q":
         return state, Quit()
+    if key == "ENTER":
+        if state.selected_run is None:
+            return state, None
+        return state, Drill(state.selected_run)
+    if key == "l":
+        if _refused(state):
+            return state, Refuse(state.other_holder)
+        if state.selected_run is None or state.selected_status != "exited":
+            return state, None
+        apply = state.selected_run == state.land_armed
+        armed = None if apply else state.selected_run
+        return dataclasses.replace(state, land_armed=armed), Land(state.selected_run, apply)
+    if key == "i":
+        return state, Intake()
     return state, None
 
 
@@ -125,6 +171,15 @@ def leader_pane(facts: Facts, width: int) -> tuple[str, ...]:
 
 def runs_pane(facts: Facts, width: int) -> tuple[str, ...]:
     return tuple(runs_top.render(list(facts.runs_rows), width))
+
+
+def attention_pane(facts: Facts, width: int) -> tuple[str, ...]:
+    lines = tuple(
+        f"{row.run}: {_ATTENTION_REASONS[row.status][0]} [{_ATTENTION_REASONS[row.status][1]}]"
+        for row in facts.runs_rows
+        if row.status in _ATTENTION_REASONS
+    )
+    return tuple(_cut(line, width) for line in lines)
 
 
 def backlog_pane(facts: Facts, width: int) -> tuple[str, ...]:
