@@ -13,6 +13,7 @@ from typing import Any
 __all__ = [
     "DEFAULT_HEARTBEAT_MINUTES",
     "beat",
+    "guard",
     "leader_path",
     "liveness",
     "locked",
@@ -86,6 +87,13 @@ def release(record: dict[str, Any] | None, session: str, pid: int, host: str) ->
     if not _is_holder(record, session, pid, host):
         return record, f"leader: not held by {session} (pid {pid}) on {host}"
     return None, ""
+
+
+def guard(record: dict | None, holder: str, state: str) -> str | None:
+    """The one-line refusal when a LIVE lock belongs to another holder, else None."""
+    if record is None or state != "live" or record.get("session") == holder:
+        return None
+    return f"refusing: the landing loop is held by {record.get('session')} (live); pass --force to override"
 
 
 def leader_path(runs_dir: Path) -> Path:
