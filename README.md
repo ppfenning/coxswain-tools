@@ -3,7 +3,7 @@
 Deterministic tools the agent seats call **instead of spending tokens**. Anything
 a seat would otherwise do by reading a file wholesale and reasoning about it —
 summing a run's cost, counting what a traced node did, cleaning up after a run,
-posting to the HUD, serving a plan — is a function here that reads it and answers.
+serving a plan — is a function here that reads it and answers.
 
 The mould, every time: a pure core with no I/O, the filesystem and the network
 at the edges, dry-run by default where a write is involved, and tests that never
@@ -16,10 +16,9 @@ touch a real run.
 | [`coxswain-cartridges`](https://github.com/ppfenning/coxswain-cartridges) | who a run works for |
 | [`coxswain-graphs`](https://github.com/ppfenning/coxswain-graphs) | what runs, and the harness that runs it |
 | [`coxswain-crew`](https://github.com/ppfenning/coxswain-crew) | who speaks |
-| [`coxswain-hud`](https://github.com/ppfenning/coxswain-hud) | where you hear and see it |
 | **`coxswain-tools`** | what the seats run so they do not have to think |
 
-Tools that read coxswain-graphs' records and post to coxswain-hud belong to
+Tools that read coxswain-graphs' records belong to
 neither; a seat routes to them by name the way it routes to skills. Nothing here
 names an employer, a tracker, or a person — CI refuses it.
 
@@ -51,10 +50,6 @@ cox runs top   — live table of runs in flight (next task wires the screen)
 cox usage assess [--json] [--runs-dir runs]     the pacing verdict for the current spend window against the resolved `policy.pacing.json` in --runs-dir, or the unmeasured default when it is absent
                                                  prints the one-line reason (or the full Assessment as JSON); exit 0 go/go_degraded, 3 hold, 4 stop
 cox epic watch PIDFILE [--log LOG]              block until a detached run exits (or the cap), then the outcome lines
-cox hud ops FILE|-                              replace the HUD's ops list (id, label, status, persona?, detail?)
-cox hud say TEXT [--persona P] [--voice V]      speak a line through the HUD
-cox hud inbox show|arm|clear                    read, wait for, or clear directives
-cox hud cast                                    the seats the HUD's org ring shows
 cox plan serve DIR [--check] [--no-open]        lint, serve through the local bridge, open in Brave
 cox route context [--json]                      what a session reads at start: team, queued intake, runs in flight, initiatives with ready work; exits 0 even with no profile
 cox route status [--json]                       every run with a pidfile or a log: alive or exited, started, the log's outcome lines
