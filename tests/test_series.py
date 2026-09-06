@@ -68,6 +68,18 @@ def test_series_row_review_rounds_counts_review_and_arbitrate_roles():
     assert row["review_rounds"] == 1.0
 
 
+def test_series_row_carries_the_applied_ceiling_when_given():
+    usage = _usage(cost=1.0)
+    ceiling = {"requested": {"tier": "deep", "effort": None}, "applied": {"tier": "standard", "effort": "high"}, "profile": "p.yaml"}
+    row = records.series_row("r1", usage, [], ceiling)
+    assert row["tier_ceiling"] == "standard" and row["effort_ceiling"] == "high"
+
+
+def test_series_row_ceiling_columns_are_empty_with_no_overlay():
+    row = records.series_row("r1", _usage(cost=1.0), [])
+    assert row["tier_ceiling"] == "" and row["effort_ceiling"] == ""
+
+
 def test_series_groups_by_run_id_and_handles_colon_filename():
     files = {
         "r1.usage.json": json.dumps(_usage(cost=1.0, calls=2, turns=5)),
@@ -77,6 +89,17 @@ def test_series_groups_by_run_id_and_handles_colon_filename():
     rows = records.series(files)
     assert len(rows) == 1
     assert rows[0]["run"] == "r1" and rows[0]["tasks_landed"] == 3
+
+
+def test_series_picks_up_the_runs_ceiling_file():
+    files = {
+        "r1.usage.json": json.dumps(_usage(cost=1.0)),
+        "r1:build.json": json.dumps(_manifest("2026-09-01T00:00:00Z", completed=1)),
+        "r1.ceiling.json": json.dumps({"requested": {"tier": "standard", "effort": None},
+                                        "applied": {"tier": "standard", "effort": "high"}, "profile": "p.yaml"}),
+    }
+    rows = records.series(files)
+    assert rows[0]["tier_ceiling"] == "standard" and rows[0]["effort_ceiling"] == "high"
 
 
 def test_series_sorts_by_date_then_run():
@@ -111,6 +134,16 @@ def test_cli_runs_series_prints_table_with_run_id(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "run-42" in out and "totals:" in out
+
+
+def test_cli_runs_series_json_includes_the_ceiling_columns_from_disk(tmp_path, capsys):
+    _write_run(tmp_path, "run-42", 1.5, 2, "2026-09-01T00:00:00Z")
+    (tmp_path / "run-42.ceiling.json").write_text(json.dumps(
+        {"requested": {"tier": "cheap", "effort": None}, "applied": {"tier": "cheap", "effort": "high"}, "profile": "p.yaml"}))
+    rc = main(["runs", "series", "--runs-dir", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert doc["rows"][0]["tier_ceiling"] == "cheap" and doc["rows"][0]["effort_ceiling"] == "high"
 
 
 def test_cli_runs_series_json_parses(tmp_path, capsys):

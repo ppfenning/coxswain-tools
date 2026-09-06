@@ -14,6 +14,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import yaml
+
 from agent_tools import (
     cleanup,
     doctor,
@@ -47,12 +49,14 @@ def _runs_usage(a: argparse.Namespace) -> int:
 
 
 _SERIES_COLUMNS = ["run", "date", "cartridge_sha", "provider_profile", "calls", "turns", "cost_usd",
-                   "cache_share", "tasks_landed", "quarantined", "review_rounds", "cost_per_landed"]
+                   "cache_share", "tasks_landed", "quarantined", "review_rounds", "cost_per_landed",
+                   "tier_ceiling", "effort_ceiling"]
 
 
 def _runs_series(a: argparse.Namespace) -> int:
     d = Path(a.runs_dir)
-    files = {f.name: f.read_text(encoding="utf-8") for pattern in ("*.usage.json", "*:*.json") for f in d.glob(pattern)}
+    files = {f.name: f.read_text(encoding="utf-8")
+             for pattern in ("*.usage.json", "*:*.json", "*.ceiling.json") for f in d.glob(pattern)}
     rows = records.series(files)
     totals = records.series_totals(rows)
     if a.json:
@@ -513,6 +517,22 @@ def _route_launch(a: argparse.Namespace) -> int:
     venv_rc = _harness_ready_or_refuse(harness_dir)
     if venv_rc is not None:
         return venv_rc
+    overlaid_provider_profile = None
+    if a.tier_ceiling is not None or a.effort_ceiling is not None:
+        provider_path = Path(profile["provider_profile"]).expanduser()
+        provider_text = _read_text_or_none(provider_path)
+        try:
+            parsed = yaml.safe_load(provider_text) if provider_text is not None else None
+        except yaml.YAMLError as exc:
+            print(f"routing: provider profile at {provider_path} is not valid YAML: {exc}")
+            return 2
+        if not isinstance(parsed, dict):
+            print(f"routing: no provider profile to apply a ceiling to at {provider_path}")
+            return 2
+        overlaid_provider_profile = route.overlay(parsed, a.tier_ceiling, a.effort_ceiling)
+        if isinstance(overlaid_provider_profile, str):
+            print(overlaid_provider_profile)
+            return 2
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -565,7 +585,12 @@ def _route_launch(a: argparse.Namespace) -> int:
         needs = {}
         env_repo = ""
 
-    argv = route.harness_argv(profile, a.graph, run_id, **needs)
+    launch_profile = profile
+    overlaid_path = None
+    if overlaid_provider_profile is not None:
+        overlaid_path = runs_dir / f"{run_id}.provider-profile.yaml"
+        launch_profile = {**profile, "provider_profile": str(overlaid_path)}
+    argv = route.harness_argv(launch_profile, a.graph, run_id, **needs)
     log_path = runs_dir / f"{run_id}.log"
     pid_path = runs_dir / f"{run_id}.pid"
     trace_dir = runs_dir / f"{run_id}-trace"
@@ -577,6 +602,17 @@ def _route_launch(a: argparse.Namespace) -> int:
         print(f"log {log_path}")
         print(f"trace {trace_dir}")
         return 0
+
+    if overlaid_path is not None:
+        overlaid_path.write_text(yaml.safe_dump(overlaid_provider_profile, sort_keys=True), encoding="utf-8")
+        (runs_dir / f"{run_id}.ceiling.json").write_text(
+            json.dumps({
+                "requested": {"tier": a.tier_ceiling, "effort": a.effort_ceiling},
+                "applied": {"tier": a.tier_ceiling, "effort": a.effort_ceiling},
+                "profile": str(overlaid_path),
+            }, indent=2),
+            encoding="utf-8",
+        )
 
     with open(log_path, "ab") as log:
         proc = subprocess.Popen(
@@ -1257,6 +1293,9 @@ def build_parser() -> argparse.ArgumentParser:
     de.add_argument("--dry-run", action="store_true"); de.set_defaults(fn=_route_launch, graph="decompose")
     co = lc.add_parser("cos", help="launch the cos graph"); co.add_argument("--profile"); co.add_argument("--dry-run", action="store_true")
     co.set_defaults(fn=_route_launch, graph="cos")
+    for _launch_parser in (ep, de, co):
+        _launch_parser.add_argument("--tier-ceiling", choices=("cheap", "standard", "deep"))
+        _launch_parser.add_argument("--effort-ceiling", choices=("low", "high"))
 
     ins = sub.add_parser("install", help="clone/update coxswain components against the manifest")
     ins.add_argument("--root", required=True); ins.add_argument("--manifest"); ins.add_argument("--provider", default="claude-code")

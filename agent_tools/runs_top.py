@@ -14,7 +14,7 @@ from agent_tools.events import Event
 
 __all__ = ["Row", "highlight", "render", "row"]
 
-_COLUMNS = ("PHASE", "NODE", "ATT", "TURNS", "COST", "VERDICT", "STATUS")
+_COLUMNS = ("PHASE", "NODE", "ATT", "TURNS", "COST", "VERDICT", "STATUS", "CEIL")
 _NO_RUNS = "no runs in flight"
 
 
@@ -29,6 +29,7 @@ class Row:
     cost_usd: float
     verdict: str
     status: str
+    ceiling: str = ""
 
 
 def _status(events: list[Event], alive: bool) -> str:
@@ -41,7 +42,15 @@ def _status(events: list[Event], alive: bool) -> str:
     return "running"
 
 
-def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: list[dict]) -> Row:
+def _ceiling_label(ceiling: dict | None) -> str:
+    """Pure: the CEIL column's text for a run's parsed ceiling.json (see
+    records.ceiling_for), or "" when the run carried no tier/effort overlay."""
+    applied = (ceiling or {}).get("applied") or {}
+    tier, effort = applied.get("tier") or "", applied.get("effort") or ""
+    return "/".join(part for part in (tier, effort) if part)
+
+
+def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: list[dict], ceiling: dict | None = None) -> Row:
     """Pure: the one row a run's events and finished calls make."""
     starts = [e for e in events if e.kind == "node_started"]
     verdicts = [e for e in events if e.kind == "verdict"]
@@ -58,6 +67,7 @@ def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: li
         cost_usd=sum(c["cost_usd"] for c in calls),
         verdict=verdict,
         status=_status(events, alive),
+        ceiling=_ceiling_label(ceiling),
     )
 
 
@@ -83,6 +93,7 @@ def render(rows: list[Row], width: int) -> list[str]:
                 f"${r.cost_usd:.2f}",
                 r.verdict,
                 r.status,
+                r.ceiling,
             ]
         )
         for r in ordered

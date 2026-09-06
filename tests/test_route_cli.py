@@ -4,8 +4,10 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
+import yaml
 
 from agent_tools import route
 from agent_tools.cli import main
@@ -266,16 +268,28 @@ def _wait_for(path, timeout=5.0):
     return path.exists()
 
 
-def _write_launch_profile(tmp_path, harness_dir, ws):
+def _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=None):
     profile = tmp_path / "profile.yaml"
     profile.write_text(
         "team: acme\n"
         f"harness_dir: {harness_dir}\n"
         f"workspace_dir: {ws}\n"
         "cartridges_dir: /opt/cartridges\n"
-        "provider_profile: /opt/providers/acme.yaml\n"
+        f"provider_profile: {provider_profile or '/opt/providers/acme.yaml'}\n"
     )
     return profile
+
+
+def _write_provider_profile(tmp_path, tier="deep", effort="high"):
+    """A provider profile in its real shape: `tiers` maps each tier the profile
+    offers (up to `tier`) to a model, `effort` maps each to `effort`."""
+    models = {"cheap": "haiku", "standard": "sonnet", "deep": "opus"}
+    offered = ["cheap", "standard", "deep"][: ["cheap", "standard", "deep"].index(tier) + 1]
+    tiers = "".join(f"  {name}: {models[name]}\n" for name in offered)
+    efforts = "".join(f"  {name}: {effort}\n" for name in offered)
+    provider = tmp_path / "provider.yaml"
+    provider.write_text(f"command: claude\ntiers:\n{tiers}effort:\n{efforts}")
+    return provider
 
 
 def _init_repo(repo):
@@ -523,3 +537,209 @@ def test_launch_refuses_a_profile_missing_a_key_harness_argv_needs(tmp_path, cap
     out = capsys.readouterr().out
     assert rc == 2
     assert "harness_dir not set" in out
+
+
+def test_launch_refuses_a_tier_ceiling_above_the_profiles_own_ceiling(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("body\n")
+    provider = _write_provider_profile(tmp_path, tier="standard", effort="high")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+        "--tier-ceiling", "deep",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "standard" in out and "deep" in out
+    assert not (ws / "runs" / "fix-thing-1.pid").exists()
+    assert not list((ws / "runs").glob("*.ceiling.json"))
+
+
+def test_launch_epic_with_a_tightening_ceiling_writes_the_overlaid_profile_and_ceiling_record(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    initiative_dir = ws / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    provider = _write_provider_profile(tmp_path, tier="deep", effort="high")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
+
+    rc = main([
+        "route", "launch", "epic",
+        "--profile", str(profile),
+        "--initiative", str(initiative_dir),
+        "--repo", str(repo),
+        "--tier-ceiling", "standard",
+        "--effort-ceiling", "low",
+    ])
+    assert rc == 0
+    run_id = "demo-1"
+    assert _wait_for(ws / "runs" / f"{run_id}.pid")
+    ceiling_path = ws / "runs" / f"{run_id}.ceiling.json"
+    assert ceiling_path.exists()
+    record = json.loads(ceiling_path.read_text())
+    assert record["requested"] == {"tier": "standard", "effort": "low"}
+    assert record["applied"] == {"tier": "standard", "effort": "low"}
+    overlaid_path = Path(record["profile"])
+    overlaid = yaml.safe_load(overlaid_path.read_text())
+    assert overlaid["tiers"] == {"cheap": "haiku", "standard": "sonnet", "deep": "sonnet"}
+    assert overlaid["effort"] == {"cheap": "low", "standard": "low", "deep": "low"}
+    recorded = harness_dir / "recorded_argv.json"
+    assert _wait_for(recorded)
+    argv = json.loads(recorded.read_text())
+    assert argv[argv.index("--provider-profile") + 1] == str(overlaid_path)
+
+
+def test_launch_with_no_ceiling_flags_writes_no_ceiling_record(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("body\n")
+    provider = _write_provider_profile(tmp_path, tier="deep", effort="high")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+    ])
+    assert rc == 0
+    assert _wait_for(ws / "runs" / "fix-thing-1.pid")
+    assert not list((ws / "runs").glob("*.ceiling.json"))
+    recorded = harness_dir / "recorded_argv.json"
+    assert _wait_for(recorded)
+    argv = json.loads(recorded.read_text())
+    assert argv[argv.index("--provider-profile") + 1] == str(provider)
+
+
+def test_launch_with_only_a_tier_ceiling_leaves_effort_unset_in_the_ceiling_record(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("body\n")
+    provider = _write_provider_profile(tmp_path, tier="deep", effort="high")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+        "--tier-ceiling", "standard",
+    ])
+    assert rc == 0
+    ceiling_path = ws / "runs" / "fix-thing-1.ceiling.json"
+    record = json.loads(ceiling_path.read_text())
+    assert record["requested"] == {"tier": "standard", "effort": None}
+    assert record["applied"] == {"tier": "standard", "effort": None}
+
+
+def test_launch_dry_run_with_a_ceiling_writes_no_provider_profile_or_ceiling_file(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("body\n")
+    provider = _write_provider_profile(tmp_path, tier="deep", effort="high")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
+
+    rc = main([
+        "route", "launch", "decompose", "--dry-run",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+        "--tier-ceiling", "standard",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "fix-thing-1.provider-profile.yaml" in out
+    assert not (ws / "runs" / "fix-thing-1.provider-profile.yaml").exists()
+    assert not (ws / "runs" / "fix-thing-1.ceiling.json").exists()
+    assert not (ws / "runs" / "fix-thing-1.pid").exists()
+
+
+def test_launch_refuses_when_the_provider_profile_is_missing_and_a_ceiling_is_requested(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("body\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)  # default provider_profile path does not exist
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+        "--tier-ceiling", "standard",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "provider profile" in out
+    assert not (ws / "runs" / "fix-thing-1.pid").exists()
+
+
+def test_launch_refuses_when_the_provider_profile_is_not_valid_yaml(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("body\n")
+    provider = tmp_path / "broken.yaml"
+    provider.write_text("tier: [unterminated\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+        "--tier-ceiling", "standard",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "not valid YAML" in out
+    assert not (ws / "runs" / "fix-thing-1.pid").exists()
+
+
+def test_launch_refuses_when_the_provider_profile_does_not_parse_to_a_mapping(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("body\n")
+    provider = tmp_path / "list.yaml"
+    provider.write_text("- a\n- b\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws, provider_profile=provider)
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+        "--tier-ceiling", "standard",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "provider profile" in out
+    assert not (ws / "runs" / "fix-thing-1.pid").exists()
