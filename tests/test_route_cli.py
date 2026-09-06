@@ -482,7 +482,7 @@ def test_launch_writes_launched_json_naming_the_lock_holder(tmp_path, capsys):
     leader.write(ws / "runs", {"session": "alice", "pid": 1, "host": "some-other-host", "taken_at": fresh, "heartbeat_at": fresh})
 
     rc = main([
-        "route", "launch", "decompose",
+        "route", "launch", "decompose", "--label", "alice",
         "--profile", str(profile),
         "--idea", str(idea),
         "--initiative-id", "fix-thing",

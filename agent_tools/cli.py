@@ -254,6 +254,10 @@ def _repo_is_dirty(repo: Path) -> bool:
 
 def _runs_land(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser()
+    if a.apply:
+        guard_rc = _leader_guard_or_refuse(Path("runs"), _holder_label(a), a.force)
+        if guard_rc is not None:
+            return guard_rc
     found = _land_record(a.run_id, a.task)
     if found is None:
         print(f"land: expected exactly one task record under runs/{a.run_id}/tasks, found something else")
@@ -570,6 +574,23 @@ def _leader_read_or_refuse(runs_dir: Path):
         return None, 2
 
 
+def _holder_label(a: argparse.Namespace) -> str:
+    return getattr(a, "label", None) or os.environ.get("COX_SESSION_LABEL") or "unlabeled"
+
+
+def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool) -> int | None:
+    """Exit code 2 with the refusal printed when another live session holds the loop; None to proceed."""
+    record, rc = _leader_read_or_refuse(runs_dir)
+    if rc is not None:
+        return None
+    state = leader.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), _leader_heartbeat_minutes())
+    line = leader.guard(record, holder, state)
+    if line is None:
+        return None
+    print(f"override: {line}" if force else line)
+    return None if force else 2
+
+
 def _leader_identity() -> tuple[int, str]:
     """The pid and host that name *this session* to the lock, for `take`/`beat`/`release`.
     `os.getpid()` names this one `cox` invocation, which exits the moment the command
@@ -821,6 +842,9 @@ def _route_launch(a: argparse.Namespace) -> int:
     if venv_rc is not None:
         return venv_rc
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
+    guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force)
+    if guard_rc is not None:
+        return guard_rc
     usage_code, usage_lines = route.launch_gate(_usage_assessment(runs_dir), a.force)
     for line in usage_lines:
         print(line)
@@ -1621,7 +1645,7 @@ def build_parser() -> argparse.ArgumentParser:
     u = runs.add_parser("usage", help="usage stats and cost for one run"); u.add_argument("run_id"); u.add_argument("--runs-dir", default="runs"); u.add_argument("--json", action="store_true"); u.set_defaults(fn=_runs_usage)
     t = runs.add_parser("trace", help="the tool-call trace for one run"); t.add_argument("run_id"); t.add_argument("--runs-dir", default="runs"); t.add_argument("--role"); t.add_argument("-v", "--verbose", action="store_true"); t.set_defaults(fn=_runs_trace)
     c = runs.add_parser("clean", help="delete a run's worktree and branches locally"); c.add_argument("run_id"); c.add_argument("--repo", required=True); c.add_argument("--worktree-root", default="~/worktrees"); c.add_argument("--apply", action="store_true"); c.set_defaults(fn=_runs_clean)
-    la = runs.add_parser("land", help="merge a run's branch into the target repo"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task")
+    la = runs.add_parser("land", help="merge a run's branch into the target repo"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task"); la.add_argument("--label"); la.add_argument("--force", action="store_true", help="land despite a foreign live leader")
     la.add_argument("--worktree-root", default="~/worktrees"); la.add_argument("--apply", action="store_true"); la.add_argument("--no-merge", action="store_true"); la.set_defaults(fn=_runs_land)
     se = runs.add_parser("series", help="per-run summary rows across a runs directory"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
     ev = runs.add_parser("events", help="poll a run's log for structured events"); ev.add_argument("--runs-dir", default="runs"); ev.add_argument("--follow", action="store_true"); ev.add_argument("--json", action="store_true"); ev.set_defaults(fn=_runs_events)
@@ -1709,7 +1733,8 @@ def build_parser() -> argparse.ArgumentParser:
     for _launch_parser in (ep, de, co):
         _launch_parser.add_argument("--tier-ceiling", choices=("cheap", "standard", "deep"))
         _launch_parser.add_argument("--effort-ceiling", choices=("low", "high"))
-        _launch_parser.add_argument("--force", action="store_true", help="launch despite a usage stop")
+        _launch_parser.add_argument("--force", action="store_true", help="launch despite a usage stop or a foreign live leader")
+        _launch_parser.add_argument("--label")
 
     ins = sub.add_parser("install", help="clone/update coxswain components against the manifest")
     ins.add_argument("--root", required=True); ins.add_argument("--manifest"); ins.add_argument("--provider", default="claude-code")
