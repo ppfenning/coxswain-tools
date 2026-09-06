@@ -5,11 +5,9 @@ reading usage files, and the clock — so pacing.py never touches any of it.
 Preferred source is `ccusage blocks --active --json`. When ccusage is
 unavailable, answers empty, or has no block marked active, the fallback is
 the run records' own `*.usage.json` files: a window of `window_hours` ending
-at `now`, summing only the files whose run started inside it. Neither path
-has a known dollar ceiling yet — that comes from `policy.pacing`, in the
-coxswain-cartridges repository, once it lands — so `ceiling_usd` is left
-unset and `pacing.assess` reports the unmeasured case: pace and projection,
-no headroom or verdict past `go`.
+at `now`, summing only the files whose run started inside it. A caller with
+no `ceiling_usd` to pass leaves it `None`, and `pacing.assess` reports the
+unmeasured case: pace and projection, no headroom or verdict past `go`.
 """
 
 from __future__ import annotations
@@ -22,7 +20,7 @@ from typing import Any
 
 from agent_tools.pacing import Policy, Window
 
-__all__ = ["DEFAULT_POLICY", "gather", "window_from"]
+__all__ = ["DEFAULT_POLICY", "block_remaining", "ceiling_remaining", "gather", "window_from"]
 
 # Used wherever the resolved cartridge dict carries no `policy.pacing` key
 # yet (the cross-repository policy has not landed). These are the real
@@ -58,6 +56,7 @@ def window_from(
     usage_files: list[tuple[datetime, dict[str, Any]]],
     now: datetime,
     window_hours: float = 5.0,
+    ceiling_usd: float | None = None,
 ) -> Window:
     """Pure. `usage_files` is `(start, parsed usage.json)` pairs; the caller
     supplies each start, this function never stats a file."""
@@ -66,7 +65,7 @@ def window_from(
         span_hours = max((active["end"] - active["start"]).total_seconds() / 3600, 1e-9)
         return Window(
             start=active["start"], end=active["end"],
-            spent_usd=active["spent"], ceiling_usd=None,
+            spent_usd=active["spent"], ceiling_usd=ceiling_usd,
             burn_usd_per_hour=active["spent"] / span_hours, runs_in_flight=0,
         )
 
@@ -76,12 +75,32 @@ def window_from(
     elapsed_hours = max((now - start).total_seconds() / 3600, 1e-9)
     return Window(
         start=start, end=now,
-        spent_usd=spent_usd, ceiling_usd=None,
+        spent_usd=spent_usd, ceiling_usd=ceiling_usd,
         burn_usd_per_hour=spent_usd / elapsed_hours, runs_in_flight=len(in_window),
     )
 
 
-def gather(runs_dir: Path | str, now: datetime, run: Any = subprocess.run, window_hours: float = 5.0) -> Window:
+def block_remaining(window: Window, now: datetime) -> tuple[int, float]:
+    """Whole minutes left in the block and the fraction still to run, clamped to [0, 1]."""
+    span = (window.end - window.start).total_seconds()
+    left = max((window.end - now).total_seconds(), 0.0)
+    return int(left // 60), max(0.0, min(1.0, left / span)) if span > 0 else 0.0
+
+
+def ceiling_remaining(window: Window) -> float | None:
+    """Fraction of `ceiling_usd` unspent, clamped to [0, 1]; None when there is no ceiling."""
+    if window.ceiling_usd is None or window.ceiling_usd <= 0:
+        return None
+    return max(0.0, min(1.0, (window.ceiling_usd - window.spent_usd) / window.ceiling_usd))
+
+
+def gather(
+    runs_dir: Path | str,
+    now: datetime,
+    run: Any = subprocess.run,
+    window_hours: float = 5.0,
+    ceiling_usd: float | None = None,
+) -> Window:
     """Impure edge: launches ccusage, reads the run directory's usage files,
     and folds whichever answers into a `Window` via `window_from`."""
     blocks_json: dict[str, Any] = {}
@@ -108,4 +127,4 @@ def gather(runs_dir: Path | str, now: datetime, run: Any = subprocess.run, windo
             started = datetime.fromtimestamp(path.stat().st_mtime, tz=now.tzinfo)
         usage_files.append((started, usage))
 
-    return window_from(blocks_json, usage_files, now, window_hours)
+    return window_from(blocks_json, usage_files, now, window_hours, ceiling_usd)
