@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -232,8 +233,7 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
         r = subprocess.run(["gh", "pr", "create", "--title", step["title"], "--body", step["body"]], cwd=repo, capture_output=True, text=True)
         return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
     if kind == "wait_checks":
-        r = subprocess.run(["gh", "pr", "checks", "--watch", "--fail-fast"], cwd=repo, capture_output=True, text=True)
-        return r.returncode == 0, ("green" if r.returncode == 0 else r.stdout.strip() or r.stderr.strip())
+        return _wait_checks(repo, float(step.get("timeout_s", 300)))
     if kind == "merge":
         r = subprocess.run(["gh", "pr", "merge", "--squash", "--delete-branch"], cwd=repo, capture_output=True, text=True)
         return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
@@ -246,6 +246,23 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
         record_path.write_text(json.dumps({**record, "landed": True}, indent=2), encoding="utf-8")
         return True, f"{step['task']} marked landed at {record_path}"
     return False, f"unknown step {kind!r}"
+
+
+def _wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
+    """Poll `gh pr checks` until a check reports, one is green, or `timeout_s` passes with none registered."""
+    started = now()
+    while True:
+        r = subprocess.run(["gh", "pr", "checks", "--watch", "--fail-fast"], cwd=repo, capture_output=True, text=True)
+        output = (r.stdout or "") + (r.stderr or "")
+        decision = land.wait_decision(r.returncode, output, now() - started, timeout_s)
+        if decision == "green":
+            return True, "green"
+        if decision == "retry":
+            sleep(10)
+            continue
+        if decision == "timeout":
+            return False, f"no checks registered within {timeout_s:.0f}s"
+        return False, output.strip()
 
 
 def _repo_is_dirty(repo: Path) -> bool:
