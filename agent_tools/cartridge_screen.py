@@ -13,7 +13,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from agent_tools.editor_model import Effect, State, fold_effects, frame, rows, step
+from agent_tools.editor_model import Effect, State, fold_effects, frame, roster_from_probe, rows, step
 from agent_tools.fragments import FragmentError, write_fragment
 from agent_tools.route import parse_profile
 from agent_tools.setup_screen import key_name, resolved_argv
@@ -157,7 +157,8 @@ def main(fields: dict, *, probe=None) -> int:
     cartridges_dir = f"{workspace}/cartridges"
     python_path = f"{root}/agent-graphs/.venv/bin/python"
     facts = probe(python_path, cartridges_dir, team, [])
-    state = State(rows=tuple(rows(facts, team)), cursor=0, pending={}, message="", team=team)
+    state = State(rows=tuple(rows(facts, team)), roster=roster_from_probe(facts), cursor=0, pending={},
+                  message="", team=team)
     venv_cartridge = f"{root}/agent-cartridges/.venv/bin/cartridge"
     ctx = {"cartridges_dir": cartridges_dir, "team": team, "root": root,
            "profile_path": fields.get("profile_path", ""),

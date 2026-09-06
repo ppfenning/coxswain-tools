@@ -13,6 +13,11 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from agent_tools.provenance import _FIXED_PATHS
+from agent_tools.roster_model import Row as RosterRow
+from agent_tools.roster_model import rows as roster_rows
+from agent_tools.roster_model import set_context as roster_set_context
+from agent_tools.roster_model import set_skills as roster_set_skills
+from agent_tools.roster_model import toggle as roster_toggle
 
 _MISSING = object()
 
@@ -108,6 +113,25 @@ def rows(probe: dict, team: str) -> list[Row]:
     )
 
 
+def _cast_layers(probe: dict) -> tuple[tuple[str, dict], ...]:
+    """Each seat's owning layer, read from the same provenance map `rows` already
+    reads; a layer's own cast content is never reconstructed, so the synthetic
+    per-layer mapping this returns names each seat with an empty entry."""
+    provenance = probe.get("provenance") or {}
+    owners: dict[str, dict] = {}
+    for seat in _crew(probe.get("resolved") or {}):
+        owner = (provenance.get(f"crew.{seat}.enabled")
+                 or provenance.get(f"crew.{seat}.skills")
+                 or provenance.get(f"crew.{seat}"))
+        if owner:
+            owners.setdefault(owner, {})[seat] = {}
+    return tuple(owners.items())
+
+
+def roster_from_probe(probe: dict) -> tuple[RosterRow, ...]:
+    return roster_rows(_crew(probe.get("resolved") or {}), _cast_layers(probe))
+
+
 def sections(items: list[Row]) -> dict[str, list[Row]]:
     """Group rows by their leading key segment. `rows()` already sorts by
     section then key; re-sort defensively so a caller need not."""
@@ -134,6 +158,8 @@ class State:
     buffer: str = ""  # text typed so far while `editing` is set; apply_text reads this on ENTER
     team: str = ""  # carried so apply_probe can rebuild rows with the same editability rule
     effects: tuple[Effect, ...] = ()
+    view: str = "cartridge"  # "cartridge" or "roster"; v switches, cursor is shared
+    roster: tuple[RosterRow, ...] = ()
 
 
 def _editable_indexes(rows: tuple[Row, ...]) -> list[int]:
@@ -146,8 +172,19 @@ def _current_row(state: State) -> Row | None:
     return None
 
 
+def _current_roster_row(state: State) -> RosterRow | None:
+    if 0 <= state.cursor < len(state.roster):
+        return state.roster[state.cursor]
+    return None
+
+
+def _toggle_view(state: State) -> State:
+    view = "roster" if state.view == "cartridge" else "cartridge"
+    return replace(state, view=view, cursor=0, message=f"view: {view}")
+
+
 def _move(state: State, delta: int) -> State:
-    indexes = _editable_indexes(state.rows)
+    indexes = list(range(len(state.roster))) if state.view == "roster" else _editable_indexes(state.rows)
     if not indexes:
         return replace(state, message="no editable rows")
     if delta > 0:
@@ -171,7 +208,18 @@ def _coerce_like(current: object, candidate: str) -> object:
         return candidate
 
 
+def _roster_toggle(state: State) -> State:
+    row = _current_roster_row(state)
+    if row is None:
+        return replace(state, message="no seat selected")
+    edits = roster_toggle({"cast": {row.seat: {"enabled": row.enabled}}}, row.seat)
+    return replace(state, effects=(Effect("write_fragment", {"edits": edits}), Effect("run_probe", {})),
+                   message=f"{row.seat} -> enabled={not row.enabled}")
+
+
 def _space(state: State) -> State:
+    if state.view == "roster":
+        return _roster_toggle(state)
     row = _current_row(state)
     if row is None:
         return replace(state, message="no row selected")
@@ -198,13 +246,37 @@ def _space(state: State) -> State:
     return replace(state, message=f"{row.key} has nothing to toggle")
 
 
+def _edit_roster_field(state: State, field: str) -> State:
+    row = _current_roster_row(state)
+    if row is None:
+        return replace(state, message="no seat selected")
+    return replace(state, editing=f"roster:{row.seat}:{field}", buffer="", message=f"editing {row.seat}.{field}")
+
+
 def _edit(state: State) -> State:
+    if state.view == "roster":
+        return _edit_roster_field(state, "context")
     row = _current_row(state)
     if row is None:
         return replace(state, message="no row selected")
     if not row.editable or row.kind != "text":
         return replace(state, message=f"{row.key} cannot be edited")
     return replace(state, editing=row.key, buffer="", message=f"editing {row.key}")
+
+
+def _edit_skills(state: State) -> State:
+    if state.view != "roster":
+        return replace(state, message="skills editing is roster-only")
+    return _edit_roster_field(state, "skills")
+
+
+def _apply_roster_text(state: State, key: str, text: str) -> State:
+    _, seat, field = key.split(":", 2)
+    skills = [s.strip() for s in text.split(",") if s.strip()]
+    edits = roster_set_skills(seat, skills) if field == "skills" else roster_set_context(seat, text)
+    return replace(state, editing=None, buffer="",
+                   effects=(Effect("write_fragment", {"edits": edits}), Effect("run_probe", {})),
+                   message=f"{seat}.{field} set")
 
 
 def apply_text(state: State, text: str) -> State:
@@ -215,6 +287,8 @@ def apply_text(state: State, text: str) -> State:
     key = state.editing
     if key is None:
         return replace(state, message="nothing is being edited; press e on a text row first")
+    if key.startswith("roster:"):
+        return _apply_roster_text(state, key, text)
     return replace(state, pending={**state.pending, key: text}, editing=None, buffer="", message=f"{key} set")
 
 
@@ -255,11 +329,23 @@ def _refresh(state: State) -> State:
 def apply_probe(state: State, probe: dict) -> State:
     """The write landed in `edited.yaml`; the freshly probed rows come back
     with layer `edited`, which `rows()` already treats as editable."""
-    return replace(state, rows=tuple(rows(probe, state.team)), pending={}, effects=())
+    return replace(state, rows=tuple(rows(probe, state.team)), roster=roster_from_probe(probe),
+                   pending={}, effects=())
+
+
+def _roster_line(row: RosterRow, state: State, width: int) -> str:
+    if state.editing == f"roster:{row.seat}:context":
+        return f"> {row.seat}.context = {state.buffer}_"[:width]
+    if state.editing == f"roster:{row.seat}:skills":
+        return f"> {row.seat}.skills = {state.buffer}_"[:width]
+    mark = "x" if row.enabled else " "
+    return f"[{mark}] {row.seat} [{row.layer}] skills={row.skills_count} context={row.context}"[:width]
 
 
 def frame(state: State, width: int) -> list[str]:
     """The lines the screen draws. Pure text: no curses, no colour."""
+    if state.view == "roster":
+        return [_roster_line(row, state, width) for row in state.roster] + [state.message[:width]]
 
     def line(row: Row) -> str:
         if row.key == state.editing:
@@ -283,6 +369,8 @@ _HANDLERS = {
     "u": _undo,
     "w": _write,
     "r": _refresh,
+    "v": _toggle_view,
+    "s": _edit_skills,
     "q": replace,
 }
 
