@@ -28,19 +28,14 @@ def test_a_dead_run_with_no_events_is_exited_and_dim():
 
 
 def test_turns_sum_across_calls():
-    calls = [{"node": "build", "attempt": 1, "turns": 3}, {"node": "build", "attempt": 2, "turns": 2}]
+    calls = [{"node": "build", "attempt": 1, "turns": 3, "cost_usd": 0.5}, {"node": "build", "attempt": 2, "turns": 2, "cost_usd": 0.25}]
     r = row("r1", True, [], [], calls)
     assert r.turns == 5
 
 
-def test_row_carries_the_tokens_argument_through_unsummed():
-    r = row("r1", True, [], [], [], tokens=1204338)
-    assert r.tokens == 1204338
-
-
-def test_row_with_no_tokens_argument_has_a_none_field():
-    r = row("r1", True, [], [], [])
-    assert r.tokens is None
+def test_cost_sums_across_calls():
+    calls = [{"node": "build", "attempt": 1, "turns": 3, "cost_usd": 0.5}, {"node": "build", "attempt": 2, "turns": 2, "cost_usd": 0.25}]
+    assert row("r1", True, [], [], calls).cost_usd == 0.75
 
 
 def test_render_cuts_every_line_and_sorts_alive_first():
@@ -116,21 +111,12 @@ def test_render_right_aligns_numeric_columns():
     assert lines[1][turns_start:turns_start + widths[4]] == "22".rjust(widths[4])
 
 
-def test_render_formats_the_tokens_cell_with_a_thousands_separator():
-    rows = [Row("r1", True, "build", "b", 1, 1, 1204338, "", "running")]
-    lines = render(rows, 80)
-    assert "1,204,338" in lines[1]
-
-
-def test_render_of_a_row_with_no_tokens_leaves_the_cell_blank_not_zero():
-    r = Row("r1", True, "build", "b", 1, 1, None, "", "running")
-    widths = column_widths([r], _HEADERS)
-    start = sum(widths[:5]) + 5
-    lines = render([r], 80)
-    assert lines[1][start:start + widths[5]] == " " * widths[5]
+def test_render_formats_the_cost_cell_as_dollars():
+    rows = [Row("r1", True, "build", "b", 1, 1, 1.5, "", "running")]
+    assert "$1.50" in render(rows, 80)[1]
 
 
 def test_render_of_no_rows_still_renders_the_header():
     lines = render([], 40)
     assert lines[0].split()[0] == "RUN"
-    assert "TOKENS" in lines[0]
+    assert "COST" in lines[0]

@@ -14,7 +14,7 @@ from agent_tools.home_model import (
 )
 from agent_tools.runs_top import Row, render
 
-_ROW = Row(run="r1", alive=True, phase="build", node="build-in-worktree", attempt=1, turns=3, tokens=1500, verdict="", status="running", ceiling="")
+_ROW = Row(run="r1", alive=True, phase="build", node="build-in-worktree", attempt=1, turns=3, cost_usd=1.5, verdict="", status="running", ceiling="")
 
 _WINDOW = {"tier": "sonnet", "effort_ceiling": "high", "spent_usd": 12.5, "time_to_reset": "2h15m"}
 _BACKLOG = {"queued": 4, "decomposed": 2, "landed": 9, "ready": {"tools-home": 3}}
