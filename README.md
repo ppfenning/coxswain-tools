@@ -1,4 +1,4 @@
-# agent-tools
+# coxswain-tools
 
 Deterministic tools the agent seats call **instead of spending tokens**. Anything
 a seat would otherwise do by reading a file wholesale and reasoning about it —
@@ -13,13 +13,13 @@ touch a real run.
 
 | Repository | Owns |
 |---|---|
-| [`agent-cartridges`](https://github.com/ppfenning/agent-cartridges) | who a run works for |
-| [`agent-graphs`](https://github.com/ppfenning/agent-graphs) | what runs, and the harness that runs it |
-| [`agent-cast`](https://github.com/ppfenning/agent-cast) | who speaks |
-| [`agent-voice-hud`](https://github.com/ppfenning/agent-voice-hud) | where you hear and see it |
-| **`agent-tools`** | what the seats run so they do not have to think |
+| [`coxswain-cartridges`](https://github.com/ppfenning/coxswain-cartridges) | who a run works for |
+| [`coxswain-graphs`](https://github.com/ppfenning/coxswain-graphs) | what runs, and the harness that runs it |
+| [`coxswain-crew`](https://github.com/ppfenning/coxswain-crew) | who speaks |
+| [`coxswain-hud`](https://github.com/ppfenning/coxswain-hud) | where you hear and see it |
+| **`coxswain-tools`** | what the seats run so they do not have to think |
 
-Tools that read agent-graphs' records and post to agent-voice-hud belong to
+Tools that read coxswain-graphs' records and post to coxswain-hud belong to
 neither; a seat routes to them by name the way it routes to skills. Nothing here
 names an employer, a tracker, or a person — CI refuses it.
 
@@ -32,7 +32,7 @@ Not yet on PyPI: once the first tag ships, this package will be `coxswain-tools`
 ```bash
 git clone https://github.com/ppfenning/coxswain-tools ~/repos/coxswain-tools
 cd ~/repos/coxswain-tools && uv venv && uv pip install -e ".[dev]"
-uv tool install -e .            # `agent-tools` on PATH for every seat
+uv tool install -e .            # `coxswain-tools` on PATH for every seat
 ```
 
 ## Commands
@@ -64,7 +64,7 @@ cox route launch decompose --idea FILE --initiative-id ID [--dry-run]   start th
 cox route launch cos [--dry-run]   start the chief of staff detached: it reads intake and runs, dispatches within the bound, and consumes what it dispatched
 cox setup   a small terminal UI over setup doctor, setup install and cartridge init (needs a terminal)
 cox setup doctor [--profile PATH] [--json]      read-only: profile, paths, harness venv, cartridge, skills, provider, workspace — a table and an exit code
-cox setup install --root DIR --team T --workspace DIR [--plugins] [--hook] [--force-profile] [--dry-run]   venvs, agent-tools on PATH, the profile, optionally the provider plugin and a session-start hook; dry-run prints the plan
+cox setup install --root DIR --team T --workspace DIR [--plugins] [--hook] [--force-profile] [--dry-run]   venvs, coxswain-tools on PATH, the profile, optionally the provider plugin and a session-start hook; dry-run prints the plan
 cox install --root DIR [--manifest PATH] [--provider NAME] [--with FLAG] [--team T] [--workspace DIR] [--dry-run]   the plan over coxswain's manifest.toml: clone, fetch, skip or refuse per component, then setup_install, doctor, desktop; --dry-run only prints it, otherwise it runs each step and exits 0 only if every step ran clean
 cox upgrade --root DIR [--manifest PATH] [--provider NAME] [--with FLAG] [--team T] [--workspace DIR] [--to VERSION] [--dry-run]   same plan as install, but refuses (exit 2, naming the directory) if any present checkout is dirty; --to overrides every component's pinned tag for this run
 cox versions [--root DIR] [--manifest PATH]     pinned vs. installed tag per component, and status: ok, drift, missing, extra
@@ -84,7 +84,7 @@ cox dev release-check [--json] [--root R] [--manifest PATH]   runs the registere
 Every command that reads a record is pure over parsed data and unit-tested
 against fixtures; every command that writes is dry-run unless `--apply`.
 
-The `route` group reads one profile, `~/.config/agent-tools/profile.yaml`:
+The `route` group reads one profile, `~/.config/coxswain-tools/profile.yaml`:
 `team`, `cartridges_dir`, `skills_roots`, `provider_profile`, `harness_dir`,
 `workspace_dir`, and `assume`, the gate answer detached runs are started
 with. `--profile PATH` overrides the location for one command,
