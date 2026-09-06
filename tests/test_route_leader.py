@@ -183,3 +183,21 @@ def test_cli_take_then_release_succeeds_for_the_same_session(tmp_path, capsys):
 def test_identity_prefers_an_explicit_pid_over_the_parent():
     assert _leader_identity(4242)[0] == 4242
     assert _leader_identity()[0] == os.getppid()
+
+
+def test_cli_take_refuses_an_explicit_dead_pid_and_writes_nothing(tmp_path, capsys):
+    profile = _profile(tmp_path)
+    runs_dir = tmp_path / "runs"
+    rc = main(["route", "leader", "take", "--profile", str(profile), "--pid", str(_DEAD_PID)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert str(_DEAD_PID) in out
+    assert leader.read(runs_dir) is None
+
+
+def test_cli_take_with_an_explicit_live_pid_still_takes(tmp_path, capsys):
+    profile = _profile(tmp_path)
+    runs_dir = tmp_path / "runs"
+    rc = main(["route", "leader", "take", "--profile", str(profile), "--pid", str(os.getpid())])
+    assert rc == 0
+    assert leader.read(runs_dir)["pid"] == os.getpid()
