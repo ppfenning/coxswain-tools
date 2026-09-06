@@ -14,6 +14,7 @@ from agent_tools.editor_model import (
     step,
 )
 from agent_tools.provenance import attribute
+from agent_tools.roster_model import Row as RosterRow
 
 
 def test_a_key_set_by_base_is_read_only_with_layer_base():
@@ -586,3 +587,38 @@ def test_fold_effects_folds_a_clean_write_with_its_paired_probe_into_fresh_rows_
     assert after.pending == {}
     assert after.effects == ()
     assert after.rows[0].layer == "edited"
+
+
+_ROSTER_ROW = RosterRow(seat="builder", enabled=True, layer="acme", skills_count=1, context="ships features")
+
+
+def test_v_switches_view_and_resets_the_cursor():
+    state = State(rows=(_TOGGLE_ROW,), cursor=1, pending={}, message="")
+    after = step(state, "v")
+    assert after.view == "roster"
+    assert after.cursor == 0
+
+
+def test_space_on_a_roster_row_writes_a_toggle_effect_off_the_seats_current_enabled_flag():
+    state = State(rows=(), roster=(_ROSTER_ROW,), cursor=0, pending={}, message="", view="roster")
+    after = step(state, "space")
+    assert after.effects[0] == Effect("write_fragment", {"edits": {"cast": {"builder": {"enabled": False}}}})
+
+
+def test_e_on_a_roster_row_starts_editing_its_context():
+    state = State(rows=(), roster=(_ROSTER_ROW,), cursor=0, pending={}, message="", view="roster")
+    after = step(state, "e")
+    assert after.editing == "roster:builder:context"
+
+
+def test_s_on_a_roster_row_starts_editing_its_skills():
+    state = State(rows=(), roster=(_ROSTER_ROW,), cursor=0, pending={}, message="", view="roster")
+    after = step(state, "s")
+    assert after.editing == "roster:builder:skills"
+
+
+def test_committing_text_while_editing_a_roster_skills_field_writes_a_split_skills_list():
+    state = State(rows=(), roster=(_ROSTER_ROW,), cursor=0, pending={}, message="",
+                  view="roster", editing="roster:builder:skills", buffer="")
+    after = apply_text(state, "writer, reviewer")
+    assert after.effects[0] == Effect("write_fragment", {"edits": {"cast": {"builder": {"skills": ["writer", "reviewer"]}}}})
