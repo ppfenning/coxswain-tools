@@ -104,3 +104,10 @@ def test_cli_runs_detail_default_prints_the_rendered_lines(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "run r1" in out
+
+
+def test_a_trace_line_whose_message_is_a_string_is_skipped_not_raised():
+    from agent_tools.runs_detail_screen import _tool_names
+
+    events = [{"message": "resuming"}, {"message": {"content": [{"type": "tool_use", "name": "Read"}]}}, {"message": None}, "junk"]
+    assert _tool_names(events) == ["Read"]
