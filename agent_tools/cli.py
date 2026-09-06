@@ -966,7 +966,7 @@ def _route_launch(a: argparse.Namespace) -> int:
 
 
 _CORE_PROBE_SCRIPT = '''
-import json, sys
+import json, os, sys
 
 cartridges_dir, team, *roots = sys.argv[1:]
 out = {"import": None, "load": None, "indexed": {}, "resolved": None, "skill_index": {}, "layers": None}
@@ -998,18 +998,31 @@ except Exception as exc:
     # not silently read as "nothing set anything".
     out["layers"] = None
     out["layers_error"] = f"{type(exc).__name__}: {exc}"
+overlay_text = os.environ.get("AGENT_TOOLS_OVERLAY_TEXT")
+if overlay_text is None:
+    out["overlay_errors"] = None
+else:
+    try:
+        from core.cartridge import overlay_errors
+        out["overlay_errors"] = overlay_errors(overlay_text)
+    except Exception as exc:
+        out["overlay_errors"] = [f"{type(exc).__name__}: {exc}"]
 print(json.dumps(out))
 '''
 
 
-def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roots: list, raw_roots: list | None = None) -> dict:
+def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roots: list, raw_roots: list | None = None,
+                     overlay_text: str | None = None) -> dict:
     """One `python -c` call into the harness venv (spec: setup doctor). Any
     failure to get parseable JSON back is folded into `core_import` as the
     stderr tail, never raised."""
+    env = dict(os.environ)
+    if overlay_text is not None:
+        env["AGENT_TOOLS_OVERLAY_TEXT"] = overlay_text
     try:
         proc = subprocess.run(
             [python_path, "-c", _CORE_PROBE_SCRIPT, cartridges_dir, team, *skills_roots],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=60, env=env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"core_import": str(exc)}
@@ -1026,6 +1039,8 @@ def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roo
     facts = {"core_import": parsed.get("import"), "cartridge_load": parsed.get("load"),
              "skill_roots_indexed": indexed, "resolved": parsed.get("resolved"),
              "skill_index": parsed.get("skill_index", {})}
+    if "overlay_errors" in parsed:
+        facts["overlay_errors"] = parsed["overlay_errors"]
     # Exactly one of `provenance`/`provenance_error` is set below, on every
     # path: a fact dict carrying neither would read as "nothing to report"
     # rather than "the walk never happened", which is the silent-mislabel
@@ -1076,7 +1091,7 @@ def _workspace_facts(workspace_dir: str) -> dict:
     return {"workspace_dirs": {name: (ws / name).exists() for name in ("work", "runs", "intake")}}
 
 
-def _gather_doctor_facts(profile_path: Path) -> dict:
+def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     """Gathers exactly the Facts keys `doctor.checks` reads; never refuses on
     a missing or unparseable profile, since reporting that is the doctor's
     job (unlike `_resolve_profile_or_refuse`, which is for `file`/`launch`)."""
@@ -1098,8 +1113,9 @@ def _gather_doctor_facts(profile_path: Path) -> dict:
     venv_python = Path(harness_dir) / ".venv" / "bin" / "python" if harness_dir else Path("/nonexistent")
     facts["harness_python_exists"] = venv_python.exists()
     if facts["harness_python_exists"]:
+        overlay_text = _read_text_or_none(repo / ".agent" / "cartridge.yaml")
         facts.update(_run_core_probe(str(venv_python), expand(profile.get("cartridges_dir", "")), profile.get("team", ""),
-                                     [expand(r) for r in roots], raw_roots=roots))
+                                     [expand(r) for r in roots], raw_roots=roots, overlay_text=overlay_text))
     if profile.get("provider_profile"):
         facts.update(_provider_facts(expand(profile["provider_profile"])))
     if profile.get("workspace_dir"):
@@ -1108,7 +1124,8 @@ def _gather_doctor_facts(profile_path: Path) -> dict:
 
 
 def _setup_doctor(a: argparse.Namespace) -> int:
-    rows = doctor.checks(_gather_doctor_facts(_profile_path(a)))
+    repo = Path(a.repo).expanduser() if a.repo else Path.cwd()
+    rows = doctor.checks(_gather_doctor_facts(_profile_path(a), repo))
     rc = doctor.exit_code(rows)
     print(json.dumps({"rows": rows, "ok": rc == 0}, indent=2) if a.json else doctor.render(rows))
     return rc
@@ -1783,7 +1800,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_p.add_argument("--profile")
     setup_p.set_defaults(fn=_setup_tui)
     su = setup_p.add_subparsers(dest="cmd", required=False)
-    sd = su.add_parser("doctor", help="check this machine's profile against what it needs"); sd.add_argument("--profile"); sd.add_argument("--json", action="store_true"); sd.set_defaults(fn=_setup_doctor)
+    sd = su.add_parser("doctor", help="check this machine's profile against what it needs"); sd.add_argument("--profile"); sd.add_argument("--repo", help="target repo to check for a .agent/cartridge.yaml overlay (default: cwd)"); sd.add_argument("--json", action="store_true"); sd.set_defaults(fn=_setup_doctor)
     si = su.add_parser("install", help="clone components and write a profile for this machine")
     si.add_argument("--root", required=True); si.add_argument("--team", required=True); si.add_argument("--workspace", required=True)
     si.add_argument("--provider-profile"); si.add_argument("--skills-root"); si.add_argument("--assume", default="a", choices=("a", "r"))

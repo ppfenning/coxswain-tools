@@ -8,6 +8,7 @@ _CHECK_ORDER = (
     "harness venv",
     "core importable",
     "cartridge",
+    "project overlay",
     "skills",
     "provider",
     "workspace",
@@ -22,6 +23,7 @@ def _good_facts():
         "harness_python_exists": True,
         "core_import": None,
         "cartridge_load": None,
+        "overlay_errors": None,
         "skill_roots_indexed": {"/s1": 3},
         "provider_command": "claude",
         "provider_on_path": True,
@@ -49,13 +51,34 @@ def test_checks_returns_rows_in_the_fixed_order():
     assert [r["check"] for r in rows] == list(_CHECK_ORDER)
 
 
+def test_a_none_overlay_errors_fact_gives_an_ok_row_naming_no_project_overlay():
+    rows = _rows_by_check(doctor.checks(_good_facts()))
+    assert rows["project overlay"] == {"check": "project overlay", "ok": True, "detail": "no project overlay"}
+
+
+def test_empty_overlay_errors_gives_an_ok_row():
+    facts = _good_facts()
+    facts["overlay_errors"] = []
+    rows = _rows_by_check(doctor.checks(facts))
+    assert rows["project overlay"] == {"check": "project overlay", "ok": True, "detail": "ok"}
+
+
+def test_a_refused_overlay_key_fails_the_row_and_names_it():
+    facts = _good_facts()
+    facts["overlay_errors"] = ["skills is refused in a project overlay"]
+    rows = _rows_by_check(doctor.checks(facts))
+    assert rows["project overlay"] == {
+        "check": "project overlay", "ok": False, "detail": "skills is refused in a project overlay",
+    }
+
+
 def test_absent_profile_fails_profile_and_skips_dependent_rows():
     facts = _good_facts()
     facts["profile_text"] = None
     rows = _rows_by_check(doctor.checks(facts))
     assert rows["profile"]["ok"] is False
     assert "/profiles/a.yaml" in rows["profile"]["detail"]
-    for check in ("profile paths", "harness venv", "core importable", "cartridge", "skills", "provider", "workspace"):
+    for check in ("profile paths", "harness venv", "core importable", "cartridge", "project overlay", "skills", "provider", "workspace"):
         assert rows[check]["ok"] is False
         assert rows[check]["detail"] == "skipped: no profile"
 
@@ -219,7 +242,7 @@ def test_render_lists_every_row_in_order_with_its_own_check_label():
     data_lines = lines[1 : 1 + len(rows)]
     labels = [re.split(r"\s{2,}", line.strip())[0] for line in data_lines]
     assert labels == list(_CHECK_ORDER)
-    assert lines[-1] == "doctor: 8 ok, 0 failing"
+    assert lines[-1] == "doctor: 9 ok, 0 failing"
 
 
 def test_render_marks_a_failing_row_as_fail_and_counts_it():
@@ -228,7 +251,7 @@ def test_render_marks_a_failing_row_as_fail_and_counts_it():
     rows = doctor.checks(facts)
     text = doctor.render(rows)
     assert "FAIL" in text
-    assert "doctor: 7 ok, 1 failing" in text
+    assert "doctor: 8 ok, 1 failing" in text
 
 
 def test_empty_facts_dict_yields_all_rows_not_checked_and_exit_one():

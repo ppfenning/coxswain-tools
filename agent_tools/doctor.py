@@ -97,6 +97,19 @@ def _none_ok_row(check: str, facts: Mapping, key: str, cascade: bool) -> dict:
     return {"check": check, "ok": False, "detail": str(val)}
 
 
+def _overlay_row(facts: Mapping, cascade: bool) -> dict:
+    if cascade:
+        return _skip("project overlay")
+    errors = facts.get("overlay_errors", _MISSING)
+    if errors is _MISSING:
+        return _not_checked("project overlay")
+    if errors is None:
+        return {"check": "project overlay", "ok": True, "detail": "no project overlay"}
+    if not errors:
+        return {"check": "project overlay", "ok": True, "detail": "ok"}
+    return {"check": "project overlay", "ok": False, "detail": str(errors[0])}
+
+
 def _skills_row(facts: Mapping, cascade: bool, parsed: dict | None) -> dict:
     if cascade:
         return _skip("skills")
@@ -154,7 +167,7 @@ def _workspace_row(facts: Mapping, cascade: bool) -> dict:
 def checks(facts: Mapping) -> list[dict]:
     """Judge a Facts mapping. Returns rows `{"check", "ok", "detail"}` in a
     fixed check order: profile, profile paths, harness venv, core
-    importable, cartridge, skills, provider, workspace. A fact that was
+    importable, cartridge, project overlay, skills, provider, workspace. A fact that was
     never gathered fails as "not checked"; a profile that fails to parse
     fails every row after it as "skipped: no profile"; an empty collection
     where paths, skill roots or workspace dirs belong fails naming that
@@ -166,6 +179,7 @@ def checks(facts: Mapping) -> list[dict]:
         _flag_row("harness venv", facts, "harness_python_exists", cascade, "venv missing"),
         _none_ok_row("core importable", facts, "core_import", cascade),
         _none_ok_row("cartridge", facts, "cartridge_load", cascade),
+        _overlay_row(facts, cascade),
         _skills_row(facts, cascade, parsed),
         _provider_row(facts, cascade),
         _workspace_row(facts, cascade),

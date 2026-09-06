@@ -17,7 +17,7 @@ harness_dir = Path(__file__).resolve().parents[2]
 (harness_dir / "probe_argv.json").write_text(json.dumps(args))
 
 load = None if os.path.isdir(cartridges_dir) else f"cartridge not found: {{cartridges_dir}}"
-print(json.dumps({{"import": None, "load": load, "indexed": {{root: 3 for root in roots}}}}))
+print(json.dumps({{"import": None, "load": load, "indexed": {{root: 3 for root in roots}}, "overlay_errors": None}}))
 """
 
 _PROVIDER = """#!{python}
@@ -252,6 +252,52 @@ def test_an_empty_layers_list_is_a_loader_contract_violation_not_a_clean_result(
                              [str(skills_a), str(skills_b)])
     assert "provenance" not in facts
     assert facts["provenance_error"] == "the loader returned no layers"
+
+
+_FAKE_CORE_OVERLAY = dict(_FAKE_CORE_OK)
+_FAKE_CORE_OVERLAY["core/cartridge.py"] = (
+    "class CartridgeError(Exception):\n"
+    "    pass\n\n"
+    "def load(team, cartridges_dir, *, skill_index):\n"
+    "    return {'team': team}\n\n"
+    "def layers(team, cartridges_dir, *, skill_index):\n"
+    "    return [('base', {'policy': {'review_tier': '1'}})]\n\n"
+    "def overlay_errors(text):\n"
+    "    return ['skills'] if 'skills' in text else []\n"
+)
+
+
+def test_an_overlay_with_a_refused_key_fails_the_project_overlay_row_naming_it(tmp_path, monkeypatch, capsys):
+    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OVERLAY)
+    repo = tmp_path / "repo"
+    (repo / ".agent").mkdir(parents=True)
+    (repo / ".agent" / "cartridge.yaml").write_text("skills:\n  - forbidden\n")
+    rc = main(["setup", "doctor", "--profile", str(profile), "--repo", str(repo), "--json"])
+    rows = _rows(capsys)
+    assert rows["project overlay"]["ok"] is False
+    assert rows["project overlay"]["detail"] == "skills"
+    assert rc == 1
+
+
+def test_no_overlay_file_leaves_every_row_ok(tmp_path, monkeypatch, capsys):
+    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OVERLAY)
+    repo = tmp_path / "repo"; repo.mkdir()
+    rc = main(["setup", "doctor", "--profile", str(profile), "--repo", str(repo), "--json"])
+    rows = _rows(capsys)
+    assert rows["project overlay"] == {"check": "project overlay", "ok": True, "detail": "no project overlay"}
+    assert rc == 0
+
+
+def test_a_core_import_failure_leaves_project_overlay_not_checked_even_with_an_overlay_present(tmp_path, monkeypatch, capsys):
+    fake = {"core/__init__.py": "", "core/cartridge.py": _FAKE_CORE_OVERLAY["core/cartridge.py"]}
+    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, fake)
+    repo = tmp_path / "repo"
+    (repo / ".agent").mkdir(parents=True)
+    (repo / ".agent" / "cartridge.yaml").write_text("skills:\n  - forbidden\n")
+    rc = main(["setup", "doctor", "--profile", str(profile), "--repo", str(repo), "--json"])
+    rows = _rows(capsys)
+    assert rows["project overlay"] == {"check": "project overlay", "ok": False, "detail": "not checked"}
+    assert rc == 1
 
 
 def test_a_trailing_yaml_comment_on_the_provider_command_is_not_part_of_the_command(tmp_path, monkeypatch, capsys):
