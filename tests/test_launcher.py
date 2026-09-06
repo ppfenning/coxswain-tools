@@ -101,3 +101,23 @@ def test_the_profile_is_found_through_the_env_var_when_no_flag_is_given(tmp_path
     out = capsys.readouterr().out
     assert rc == 0
     assert "--plugin-dir" in out and str(tmp_path / "workspace") in out
+
+
+def test_no_arg_off_a_tty_prints_route_status_and_does_not_open_curses(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    monkeypatch.setattr("agent_tools.home_screen.main", lambda: (_ for _ in ()).throw(AssertionError("curses opened")))
+    profile = _profile(tmp_path, tmp_path / "skills")
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
+    main(["route", "status"])
+    expected = capsys.readouterr().out
+    main([])
+    assert capsys.readouterr().out == expected
+
+
+def test_home_and_bare_tty_both_call_the_home_entry_function(monkeypatch):
+    calls = []
+    monkeypatch.setattr("agent_tools.home_screen.main", lambda: calls.append(True) or 0)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    main([])
+    main(["home"])
+    assert len(calls) == 2

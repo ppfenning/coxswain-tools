@@ -1554,6 +1554,11 @@ def _release_check(a: argparse.Namespace) -> int:
     return 0
 
 
+def _home(a: argparse.Namespace) -> int:
+    from agent_tools import home_screen
+    return home_screen.main()
+
+
 def _setup_tui(a: argparse.Namespace) -> int:
     if not sys.stdin.isatty():
         print("setup: needs a terminal; use setup doctor / setup install / cartridge init directly")
@@ -1765,6 +1770,9 @@ def build_parser() -> argparse.ArgumentParser:
     old_rel.add_argument("rest", nargs=argparse.REMAINDER)
     old_rel.set_defaults(fn=_release_moved)
 
+    home_p = sub.add_parser("home", help="the live dashboard: runs, leader, backlog")
+    home_p.set_defaults(fn=_home)
+
     setup_p = sub.add_parser(
         "setup", help="does this machine's profile actually work",
         description="Does this machine's profile actually work.",
@@ -1880,6 +1888,11 @@ def _bare_launcher_split(args: list[str]):
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
+    if not args:
+        if sys.stdout.isatty():
+            from agent_tools import home_screen
+            return home_screen.main()
+        return _route_status(argparse.Namespace(profile=None, json=False))
     split = _bare_launcher_split(args)
     head, tail = split if split is not None else (args, [])
     a = build_parser().parse_args(head)
