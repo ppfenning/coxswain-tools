@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
@@ -24,6 +25,7 @@ from agent_tools import (
     install,
     install_exec,
     land,
+    leader,
     pacing,
     plan,
     provenance,
@@ -454,6 +456,158 @@ def _route_status(a: argparse.Namespace) -> int:
         print(json.dumps(rows, indent=2) if a.json else route.render_status(rows))
     except Exception as exc:
         print(f"routing: status unavailable ({type(exc).__name__}: {exc})")
+    return 0
+
+
+def _leader_runs_dir_or_refuse(a: argparse.Namespace):
+    """spec: the leader lock lives under the profile's workspace, same as
+    `route status`'s runs dir. Returns (profile, runs_dir, None) or
+    (None, None, 2) after printing the refusal."""
+    profile_path = _profile_path(a)
+    text = _read_text_or_none(profile_path)
+    if text is None:
+        print(f"routing: no profile at {profile_path}")
+        return None, None, 2
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError as exc:
+        print(f"routing: profile unreadable: {exc}")
+        return None, None, 2
+    workspace = profile.get("workspace_dir", "")
+    if not workspace:
+        print(f"routing: workspace_dir not set in profile {profile_path}")
+        return None, None, 2
+    return profile, Path(workspace).expanduser() / "runs", None
+
+
+def _leader_heartbeat_minutes() -> int:
+    """`policy.leader.heartbeat_minutes` from the resolved cartridge dict, default 10.
+    Resolving a cartridge's own policy is another repository's item, and
+    `route.parse_profile`'s flat `key: scalar` schema (spec §1) has no `policy` key to
+    read in the meantime, so this always answers the default until that lands."""
+    return leader.DEFAULT_HEARTBEAT_MINUTES
+
+
+def _leader_read_or_refuse(runs_dir: Path):
+    """A file present but unreadable or not valid JSON is a refusal, not a free lock
+    (charter A6: `leader.read` raises at the edge; here is where that becomes a value).
+    Returns `(record_or_none, None)` or `(None, 2)` after printing the reason."""
+    try:
+        return leader.read(runs_dir), None
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"leader: lock file unreadable ({type(exc).__name__}: {exc})")
+        return None, 2
+
+
+def _leader_identity() -> tuple[int, str]:
+    """The pid and host that name *this session* to the lock, for `take`/`beat`/`release`.
+    `os.getpid()` names this one `cox` invocation, which exits the moment the command
+    returns; every subsequent `beat`/`release` from the same landing-loop session is a
+    separate `cox` process. `os.getppid()` names the process that invoked `cox` — the
+    long-running script or shell loop that actually owns the loop and issues `take`,
+    `beat` and `release` in turn — so identity, and its liveness, survive across calls."""
+    return os.getppid(), socket.gethostname()
+
+
+def _leader_pid_alive(record: dict | None) -> bool:
+    """A pid is judged dead only on the host that recorded it: this process has no way
+    to check a pid number on another machine, so a foreign host's lock is never read as
+    dead here — only its own host, or its heartbeat aging out, can make it stale."""
+    if record is None:
+        return False
+    pid = record.get("pid")
+    if not isinstance(pid, int):
+        return False
+    if record.get("host") != socket.gethostname():
+        return True
+    return leader.pid_alive(pid)
+
+
+def _print_if_stale(record: dict | None, state: str) -> None:
+    if record is not None and state == "stale":
+        print(f"leader stale: {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}")
+
+
+def _route_leader_take(a: argparse.Namespace) -> int:
+    _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    session = a.label or "leader"
+    pid, host = _leader_identity()
+    heartbeat_minutes = _leader_heartbeat_minutes()
+    with leader.locked(runs_dir):
+        record, read_rc = _leader_read_or_refuse(runs_dir)
+        if read_rc is not None:
+            return read_rc
+        now = datetime.datetime.now(datetime.UTC)
+        alive = _leader_pid_alive(record)
+        prior_state = leader.liveness(record, alive, now, heartbeat_minutes)
+        _print_if_stale(record, prior_state)
+        new_record, reason = leader.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal)
+        if new_record is None:
+            print(reason)
+            return 2
+        leader.write(runs_dir, new_record)
+    print(f"leader taken: {new_record['session']} (pid {new_record['pid']}) on {new_record['host']}")
+    return 0
+
+
+def _route_leader_beat(a: argparse.Namespace) -> int:
+    _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    session = a.label or "leader"
+    pid, host = _leader_identity()
+    with leader.locked(runs_dir):
+        record, read_rc = _leader_read_or_refuse(runs_dir)
+        if read_rc is not None:
+            return read_rc
+        new_record, reason = leader.beat(record, session, pid, host, datetime.datetime.now(datetime.UTC), run_id=a.run)
+        if new_record is None:
+            print(reason)
+            return 2
+        leader.write(runs_dir, new_record)
+    print(f"leader heartbeat: {new_record['session']}")
+    return 0
+
+
+def _route_leader_release(a: argparse.Namespace) -> int:
+    _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    session = a.label or "leader"
+    pid, host = _leader_identity()
+    with leader.locked(runs_dir):
+        record, read_rc = _leader_read_or_refuse(runs_dir)
+        if read_rc is not None:
+            return read_rc
+        _new_record, reason = leader.release(record, session, pid, host)
+        if reason:
+            print(reason)
+            return 2
+        leader.write(runs_dir, None)
+    print(f"leader released: {record['session']}")
+    return 0
+
+
+def _route_leader_status(a: argparse.Namespace) -> int:
+    _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    record, read_rc = _leader_read_or_refuse(runs_dir)
+    if read_rc is not None:
+        return read_rc
+    now = datetime.datetime.now(datetime.UTC)
+    alive = _leader_pid_alive(record)
+    state = leader.liveness(record, alive, now, _leader_heartbeat_minutes())
+    if not a.json:
+        _print_if_stale(record, state)
+    if a.json:
+        print(json.dumps({**(record or {}), "state": state}, indent=2))
+    elif record is None:
+        print("leader: none")
+    else:
+        print(f"leader: {record['session']} (pid {record['pid']}) on {record['host']} — {state}")
     return 0
 
 
@@ -1377,6 +1531,17 @@ def build_parser() -> argparse.ArgumentParser:
     st = r.add_parser("status", help="what is queued or running for this profile"); st.add_argument("--profile"); st.add_argument("--json", action="store_true"); st.set_defaults(fn=_route_status)
     f = r.add_parser("file", help="file a new ticket for the harness"); f.add_argument("--profile"); f.add_argument("--repo", required=True); f.add_argument("--title", required=True)
     f.add_argument("--body"); f.add_argument("--phase", default="build"); f.add_argument("--intake", action="store_true"); f.set_defaults(fn=_route_file)
+    ld = r.add_parser("leader", help="the leader lock for the landing loop (runs/leader.json)")
+    ld.set_defaults(fn=_bare_group(ld))
+    lds = ld.add_subparsers(dest="leader_cmd", required=False)
+    lt = lds.add_parser("take", help="take the leader lock if no live leader holds it")
+    lt.add_argument("--profile"); lt.add_argument("--label"); lt.add_argument("--steal", action="store_true"); lt.set_defaults(fn=_route_leader_take)
+    lb = lds.add_parser("beat", help="refresh the leader lock's heartbeat")
+    lb.add_argument("--profile"); lb.add_argument("--label"); lb.add_argument("--run"); lb.set_defaults(fn=_route_leader_beat)
+    lr = lds.add_parser("release", help="release the leader lock this session holds")
+    lr.add_argument("--profile"); lr.add_argument("--label"); lr.set_defaults(fn=_route_leader_release)
+    lst = lds.add_parser("status", help="the leader lock's holder and computed state")
+    lst.add_argument("--profile"); lst.add_argument("--json", action="store_true"); lst.set_defaults(fn=_route_leader_status)
     lc = r.add_parser("launch", help="run one of the harness's graphs directly").add_subparsers(dest="graph", required=True)
     ep = lc.add_parser("epic", help="launch the epic graph against a filed initiative"); ep.add_argument("--profile"); ep.add_argument("--initiative", required=True); ep.add_argument("--repo")
     ep.add_argument("--fix-attempts", type=int, default=None); ep.add_argument("--dry-run", action="store_true"); ep.set_defaults(fn=_route_launch, graph="epic")

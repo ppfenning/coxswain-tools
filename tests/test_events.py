@@ -31,6 +31,21 @@ def test_budget_stop_fix_loop_wording():
     assert Event("run1", "budget_stop", 1, {}) in events
 
 
+def test_leader_taken_wording():
+    events = from_log("run1", ["run1 started", "leader taken: cos1 (pid 4242) on host1"])
+    assert Event("run1", "leader_taken", 1, {"session": "cos1", "pid": 4242, "host": "host1"}) in events
+
+
+def test_leader_released_wording():
+    events = from_log("run1", ["run1 started", "leader released: cos1"])
+    assert Event("run1", "leader_released", 1, {"session": "cos1"}) in events
+
+
+def test_leader_stale_wording():
+    events = from_log("run1", ["run1 started", "leader stale: cos1 (pid 4242) on host1"])
+    assert Event("run1", "leader_stale", 1, {"session": "cos1", "pid": 4242, "host": "host1"}) in events
+
+
 def test_run_exited_summary_line():
     events = from_log(
         "run1",
