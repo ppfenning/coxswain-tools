@@ -15,7 +15,7 @@ did not just build.
 
 from __future__ import annotations
 
-MENU = ["doctor", "install (dry run)", "install", "init cartridge", "quit"]
+MENU = ["doctor", "install (dry run)", "install", "init cartridge", "edit cartridge", "quit"]
 _FIELD_ORDER = ("root", "team", "workspace")
 _FOCUS_ORDER = ("menu", "field:root", "field:team", "field:workspace")
 _TOGGLE_KEYS = {"p": "plugins", "h": "hook", "f": "force_profile"}
@@ -24,6 +24,7 @@ _DESCRIPTIONS = {
     "install (dry run)": "print the plan, change nothing",
     "install": "venvs, profile, plugin, hook",
     "init cartridge": "a team cartridge under the workspace",
+    "edit cartridge": "resolved fields, editable by layer",
     "quit": "",
 }
 _FOOTER = "↑↓ move · Tab fields · Enter run · p/h/f toggles · q quit"
@@ -55,6 +56,8 @@ def _missing_field(item: str, fields: dict) -> str | None:
         required = _FIELD_ORDER
     elif item == "init cartridge":
         required = ("team", "workspace")
+    elif item == "edit cartridge":
+        required = _FIELD_ORDER  # own tuple: cartridge_screen.main builds the probe path from root
     else:
         required = ()
     return next((name for name in required if not fields[name]), None)
@@ -84,6 +87,8 @@ def _activate(item: str, fields: dict, toggles: dict) -> tuple[list[dict], str]:
     missing = _missing_field(item, fields)
     if missing is not None:
         return [], f"{missing} is required"
+    if item == "edit cartridge":
+        return [{"kind": "mode", "mode": "editor"}], ""
     return [{"action": "run", "argv": _argv_for(item, fields, toggles)}], ""
 
 
