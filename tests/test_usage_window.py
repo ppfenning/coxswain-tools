@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
-from agent_tools.pacing import assess
-from agent_tools.usage_window import DEFAULT_POLICY, gather, window_from
+from agent_tools.pacing import Window, assess
+from agent_tools.usage_window import DEFAULT_POLICY, block_remaining, ceiling_remaining, gather, window_from
 
 _NOW = datetime(2026, 9, 5, 12, 0, 0, tzinfo=UTC)
 
@@ -139,3 +139,49 @@ def test_default_policy_never_tightens_an_absent_pacing_policy():
     result = assess(window, DEFAULT_POLICY, _NOW)
     assert result.tier_ceiling == "deep"
     assert result.effort_ceiling == "high"
+
+
+def test_a_passed_ceiling_reaches_the_window_on_the_ccusage_path():
+    window = window_from({"blocks": [_active_block()]}, [], _NOW, ceiling_usd=50.0)
+    assert window.ceiling_usd == 50.0
+
+
+def test_a_passed_ceiling_reaches_the_window_on_the_fallback_path():
+    inside = _NOW.replace(hour=11)
+    window = window_from({"blocks": []}, [(inside, {"cost_usd": 5.0})], _NOW, ceiling_usd=50.0)
+    assert window.ceiling_usd == 50.0
+
+
+def test_gather_threads_a_passed_ceiling_onto_the_window(tmp_path):
+    def fake_run(argv, **kwargs):
+        raise FileNotFoundError("npx not found")
+
+    window = gather(runs_dir=tmp_path, now=_NOW, run=fake_run, ceiling_usd=3.0)
+    assert window.ceiling_usd == 3.0
+
+
+def _window(ceiling_usd=None, spent_usd=0.0, start=_NOW, end=_NOW):
+    return Window(start=start, end=end, spent_usd=spent_usd, ceiling_usd=ceiling_usd, burn_usd_per_hour=0.0, runs_in_flight=0)
+
+
+def test_block_remaining_at_half_elapsed_is_half_the_fraction():
+    window = _window(start=_NOW, end=_NOW.replace(hour=_NOW.hour + 4))
+    _, fraction = block_remaining(window, _NOW.replace(hour=_NOW.hour + 2))
+    assert fraction == 0.5
+
+
+def test_block_remaining_with_now_past_end_is_zero_not_negative():
+    window = _window(start=_NOW.replace(hour=_NOW.hour - 2), end=_NOW.replace(hour=_NOW.hour - 1))
+    minutes, fraction = block_remaining(window, _NOW)
+    assert minutes == 0
+    assert fraction == 0.0
+
+
+def test_ceiling_remaining_clamps_a_spend_over_the_ceiling_to_zero():
+    window = _window(ceiling_usd=10.0, spent_usd=15.0)
+    assert ceiling_remaining(window) == 0.0
+
+
+def test_ceiling_remaining_is_none_with_no_ceiling_set():
+    window = _window(ceiling_usd=None, spent_usd=15.0)
+    assert ceiling_remaining(window) is None
