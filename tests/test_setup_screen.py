@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from agent_tools import cli, setup_tui
+from agent_tools import cartridge_screen, cli, setup_screen, setup_tui
 from agent_tools.setup_screen import key_name, loop, main, resolved_argv, run_action
 
 
@@ -130,6 +130,24 @@ def test_main_returns_0_regardless_of_what_curses_wrapper_or_loop_return(monkeyp
     curses = pytest.importorskip("curses")
     monkeypatch.setattr(curses, "wrapper", lambda fn: None)
     assert main("r", "t", "w") == 0
+
+
+def test_main_enters_cartridge_screen_on_a_mode_action_and_resumes_the_menu(monkeypatch):
+    curses = pytest.importorskip("curses")
+    calls = []
+
+    def fake_loop(stdscr, screen):
+        calls.append("loop")
+        if calls.count("loop") == 1:
+            return screen, {"kind": "mode", "mode": "editor"}
+        return {**screen, "quit": True}, None
+
+    monkeypatch.setattr(setup_screen, "loop", fake_loop)
+    monkeypatch.setattr(cartridge_screen, "main", lambda fields: calls.append(fields) or 0)
+    monkeypatch.setattr(curses, "wrapper", lambda fn: fn(None))
+
+    assert setup_screen.main("r", "t", "w") == 0
+    assert calls == ["loop", {"root": "r", "team": "t", "workspace": "w"}, "loop"]
 
 
 def test_q_ends_the_loop_without_running_anything():

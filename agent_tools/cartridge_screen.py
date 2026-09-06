@@ -1,20 +1,32 @@
-"""The effect runner for the cartridge editor: the only place that touches
-a subprocess, writes a fragment, or rewrites the profile file.
-`editor_model.py` decides which `Effect` to run; this module only runs the
-one it is handed. No curses here — that edge is the next task.
+"""The effect runner and curses edge for the cartridge editor: the only
+place that touches a subprocess, writes a fragment, rewrites the profile
+file, or reads/draws curses. `editor_model.py` decides which `Effect` to
+run and what a key or a result means; this module only runs the effect it
+is handed and draws the frame it is given.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import subprocess
 from pathlib import Path
 
-from agent_tools.editor_model import Effect
+from agent_tools.editor_model import Effect, State, fold_effects, frame, rows, step
 from agent_tools.fragments import FragmentError, write_fragment
 from agent_tools.route import parse_profile
-from agent_tools.setup_screen import resolved_argv
+from agent_tools.setup_screen import key_name, resolved_argv
+
+
+def _present(path: str) -> bool:
+    """Whether a binary is there. A path the process may not read — `/root` on a CI
+    runner — is "not there", never an exception: the same rule `setup_screen.run_action`
+    keeps, that a missing binary is a value on the screen."""
+    try:
+        return Path(path).exists()
+    except OSError:
+        return False
 
 
 def _write_fragment(effect: Effect, ctx: dict, write) -> dict:
@@ -53,7 +65,7 @@ def _init_cartridge(effect: Effect, ctx: dict, run) -> dict:
     argv = resolved_argv(["cartridge", "init", name, "--cartridges-dir", str(ctx["cartridges_dir"]),
                           "--extends", effect.payload["extends"]],
                          cartridge_on_path=shutil.which("cartridge") is not None,
-                         venv_cartridge_exists=Path(venv_cartridge).exists(), venv_cartridge=venv_cartridge)
+                         venv_cartridge_exists=_present(venv_cartridge), venv_cartridge=venv_cartridge)
     result, failure = _launch(argv, run)
     if failure is not None:
         return {"returncode": 127, "team": name, "output": failure}
@@ -96,3 +108,63 @@ def _expanded(value, home: str):
 def profile_fields(text: str, home: str) -> dict:
     """Profile fields, `~` expanded against `home` — never `$HOME`/`expanduser()`."""
     return {key: _expanded(value, home) for key, value in parse_profile(text).items()}
+
+
+def _should_quit(state: State, key: str) -> bool:
+    """The curses session's own exit gesture, not the model's: a bare `q`
+    while no row is being edited. `step` already treats that `q` as a
+    no-op it never calls "unknown" (`_HANDLERS["q"] = replace`), leaving
+    the session's lifecycle to this caller, never to a fact `step` holds."""
+    return key == "q" and state.editing is None
+
+
+def loop(stdscr, state: State, ctx: dict, *, runner=run_effect) -> None:
+    """Reads a key, steps the model, runs any effects it asked for, and
+    draws the frame it returns. `_should_quit` is the only decision here."""
+    import curses
+
+    with contextlib.suppress(curses.error):  # no real terminal behind stdscr, e.g. under test
+        curses.curs_set(0)
+    while True:
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
+        for row, line in enumerate(frame(state, width)[:height]):
+            with contextlib.suppress(curses.error):
+                stdscr.addnstr(row, 0, line, width)
+        stdscr.refresh()
+        ch = stdscr.getch()
+        if ch == curses.KEY_RESIZE:
+            continue
+        key = key_name(ch)
+        if _should_quit(state, key):
+            return
+        state = step(state, key)
+        if state.effects:
+            results = [(effect, runner(effect, ctx)) for effect in state.effects]
+            state = fold_effects(state, results)
+
+
+def main(fields: dict, *, probe=None) -> int:
+    """Builds the initial rows from a first probe (`cli._run_core_probe` by
+    default) and enters the curses loop; its `resolved`/`provenance` keys
+    go straight to `editor_model.rows`, unreshaped."""
+    import curses
+
+    if probe is None:
+        from agent_tools.cli import _run_core_probe
+        probe = _run_core_probe
+    root, team, workspace = fields.get("root", ""), fields.get("team", ""), fields.get("workspace", "")
+    cartridges_dir = f"{workspace}/cartridges"
+    python_path = f"{root}/agent-graphs/.venv/bin/python"
+    facts = probe(python_path, cartridges_dir, team, [])
+    state = State(rows=tuple(rows(facts, team)), cursor=0, pending={}, message="", team=team)
+    venv_cartridge = f"{root}/agent-cartridges/.venv/bin/cartridge"
+    ctx = {"cartridges_dir": cartridges_dir, "team": team, "root": root,
+           "profile_path": fields.get("profile_path", ""),
+           # same on-path/venv-fallback convention `_init_cartridge` uses for `cartridge`.
+           "probe_argv": resolved_argv(["cartridge", "probe", "--cartridges-dir", cartridges_dir, "--team", team],
+                                        cartridge_on_path=shutil.which("cartridge") is not None,
+                                        venv_cartridge_exists=_present(venv_cartridge),
+                                        venv_cartridge=venv_cartridge)}
+    curses.wrapper(lambda stdscr: loop(stdscr, state, ctx))
+    return 0

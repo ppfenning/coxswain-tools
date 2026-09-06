@@ -26,7 +26,7 @@ def actions_after(keys: list[str], screen: dict | None = None) -> list[dict]:
 def test_initial_cursor_is_zero_and_menu_is_in_order():
     screen = initial("", "", "")
     assert screen["cursor"] == 0
-    assert screen["menu"] == ["doctor", "install (dry run)", "install", "init cartridge", "quit"]
+    assert screen["menu"] == ["doctor", "install (dry run)", "install", "init cartridge", "edit cartridge", "quit"]
     assert screen["menu"] == MENU
 
 
@@ -135,6 +135,18 @@ def test_enter_on_init_cartridge_with_fields_set_builds_the_cartridge_argv():
         "action": "run",
         "argv": ["cartridge", "init", "acme", "--cartridges-dir", "/root/workspace/cartridges"],
     }]
+
+
+def test_enter_on_edit_cartridge_with_fields_set_yields_the_mode_action():
+    ready = _screen(cursor=MENU.index("edit cartridge"))
+    assert actions_after(["ENTER"], ready) == [{"kind": "mode", "mode": "editor"}]
+
+
+def test_enter_on_edit_cartridge_with_empty_root_yields_no_action_and_names_root():
+    missing_root = _screen(fields={"root": "", "team": "acme", "workspace": "/root/workspace"},
+                            cursor=MENU.index("edit cartridge"))
+    assert actions_after(["ENTER"], missing_root) == []
+    assert "root" in after(["ENTER"], missing_root)["status"]
 
 
 def test_q_under_menu_focus_sets_quit():
