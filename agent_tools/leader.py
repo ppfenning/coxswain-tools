@@ -33,7 +33,7 @@ def _is_holder(record: dict[str, Any], session: str, pid: int, host: str) -> boo
 
 
 def liveness(record: dict[str, Any] | None, pid_alive_: bool, now: datetime.datetime, heartbeat_minutes: int = DEFAULT_HEARTBEAT_MINUTES) -> str:
-    """Pure:"""
+    """Pure."""
     if record is None:
         return "none"
     if not pid_alive_:
@@ -60,7 +60,7 @@ def take(
     pid_alive_: bool,
     steal: bool = False,
 ) -> tuple[dict[str, Any] | None, str]:
-    """Pure:"""
+    """Pure."""
     state = liveness(record, pid_alive_, now, heartbeat_minutes)
     if state == "live":
         return None, f"leader: {_held_by_line(record)}"
@@ -72,7 +72,7 @@ def take(
 
 
 def beat(record: dict[str, Any] | None, session: str, pid: int, host: str, now: datetime.datetime, run_id: str | None = None) -> tuple[dict[str, Any] | None, str]:
-    """Pure:"""
+    """Pure."""
     if record is None or not _is_holder(record, session, pid, host):
         return None, f"leader: not held by {session} (pid {pid}) on {host}"
     existing_runs = record.get("runs", [])
@@ -81,7 +81,7 @@ def beat(record: dict[str, Any] | None, session: str, pid: int, host: str, now: 
 
 
 def release(record: dict[str, Any] | None, session: str, pid: int, host: str) -> tuple[dict[str, Any] | None, str]:
-    """Pure:"""
+    """Pure."""
     if record is None:
         return None, "leader: no lock held"
     if not _is_holder(record, session, pid, host):
@@ -101,7 +101,7 @@ def leader_path(runs_dir: Path) -> Path:
 
 
 def read(runs_dir: Path) -> dict[str, Any] | None:
-    """Edge:"""
+    """Edge."""
     try:
         text = leader_path(runs_dir).read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -110,7 +110,7 @@ def read(runs_dir: Path) -> dict[str, Any] | None:
 
 
 def write(runs_dir: Path, record: dict[str, Any] | None) -> None:
-    """Edge:"""
+    """Edge."""
     path = leader_path(runs_dir)
     if record is None:
         path.unlink(missing_ok=True)
@@ -133,7 +133,7 @@ def pid_alive(pid: int) -> bool:
 
 @contextlib.contextmanager
 def locked(runs_dir: Path):
-    """Edge:"""
+    """Edge."""
     runs_dir = Path(runs_dir)
     runs_dir.mkdir(parents=True, exist_ok=True)
     fd = os.open(runs_dir / "leader.lock", os.O_CREAT | os.O_RDWR)
