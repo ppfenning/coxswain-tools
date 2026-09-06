@@ -23,11 +23,20 @@ def _record(root: Path, run: str) -> dict:
         return {}
 
 
+def _content(event: dict) -> list:
+    """A trace line's tool-use items, or none: `message` is a string on some lines and a mapping on others."""
+    message = event.get("message") if isinstance(event, dict) else None
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content")
+    return content if isinstance(content, list) else []
+
+
 def _tool_names(trace_events: list[dict]) -> list[str]:
     return [
         item["name"]
         for event in trace_events
-        for item in (event.get("message") or {}).get("content") or []
+        for item in _content(event)
         if isinstance(item, dict) and item.get("type") == "tool_use"
     ]
 
