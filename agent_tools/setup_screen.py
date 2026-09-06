@@ -92,12 +92,13 @@ def loop(stdscr, screen: dict, *, runner=run_action) -> tuple[dict, dict | None]
 
 def main(root: str, team: str, workspace: str) -> int:
     import curses
+    from functools import partial
 
     from agent_tools import cartridge_screen
 
     screen = initial(root, team, workspace)
     while True:
-        result = curses.wrapper(lambda stdscr: loop(stdscr, screen))
+        result = curses.wrapper(partial(loop, screen=screen))
         if not result:
             return 0
         screen, action = result
