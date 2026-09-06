@@ -9,7 +9,7 @@ def _manifest():
         "components": {
             "harness": {"repo": "org/harness", "tag": "v1.0.0", "required": True},
             "cartridges": {"repo": "org/cartridges", "tag": "v1.0.0", "required": True},
-            "hud": {"repo": "org/hud", "tag": "v1.0.0", "required": False, "flag": "hud"},
+            "extra": {"repo": "org/extra", "tag": "v1.0.0", "required": False, "flag": "extra"},
             "desktop-app": {"repo": "org/desktop-app", "tag": "v1.0.0", "required": False,
                             "flag": "desktop", "path": "/Applications/Coxswain.app"},
         },
@@ -37,15 +37,15 @@ def test_fresh_root_clones_required_only():
     kinds = _kinds(steps)
     assert ("clone", "harness") in kinds
     assert ("clone", "cartridges") in kinds
-    assert not any(c == "hud" for _, c in kinds)
+    assert not any(c == "extra" for _, c in kinds)
     assert not any(c == "desktop-app" for _, c in kinds)
     assert ("setup_install", "setup_install") in kinds
     assert ("doctor", "doctor") in kinds
 
 
-def test_with_hud_adds_hud():
-    steps = install.plan(_manifest(), _facts(), _options(with_=["hud"]))
-    assert ("clone", "hud") in _kinds(steps)
+def test_with_a_flagged_component_adds_it():
+    steps = install.plan(_manifest(), _facts(), _options(with_=["extra"]))
+    assert ("clone", "extra") in _kinds(steps)
 
 
 def test_present_at_tag_skips():
@@ -99,7 +99,7 @@ def test_rows_statuses_ok_drift_missing_extra():
     by_name = {r[0]: r for r in install.rows(_manifest(), _facts(checkouts))}
     assert by_name["harness"] == ("harness", "v1.0.0", "v1.0.0", "ok")
     assert by_name["cartridges"] == ("cartridges", "v1.0.0", "v0.9.0", "drift")
-    assert by_name["hud"] == ("hud", "v1.0.0", None, "missing")
+    assert by_name["extra"] == ("extra", "v1.0.0", None, "missing")
     assert by_name["desktop-app"] == ("desktop-app", "v1.0.0", None, "missing")
     assert by_name["extra-thing"] == ("extra-thing", None, "v9.9.9", "extra")
 

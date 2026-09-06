@@ -31,7 +31,7 @@ def test_watch_returns_at_once_for_a_dead_pid(tmp_path):
 def test_every_subcommand_parses():
     p = build_parser()
     for argv in (["runs", "usage", "r"], ["runs", "trace", "r", "--role", "build"], ["runs", "clean", "r", "--repo", "."],
-                 ["epic", "watch", "pid"], ["hud", "ops", "-"], ["hud", "say", "hi"], ["hud", "inbox", "arm"], ["hud", "cast"], ["plan", "serve", "d"]):
+                 ["epic", "watch", "pid"], ["plan", "serve", "d"]):
         assert p.parse_args(argv).fn
 
 
