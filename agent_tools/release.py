@@ -7,7 +7,7 @@ runs the git commands at the edge."""
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$")
@@ -32,6 +32,24 @@ def _sort_key(parsed: tuple[int, int, int, int | None]) -> tuple:
 
 def _refuse(component: str | None, detail: str) -> list[dict]:
     return [{"kind": "refuse", "component": component, "detail": detail}]
+
+
+def _drift_line(d) -> str:
+    a = f"{d.a_file}:{d.a_line}" if d.a_line is not None else d.a_file
+    b = f"{d.b_file}:{d.b_line}" if d.b_line is not None else d.b_file
+    return f"{d.check}: {a} <-> {b} — {d.correction}"
+
+
+def gate(drifts: Sequence, allow_reason: str | None) -> list[dict]:
+    """Refuse steps naming each drift, or one note step when `allow_reason`
+    says why they stand; empty when `drifts` is empty."""
+    if not drifts:
+        return []
+    if allow_reason is None:
+        return [{"kind": "refuse", "component": d.check, "detail": _drift_line(d)} for d in drifts]
+    plural = "" if len(drifts) == 1 else "s"
+    return [{"kind": "note", "component": "release-check",
+             "detail": f"{allow_reason} ({len(drifts)} drift{plural} allowed)"}]
 
 
 def is_maintainer_remote(url: str) -> bool:
