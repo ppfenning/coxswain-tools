@@ -1,6 +1,6 @@
 import json
 
-from agent_tools import cli, release_check, release_check_cli, release_check_manifest
+from agent_tools import cli, release_check, release_check_cli, release_check_manifest, release_check_notes
 from agent_tools.release_check import Drift, facts_plan, render, run_checks, to_json
 
 
@@ -62,9 +62,10 @@ def test_cli_release_check_with_a_valid_manifest_exits_zero_and_reports_no_drift
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text('[coxswain]\nversion = "0.1.0"\n[components.cox]\ntag = "v0.1.0"\n')
     monkeypatch.setattr(release_check_manifest, "gather_manifest_facts", lambda *a: {})
+    monkeypatch.setattr(release_check_notes, "gather_notes_facts", lambda *a, **k: {})
     rc = cli.main(["dev", "release-check", "--root", str(tmp_path), "--manifest", str(manifest_path)])
     assert rc == 0
-    assert "no drift (2 checks)" in capsys.readouterr().out
+    assert "no drift (3 checks)" in capsys.readouterr().out
 
 
 def test_cli_release_check_renders_a_drift_from_a_registered_check(tmp_path, capsys, monkeypatch):
@@ -92,8 +93,9 @@ def test_cli_release_check_with_a_missing_manifest_refuses_and_names_it(tmp_path
 def test_cli_release_check_json_flag_prints_a_json_list(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(release_check_cli, "gather_cli_facts", lambda root, run: {})
     monkeypatch.setattr(release_check_manifest, "gather_manifest_facts", lambda *a: {})
+    monkeypatch.setattr(release_check_notes, "gather_notes_facts", lambda *a, **k: {})
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text('[coxswain]\nversion = "0.1.0"\n')
     rc = cli.main(["dev", "release-check", "--root", str(tmp_path), "--manifest", str(manifest_path), "--json"])
     assert rc == 0
-    assert json.loads(capsys.readouterr().out) == {"checks_run": 2, "drifts": []}
+    assert json.loads(capsys.readouterr().out) == {"checks_run": 3, "drifts": []}
