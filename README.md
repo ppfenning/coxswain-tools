@@ -55,6 +55,16 @@ cox runs events [--runs-dir runs] [--follow] [--json]   poll a run's log for str
 cox runs top [--runs-dir runs] [--interval N] [--once]   live table of runs in flight
 ```
 
+**usage** — the usage window and the pace it allows
+```
+cox usage assess [--json] [--runs-dir runs]       the pacing verdict for the current spend window
+```
+
+**epic** — a detached run
+```
+cox epic watch PIDFILE [--log LOG] [--json]        poll a detached run's pidfile until it exits
+```
+
 **plan**
 ```
 cox plan serve DIR [--kind plan] [--check] [--no-open]   serve a visual plan through the local bridge
