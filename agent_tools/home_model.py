@@ -76,8 +76,6 @@ Effect = Talk | Setup | Quit | Refuse
 
 def step(state: State, key: str) -> tuple[State, Effect | None]:
     if key == "t":
-        if state.leader_liveness == "live" and state.other_holder:
-            return state, Refuse(state.other_holder)
         return state, Talk(state.plugin_dir)
     if key == "s":
         return state, Setup()
