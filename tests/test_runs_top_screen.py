@@ -34,6 +34,37 @@ def test_rows_now_maps_facts_through_runs_top_row(tmp_path):
     assert rows_now(tmp_path) == []
 
 
+def test_facts_reads_the_runs_ceiling_file(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    _write(tmp_path / "r1.ceiling.json", json.dumps(
+        {"requested": {"tier": "standard", "effort": None}, "applied": {"tier": "standard", "effort": "high"}, "profile": "p.yaml"}))
+
+    result = facts(tmp_path, now_alive=lambda pid: pid == 123)
+
+    assert result[0]["ceiling"]["applied"] == {"tier": "standard", "effort": "high"}
+
+
+def test_facts_ceiling_is_none_with_no_ceiling_file(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+
+    result = facts(tmp_path, now_alive=lambda pid: pid == 123)
+
+    assert result[0]["ceiling"] is None
+
+
+def test_rows_now_carries_the_ceiling_label_into_the_row(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    _write(tmp_path / "r1.ceiling.json", json.dumps(
+        {"requested": {"tier": "standard", "effort": None}, "applied": {"tier": "standard", "effort": "high"}, "profile": "p.yaml"}))
+
+    rows = rows_now(tmp_path)
+
+    assert rows[0].ceiling == "standard/high"
+
+
 def test_facts_omits_a_dead_run_with_a_stale_log(tmp_path):
     _write(tmp_path / "r2.pid", "999")
     log = tmp_path / "r2.log"
@@ -99,3 +130,16 @@ def test_cli_runs_top_once_prints_the_header(tmp_path, capsys):
     rc = cli.main(["runs", "top", "--runs-dir", str(tmp_path), "--once"])
     assert rc == 0
     assert "RUN" in capsys.readouterr().out
+
+
+def test_cli_runs_top_once_prints_ceil_for_a_run_with_a_ceiling_file(tmp_path, capsys):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    _write(tmp_path / "r1.ceiling.json", json.dumps(
+        {"requested": {"tier": "standard", "effort": None}, "applied": {"tier": "standard", "effort": "high"}, "profile": "p.yaml"}))
+
+    rc = cli.main(["runs", "top", "--runs-dir", str(tmp_path), "--once"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "CEIL" in out
+    assert "standard/high" in out
