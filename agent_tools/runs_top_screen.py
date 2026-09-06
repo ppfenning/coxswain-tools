@@ -124,13 +124,17 @@ def _attr(row, has_color: bool):
     return curses.A_NORMAL
 
 
-def draw(stdscr, rows: list) -> None:
+def _ordered(rows: list) -> list:
+    return runs_top.order(rows)
+
+
+def draw(stdscr, rows: list, cursor: int | None = None) -> None:
     import curses
 
     stdscr.clear()
     height, width = stdscr.getmaxyx()
     lines = runs_top.render(rows, width)
-    ordered = sorted(rows, key=lambda r: (not r.alive, r.run))
+    ordered = _ordered(rows)
     has_color = _has_colors()
     if has_color:
         try:
@@ -139,23 +143,46 @@ def draw(stdscr, rows: list) -> None:
             has_color = False
     for i, line in enumerate(lines[:height]):
         row = ordered[i - 1] if 0 < i <= len(ordered) else None
-        attr = _attr(row, has_color) if row is not None else curses.A_NORMAL
+        base = _attr(row, has_color) if row is not None else curses.A_NORMAL
+        attr = base | curses.A_REVERSE if row is not None and cursor == i - 1 else base
         with contextlib.suppress(curses.error):
             stdscr.addnstr(i, 0, line, width, attr)
     stdscr.refresh()
 
 
-def loop(stdscr, runs_dir, interval: float, tick=rows_now) -> int:
+def _show_detail(stdscr, runs_dir, run: str, now_alive=_default_alive) -> None:
+    """Draws one run's detail until `q`/ESC; the caller resumes the table."""
+    from agent_tools import runs_detail, runs_detail_screen
+
+    detail = runs_detail.detail(**runs_detail_screen.facts_for(runs_dir, run, now_alive=now_alive))
+    while True:
+        runs_detail_screen.draw(stdscr, detail)
+        ch = stdscr.getch()
+        if ch in (ord("q"), ord("Q"), 27):
+            return
+
+
+def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_alive) -> int:
     import curses
 
     with contextlib.suppress(curses.error):  # no real terminal behind stdscr, e.g. under test
         curses.curs_set(0)
     stdscr.timeout(int(interval * 1000))
+    cursor = 0
     while True:
-        draw(stdscr, tick(runs_dir))
+        rows = tick(runs_dir)
+        ordered = _ordered(rows)
+        cursor = min(cursor, len(ordered) - 1) if ordered else 0
+        draw(stdscr, rows, cursor if ordered else None)
         ch = stdscr.getch()
         if ch in (ord("q"), ord("Q")):
             return 0
+        if ordered and ch in (ord("j"), curses.KEY_DOWN):
+            cursor = min(cursor + 1, len(ordered) - 1)
+        elif ordered and ch in (ord("k"), curses.KEY_UP):
+            cursor = max(cursor - 1, 0)
+        elif ordered and ch in (10, 13, curses.KEY_ENTER):
+            _show_detail(stdscr, runs_dir, ordered[cursor].run, now_alive)
         # curses.KEY_RESIZE and a plain timeout both fall through here: either
         # way the next iteration redraws against the current rows and size.
 
