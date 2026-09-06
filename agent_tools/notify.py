@@ -34,7 +34,7 @@ class Notification:
 
 
 def notifications(events: Sequence[Event], policy: Mapping | None = None) -> list[Notification]:
-    """Pure: the notifications `policy["kinds"]` allows;"""
+    """Pure: the notifications `policy["kinds"]` allows."""
     policy = policy if policy is not None else DEFAULT_POLICY
     kinds = set(policy.get("kinds", DEFAULT_POLICY["kinds"]))
     min_cost_usd = policy.get("min_cost_usd", DEFAULT_POLICY["min_cost_usd"])
