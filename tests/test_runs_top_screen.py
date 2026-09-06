@@ -1,4 +1,5 @@
 import json
+import os
 import time
 
 import pytest
@@ -183,3 +184,19 @@ def test_cli_runs_top_once_prints_ceil_for_a_run_with_a_ceiling_file(tmp_path, c
     assert rc == 0
     assert "CEIL" in out
     assert "standard/high" in out
+
+
+def test_the_row_names_the_node_written_last_not_the_last_one_alphabetically(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "")
+    trace = tmp_path / "r1-trace"
+    trace.mkdir()
+    result = json.dumps({"type": "result", "num_turns": 1, "total_cost_usd": 0.1}) + "\n"
+    _write(trace / "scope_epic-1.jsonl", result)
+    _write(trace / "build-4.jsonl", result)
+    os.utime(trace / "scope_epic-1.jsonl", (1000, 1000))
+    os.utime(trace / "build-4.jsonl", (2000, 2000))
+
+    rows = rows_now(tmp_path)
+
+    assert (rows[0].node, rows[0].attempt) == ("build", 4)
