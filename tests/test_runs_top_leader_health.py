@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import socket
 
 import pytest
 
@@ -27,6 +28,11 @@ def test_a_run_is_orphaned_when_the_leader_is_stale():
     assert r.status == "orphaned"
 
 
+def test_a_run_is_orphaned_when_the_leader_is_crashed():
+    r = runs_top.row("r1", True, [], [], [], None, "loop-a", _leader("crashed"))
+    assert r.status == "orphaned"
+
+
 def test_no_leader_file_is_not_an_alert():
     r = runs_top.row("r1", True, [], [], [], None, "", None)
     assert r.status == "running"
@@ -47,6 +53,7 @@ def test_render_with_no_leader_arg_omits_the_leader_line():
 
 def test_a_stale_leader_line_highlights_alert_a_live_one_does_not():
     assert runs_top.leader_highlight(_leader("stale")) == "alert"
+    assert runs_top.leader_highlight(_leader("crashed")) == "alert"
     assert runs_top.leader_highlight(_leader("live")) == "normal"
     assert runs_top.leader_highlight(None) == "normal"
 
@@ -54,16 +61,17 @@ def test_a_stale_leader_line_highlights_alert_a_live_one_does_not():
 def test_leader_notifications_fires_only_on_a_live_to_stale_or_none_transition_with_a_live_run():
     lost = notify.Notification("loop leader", "loop leader lost its heartbeat", "critical")
     assert notify.leader_notifications("live", "stale", True) == [lost]
+    assert notify.leader_notifications("live", "crashed", True) == [lost]
     assert notify.leader_notifications("live", "none", True) == [lost]
     assert notify.leader_notifications("live", "live", True) == []
     assert notify.leader_notifications("live", "stale", False) == []
     assert notify.leader_notifications(None, "stale", True) == []
 
 
-def test_a_leader_transition_from_live_to_stale_with_a_live_run_notifies(tmp_path):
+def test_a_leader_transition_from_live_to_crashed_with_a_live_run_notifies(tmp_path):
     now_iso = datetime.datetime.now(datetime.UTC).isoformat()
     (tmp_path / "leader.json").write_text(
-        json.dumps({"session": "loop-a", "pid": 111, "host": "h", "taken_at": now_iso, "heartbeat_at": now_iso}),
+        json.dumps({"session": "loop-a", "pid": 111, "host": socket.gethostname(), "taken_at": now_iso, "heartbeat_at": now_iso}),
         encoding="utf-8",
     )
     (tmp_path / "r1.log").write_text("n1 verdict: land\n", encoding="utf-8")  # no run_exited line: r1 reads as alive

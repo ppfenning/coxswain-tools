@@ -12,6 +12,7 @@ import datetime
 import json
 import os
 import re
+import socket
 import time
 from pathlib import Path
 
@@ -142,7 +143,7 @@ def leader_now(runs_dir, heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUT
         return None
     now = datetime.datetime.now(datetime.UTC)
     alive = pid_alive(record["pid"]) if isinstance(record.get("pid"), int) else False
-    state = leader.liveness(record, alive, now, heartbeat_minutes)
+    state = leader.liveness(record, alive, now, socket.gethostname(), heartbeat_minutes)
     return {"holder": record.get("session", ""), "state": state, "minutes_ago": _minutes_ago(record.get("heartbeat_at"), now)}
 
 

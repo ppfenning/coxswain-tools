@@ -32,18 +32,20 @@ def _is_holder(record: dict[str, Any], session: str, pid: int, host: str) -> boo
     return record.get("session") == session and record.get("pid") == pid and record.get("host") == host
 
 
-def liveness(record: dict[str, Any] | None, pid_alive_: bool, now: datetime.datetime, heartbeat_minutes: int = DEFAULT_HEARTBEAT_MINUTES) -> str:
-    """Pure."""
+def liveness(record: dict[str, Any] | None, pid_alive_: bool, now: datetime.datetime, host: str, heartbeat_minutes: int = DEFAULT_HEARTBEAT_MINUTES) -> str:
+    """Pure: pid_alive_ is consulted only when record's host is host; a fresh heartbeat from another host is live regardless."""
     if record is None:
         return "none"
-    if not pid_alive_:
-        return "stale"
     try:
         heartbeat_at = datetime.datetime.fromisoformat(record["heartbeat_at"])
         age = now - heartbeat_at
     except (KeyError, TypeError, ValueError):
         return "stale"
-    return "live" if age <= datetime.timedelta(minutes=heartbeat_minutes) else "stale"
+    if age > datetime.timedelta(minutes=heartbeat_minutes):
+        return "stale"
+    if record.get("host") == host and not pid_alive_:
+        return "crashed"
+    return "live"
 
 
 def _held_by_line(record: dict[str, Any]) -> str:
@@ -61,11 +63,11 @@ def take(
     steal: bool = False,
 ) -> tuple[dict[str, Any] | None, str]:
     """Pure."""
-    state = liveness(record, pid_alive_, now, heartbeat_minutes)
+    state = liveness(record, pid_alive_, now, host, heartbeat_minutes)
     if state == "live":
         return None, f"leader: {_held_by_line(record)}"
-    if state == "stale" and not steal:
-        return None, f"leader: {_held_by_line(record)} (stale; pass --steal to take over)"
+    if state in ("stale", "crashed") and not steal:
+        return None, f"leader: {_held_by_line(record)} ({state}; pass --steal to take over)"
     taken_at = now.isoformat()
     new_record = {"session": session, "pid": pid, "host": host, "taken_at": taken_at, "heartbeat_at": taken_at, "runs": []}
     return new_record, ""

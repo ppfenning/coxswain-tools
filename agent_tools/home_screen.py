@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import socket
 import subprocess
 import time
 from datetime import UTC, datetime
@@ -100,7 +101,7 @@ def facts(runs_dir, work_dir, intake_dir, now: float, cache: dict | None = None,
     alive = leader.pid_alive(leader_record["pid"]) if leader_record and isinstance(leader_record.get("pid"), int) else False
     result = home_model.Facts(
         leader=leader_record,
-        leader_liveness=leader.liveness(leader_record, alive, now_dt),
+        leader_liveness=leader.liveness(leader_record, alive, now_dt, socket.gethostname()),
         runs_rows=runs_value or (),
         backlog=backlog_value or {},
         window=window_value or {},
