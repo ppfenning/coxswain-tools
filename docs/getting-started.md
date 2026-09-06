@@ -118,7 +118,7 @@ claude plugin install local-skills@agent-cartridges
 ## 7. Verify
 
 ```bash
-agent-tools setup doctor
+cox setup doctor
 ```
 
 is read-only: it checks profile, paths, harness venv, cartridge, skills,
@@ -133,11 +133,11 @@ resolves its argument against the current directory, and `runs usage` and
 
 ```bash
 cd <checkout root>/workspace
-agent-tools route file --repo <path> --title "..." --body FILE
-agent-tools route launch epic --initiative work/<slug> --fix-attempts 2
-agent-tools route status
-agent-tools runs usage <run-id>
-agent-tools runs series
+cox route file --repo <path> --title "..." --body FILE
+cox route launch epic --initiative work/<slug> --fix-attempts 2
+cox route status
+cox runs usage <run-id>
+cox runs series
 ```
 
 `route file` prints the path it wrote for `<slug>`; use that printed value,
@@ -149,3 +149,37 @@ A finished run leaves behind its phase branches and a scratch worktree.
 Under `runs/` it also leaves a pidfile, a log, a `<run-id>-trace` directory,
 and the usage and manifest files that `runs usage` and `runs series` read
 back.
+
+## 9. Edit your cartridge
+
+`cox setup` opens a menu; choose `edit cartridge`. It needs `root`,
+`team`, and `workspace` filled in first, because the probe that reads your
+cartridge builds its interpreter path from `root`.
+
+The screen lists one row per editable key of your RESOLVED cartridge: its
+value, and which layer it came from (`base`, `local`, your team, or
+`edited`, once you have written something). A row you cannot edit is
+marked read-only and says which layer owns it instead.
+
+```
+  policy.review_tier = 2 [team]
+* crew.reviewer.enabled = true [edited]
+  crew.reviewer.skills = review_charter (read-only: base)
+```
+
+Keys: `j`/`k` move between editable rows; `space` cycles a choice row
+through its values; `e` opens a text row for typing, `ENTER` commits the
+typed text, `ESC` cancels the edit (while editing, `q` is an ordinary
+character, not the quit key); `u` reverts the row under the cursor to its
+last-probed value; `w` writes; `r` re-probes without writing; `q` quits.
+
+`w` writes ONLY `<team>/cartridge.d/edited.yaml`, merging your pending
+edits with whatever fragment was already there, then re-probes so the
+rows on screen reflect the loader's own view, not your guess at it. A
+refused write keeps your pending edits and reports the loader's error on
+the section the write touched. Writes are tighten-only: loosening a risk
+or a ramp the base cartridge already declared is refused before anything
+touches disk.
+
+Starting from no team cartridge at all? Run `cartridge init <team>` first
+(section 5).
