@@ -34,6 +34,8 @@ from agent_tools import (
     release,
     release_check,
     route,
+    runs_detail,
+    runs_detail_screen,
     runs_top,
     runs_top_screen,
     setup_install,
@@ -119,6 +121,15 @@ def _resolved_notify_policy(runs_dir: Path) -> dict:
 def _runs_notify(a: argparse.Namespace) -> int:
     policy = _resolved_notify_policy(Path(a.runs_dir))
     return notify.run_loop(a.runs_dir, once=a.once, interval=a.interval, policy=policy)
+
+
+def _runs_detail(a: argparse.Namespace) -> int:
+    d = runs_detail.detail(**runs_detail_screen.facts_for(a.runs_dir, a.run_id))
+    if a.json:
+        print(json.dumps(dataclasses.asdict(d)))
+    else:
+        print("\n".join(runs_detail.render(d, 120)))
+    return 0
 
 
 def _runs_trace(a: argparse.Namespace) -> int:
@@ -1494,7 +1505,7 @@ def build_parser() -> argparse.ArgumentParser:
     runs_p = sub.add_parser(
         "runs", help="what a harness run recorded, and cleaning up after it",
         description="What a harness run recorded, and cleaning up after it.",
-        epilog="examples:\n  cox runs land <run> --repo PATH --apply\n  cox runs usage <run> --json",
+        epilog="examples:\n  cox runs land <run> --repo PATH --apply\n  cox runs usage <run> --json\n  cox runs detail <run> --json",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     runs_p.set_defaults(fn=_bare_group(runs_p))
@@ -1508,6 +1519,7 @@ def build_parser() -> argparse.ArgumentParser:
     ev = runs.add_parser("events", help="poll a run's log for structured events"); ev.add_argument("--runs-dir", default="runs"); ev.add_argument("--follow", action="store_true"); ev.add_argument("--json", action="store_true"); ev.set_defaults(fn=_runs_events)
     tp = runs.add_parser("top", help="live table of runs in flight; --once prints it and exits"); tp.add_argument("--runs-dir", default="runs"); tp.add_argument("--interval", type=float, default=3); tp.add_argument("--once", action="store_true"); tp.set_defaults(fn=_runs_top)
     no = runs.add_parser("notify", help="desktop notifications for exits, quarantines, budget stops and cost"); no.add_argument("--runs-dir", default="runs"); no.add_argument("--once", action="store_true"); no.add_argument("--interval", type=float, default=10); no.set_defaults(fn=_runs_notify)
+    de = runs.add_parser("detail", help="one run's timeline, objection and last tool calls"); de.add_argument("run_id"); de.add_argument("--runs-dir", default="runs"); de.add_argument("--json", action="store_true"); de.set_defaults(fn=_runs_detail)
 
     usage_p = sub.add_parser(
         "usage", help="spend pacing against the ceiling for the current window",

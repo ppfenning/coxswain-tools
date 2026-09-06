@@ -98,7 +98,7 @@ class _FakeStdscr:
         pass
 
     def addnstr(self, y, x, s, n, attr=0):
-        self.addnstr_calls.append((y, x, s, n))
+        self.addnstr_calls.append((y, x, s, n, attr))
 
     def getch(self):
         return self._keys.pop(0)
@@ -130,6 +130,46 @@ def test_cli_runs_top_once_prints_the_header(tmp_path, capsys):
     rc = cli.main(["runs", "top", "--runs-dir", str(tmp_path), "--once"])
     assert rc == 0
     assert "RUN" in capsys.readouterr().out
+
+
+def test_loop_enter_on_the_highlighted_row_opens_detail_then_q_returns_to_the_table(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    stdscr = _FakeStdscr([ord("\n"), ord("q"), ord("q")])
+
+    rc = loop(stdscr, tmp_path, 1, tick=rows_now, now_alive=lambda pid: True)
+
+    assert rc == 0
+    assert stdscr.draws == 3  # table, detail, table again
+
+
+def test_draw_marks_the_cursor_row_with_a_reverse_attr(tmp_path):
+    curses = pytest.importorskip("curses")
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    stdscr = _FakeStdscr([])
+
+    draw(stdscr, rows_now(tmp_path), cursor=0)
+
+    row_call = next(c for c in stdscr.addnstr_calls if c[0] == 1)
+    assert row_call[4] & curses.A_REVERSE
+
+
+def test_loop_j_moves_the_cursor_so_enter_opens_the_second_rows_detail(tmp_path):
+    from agent_tools import runs_top
+
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    _write(tmp_path / "r2.pid", "124")
+    _write(tmp_path / "r2.log", "n1 verdict: land\n")
+    rows = [runs_top.row("r1", True, [], [], [], None), runs_top.row("r2", True, [], [], [], None)]
+    stdscr = _FakeStdscr([ord("j"), ord("\n"), ord("q"), ord("q")])
+
+    rc = loop(stdscr, tmp_path, 1, tick=lambda d: rows, now_alive=lambda pid: True)
+
+    assert rc == 0
+    assert any("run r2 [" in call[2] for call in stdscr.addnstr_calls)
+    assert not any("run r1 [" in call[2] for call in stdscr.addnstr_calls)
 
 
 def test_cli_runs_top_once_prints_ceil_for_a_run_with_a_ceiling_file(tmp_path, capsys):

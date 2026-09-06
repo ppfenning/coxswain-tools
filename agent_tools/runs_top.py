@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from agent_tools.events import Event
 
-__all__ = ["Row", "highlight", "render", "row"]
+__all__ = ["Row", "highlight", "order", "render", "row"]
 
 _COLUMNS = ("PHASE", "NODE", "ATT", "TURNS", "COST", "VERDICT", "STATUS", "CEIL")
 _NO_RUNS = "no runs in flight"
@@ -75,13 +75,17 @@ def _cut(line: str, width: int) -> str:
     return line[: max(width, 0)]
 
 
+def order(rows: list) -> list:
+    return sorted(rows, key=lambda r: (not r.alive, r.run))
+
+
 def render(rows: list[Row], width: int) -> list[str]:
     """Pure: the header line then one line per row, cut to `width`."""
     run_width = max([len("RUN")] + [len(r.run) for r in rows])
     header = " ".join(["RUN".ljust(run_width), *_COLUMNS])
     if not rows:
         return [_cut(header, width), _cut(_NO_RUNS, width)]
-    ordered = sorted(rows, key=lambda r: (not r.alive, r.run))
+    ordered = order(rows)
     lines = [
         " ".join(
             [
