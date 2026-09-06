@@ -272,3 +272,12 @@ def test_cli_apply_refuses_a_checks_launch_failure_before_push(repo, tmp_path, c
     assert rc == 2
     assert "refuse checks: pytest:" in out
     assert not any("push" in c for c in calls)
+
+
+def test_wait_decision_retries_only_while_no_check_has_registered():
+    from agent_tools.land import wait_decision
+
+    assert wait_decision(0, "all checks pass", 0, 300) == "green"
+    assert wait_decision(1, "no checks reported on the 'pr/x' branch", 5, 300) == "retry"
+    assert wait_decision(1, "no checks reported on the 'pr/x' branch", 301, 300) == "timeout"
+    assert wait_decision(1, "test: fail", 5, 300) == "failed"

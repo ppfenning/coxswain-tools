@@ -22,7 +22,12 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["checks_argv", "land_plan", "pr_body"]
+__all__ = [
+    "checks_argv",
+    "land_plan",
+    "pr_body",
+    "wait_decision",
+]
 
 
 def _proposal(record: dict[str, Any], kind: str) -> dict[str, Any] | None:
@@ -83,6 +88,18 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
         {"kind": "clean", "run": run},
         {"kind": "mark_done", "task": task},
     ]
+
+
+_NO_CHECKS = "no checks reported"
+
+
+def wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: float) -> str:
+    """`green`, `failed`, `retry` or `timeout`: a branch whose checks have not registered yet is retried until `timeout_s`."""
+    if returncode == 0:
+        return "green"
+    if _NO_CHECKS in output.lower():
+        return "retry" if elapsed_s < timeout_s else "timeout"
+    return "failed"
 
 
 def pr_body(record: dict[str, Any]) -> str:
