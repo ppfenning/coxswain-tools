@@ -94,13 +94,15 @@ def _runs_events(a: argparse.Namespace) -> int:
 
 
 def _runs_top(a: argparse.Namespace) -> int:
+    heartbeat_minutes = _leader_heartbeat_minutes()
     if a.once:
-        print("\n".join(runs_top.render(runs_top_screen.rows_now(a.runs_dir), 120)))
+        leader_state = runs_top_screen.leader_now(a.runs_dir, heartbeat_minutes)
+        print("\n".join(runs_top.render(runs_top_screen.rows_now(a.runs_dir, heartbeat_minutes), 120, leader_state)))
         return 0
     if not sys.stdin.isatty():
         print("runs top: needs a terminal; use --once")
         return 2
-    return runs_top_screen.main(a.runs_dir, a.interval)
+    return runs_top_screen.main(a.runs_dir, a.interval, heartbeat_minutes)
 
 
 def _resolved_notify_policy(runs_dir: Path) -> dict:
@@ -120,7 +122,8 @@ def _resolved_notify_policy(runs_dir: Path) -> dict:
 
 def _runs_notify(a: argparse.Namespace) -> int:
     policy = _resolved_notify_policy(Path(a.runs_dir))
-    return notify.run_loop(a.runs_dir, once=a.once, interval=a.interval, policy=policy)
+    return notify.run_loop(a.runs_dir, once=a.once, interval=a.interval, policy=policy,
+                            heartbeat_minutes=_leader_heartbeat_minutes())
 
 
 def _runs_detail(a: argparse.Namespace) -> int:

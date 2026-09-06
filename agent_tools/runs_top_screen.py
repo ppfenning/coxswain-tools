@@ -8,16 +8,18 @@ a fake stdscr.
 from __future__ import annotations
 
 import contextlib
+import datetime
+import json
 import os
 import re
 import time
 from pathlib import Path
 
 from agent_tools import events as events_module
-from agent_tools import runs_top
+from agent_tools import leader, runs_top
 from agent_tools.records import ceiling_for, load_trace
 
-__all__ = ["draw", "facts", "loop", "main", "rows_now"]
+__all__ = ["draw", "facts", "leader_now", "loop", "main", "rows_now"]
 
 _STALE_SECONDS = 600
 _TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)$")
@@ -74,6 +76,17 @@ def _ceiling(root: Path, run: str) -> dict | None:
     return ceiling_for(run, {path.name: path.read_text(encoding="utf-8")})
 
 
+def _launched_by(root: Path, run: str) -> str:
+    path = root / f"{run}.launched.json"
+    if not path.exists():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return data.get("launched_by", "") if isinstance(data, dict) else ""
+
+
 def _fact(root: Path, run: str, alive: bool) -> dict:
     lines = _read_lines(root / f"{run}.log")
     trace_dir = root / f"{run}-trace"
@@ -82,7 +95,7 @@ def _fact(root: Path, run: str, alive: bool) -> dict:
     events = events_module.from_log(run, lines) + events_module.from_trace_names(run, names)
     calls = [c for c in (_call(p) for p in trace_paths) if c is not None]
     return {"run": run, "alive": alive, "phases": _phases(root, run), "events": events, "calls": calls,
-            "ceiling": _ceiling(root, run)}
+            "ceiling": _ceiling(root, run), "launched_by": _launched_by(root, run)}
 
 
 def facts(runs_dir, now_alive=_default_alive) -> list[dict]:
@@ -100,8 +113,34 @@ def facts(runs_dir, now_alive=_default_alive) -> list[dict]:
     return [_fact(root, run, run in alive) for run in sorted(alive | recent)]
 
 
-def rows_now(runs_dir) -> list[runs_top.Row]:
-    return [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"]) for f in facts(runs_dir)]
+def _minutes_ago(heartbeat_at, now: datetime.datetime) -> int:
+    try:
+        beat = datetime.datetime.fromisoformat(heartbeat_at)
+    except (TypeError, ValueError):
+        return 0
+    return max(int((now - beat).total_seconds() // 60), 0)
+
+
+def leader_now(runs_dir, heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUTES, pid_alive=leader.pid_alive) -> dict | None:
+    """Edge: `runs/leader.json` turned into the plain dict `runs_top.render` shows,
+    or None when no lock is held. A file present but unreadable reads as no lock,
+    same as `leader.read`'s own contract for a missing file."""
+    try:
+        record = leader.read(runs_dir)
+    except (OSError, json.JSONDecodeError):
+        record = None
+    if record is None:
+        return None
+    now = datetime.datetime.now(datetime.UTC)
+    alive = pid_alive(record["pid"]) if isinstance(record.get("pid"), int) else False
+    state = leader.liveness(record, alive, now, heartbeat_minutes)
+    return {"holder": record.get("session", ""), "state": state, "minutes_ago": _minutes_ago(record.get("heartbeat_at"), now)}
+
+
+def rows_now(runs_dir, heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUTES) -> list[runs_top.Row]:
+    leader_state = leader_now(runs_dir, heartbeat_minutes)
+    return [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], leader_state)
+            for f in facts(runs_dir)]
 
 
 def _has_colors() -> bool:
@@ -124,16 +163,25 @@ def _attr(row, has_color: bool):
     return curses.A_NORMAL
 
 
+def _leader_attr(leader_state, has_color: bool):
+    import curses
+
+    if runs_top.leader_highlight(leader_state) == "alert":
+        return (curses.color_pair(1) if has_color else 0) | curses.A_BOLD
+    return curses.A_NORMAL
+
+
 def _ordered(rows: list) -> list:
     return runs_top.order(rows)
 
 
-def draw(stdscr, rows: list, cursor: int | None = None) -> None:
+def draw(stdscr, rows: list, cursor: int | None = None, leader_state=runs_top.UNSET) -> None:
     import curses
 
     stdscr.clear()
     height, width = stdscr.getmaxyx()
-    lines = runs_top.render(rows, width)
+    lines = runs_top.render(rows, width, leader_state)
+    offset = 0 if leader_state is runs_top.UNSET else 1
     ordered = _ordered(rows)
     has_color = _has_colors()
     if has_color:
@@ -142,9 +190,12 @@ def draw(stdscr, rows: list, cursor: int | None = None) -> None:
         except curses.error:
             has_color = False
     for i, line in enumerate(lines[:height]):
-        row = ordered[i - 1] if 0 < i <= len(ordered) else None
-        base = _attr(row, has_color) if row is not None else curses.A_NORMAL
-        attr = base | curses.A_REVERSE if row is not None and cursor == i - 1 else base
+        if offset and i == 0:
+            attr = _leader_attr(leader_state, has_color)
+        else:
+            row = ordered[i - 1 - offset] if offset < i <= len(ordered) + offset else None
+            base = _attr(row, has_color) if row is not None else curses.A_NORMAL
+            attr = base | curses.A_REVERSE if row is not None and cursor == i - 1 - offset else base
         with contextlib.suppress(curses.error):
             stdscr.addnstr(i, 0, line, width, attr)
     stdscr.refresh()
@@ -162,7 +213,8 @@ def _show_detail(stdscr, runs_dir, run: str, now_alive=_default_alive) -> None:
             return
 
 
-def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_alive) -> int:
+def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_alive,
+         heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUTES) -> int:
     import curses
 
     with contextlib.suppress(curses.error):  # no real terminal behind stdscr, e.g. under test
@@ -171,9 +223,10 @@ def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_al
     cursor = 0
     while True:
         rows = tick(runs_dir)
+        leader_state = leader_now(runs_dir, heartbeat_minutes)
         ordered = _ordered(rows)
         cursor = min(cursor, len(ordered) - 1) if ordered else 0
-        draw(stdscr, rows, cursor if ordered else None)
+        draw(stdscr, rows, cursor if ordered else None, leader_state)
         ch = stdscr.getch()
         if ch in (ord("q"), ord("Q")):
             return 0
@@ -187,7 +240,7 @@ def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_al
         # way the next iteration redraws against the current rows and size.
 
 
-def main(runs_dir, interval: float) -> int:
+def main(runs_dir, interval: float, heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUTES) -> int:
     import curses
     import signal
 
@@ -196,7 +249,7 @@ def main(runs_dir, interval: float) -> int:
 
     previous = signal.signal(signal.SIGHUP, _hangup)
     try:
-        return curses.wrapper(lambda stdscr: loop(stdscr, runs_dir, interval))
+        return curses.wrapper(lambda stdscr: loop(stdscr, runs_dir, interval, heartbeat_minutes=heartbeat_minutes))
     except KeyboardInterrupt:
         # A closed window sends SIGHUP; raising through the wrapper lets it
         # restore the terminal before this function returns.
