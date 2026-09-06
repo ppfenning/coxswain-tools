@@ -11,9 +11,8 @@ and doubles as a local plugin marketplace for skill-aware providers.
 `agent-graphs` is the harness that runs a graph; it depends on
 agent-cartridges as a path dependency, so a working agent-graphs checkout
 needs a resolvable agent-cartridges checkout beside it.
-`coxswain-tools` provides `cox`, the CLI a seat runs instead of reasoning by
-hand; its `route` group is the entry point that files work and launches the
-harness. `agent-tools` is kept as an alias for one release.
+`agent-tools` is the CLI a seat runs instead of reasoning by hand; its
+`route` group is the entry point that files work and launches the harness.
 Clone them in dependency order: cartridges, then graphs, then tools, side
 by side under one checkout root.
 
@@ -22,14 +21,14 @@ by side under one checkout root.
 ```bash
 git clone https://github.com/ppfenning/agent-cartridges <checkout root>/agent-cartridges
 git clone https://github.com/ppfenning/agent-graphs <checkout root>/agent-graphs
-git clone https://github.com/ppfenning/coxswain-tools <checkout root>/coxswain-tools
+git clone https://github.com/ppfenning/agent-tools <checkout root>/agent-tools
 ```
 
 In each of the three, create the environment:
 
 ```bash
 cd <checkout root>/agent-cartridges && uv venv && uv pip install -e ".[dev]"
-cd <checkout root>/coxswain-tools && uv venv && uv pip install -e ".[dev]"
+cd <checkout root>/agent-tools && uv venv && uv pip install -e ".[dev]"
 ```
 
 agent-graphs depends on agent-cartridges as a path dependency, so `uv sync`
@@ -39,10 +38,10 @@ fails there; the form that works installs both in one call:
 cd <checkout root>/agent-graphs && uv venv && uv pip install -e ".[dev]" -e <checkout root>/agent-cartridges
 ```
 
-Then put `cox` on PATH for every seat:
+Then put `agent-tools` on PATH for every seat:
 
 ```bash
-uv tool install -e <checkout root>/coxswain-tools
+uv tool install -e <checkout root>/agent-tools
 ```
 
 ## 3. The two interactive logins

@@ -7,6 +7,8 @@ from __future__ import annotations
 import os
 import re
 
+from agent_tools.pacing import Assessment
+
 __all__ = [
     "ProfileError",
     "child_env",
@@ -16,6 +18,7 @@ __all__ = [
     "initiative_summaries",
     "intake_entries",
     "intake_file",
+    "launch_gate",
     "next_run_id",
     "overlay",
     "parse_frontmatter",
@@ -360,6 +363,22 @@ def overlay(profile: dict, tier_ceiling: str | None, effort_ceiling: str | None)
     new_tiers = {tier: tiers[capped_tier(tier)] for tier in tiers}
     new_efforts = {tier: capped_effort(efforts.get(capped_tier(tier), value)) for tier, value in efforts.items()}
     return {**profile, **({"tiers": new_tiers} if tiers else {}), **({"effort": new_efforts} if efforts else {})}
+
+
+def launch_gate(assessment: Assessment, force: bool) -> tuple[int | None, list[str]]:
+    """Pure: what `route launch` does with one usage `Assessment`, computed
+    once via the gatherer. `stop` refuses before anything starts unless
+    `force` overrides it; `hold` and `go_degraded` only narrate the reason
+    and let the launch continue; `go` is silent. This function decides —
+    `_route_launch` only prints the returned lines and returns the code.
+    """
+    if assessment.verdict == "stop" and not force:
+        return 2, [f"routing: usage stop: {assessment.reason}"]
+    if assessment.verdict == "stop":
+        return None, [f"routing: usage stop overridden by --force: {assessment.reason}"]
+    if assessment.verdict in ("hold", "go_degraded"):
+        return None, [f"routing: usage {assessment.verdict}: {assessment.reason}"]
+    return None, []
 
 
 def _alive_runs(runs: list) -> list:

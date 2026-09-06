@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from agent_tools import route
+from agent_tools import pacing, route
 
 VALID_PROFILE = """\
 team: acme
@@ -885,3 +885,40 @@ def test_work_item_initiative_argument_wins_over_a_frontmatter_key():
     fields = {"initiative": "wrong"}
     item = route.work_item(fields, initiative="demo", phase_dir="1-build", stem="task")
     assert item["initiative"] == "demo"
+
+
+def _assessment(verdict: str, reason: str) -> pacing.Assessment:
+    return pacing.Assessment(
+        spent_fraction=0.5, elapsed_fraction=0.5, projected_total=1.0, headroom_usd=1.0,
+        verdict=verdict, tier_ceiling="deep", effort_ceiling="high", hold_until=None, reason=reason,
+    )
+
+
+def test_launch_gate_stop_without_force_refuses_with_exit_2_and_the_reason():
+    code, lines = route.launch_gate(_assessment("stop", "both ladders exhausted"), force=False)
+    assert code == 2
+    assert lines == ["routing: usage stop: both ladders exhausted"]
+
+
+def test_launch_gate_stop_with_force_overrides_and_continues():
+    code, lines = route.launch_gate(_assessment("stop", "both ladders exhausted"), force=True)
+    assert code is None
+    assert lines == ["routing: usage stop overridden by --force: both ladders exhausted"]
+
+
+def test_launch_gate_hold_narrates_the_reason_and_continues():
+    code, lines = route.launch_gate(_assessment("hold", "headroom below minimum"), force=False)
+    assert code is None
+    assert lines == ["routing: usage hold: headroom below minimum"]
+
+
+def test_launch_gate_go_degraded_narrates_the_reason_and_continues():
+    code, lines = route.launch_gate(_assessment("go_degraded", "degrading to tier=cheap effort=low"), force=False)
+    assert code is None
+    assert lines == ["routing: usage go_degraded: degrading to tier=cheap effort=low"]
+
+
+def test_launch_gate_go_is_silent():
+    code, lines = route.launch_gate(_assessment("go", "on pace"), force=False)
+    assert code is None
+    assert lines == []
