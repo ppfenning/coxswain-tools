@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from agent_tools.events import Event
 
-__all__ = ["UNSET", "Row", "column_widths", "highlight", "leader_highlight", "order", "render", "row"]
+__all__ = ["UNSET", "Row", "column_widths", "highlight", "leader_highlight", "order", "render", "row", "tail_lines"]
 
 _COLUMNS = ("PHASE", "NODE", "ATT", "TURNS", "COST", "VERDICT", "STATUS", "CEIL", "BY")
 _HEADERS = ("RUN", *_COLUMNS)
@@ -94,6 +94,12 @@ def _cut(line: str, width: int) -> str:
     return line[: max(width, 0)]
 
 
+def tail_lines(text: str, limit: int) -> list[str]:
+    """Pure: the last `limit` non-empty lines of `text`."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    return lines[-limit:] if limit > 0 else []
+
+
 def order(rows: list) -> list:
     return sorted(rows, key=lambda r: (not r.alive, r.run))
 
@@ -118,17 +124,22 @@ def _padded(cell: str, header: str, w: int) -> str:
     return cell.rjust(w) if header in _RIGHT else cell.ljust(w)
 
 
-def render(rows: list[Row], width: int, leader=UNSET) -> list[str]:
+def render(rows: list[Row], width: int, leader=UNSET, expanded=None, detail_lines: tuple = ()) -> list[str]:
     """Pure: the leader line (only when `leader` is passed), the header line,
-    then one line per row, cut to `width`."""
-    prefix = [] if leader is UNSET else [_cut(_leader_line(leader), width)]
+    one line per row, and `detail_lines` indented two spaces under `expanded`'s
+    row (nothing, if `expanded` names no row in `rows`), all cut to `width`."""
+    prefix = [] if leader is UNSET else [_leader_line(leader)]
     widths = column_widths(rows, _HEADERS)
     header = " ".join(_padded(h, h, w) for h, w in zip(_HEADERS, widths))
     if not rows:
-        return [*prefix, _cut(header, width), _cut(_NO_RUNS, width)]
+        return [_cut(line, width) for line in [*prefix, header, _NO_RUNS]]
     ordered = order(rows)
-    lines = [" ".join(_padded(c, h, w) for c, h, w in zip(_cells(r), _HEADERS, widths)) for r in ordered]
-    return [*prefix, *[_cut(line, width) for line in [header, *lines]]]
+    body = []
+    for r in ordered:
+        body.append(" ".join(_padded(c, h, w) for c, h, w in zip(_cells(r), _HEADERS, widths)))
+        if r.run == expanded:
+            body.extend("  " + line for line in detail_lines)
+    return [_cut(line, width) for line in [*prefix, header, *body]]
 
 
 def highlight(row: Row) -> str:

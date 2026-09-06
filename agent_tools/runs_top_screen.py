@@ -19,7 +19,7 @@ from agent_tools import events as events_module
 from agent_tools import leader, runs_top
 from agent_tools.records import ceiling_for, load_trace
 
-__all__ = ["draw", "facts", "leader_now", "loop", "main", "rows_now"]
+__all__ = ["draw", "facts", "first_visible", "leader_now", "loop", "main", "rows_now"]
 
 _STALE_SECONDS = 600
 _TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)$")
@@ -184,42 +184,94 @@ def _ordered(rows: list) -> list:
     return runs_top.order(rows)
 
 
-def draw(stdscr, rows: list, cursor: int | None = None, leader_state=runs_top.UNSET) -> None:
+def _line_kinds(ordered: list, expanded, detail_count: int) -> list:
+    """One entry per line `runs_top.render` draws below any leader line: `None`
+    for the header or a detail line, `(row, index)` for a row's own line."""
+    kinds = [None]
+    for i, r in enumerate(ordered):
+        kinds.append((r, i))
+        if r.run == expanded:
+            kinds.extend([None] * detail_count)
+    return kinds
+
+
+def _scroll_facts(ordered: list, expanded, detail_count: int, cursor: int, has_leader: bool) -> tuple[int, int]:
+    """The cursor's absolute line number and the total line count, for `first_visible`."""
+    kinds = _line_kinds(ordered, expanded, detail_count)
+    offset = 1 if has_leader else 0
+    cursor_line = offset + next(i for i, k in enumerate(kinds) if k is not None and k[1] == cursor)
+    return cursor_line, offset + len(kinds)
+
+
+def first_visible(cursor_index: int, total_lines: int, window_height: int, current_first: int) -> int:
+    """Pure: the scroll offset that keeps `cursor_index` on screen, moving `current_first` no more than it must."""
+    if window_height <= 0:
+        return current_first
+    last_first = max(total_lines - window_height, 0)
+    first = min(current_first, last_first)
+    if cursor_index < first:
+        first = cursor_index
+    elif cursor_index > first + window_height - 1:
+        first = cursor_index - window_height + 1
+    return max(min(first, last_first), 0)
+
+
+def draw(stdscr, rows: list, cursor: int | None = None, leader_state=runs_top.UNSET,
+         expanded=None, detail_lines: tuple = (), first: int = 0) -> None:
     import curses
 
     stdscr.clear()
     height, width = stdscr.getmaxyx()
-    lines = runs_top.render(rows, width, leader_state)
-    offset = 0 if leader_state is runs_top.UNSET else 1
+    lines = runs_top.render(rows, width, leader_state, expanded, detail_lines)
+    has_leader = leader_state is not runs_top.UNSET
+    offset = 1 if has_leader else 0
     ordered = _ordered(rows)
+    kinds = _line_kinds(ordered, expanded, len(detail_lines))
     has_color = _has_colors()
     if has_color:
         try:
             curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
         except curses.error:
             has_color = False
-    for i, line in enumerate(lines[:height]):
-        if offset and i == 0:
+    for row_i, line in enumerate(lines[first:first + height]):
+        i = first + row_i
+        if has_leader and i == 0:
             attr = _leader_attr(leader_state, has_color)
         else:
-            row = ordered[i - 1 - offset] if offset < i <= len(ordered) + offset else None
-            base = _attr(row, has_color) if row is not None else curses.A_NORMAL
-            attr = base | curses.A_REVERSE if row is not None and cursor == i - 1 - offset else base
+            kind = kinds[i - offset] if 0 <= i - offset < len(kinds) else None
+            base = _attr(kind[0], has_color) if kind is not None else curses.A_NORMAL
+            attr = base | curses.A_REVERSE if kind is not None and cursor == kind[1] else base
         with contextlib.suppress(curses.error):
-            stdscr.addnstr(i, 0, line, width, attr)
+            stdscr.addnstr(row_i, 0, line, width, attr)
     stdscr.refresh()
 
 
-def _show_detail(stdscr, runs_dir, run: str, now_alive=_default_alive) -> None:
-    """Draws one run's detail until `q`/ESC; the caller resumes the table."""
+def _session_text(root: Path, run: str) -> str:
+    """Edge: the newest trace file's message text and tool calls, one per line."""
+    from agent_tools import runs_detail_screen
+
+    newest = runs_detail_screen._newest_trace(root, run)
+    if newest is None:
+        return ""
+    lines = []
+    for event in load_trace(newest):
+        for item in runs_detail_screen._content(event):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text":
+                lines.append(item.get("text", ""))
+            elif item.get("type") == "tool_use":
+                lines.append(f"tool: {item.get('name', '')}")
+    return "\n".join(lines)
+
+
+def _accordion_detail(runs_dir, run: str, width: int, now_alive) -> list[str]:
     from agent_tools import runs_detail, runs_detail_screen
 
+    root = Path(runs_dir)
     detail = runs_detail.detail(**runs_detail_screen.facts_for(runs_dir, run, now_alive=now_alive))
-    while True:
-        runs_detail_screen.draw(stdscr, detail)
-        ch = stdscr.getch()
-        if ch in (ord("q"), ord("Q"), 27):
-            return
+    tail = runs_top.tail_lines(_session_text(root, run), 3)
+    return [*runs_detail.render(detail, width), *tail]
 
 
 def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_alive,
@@ -230,12 +282,21 @@ def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_al
         curses.curs_set(0)
     stdscr.timeout(int(interval * 1000))
     cursor = 0
+    expanded = None
+    first = 0
     while True:
         rows = tick(runs_dir)
         leader_state = leader_now(runs_dir, heartbeat_minutes)
         ordered = _ordered(rows)
         cursor = min(cursor, len(ordered) - 1) if ordered else 0
-        draw(stdscr, rows, cursor if ordered else None, leader_state)
+        expanded = expanded if any(r.run == expanded for r in ordered) else None
+        height, width = stdscr.getmaxyx()
+        detail_lines = _accordion_detail(runs_dir, expanded, width, now_alive) if expanded is not None else ()
+        if ordered:
+            cursor_line, total_lines = _scroll_facts(ordered, expanded, len(detail_lines), cursor,
+                                                       leader_state is not runs_top.UNSET)
+            first = first_visible(cursor_line, total_lines, height, first)
+        draw(stdscr, rows, cursor if ordered else None, leader_state, expanded, detail_lines, first)
         ch = stdscr.getch()
         if ch in (ord("q"), ord("Q")):
             return 0
@@ -244,7 +305,10 @@ def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_al
         elif ordered and ch in (ord("k"), curses.KEY_UP):
             cursor = max(cursor - 1, 0)
         elif ordered and ch in (10, 13, curses.KEY_ENTER):
-            _show_detail(stdscr, runs_dir, ordered[cursor].run, now_alive)
+            run = ordered[cursor].run
+            expanded = None if expanded == run else run
+        elif ch == 27:
+            expanded = None
         # curses.KEY_RESIZE and a plain timeout both fall through here: either
         # way the next iteration redraws against the current rows and size.
 

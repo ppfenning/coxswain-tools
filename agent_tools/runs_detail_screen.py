@@ -41,13 +41,15 @@ def _tool_names(trace_events: list[dict]) -> list[str]:
     ]
 
 
-def _tail(root: Path, run: str) -> list[str]:
+def _newest_trace(root: Path, run: str) -> Path | None:
     trace_dir = root / f"{run}-trace"
     paths = [p for p in trace_dir.glob("*.jsonl") if runs_top_screen._TRACE_NAME.match(p.stem)] if trace_dir.exists() else []
-    if not paths:
-        return []
-    newest = max(paths, key=lambda p: p.stat().st_mtime)
-    return _tool_names(load_trace(newest))[-3:]
+    return max(paths, key=lambda p: p.stat().st_mtime) if paths else None
+
+
+def _tail(root: Path, run: str) -> list[str]:
+    newest = _newest_trace(root, run)
+    return _tool_names(load_trace(newest))[-3:] if newest else []
 
 
 def facts_for(runs_dir, run: str, now_alive=runs_top_screen._default_alive) -> dict:

@@ -1,5 +1,5 @@
 from agent_tools.events import Event
-from agent_tools.runs_top import Row, column_widths, highlight, render, row
+from agent_tools.runs_top import Row, column_widths, highlight, render, row, tail_lines
 
 
 def test_the_last_node_started_and_verdict_win():
@@ -120,3 +120,32 @@ def test_render_of_no_rows_still_renders_the_header():
     lines = render([], 40)
     assert lines[0].split()[0] == "RUN"
     assert "COST" in lines[0]
+
+
+def test_render_inserts_detail_lines_after_the_expanded_row():
+    rows = [
+        Row("aaa", True, "build", "build", 1, 1, 1.0, "", "running"),
+        Row("bbb", True, "build", "build", 1, 1, 1.0, "", "running"),
+    ]
+    plain = render(rows, 40)
+    lines = render(rows, 40, expanded="aaa", detail_lines=("d1", "d2"))
+    assert lines == [plain[0], plain[1], "  d1", "  d2", plain[2]]
+
+
+def test_render_with_expanded_naming_an_absent_run_inserts_nothing():
+    rows = [Row("aaa", True, "build", "build", 1, 1, 1.0, "", "running")]
+    assert render(rows, 40, expanded="zzz", detail_lines=("d1",)) == render(rows, 40)
+
+
+def test_render_indents_and_cuts_a_detail_line_to_width():
+    rows = [Row("aaa", True, "build", "build", 1, 1, 1.0, "", "running")]
+    lines = render(rows, 5, expanded="aaa", detail_lines=("abcdefgh",))
+    assert lines[-1] == "  abc"
+
+
+def test_tail_lines_returns_everything_when_under_the_limit():
+    assert tail_lines("a\nb\n", 5) == ["a", "b"]
+
+
+def test_tail_lines_keeps_only_the_last_lines_over_the_limit():
+    assert tail_lines("a\nb\nc\nd\n", 2) == ["c", "d"]
