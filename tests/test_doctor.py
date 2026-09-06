@@ -12,6 +12,7 @@ _CHECK_ORDER = (
     "skills",
     "provider",
     "workspace",
+    "cast",
 )
 
 
@@ -29,6 +30,7 @@ def _good_facts():
         "provider_on_path": True,
         "provider_version": "claude 1.2.3",
         "workspace_dirs": {"/w/work": True, "/w/runs": True, "/w/intake": True},
+        "cast_seats": {},
     }
 
 
@@ -78,7 +80,7 @@ def test_absent_profile_fails_profile_and_skips_dependent_rows():
     rows = _rows_by_check(doctor.checks(facts))
     assert rows["profile"]["ok"] is False
     assert "/profiles/a.yaml" in rows["profile"]["detail"]
-    for check in ("profile paths", "harness venv", "core importable", "cartridge", "project overlay", "skills", "provider", "workspace"):
+    for check in ("profile paths", "harness venv", "core importable", "cartridge", "project overlay", "skills", "provider", "workspace", "cast"):
         assert rows[check]["ok"] is False
         assert rows[check]["detail"] == "skipped: no profile"
 
@@ -242,7 +244,7 @@ def test_render_lists_every_row_in_order_with_its_own_check_label():
     data_lines = lines[1 : 1 + len(rows)]
     labels = [re.split(r"\s{2,}", line.strip())[0] for line in data_lines]
     assert labels == list(_CHECK_ORDER)
-    assert lines[-1] == "doctor: 9 ok, 0 failing"
+    assert lines[-1] == "doctor: 10 ok, 0 failing"
 
 
 def test_render_marks_a_failing_row_as_fail_and_counts_it():
@@ -251,10 +253,35 @@ def test_render_marks_a_failing_row_as_fail_and_counts_it():
     rows = doctor.checks(facts)
     text = doctor.render(rows)
     assert "FAIL" in text
-    assert "doctor: 8 ok, 1 failing" in text
+    assert "doctor: 9 ok, 1 failing" in text
 
 
 def test_empty_facts_dict_yields_all_rows_not_checked_and_exit_one():
-    rows = doctor.checks({})
-    assert all(r["ok"] is False and r["detail"] == "not checked" for r in rows)
-    assert doctor.exit_code(rows) == 1
+    rows = _rows_by_check(doctor.checks({}))
+    assert all(r["ok"] is False and r["detail"] == "not checked" for check, r in rows.items() if check != "cast")
+    assert rows["cast"] == {"check": "cast", "ok": True, "detail": "not gathered"}
+    assert doctor.exit_code(rows.values()) == 1
+
+
+def test_all_enabled_seats_installed_and_all_disabled_seats_absent_gives_an_ok_cast_row():
+    facts = _good_facts()
+    facts["cast_seats"] = {
+        "reviewer": {"enabled": True, "installed": True},
+        "scribe": {"enabled": False, "installed": False},
+    }
+    rows = _rows_by_check(doctor.checks(facts))
+    assert rows["cast"] == {"check": "cast", "ok": True, "detail": "2 seats"}
+
+
+def test_a_missing_enabled_seat_fails_the_cast_row_naming_it():
+    facts = _good_facts()
+    facts["cast_seats"] = {"reviewer": {"enabled": True, "installed": False}}
+    rows = _rows_by_check(doctor.checks(facts))
+    assert rows["cast"] == {"check": "cast", "ok": False, "detail": "missing: reviewer"}
+
+
+def test_an_installed_disabled_seat_fails_the_cast_row_naming_it():
+    facts = _good_facts()
+    facts["cast_seats"] = {"reviewer": {"enabled": False, "installed": True}}
+    rows = _rows_by_check(doctor.checks(facts))
+    assert rows["cast"] == {"check": "cast", "ok": False, "detail": "present: reviewer"}

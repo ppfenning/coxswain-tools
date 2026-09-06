@@ -4,6 +4,7 @@ import pytest
 
 from agent_tools import route
 from agent_tools.setup_install import (
+    _agent_steps,
     hook_settings,
     install_plan,
     profile_text,
@@ -222,3 +223,31 @@ def test_assume_flows_into_the_written_profile():
     steps = _plan(assume="r")
     writes = [s for s in steps if s["op"] == "write"]
     assert "assume: r" in writes[0]["text"]
+
+
+def test_agent_steps_writes_an_enabled_seat():
+    steps = _agent_steps({"reviewer": {"enabled": True, "path": "/p", "text": "t"}})
+    assert steps == [{"op": "write", "path": "/p", "text": "t", "why": "install the reviewer seat"}]
+
+
+def test_agent_steps_treats_an_absent_enabled_key_as_enabled():
+    steps = _agent_steps({"reviewer": {"path": "/p", "text": "t"}})
+    assert steps == [{"op": "write", "path": "/p", "text": "t", "why": "install the reviewer seat"}]
+
+
+def test_agent_steps_removes_a_disabled_seat():
+    steps = _agent_steps({"reviewer": {"enabled": False, "path": "/p", "text": "t"}})
+    assert steps == [{"op": "remove", "path": "/p", "why": "reviewer seat is disabled"}]
+
+
+def test_install_plan_splices_agent_steps_after_the_profile_block():
+    steps = _plan(cast={"reviewer": {"enabled": False, "path": "/p", "text": "t"}})
+    profile_index = next(i for i, s in enumerate(steps)
+                          if s.get("what") == "profile" or s.get("path", "").endswith("profile.yaml"))
+    remove_index = next(i for i, s in enumerate(steps) if s["op"] == "remove")
+    assert steps[remove_index] == {"op": "remove", "path": "/p", "why": "reviewer seat is disabled"}
+    assert remove_index > profile_index
+
+
+def test_render_plan_prints_a_remove_line():
+    assert render_plan([{"op": "remove", "path": "/p", "why": "x"}]) == "remove /p"
