@@ -58,13 +58,13 @@ def _runs_usage(a: argparse.Namespace) -> int:
 
 _SERIES_COLUMNS = ["run", "date", "cartridge_sha", "provider_profile", "calls", "turns", "cost_usd",
                    "cache_share", "tasks_landed", "quarantined", "review_rounds", "cost_per_landed",
-                   "tier_ceiling", "effort_ceiling"]
+                   "tier_ceiling", "effort_ceiling", "launched_by"]
 
 
 def _runs_series(a: argparse.Namespace) -> int:
     d = Path(a.runs_dir)
     files = {f.name: f.read_text(encoding="utf-8")
-             for pattern in ("*.usage.json", "*:*.json", "*.ceiling.json") for f in d.glob(pattern)}
+             for pattern in ("*.usage.json", "*:*.json", "*.ceiling.json", "*.launched.json") for f in d.glob(pattern)}
     rows = records.series(files)
     totals = records.series_totals(rows)
     if a.json:
@@ -589,6 +589,14 @@ def _leader_pid_alive(record: dict | None) -> bool:
     return leader.pid_alive(pid)
 
 
+def _leader_launched_by(record: dict | None, pid_alive_: bool, now: datetime.datetime, heartbeat_minutes: int) -> str | None:
+    """The label to stamp on a run launched right now: the lock's own holder when it
+    reads live, `None` when it reads stale or none — never a guess."""
+    if leader.liveness(record, pid_alive_, now, heartbeat_minutes) != "live":
+        return None
+    return record.get("session")
+
+
 def _print_if_stale(record: dict | None, state: str) -> None:
     if record is not None and state == "stale":
         print(f"leader stale: {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}")
@@ -914,6 +922,13 @@ def _route_launch(a: argparse.Namespace) -> int:
             argv, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
         )
     pid_path.write_text(str(proc.pid))
+    now = datetime.datetime.now(datetime.UTC)
+    lock_record, lock_refuse_rc = _leader_read_or_refuse(runs_dir)
+    launched_by = None if lock_refuse_rc is not None else _leader_launched_by(lock_record, _leader_pid_alive(lock_record), now, _leader_heartbeat_minutes())
+    launched_payload = {"launched_by": launched_by} if launched_by is not None else {}
+    (runs_dir / f"{run_id}.launched.json").write_text(
+        json.dumps({**launched_payload, "at": now.isoformat()}), encoding="utf-8",
+    )
     print(f"run {run_id}")
     print(f"pid {pid_path}")
     print(f"log {log_path}")

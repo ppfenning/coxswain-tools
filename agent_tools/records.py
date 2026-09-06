@@ -11,6 +11,7 @@ from typing import Any
 __all__ = [
     "ceiling_for",
     "format_table",
+    "launched_by_for",
     "load_trace",
     "load_usage",
     "series",
@@ -147,8 +148,23 @@ def ceiling_for(run_id: str, files: Mapping[str, str]) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def launched_by_for(run_id: str, files: Mapping[str, str]) -> str | None:
+    """None means no session held the leader lock at launch time."""
+    text = files.get(f"{run_id}.launched.json")
+    if text is None:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    label = parsed.get("launched_by")
+    return label if isinstance(label, str) else None
+
+
 def series_row(run_id: str, usage: Mapping[str, Any] | None, manifests: Sequence[Mapping[str, Any]],
-                ceiling: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                ceiling: Mapping[str, Any] | None = None, launched_by: str | None = None) -> dict[str, Any]:
     """Pure: one steward-pass row for a run, from its usage summary and its phase manifests.
     `ceiling` is the run's own parsed ceiling.json (see `ceiling_for`), or None when the
     run carried no tier/effort overlay; its applied tier/effort become the row's own
@@ -178,6 +194,7 @@ def series_row(run_id: str, usage: Mapping[str, Any] | None, manifests: Sequence
         "cost_per_landed": round(figures["cost_usd"] / tasks_landed, 2) if tasks_landed else None,
         "tier_ceiling": applied.get("tier") or "",
         "effort_ceiling": applied.get("effort") or "",
+        "launched_by": launched_by or "",
     }
 
 
@@ -197,7 +214,7 @@ def series(files: Mapping[str, str]) -> list[dict[str, Any]]:
             by_run[name[: -len(".usage.json")]]["usage"] = parsed
         elif ":" in name:
             by_run[name.split(":", 1)[0]]["manifests"].append(parsed)
-    rows = [series_row(run_id, entry["usage"], entry["manifests"], ceiling_for(run_id, files)) for run_id, entry in by_run.items()]
+    rows = [series_row(run_id, entry["usage"], entry["manifests"], ceiling_for(run_id, files), launched_by_for(run_id, files)) for run_id, entry in by_run.items()]
     return sorted(rows, key=lambda r: (r["date"], r["run"]))
 
 
