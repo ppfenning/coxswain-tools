@@ -17,7 +17,7 @@ def test_facts_reads_one_alive_run_with_calls_and_phases(tmp_path):
     _write(tmp_path / "r1:build.json", "{}")
     trace = tmp_path / "r1-trace"
     trace.mkdir()
-    _write(trace / "n1-1.jsonl", json.dumps({"type": "result", "total_cost_usd": 0.5, "num_turns": 4}) + "\n")
+    _write(trace / "n1-1.jsonl", json.dumps({"type": "result", "num_turns": 4}) + "\n")
     _write(trace / "n2-1.jsonl", json.dumps({"type": "assistant"}) + "\n")
 
     result = facts(tmp_path, now_alive=lambda pid: pid == 123)
@@ -27,7 +27,36 @@ def test_facts_reads_one_alive_run_with_calls_and_phases(tmp_path):
     assert f["run"] == "r1"
     assert f["alive"] is True
     assert f["phases"] == ["build"]
-    assert f["calls"] == [{"node": "n1", "attempt": 1, "cost_usd": 0.5, "turns": 4}]
+    assert f["calls"] == [{"node": "n1", "attempt": 1, "turns": 4}]
+
+
+def test_facts_reads_the_runs_usage_file(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    _write(tmp_path / "r1.usage.json", json.dumps({"run_id": "r1", "calls": [{"cost_usd": 1.0, "turns": 3, "input_total": 1200000, "cache_creation_tokens": 3000, "output_tokens": 1338}]}))
+
+    result = facts(tmp_path, now_alive=lambda pid: pid == 123)
+
+    assert result[0]["tokens"] == 1204338
+
+
+def test_facts_tokens_is_none_with_no_usage_file(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+
+    result = facts(tmp_path, now_alive=lambda pid: pid == 123)
+
+    assert result[0]["tokens"] is None
+
+
+def test_rows_now_carries_the_tokens_total_into_the_row(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    _write(tmp_path / "r1.usage.json", json.dumps({"run_id": "r1", "calls": [{"cost_usd": 1.0, "turns": 3, "input_total": 400, "cache_creation_tokens": 60, "output_tokens": 40}]}))
+
+    rows = rows_now(tmp_path)
+
+    assert rows[0].tokens == 500
 
 
 def test_rows_now_maps_facts_through_runs_top_row(tmp_path):
