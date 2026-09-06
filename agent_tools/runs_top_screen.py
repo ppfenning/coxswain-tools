@@ -17,7 +17,7 @@ from pathlib import Path
 
 from agent_tools import events as events_module
 from agent_tools import leader, runs_top
-from agent_tools.records import ceiling_for, load_trace, load_usage, usage_summary
+from agent_tools.records import ceiling_for, load_trace
 
 __all__ = ["draw", "facts", "leader_now", "loop", "main", "rows_now"]
 
@@ -48,9 +48,9 @@ def _phases(root: Path, run: str) -> list[str]:
 
 
 def _call(path: Path) -> dict | None:
-    """The `result` line's turns for one trace file, or None when the name
-    does not fit `<node>-<n>.jsonl` or the file has no result line. A file
-    that fails to parse is skipped by `load_trace`, never raised."""
+    """The `result` line's cost and turns for one trace file, or None when
+    the name does not fit `<node>-<n>.jsonl` or the file has no result line.
+    A file that fails to parse is skipped by `load_trace`, never raised."""
     m = _TRACE_NAME.match(path.stem)
     if not m:
         return None
@@ -61,7 +61,8 @@ def _call(path: Path) -> dict | None:
     result = next((e for e in trace_events if e.get("type") == "result"), None)
     if result is None:
         return None
-    return {"node": m.group(1), "attempt": int(m.group(2)), "turns": result.get("num_turns", 0)}
+    return {"node": m.group(1), "attempt": int(m.group(2)),
+            "cost_usd": result.get("total_cost_usd", 0.0), "turns": result.get("num_turns", 0)}
 
 
 def _read_lines(path: Path) -> list[str]:
@@ -86,17 +87,6 @@ def _launched_by(root: Path, run: str) -> str:
     return data.get("launched_by", "") if isinstance(data, dict) else ""
 
 
-def _tokens(root: Path, run: str) -> int | None:
-    """The run's input tokens, cache reads included, from `<run>.usage.json`, or None when the file is absent or unreadable."""
-    path = root / f"{run}.usage.json"
-    if not path.exists():
-        return None
-    try:
-        return usage_summary(load_usage(path))["tokens_total"]
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
 def _fact(root: Path, run: str, alive: bool) -> dict:
     lines = _read_lines(root / f"{run}.log")
     trace_dir = root / f"{run}-trace"
@@ -105,7 +95,7 @@ def _fact(root: Path, run: str, alive: bool) -> dict:
     events = events_module.from_log(run, lines) + events_module.from_trace_names(run, names)
     calls = [c for c in (_call(p) for p in trace_paths) if c is not None]
     return {"run": run, "alive": alive, "phases": _phases(root, run), "events": events, "calls": calls,
-            "ceiling": _ceiling(root, run), "launched_by": _launched_by(root, run), "tokens": _tokens(root, run)}
+            "ceiling": _ceiling(root, run), "launched_by": _launched_by(root, run)}
 
 
 def facts(runs_dir, now_alive=_default_alive) -> list[dict]:
@@ -149,7 +139,7 @@ def leader_now(runs_dir, heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUT
 
 def rows_now(runs_dir, heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUTES) -> list[runs_top.Row]:
     leader_state = leader_now(runs_dir, heartbeat_minutes)
-    return [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], leader_state, f["tokens"])
+    return [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], leader_state)
             for f in facts(runs_dir)]
 
 

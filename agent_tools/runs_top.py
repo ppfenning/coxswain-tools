@@ -15,9 +15,9 @@ from agent_tools.events import Event
 
 __all__ = ["UNSET", "Row", "column_widths", "highlight", "leader_highlight", "order", "render", "row"]
 
-_COLUMNS = ("PHASE", "NODE", "ATT", "TURNS", "TOKENS", "VERDICT", "STATUS", "CEIL", "BY")
+_COLUMNS = ("PHASE", "NODE", "ATT", "TURNS", "COST", "VERDICT", "STATUS", "CEIL", "BY")
 _HEADERS = ("RUN", *_COLUMNS)
-_RIGHT = {"ATT", "TURNS", "TOKENS"}
+_RIGHT = {"ATT", "TURNS", "COST"}
 _NO_RUNS = "no runs in flight"
 
 UNSET = object()  # `render`'s "no leader argument given" default, distinct from a real `None` (no lock file).
@@ -31,7 +31,7 @@ class Row:
     node: str
     attempt: int
     turns: int
-    tokens: int | None
+    cost_usd: float
     verdict: str
     status: str
     ceiling: str = ""
@@ -68,8 +68,8 @@ def _orphaned(alive: bool, launched_by: str, leader: dict | None) -> bool:
 
 
 def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: list[dict], ceiling: dict | None = None,
-        launched_by: str = "", leader: dict | None = None, tokens: int | None = None) -> Row:
-    """Pure: the one row a run's events, finished calls, and input tokens make."""
+        launched_by: str = "", leader: dict | None = None) -> Row:
+    """Pure: the one row a run's events and finished calls make."""
     starts = [e for e in events if e.kind == "node_started"]
     verdicts = [e for e in events if e.kind == "verdict"]
     node = starts[-1].detail["node"] if starts else ""
@@ -82,7 +82,7 @@ def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: li
         node=node,
         attempt=attempt,
         turns=sum(c["turns"] for c in calls),
-        tokens=tokens,
+        cost_usd=sum(c["cost_usd"] for c in calls),
         verdict=verdict,
         status=_status(events, alive, _orphaned(alive, launched_by, leader)),
         ceiling=_ceiling_label(ceiling),
@@ -105,8 +105,7 @@ def _leader_line(leader: dict | None) -> str:
 
 
 def _cells(r: Row) -> tuple[str, ...]:
-    tokens = "" if r.tokens is None else f"{r.tokens:,}"
-    return (r.run, r.phase, r.node, str(r.attempt), str(r.turns), tokens, r.verdict, r.status, r.ceiling, r.launched_by)
+    return (r.run, r.phase, r.node, str(r.attempt), str(r.turns), f"${r.cost_usd:.2f}", r.verdict, r.status, r.ceiling, r.launched_by)
 
 
 def column_widths(rows: Sequence[Row], headers: Sequence[str]) -> tuple[int, ...]:
