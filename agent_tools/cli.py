@@ -349,24 +349,36 @@ def _gather_context(profile_path: Path):
 
 
 def _route_context(a: argparse.Namespace) -> int:
-    # The edge is allowed to catch everything: this command must never take a
-    # session down with it (spec §2). Charter A6 puts exceptions at the edge.
+    # The edge is allowed to catch everything _gather_context can raise: this
+    # command must never take a session down with it (spec §2). That
+    # tolerance is for profile/workspace file reads only — it stops at the
+    # gatherer, per charter A6, so a bug in the usage assessment surfaces
+    # instead of erasing an otherwise-good docket (run tools-pacing-7).
     try:
         profile, reason, intake, runs, initiatives = _gather_context(_profile_path(a))
-        if a.json:
-            doc = route.context_document(profile, intake, runs, initiatives)
-            if reason:
-                doc["reason"] = reason
-            print(json.dumps(doc, indent=2))
-        elif reason:
-            # nothing was read, so print no counts: an unread workspace must not
-            # look like an empty one
-            first_line = route.render_context(profile, [], [], []).partition("\n")[0]
-            print(f"{first_line} ({reason})")
-        else:
-            print(route.render_context(profile, intake, runs, initiatives))
     except Exception as exc:
         print(f"routing: context unavailable ({type(exc).__name__}: {exc})")
+        return 0
+    # Computed once via the gatherer, same reason `route launch` gates on;
+    # only when there is a workspace to gather usage files from.
+    usage_reason = (
+        _usage_assessment(Path(profile["workspace_dir"]).expanduser() / "runs").reason
+        if not reason and profile is not None else None
+    )
+    if a.json:
+        doc = route.context_document(profile, intake, runs, initiatives)
+        if reason:
+            doc["reason"] = reason
+        if usage_reason is not None:
+            doc["usage"] = usage_reason
+        print(json.dumps(doc, indent=2))
+    elif reason:
+        # nothing was read, so print no counts: an unread workspace must not
+        # look like an empty one
+        first_line = route.render_context(profile, [], [], []).partition("\n")[0]
+        print(f"{first_line} ({reason})")
+    else:
+        print(f"{route.render_context(profile, intake, runs, initiatives)}\nusage: {usage_reason}")
     return 0
 
 
@@ -519,6 +531,12 @@ def _route_launch(a: argparse.Namespace) -> int:
     venv_rc = _harness_ready_or_refuse(harness_dir)
     if venv_rc is not None:
         return venv_rc
+    runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
+    usage_code, usage_lines = route.launch_gate(_usage_assessment(runs_dir), a.force)
+    for line in usage_lines:
+        print(line)
+    if usage_code is not None:
+        return usage_code
     overlaid_provider_profile = None
     if a.tier_ceiling is not None or a.effort_ceiling is not None:
         provider_path = Path(profile["provider_profile"]).expanduser()
@@ -535,7 +553,6 @@ def _route_launch(a: argparse.Namespace) -> int:
         if isinstance(overlaid_provider_profile, str):
             print(overlaid_provider_profile)
             return 2
-    runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     if a.graph == "epic":
@@ -1221,11 +1238,19 @@ def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
     )
 
 
-def _usage_assess(a: argparse.Namespace) -> int:
+def _usage_assessment(runs_dir) -> pacing.Assessment:
+    """Computed once via the gatherer and shared by every surface that
+    narrates it: `usage assess`, `route context`'s docket line, and `route
+    launch`'s gate all call this so the same window yields the same reason.
+    """
     now = datetime.datetime.now(datetime.UTC)
-    window = usage_window.gather(a.runs_dir, now)
-    policy = _resolved_pacing_policy(Path(a.runs_dir))
-    result = pacing.assess(window, policy, now)
+    window = usage_window.gather(runs_dir, now)
+    policy = _resolved_pacing_policy(Path(runs_dir))
+    return pacing.assess(window, policy, now)
+
+
+def _usage_assess(a: argparse.Namespace) -> int:
+    result = _usage_assessment(a.runs_dir)
     if a.json:
         d = dataclasses.asdict(result)
         d["hold_until"] = result.hold_until.isoformat() if result.hold_until else None
@@ -1351,6 +1376,7 @@ def build_parser() -> argparse.ArgumentParser:
     for _launch_parser in (ep, de, co):
         _launch_parser.add_argument("--tier-ceiling", choices=("cheap", "standard", "deep"))
         _launch_parser.add_argument("--effort-ceiling", choices=("low", "high"))
+        _launch_parser.add_argument("--force", action="store_true", help="launch despite a usage stop")
 
     ins = sub.add_parser("install", help="clone/update coxswain components against the manifest")
     ins.add_argument("--root", required=True); ins.add_argument("--manifest"); ins.add_argument("--provider", default="claude-code")
