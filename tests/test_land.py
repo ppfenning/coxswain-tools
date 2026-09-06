@@ -281,3 +281,16 @@ def test_wait_decision_retries_only_while_no_check_has_registered():
     assert wait_decision(1, "no checks reported on the 'pr/x' branch", 5, 300) == "retry"
     assert wait_decision(1, "no checks reported on the 'pr/x' branch", 301, 300) == "timeout"
     assert wait_decision(1, "test: fail", 5, 300) == "failed"
+
+
+def test_unanimous_approval_lands_without_an_arbitration_verdict():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    record = _record(arbitration={}, review={"verdict": "approve"}, adversary={"verdict": "approve"})
+    assert land.land_plan(record, branches, "main")[0]["kind"] != "refuse"
+
+
+def test_no_arbitration_and_a_dissenting_reviewer_still_refuses():
+    record = _record(arbitration={}, review={"verdict": "approve"}, adversary={"verdict": "revise"})
+    assert land.land_plan(record, {}, "main") == [
+        {"kind": "refuse", "reason": "no arbitration, and the reviewers were ['approve', 'revise']"}
+    ]
