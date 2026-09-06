@@ -18,8 +18,10 @@ __all__ = [
     "backlog_pane",
     "frame",
     "leader_pane",
+    "panel_status",
     "runs_pane",
     "step",
+    "time_to_reset",
     "window_pane",
 ]
 
@@ -103,6 +105,15 @@ def _heartbeat_age(leader: dict | None, now: float) -> float | None:
     return now - heartbeat_at.timestamp()
 
 
+def panel_status(last_value, age_seconds: float | None, timeout_seconds: float) -> str:
+    """fresh within `timeout_seconds`, stale past it with a value, absent with none."""
+    if last_value is None:
+        return "absent"
+    if age_seconds is None or age_seconds > timeout_seconds:
+        return "stale"
+    return "fresh"
+
+
 def leader_pane(facts: Facts, width: int) -> tuple[str, ...]:
     holder = (facts.leader or {}).get("session", "none")
     live_runs = any(r.alive for r in facts.runs_rows)
@@ -125,6 +136,10 @@ def backlog_pane(facts: Facts, width: int) -> tuple[str, ...]:
     ready_line = "ready: " + (", ".join(f"{k}={v}" for k, v in ready.items()) or "none")
     lines = ("BACKLOG", counts, ready_line)
     return tuple(_cut(line, width) for line in lines)
+
+
+def time_to_reset(end: datetime.datetime, now: datetime.datetime) -> str:
+    return f"{max(int((end - now).total_seconds() // 60), 0)}m"
 
 
 def window_pane(facts: Facts, width: int) -> tuple[str, ...]:
