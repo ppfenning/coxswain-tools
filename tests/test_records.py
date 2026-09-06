@@ -51,3 +51,9 @@ def test_ceiling_for_is_none_when_the_run_has_no_ceiling_file():
 
 def test_ceiling_for_is_none_for_malformed_json():
     assert records.ceiling_for("r1", {"r1.ceiling.json": "not json"}) is None
+
+
+def test_usage_summary_totals_every_token_the_run_spent():
+    usage = {"calls": [{"cost_usd": 0.1, "turns": 1, "input_total": 1000, "cache_read_tokens": 900,
+                        "cache_creation_tokens": 50, "output_tokens": 25}]}
+    assert records.usage_summary(usage)["tokens_total"] == 1075

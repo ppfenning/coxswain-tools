@@ -53,12 +53,15 @@ def usage_summary(usage: Mapping[str, Any]) -> dict[str, Any]:
             row["turns"] += int(c.get("turns") or 0)
     total_in = sum(int(c.get("input_total") if c.get("input_total") is not None else c.get("input_tokens") or 0) for c in calls)
     cached = sum(int(c.get("cache_read_tokens") or 0) for c in calls)
+    created = sum(int(c.get("cache_creation_tokens") or 0) for c in calls)
+    produced = sum(int(c.get("output_tokens") or 0) for c in calls)
     return {
         "run_id": usage.get("run_id"),
         "calls": len(calls),
         "cost_usd": round(sum(float(c.get("cost_usd") or 0.0) for c in calls), 4),
         "turns": sum(int(c.get("turns") or 0) for c in calls),
         "input_total": total_in,
+        "tokens_total": total_in + created + produced,
         "cache_read_share": round(cached / total_in, 3) if total_in else None,
         "by_role": dict(sorted(by_role.items(), key=lambda kv: -kv[1]["cost_usd"])),
         "by_model": dict(sorted(by_model.items(), key=lambda kv: -kv[1]["cost_usd"])),
