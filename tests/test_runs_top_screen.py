@@ -5,7 +5,7 @@ import time
 import pytest
 
 from agent_tools import cli
-from agent_tools.runs_top_screen import draw, facts, loop, rows_now
+from agent_tools.runs_top_screen import draw, facts, first_visible, loop, rows_now
 
 
 def _write(path, text):
@@ -85,6 +85,7 @@ class _FakeStdscr:
         self._size = size
         self.draws = 0
         self.addnstr_calls = []
+        self.checkpoints = []
 
     def getmaxyx(self):
         return self._size
@@ -102,6 +103,7 @@ class _FakeStdscr:
         self.addnstr_calls.append((y, x, s, n, attr))
 
     def getch(self):
+        self.checkpoints.append(len(self.addnstr_calls))
         return self._keys.pop(0)
 
 
@@ -133,15 +135,19 @@ def test_cli_runs_top_once_prints_the_header(tmp_path, capsys):
     assert "RUN" in capsys.readouterr().out
 
 
-def test_loop_enter_on_the_highlighted_row_opens_detail_then_q_returns_to_the_table(tmp_path):
+def test_loop_enter_expands_the_row_in_place_and_enter_again_collapses_it(tmp_path):
     _write(tmp_path / "r1.pid", "123")
     _write(tmp_path / "r1.log", "n1 verdict: land\n")
-    stdscr = _FakeStdscr([ord("\n"), ord("q"), ord("q")])
+    stdscr = _FakeStdscr([ord("\n"), ord("\n"), ord("q")])
 
     rc = loop(stdscr, tmp_path, 1, tick=rows_now, now_alive=lambda pid: True)
 
+    bounds = [0, *stdscr.checkpoints]
+    draws = [stdscr.addnstr_calls[bounds[i]:bounds[i + 1]] for i in range(len(bounds) - 1)]
     assert rc == 0
-    assert stdscr.draws == 3  # table, detail, table again
+    assert not any(c[2].startswith("  ") for c in draws[0])
+    assert any(c[2].startswith("  ") for c in draws[1])
+    assert not any(c[2].startswith("  ") for c in draws[2])
 
 
 def test_draw_marks_the_cursor_row_with_a_reverse_attr(tmp_path):
@@ -156,7 +162,7 @@ def test_draw_marks_the_cursor_row_with_a_reverse_attr(tmp_path):
     assert row_call[4] & curses.A_REVERSE
 
 
-def test_loop_j_moves_the_cursor_so_enter_opens_the_second_rows_detail(tmp_path):
+def test_loop_j_moves_the_cursor_so_enter_expands_the_second_row(tmp_path):
     from agent_tools import runs_top
 
     _write(tmp_path / "r1.pid", "123")
@@ -164,13 +170,41 @@ def test_loop_j_moves_the_cursor_so_enter_opens_the_second_rows_detail(tmp_path)
     _write(tmp_path / "r2.pid", "124")
     _write(tmp_path / "r2.log", "n1 verdict: land\n")
     rows = [runs_top.row("r1", True, [], [], [], None), runs_top.row("r2", True, [], [], [], None)]
-    stdscr = _FakeStdscr([ord("j"), ord("\n"), ord("q"), ord("q")])
+    stdscr = _FakeStdscr([ord("j"), ord("\n"), ord("q")])
 
     rc = loop(stdscr, tmp_path, 1, tick=lambda d: rows, now_alive=lambda pid: True)
 
     assert rc == 0
     assert any("run r2 [" in call[2] for call in stdscr.addnstr_calls)
     assert not any("run r1 [" in call[2] for call in stdscr.addnstr_calls)
+
+
+def test_loop_enter_on_another_row_moves_the_expansion_there(tmp_path):
+    from agent_tools import runs_top
+
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    _write(tmp_path / "r2.pid", "124")
+    _write(tmp_path / "r2.log", "n1 verdict: land\n")
+    rows = [runs_top.row("r1", True, [], [], [], None), runs_top.row("r2", True, [], [], [], None)]
+    stdscr = _FakeStdscr([ord("\n"), ord("j"), ord("\n"), ord("q")])
+
+    rc = loop(stdscr, tmp_path, 1, tick=lambda d: rows, now_alive=lambda pid: True)
+
+    bounds = [0, *stdscr.checkpoints]
+    draws = [stdscr.addnstr_calls[bounds[i]:bounds[i + 1]] for i in range(len(bounds) - 1)]
+    assert rc == 0
+    assert any("run r1 [" in c[2] for c in draws[1])
+    assert any("run r2 [" in c[2] for c in draws[3])
+    assert not any("run r1 [" in c[2] for c in draws[3])
+
+
+def test_first_visible_leaves_a_cursor_already_on_screen_alone():
+    assert first_visible(cursor_index=7, total_lines=30, window_height=10, current_first=5) == 5
+
+
+def test_first_visible_scrolls_the_minimum_to_bring_the_cursor_back_on_screen():
+    assert first_visible(cursor_index=15, total_lines=30, window_height=10, current_first=0) == 6
 
 
 def test_cli_runs_top_once_prints_ceil_for_a_run_with_a_ceiling_file(tmp_path, capsys):
