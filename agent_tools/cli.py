@@ -33,6 +33,8 @@ from agent_tools import (
     records,
     release,
     release_check,
+    release_check_cli,
+    release_check_manifest,
     route,
     runs_detail,
     runs_detail_screen,
@@ -1362,6 +1364,7 @@ def _remote_tags(repo: str) -> list[str] | None:
 
 _RELEASE_DETAIL = {
     "refuse": lambda step: step["detail"],
+    "note": lambda step: step["detail"],
     "tag": lambda step: f"{step['repo']} -> {step['tag']}",
     "bump_manifest": lambda step: f"{step['from']} -> {step['to']}",
     "notes": lambda step: step["path"],
@@ -1443,6 +1446,8 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             print(f"tag {step['component']}: {step['tag']}")
         elif kind == "notes":
             print(f"notes notes: {step['path']}")
+        elif kind == "note":
+            print(f"note {step['component']}: {step['detail']}")
         elif kind == "tag_self":
             self_tag_rc, self_tag_out = run(release.tag_argv(umbrella, version), None)
             if self_tag_rc != 0:
@@ -1483,14 +1488,16 @@ def _release(a: argparse.Namespace) -> int:
     if remote is None or not release.is_maintainer_remote(remote):
         print(f"refuse: {checkout} is not a ppfenning/coxswain checkout (cox dev release runs on a maintainer's machine)")
         return 2
+    root = a.root or "."
+    facts = release_check.facts_plan(root, manifest)
+    drifts = release_check.run_checks(facts)
     existing_tags = {name: _remote_tags(spec["repo"]) for name, spec in manifest.get("components", {}).items()
                       if spec.get("repo")}
-    steps = release.release_plan(manifest, a.version, existing_tags)
+    steps = release.gate(drifts, a.allow_doc_drift) + release.release_plan(manifest, a.version, existing_tags)
     if a.dry_run:
         for step in steps:
             print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
         return 2 if any(step["kind"] == "refuse" for step in steps) else 0
-    root = a.root or "."
     overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
     umbrella = a.umbrella or str(Path(root) / "coxswain")
     return _release_execute(steps, a.version, root, overrides, umbrella, _real_run)
@@ -1502,7 +1509,12 @@ def _release_check(a: argparse.Namespace) -> int:
     if manifest is None:
         print(f"refusing: no manifest at {manifest_path}")
         return 2
-    facts = release_check.facts_plan(a.root or ".", manifest)
+    plan = release_check.facts_plan(a.root or ".", manifest)
+    facts = {
+        **plan,
+        **release_check_cli.gather_cli_facts(a.root or ".", _real_run),
+        **release_check_manifest.gather_manifest_facts(manifest, str(manifest_path), plan["component_docs"], plan["release_notes"]),
+    }
     drifts = release_check.run_checks(facts)
     rendered = release_check.render(drifts, len(release_check.CHECKS))
     print(json.dumps({"checks_run": len(release_check.CHECKS), "drifts": release_check.to_json(drifts)}) if a.json else rendered)
@@ -1722,6 +1734,8 @@ def build_parser() -> argparse.ArgumentParser:
     rel.add_argument("version"); rel.add_argument("--manifest"); rel.add_argument("--dry-run", action="store_true")
     rel.add_argument("--root", default="."); rel.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
     rel.add_argument("--umbrella")
+    rel.add_argument("--allow-doc-drift", dest="allow_doc_drift", metavar="REASON", default=None,
+                      help="proceed despite a standing release-check drift, naming why")
     rel.set_defaults(fn=_release)
 
     relc = dev.add_parser("release-check", help="gather facts and print drifts between the CLI, the manifest, the docs and the release notes")

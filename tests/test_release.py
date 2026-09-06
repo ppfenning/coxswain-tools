@@ -2,7 +2,8 @@ import tomllib
 
 import pytest
 
-from agent_tools import cli, release
+from agent_tools import cli, release, release_check
+from agent_tools.release_check import Drift
 
 _MANIFEST_TOML = """
 [coxswain]
@@ -284,3 +285,54 @@ def test_cox_release_alias_prints_moved_message_for_the_flagged_form_too(capsys)
     rc = cli.main(["release", "0.4.0", "--dry-run", "--manifest", "x.toml"])
     assert rc == 2
     assert capsys.readouterr().out.strip() == "moved: use cox dev release"
+
+
+def test_gate_refuses_one_step_per_drift_when_no_reason_is_given():
+    drifts = [Drift("cli-surface", "docs/reference/cli/x.md", None, "cli.py", 42, "add cox x to the docs")]
+    assert release.gate(drifts, None) == [
+        {"kind": "refuse", "component": "cli-surface",
+         "detail": "cli-surface: docs/reference/cli/x.md <-> cli.py:42 — add cox x to the docs"}
+    ]
+
+
+def test_gate_notes_the_reason_and_drift_count_when_one_is_given():
+    drifts = [Drift("cli-surface", "a", None, "b", None, "fix a"), Drift("manifest", "a", None, "b", None, "fix b")]
+    assert release.gate(drifts, "docs land next sprint") == [
+        {"kind": "note", "component": "release-check", "detail": "docs land next sprint (2 drifts allowed)"}
+    ]
+
+
+def test_gate_is_a_no_op_with_no_drifts():
+    assert release.gate([], None) == []
+    assert release.gate([], "any reason") == []
+
+
+def test_cli_release_refuses_before_tagging_when_a_drift_stands(tmp_path, capsys, monkeypatch):
+    def stub(facts):
+        return [Drift("cli-surface", "docs/x.md", None, "cli.py", 10, "add x")]
+
+    monkeypatch.setattr(release_check, "CHECKS", (stub,))
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    rc = cli.main(["dev", "release", "0.2.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "refuse cli-surface: cli-surface: docs/x.md <-> cli.py:10 — add x" in out
+    assert "tag " not in out
+
+
+def test_cli_release_with_allow_doc_drift_notes_the_reason_and_proceeds(tmp_path, capsys, monkeypatch):
+    def stub(facts):
+        return [Drift("cli-surface", "docs/x.md", None, "cli.py", 10, "add x")]
+
+    monkeypatch.setattr(release_check, "CHECKS", (stub,))
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    rc = cli.main(["dev", "release", "0.2.0", "--dry-run", "--manifest", str(manifest_path),
+                   "--root", str(tmp_path), "--allow-doc-drift", "docs land next sprint"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "note release-check: docs land next sprint (1 drift allowed)" in out
+    assert "tag harness: org/harness -> v0.2.0" in out
