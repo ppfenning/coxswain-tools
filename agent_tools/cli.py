@@ -581,14 +581,15 @@ def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool) -> int | N
     return None if force else 2
 
 
-def _leader_identity() -> tuple[int, str]:
+def _leader_identity(explicit_pid: int | None = None) -> tuple[int, str]:
     """The pid and host that name *this session* to the lock, for `take`/`beat`/`release`.
     `os.getpid()` names this one `cox` invocation, which exits the moment the command
-    returns; every subsequent `beat`/`release` from the same landing-loop session is a
-    separate `cox` process. `os.getppid()` names the process that invoked `cox` — the
-    long-running script or shell loop that actually owns the loop and issues `take`,
-    `beat` and `release` in turn — so identity, and its liveness, survive across calls."""
-    return os.getppid(), socket.gethostname()
+    returns. `os.getppid()` names the process that invoked `cox`, which is the right
+    answer only when a single long-running shell issues `take`, `beat` and `release` in
+    turn; a caller that runs each command in a fresh shell records a pid that is dead
+    before the next command, so its lock reads as stale the instant it is taken.
+    `--pid` lets such a caller name the durable process that actually owns the loop."""
+    return explicit_pid or os.getppid(), socket.gethostname()
 
 
 def _leader_pid_alive(record: dict | None) -> bool:
@@ -623,7 +624,7 @@ def _route_leader_take(a: argparse.Namespace) -> int:
     if refuse_rc is not None:
         return refuse_rc
     session = a.label or "leader"
-    pid, host = _leader_identity()
+    pid, host = _leader_identity(a.pid)
     heartbeat_minutes = _leader_heartbeat_minutes()
     with leader.locked(runs_dir):
         record, read_rc = _leader_read_or_refuse(runs_dir)
@@ -647,7 +648,7 @@ def _route_leader_beat(a: argparse.Namespace) -> int:
     if refuse_rc is not None:
         return refuse_rc
     session = a.label or "leader"
-    pid, host = _leader_identity()
+    pid, host = _leader_identity(a.pid)
     with leader.locked(runs_dir):
         record, read_rc = _leader_read_or_refuse(runs_dir)
         if read_rc is not None:
@@ -666,7 +667,7 @@ def _route_leader_release(a: argparse.Namespace) -> int:
     if refuse_rc is not None:
         return refuse_rc
     session = a.label or "leader"
-    pid, host = _leader_identity()
+    pid, host = _leader_identity(a.pid)
     with leader.locked(runs_dir):
         record, read_rc = _leader_read_or_refuse(runs_dir)
         if read_rc is not None:
@@ -1708,11 +1709,11 @@ def build_parser() -> argparse.ArgumentParser:
     ld.set_defaults(fn=_bare_group(ld))
     lds = ld.add_subparsers(dest="leader_cmd", required=False)
     lt = lds.add_parser("take", help="take the leader lock if no live leader holds it")
-    lt.add_argument("--profile"); lt.add_argument("--label"); lt.add_argument("--steal", action="store_true"); lt.set_defaults(fn=_route_leader_take)
+    lt.add_argument("--profile"); lt.add_argument("--label"); lt.add_argument("--pid", type=int, help="the durable pid that owns the loop (default: the parent process)"); lt.add_argument("--steal", action="store_true"); lt.set_defaults(fn=_route_leader_take)
     lb = lds.add_parser("beat", help="refresh the leader lock's heartbeat")
-    lb.add_argument("--profile"); lb.add_argument("--label"); lb.add_argument("--run"); lb.set_defaults(fn=_route_leader_beat)
+    lb.add_argument("--profile"); lb.add_argument("--label"); lb.add_argument("--pid", type=int, help="the durable pid that owns the loop (default: the parent process)"); lb.add_argument("--run"); lb.set_defaults(fn=_route_leader_beat)
     lr = lds.add_parser("release", help="release the leader lock this session holds")
-    lr.add_argument("--profile"); lr.add_argument("--label"); lr.set_defaults(fn=_route_leader_release)
+    lr.add_argument("--profile"); lr.add_argument("--label"); lr.add_argument("--pid", type=int, help="the durable pid that owns the loop (default: the parent process)"); lr.set_defaults(fn=_route_leader_release)
     lst = lds.add_parser("status", help="the leader lock's holder and computed state")
     lst.add_argument("--profile"); lst.add_argument("--json", action="store_true"); lst.set_defaults(fn=_route_leader_status)
     lc = r.add_parser("launch", help="run one of the harness's graphs directly").add_subparsers(dest="graph", required=True)
