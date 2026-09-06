@@ -161,7 +161,7 @@ def panel_status(last_value, age_seconds: float | None, timeout_seconds: float) 
 def leader_pane(facts: Facts, width: int) -> tuple[str, ...]:
     holder = (facts.leader or {}).get("session", "none")
     live_runs = any(r.alive for r in facts.runs_rows)
-    attention = facts.leader_liveness in ("none", "stale") and live_runs
+    attention = facts.leader_liveness in ("none", "stale", "crashed") and live_runs
     mark = _ATTENTION_MARK if attention else ""
     age = _heartbeat_age(facts.leader, facts.now)
     heartbeat = f"{age:.0f}s ago" if age is not None else "n/a"

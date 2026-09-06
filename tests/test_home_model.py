@@ -42,6 +42,11 @@ def test_leader_pane_marks_attention_when_leader_is_stale_and_a_run_is_alive():
     assert lines[0].startswith("!")
 
 
+def test_leader_pane_marks_attention_when_leader_is_crashed_and_a_run_is_alive():
+    lines = leader_pane(_facts(leader={"session": "s1"}, leader_liveness="crashed"), 80)
+    assert lines[0].startswith("!")
+
+
 def test_leader_pane_is_plain_with_no_heartbeat_when_the_leader_carries_none():
     lines = leader_pane(_facts(leader={"session": "s1"}, leader_liveness="live"), 80)
     assert lines == ("LEADER", "holder: s1  status: live  heartbeat: n/a")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 import shutil
+import socket
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
@@ -59,9 +60,9 @@ def notifications(events: Sequence[Event], policy: Mapping | None = None) -> lis
 
 
 def leader_notifications(previous_state: str | None, current_state: str, any_alive: bool) -> list[Notification]:
-    """Pure: one critical notice exactly on a live-to-stale/none transition
+    """Pure: one critical notice exactly on a live-to-stale/crashed/none transition
     while at least one run is still alive; recovery and quiet leaders stay silent."""
-    if previous_state == "live" and current_state in ("stale", "none") and any_alive:
+    if previous_state == "live" and current_state in ("stale", "crashed", "none") and any_alive:
         return [Notification("loop leader", _LEADER_LOST_HEARTBEAT, "critical")]
     return []
 
@@ -144,7 +145,7 @@ def _leader_state(root: Path, pid_alive, heartbeat_minutes: int) -> str:
     if record is None:
         return "none"
     alive = pid_alive(record["pid"]) if isinstance(record.get("pid"), int) else False
-    return leader.liveness(record, alive, datetime.datetime.now(datetime.UTC), heartbeat_minutes)
+    return leader.liveness(record, alive, datetime.datetime.now(datetime.UTC), socket.gethostname(), heartbeat_minutes)
 
 
 def run_loop(runs_dir, *, once: bool = False, interval: float = 10, send=None, sleep=time.sleep,

@@ -573,7 +573,7 @@ def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool) -> int | N
     record, rc = _leader_read_or_refuse(runs_dir)
     if rc is not None:
         return None
-    state = leader.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), _leader_heartbeat_minutes())
+    state = leader.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), socket.gethostname(), _leader_heartbeat_minutes())
     line = leader.guard(record, holder, state)
     if line is None:
         return None
@@ -614,17 +614,17 @@ def _leader_refuse_dead_pid(explicit_pid: int | None) -> int | None:
     return 2
 
 
-def _leader_launched_by(record: dict | None, pid_alive_: bool, now: datetime.datetime, heartbeat_minutes: int) -> str | None:
+def _leader_launched_by(record: dict | None, pid_alive_: bool, now: datetime.datetime, host: str, heartbeat_minutes: int) -> str | None:
     """The label to stamp on a run launched right now: the lock's own holder when it
-    reads live, `None` when it reads stale or none — never a guess."""
-    if leader.liveness(record, pid_alive_, now, heartbeat_minutes) != "live":
+    reads live, `None` when it reads stale, crashed, or none — never a guess."""
+    if leader.liveness(record, pid_alive_, now, host, heartbeat_minutes) != "live":
         return None
     return record.get("session")
 
 
 def _print_if_stale(record: dict | None, state: str) -> None:
-    if record is not None and state == "stale":
-        print(f"leader stale: {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}")
+    if record is not None and state in ("stale", "crashed"):
+        print(f"leader {state}: {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}")
 
 
 def _route_leader_take(a: argparse.Namespace) -> int:
@@ -643,7 +643,7 @@ def _route_leader_take(a: argparse.Namespace) -> int:
             return read_rc
         now = datetime.datetime.now(datetime.UTC)
         alive = _leader_pid_alive(record)
-        prior_state = leader.liveness(record, alive, now, heartbeat_minutes)
+        prior_state = leader.liveness(record, alive, now, host, heartbeat_minutes)
         _print_if_stale(record, prior_state)
         new_record, reason = leader.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal)
         if new_record is None:
@@ -707,7 +707,7 @@ def _route_leader_status(a: argparse.Namespace) -> int:
         return read_rc
     now = datetime.datetime.now(datetime.UTC)
     alive = _leader_pid_alive(record)
-    state = leader.liveness(record, alive, now, _leader_heartbeat_minutes())
+    state = leader.liveness(record, alive, now, socket.gethostname(), _leader_heartbeat_minutes())
     if not a.json:
         _print_if_stale(record, state)
     if a.json:
@@ -961,7 +961,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     pid_path.write_text(str(proc.pid))
     now = datetime.datetime.now(datetime.UTC)
     lock_record, lock_refuse_rc = _leader_read_or_refuse(runs_dir)
-    launched_by = None if lock_refuse_rc is not None else _leader_launched_by(lock_record, _leader_pid_alive(lock_record), now, _leader_heartbeat_minutes())
+    launched_by = None if lock_refuse_rc is not None else _leader_launched_by(lock_record, _leader_pid_alive(lock_record), now, socket.gethostname(), _leader_heartbeat_minutes())
     launched_payload = {"launched_by": launched_by} if launched_by is not None else {}
     (runs_dir / f"{run_id}.launched.json").write_text(
         json.dumps({**launched_payload, "at": now.isoformat()}), encoding="utf-8",

@@ -62,7 +62,7 @@ def _orphaned(alive: bool, launched_by: str, leader: dict | None) -> bool:
     """Alive, and either the leader lost its heartbeat, or a known launcher is not the live leader; no leader file is not an alert."""
     if not alive or leader is None:
         return False
-    if leader.get("state") == "stale":
+    if leader.get("state") in ("stale", "crashed"):
         return True
     return bool(launched_by) and leader.get("state") == "live" and launched_by != leader.get("holder")
 
@@ -153,4 +153,4 @@ def highlight(row: Row) -> str:
 
 def leader_highlight(leader: dict | None) -> str:
     """Pure: the label the screen maps to a colour for the leader line itself."""
-    return "alert" if leader is not None and leader.get("state") == "stale" else "normal"
+    return "alert" if leader is not None and leader.get("state") in ("stale", "crashed") else "normal"
