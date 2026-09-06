@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from agent_tools.pacing import Policy, Window, assess
 
-_START = datetime(2026, 9, 5, 0, 0, 0)
-_END = datetime(2026, 9, 5, 10, 0, 0)
+_START = datetime(2026, 9, 5, 0, 0, 0, tzinfo=UTC)
+_END = datetime(2026, 9, 5, 10, 0, 0, tzinfo=UTC)
 
 
 def _policy(min_headroom_usd: float = 10.0) -> Policy:
