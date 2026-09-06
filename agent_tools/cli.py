@@ -374,22 +374,15 @@ def _gather_context(profile_path: Path):
     if not workspace:
         return profile, "workspace_dir not set in profile", [], [], []
     ws = Path(workspace).expanduser()
-    intake_files = {p.name: t for p in sorted((ws / "intake").glob("*.md")) if (t := _read_text_or_none(p)) is not None}
     pid_paths = sorted((ws / "runs").glob("*.pid"))
     pids = {p.stem: t for p in pid_paths if (t := _read_text_or_none(p)) is not None}
     alive = {rid: (pid := route.parse_pid(t)) is not None and epic.alive(pid) for rid, t in pids.items()}
     started = {rid: _mtime_iso(ws / "runs" / f"{rid}.pid") for rid in pids}
     # the initiative id is the DIRECTORY name: work/<initiative>/<phase>/<task>.md;
     # the edge only reads and names the path parts — route.work_item normalises
-    items = [
-        route.work_item(fields, initiative=task_path.parent.parent.name, phase_dir=task_path.parent.name, stem=task_path.stem)
-        for task_path in sorted((ws / "work").glob("*/*/*.md"))
-        if task_path.name != "initiative.md"
-        for text in [_read_text_or_none(task_path)] if text is not None
-        for fields in [route.parse_frontmatter(text)[0]]
-    ]
+    items = _work_items(ws)
     return (profile, "",
-            route.intake_entries(intake_files),
+            _intake_groups(ws, items),
             route.run_entries(pids, alive, started),
             route.initiative_summaries(items))
 
@@ -421,7 +414,8 @@ def _route_context(a: argparse.Namespace) -> int:
     elif reason:
         # nothing was read, so print no counts: an unread workspace must not
         # look like an empty one
-        first_line = route.render_context(profile, [], [], []).partition("\n")[0]
+        empty_groups = {"queued": [], "decomposed": [], "landed": []}
+        first_line = route.render_context(profile, empty_groups, [], []).partition("\n")[0]
         print(f"{first_line} ({reason})")
     else:
         print(f"{route.render_context(profile, intake, runs, initiatives)}\nusage: {usage_reason}")
@@ -457,6 +451,39 @@ def _refuse_if_already_running(runs_dir: Path, prefix: str):
     return None
 
 
+def _work_items(ws: Path) -> list:
+    return [
+        route.work_item(fields, initiative=task_path.parent.parent.name, phase_dir=task_path.parent.name, stem=task_path.stem)
+        for task_path in sorted((ws / "work").glob("*/*/*.md"))
+        if task_path.name != "initiative.md"
+        for text in [_read_text_or_none(task_path)] if text is not None
+        for fields in [route.parse_frontmatter(text)[0]]
+    ]
+
+
+def _initiative_texts(ws: Path) -> dict:
+    return {
+        p.name: _read_text_or_none(p / "initiative.md") or ""
+        for p in sorted((ws / "work").glob("*"))
+        if (p / "initiative.md").is_file()
+    }
+
+
+def _intake_groups(ws: Path, items: list) -> dict:
+    intake_root = ws / "intake"
+    paths = sorted(intake_root.glob("*.md")) + sorted((intake_root / "done").glob("*.md"))
+    files = {str(p.relative_to(intake_root)): t for p in paths if (t := _read_text_or_none(p)) is not None}
+    texts = _initiative_texts(ws)
+    states = route.initiative_states(sorted(texts), items)
+    initiatives = [{"id": iid, "done": states[iid], "text": texts[iid]} for iid in texts]
+    return route.intake_groups(route.intake_entries(files), initiatives)
+
+
+def _intake_groups_for(ws: Path):
+    """`_intake_groups` from disk, or `None` with no `intake/` dir."""
+    return _intake_groups(ws, _work_items(ws)) if (ws / "intake").is_dir() else None
+
+
 def _status_rows_for(runs_dir: Path) -> list:
     pids = {p.stem: t for p in sorted(runs_dir.glob("*.pid")) if (t := _read_text_or_none(p)) is not None}
     alive = {run_id: _run_alive(route.parse_pid(t)) for run_id, t in pids.items()}
@@ -485,8 +512,14 @@ def _route_status(a: argparse.Namespace) -> int:
     # not take the session down with it (spec §2); charter A6 puts
     # exceptions at the edge, matching _route_context's guard above.
     try:
-        rows = _status_rows_for(Path(workspace).expanduser() / "runs")
-        print(json.dumps(rows, indent=2) if a.json else route.render_status(rows))
+        ws = Path(workspace).expanduser()
+        rows = _status_rows_for(ws / "runs")
+        groups = _intake_groups_for(ws)
+        if a.json:
+            doc = rows if groups is None else {"runs": rows, "intake": groups}
+            print(json.dumps(doc, indent=2))
+        else:
+            print(route.render_status(rows, groups))
     except Exception as exc:
         print(f"routing: status unavailable ({type(exc).__name__}: {exc})")
     return 0
@@ -673,10 +706,61 @@ def _resolve_profile_or_refuse(a: argparse.Namespace):
     return profile, None
 
 
+def _write_mapping(mapping: dict, ws: Path):
+    """Write `mapping` (relative path -> text) under `ws`; `None` on success, else the refusal to print."""
+    targets = {rel: ws / rel for rel in mapping}
+    existing = [str(path) for path in targets.values() if path.exists()]
+    if existing:
+        return f"routing: refusing to overwrite existing path(s): {', '.join(existing)}"
+    for rel, path in targets.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(mapping[rel], encoding="utf-8")
+        print(str(path))
+    return None
+
+
+def _route_file_from_intake(a: argparse.Namespace, ws: Path) -> int:
+    intake_path = Path(a.from_intake)
+    if intake_path.parent.resolve() != (ws / "intake").resolve():
+        print(f"routing: --from-intake must name a file directly under {ws / 'intake'}")
+        return 2
+    intake_text = _read_text_or_none(intake_path)
+    if intake_text is None:
+        print(f"routing: cannot read intake file {a.from_intake}")
+        return 2
+    fields, intake_body = route.parse_frontmatter(intake_text)
+    [entry] = route.intake_entries({intake_path.name: intake_text})
+    try:
+        mapping = route.initiative_files(entry["title"], intake_body, fields.get("repo", ""), phase=a.phase)
+    except ValueError as exc:
+        print(f"routing: {exc}")
+        return 2
+    slug = route.slugify(entry["title"])
+    initiative_rel = f"work/{slug}/initiative.md"
+    new_initiative_text, new_intake_text = route.link_intake(
+        mapping[initiative_rel], intake_text, f"intake/{intake_path.name}", slug
+    )
+    mapping[initiative_rel] = new_initiative_text
+    mapping[f"intake/done/{intake_path.name}"] = new_intake_text
+    refusal = _write_mapping(mapping, ws)
+    if refusal:
+        print(refusal)
+        return 2
+    intake_path.unlink()
+    print(f"removed: {intake_path}")
+    return 0
+
+
 def _route_file(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
         return rc
+    ws = Path(profile["workspace_dir"]).expanduser()
+    if a.from_intake:
+        return _route_file_from_intake(a, ws)
+    if not a.title or not a.repo:
+        print("routing: --title and --repo are required unless --from-intake is given")
+        return 2
     if a.body == "-":
         body = sys.stdin.read()
     elif a.body:
@@ -695,16 +779,10 @@ def _route_file(a: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"routing: {exc}")
         return 2
-    ws = Path(profile["workspace_dir"]).expanduser()
-    targets = {rel: ws / rel for rel in mapping}
-    existing = [str(path) for path in targets.values() if path.exists()]
-    if existing:
-        print(f"routing: refusing to overwrite existing path(s): {', '.join(existing)}")
+    refusal = _write_mapping(mapping, ws)
+    if refusal:
+        print(refusal)
         return 2
-    for rel, path in targets.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(mapping[rel], encoding="utf-8")
-        print(str(path))
     return 0
 
 
@@ -1577,8 +1655,9 @@ def build_parser() -> argparse.ArgumentParser:
     r = route_p.add_subparsers(dest="cmd", required=False)
     ctx = r.add_parser("context", help="the routing profile's resolved context"); ctx.add_argument("--profile"); ctx.add_argument("--json", action="store_true"); ctx.set_defaults(fn=_route_context)
     st = r.add_parser("status", help="what is queued or running for this profile"); st.add_argument("--profile"); st.add_argument("--json", action="store_true"); st.set_defaults(fn=_route_status)
-    f = r.add_parser("file", help="file a new ticket for the harness"); f.add_argument("--profile"); f.add_argument("--repo", required=True); f.add_argument("--title", required=True)
-    f.add_argument("--body"); f.add_argument("--phase", default="build"); f.add_argument("--intake", action="store_true"); f.set_defaults(fn=_route_file)
+    f = r.add_parser("file", help="file a new ticket for the harness"); f.add_argument("--profile"); f.add_argument("--repo"); f.add_argument("--title")
+    f.add_argument("--body"); f.add_argument("--phase", default="build"); f.add_argument("--intake", action="store_true")
+    f.add_argument("--from-intake", help="link and file an existing intake file's initiative, then retire it"); f.set_defaults(fn=_route_file)
     ld = r.add_parser("leader", help="the leader lock for the landing loop (runs/leader.json)")
     ld.set_defaults(fn=_bare_group(ld))
     lds = ld.add_subparsers(dest="leader_cmd", required=False)
