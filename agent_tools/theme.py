@@ -63,7 +63,7 @@ def install(theme: Theme) -> dict[str, int]:
 
     numbers = pair_numbers(theme)
     if not curses.has_colors():
-        return {role: 0 for role in theme}
+        return dict.fromkeys(theme, 0)
     curses.start_color()
     curses.use_default_colors()
     for role, n in numbers.items():
