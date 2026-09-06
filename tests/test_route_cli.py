@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import pacing, route, usage_window
+from agent_tools import leader, pacing, route, usage_window
 from agent_tools.cli import main
 from agent_tools.pacing import Window
 
@@ -468,6 +468,50 @@ def test_launch_decompose_starts_the_harness_detached_with_the_recorded_argv(tmp
         idea=str(idea), initiative_id="fix-thing",
     )
     assert argv == expected[1:]
+
+
+def test_launch_writes_launched_json_naming_the_lock_holder(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    fresh = datetime.datetime.now(datetime.UTC).isoformat()
+    leader.write(ws / "runs", {"session": "alice", "pid": 1, "host": "some-other-host", "taken_at": fresh, "heartbeat_at": fresh})
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+    ])
+    assert rc == 0
+    launched_path = ws / "runs" / "fix-thing-1.launched.json"
+    assert _wait_for(launched_path)
+    assert json.loads(launched_path.read_text())["launched_by"] == "alice"
+
+
+def test_launch_with_no_held_lock_writes_launched_json_with_no_launched_by_key(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+    ])
+    assert rc == 0
+    launched_path = ws / "runs" / "fix-thing-1.launched.json"
+    assert _wait_for(launched_path)
+    assert "launched_by" not in json.loads(launched_path.read_text())
 
 
 def test_launch_dry_run_prints_argv_and_starts_nothing(tmp_path, capsys):
