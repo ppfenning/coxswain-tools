@@ -9,8 +9,28 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_tools import route
+from agent_tools import pacing, route, usage_window
 from agent_tools.cli import main
+from agent_tools.pacing import Window
+
+# Fixed in the past so `_usage_assessment`'s own `datetime.now(UTC)` always
+# falls after `_USAGE_END`, pinning `elapsed_fraction` regardless of when the
+# test runs (same trick as tests/test_usage_assess_cli.py).
+_USAGE_START = datetime.datetime(2020, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
+_USAGE_END = datetime.datetime(2020, 1, 1, 10, 0, 0, tzinfo=datetime.UTC)
+
+
+def _unmeasured_window(*_a, **_k) -> Window:
+    return Window(start=_USAGE_START, end=_USAGE_END, spent_usd=0.0, ceiling_usd=None,
+                  burn_usd_per_hour=0.0, runs_in_flight=0)
+
+
+@pytest.fixture(autouse=True)
+def _stub_usage_gather(monkeypatch):
+    """Every route context/launch test in this file crosses `_usage_assessment`;
+    stub the gatherer to an unmeasured window so no test shells out to `npx
+    ccusage`. A test that wants a different verdict re-patches `gather` itself."""
+    monkeypatch.setattr(usage_window, "gather", _unmeasured_window)
 
 
 def test_context_text_with_no_profile_mentions_no_profile(tmp_path, capsys):
@@ -89,6 +109,22 @@ def test_context_text_with_full_profile_lists_initiative_and_runs(tmp_path, caps
     assert "Do the thing" in out
     assert "runs: 1 in flight" in out
     assert "run1" in out and "run2" not in out
+
+
+def test_context_text_with_full_profile_ends_with_the_usage_reason_line(tmp_path, capsys):
+    profile = _write_workspace(tmp_path)
+    rc = main(["route", "context", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.splitlines()[-1] == "usage: window is unmeasured: no usable ceiling_usd; reporting pace only"
+
+
+def test_context_json_with_full_profile_carries_the_same_usage_reason(tmp_path, capsys):
+    profile = _write_workspace(tmp_path)
+    rc = main(["route", "context", "--profile", str(profile), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert doc["usage"] == "window is unmeasured: no usable ceiling_usd; reporting pace only"
 
 
 def test_context_with_work_item_missing_frontmatter_still_exits_zero_and_not_ready(tmp_path, capsys):
@@ -719,6 +755,59 @@ def test_launch_refuses_when_the_provider_profile_is_not_valid_yaml(tmp_path, ca
     assert rc == 2
     assert "not valid YAML" in out
     assert not (ws / "runs" / "fix-thing-1.pid").exists()
+
+
+def _stopped_window(*_a, **_k) -> Window:
+    return Window(start=_USAGE_START, end=_USAGE_END, spent_usd=95.0, ceiling_usd=10.0,
+                  burn_usd_per_hour=90.0, runs_in_flight=3)
+
+
+def test_launch_refuses_before_starting_when_usage_verdict_is_stop(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(usage_window, "gather", _stopped_window)
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main(["route", "launch", "cos", "--dry-run", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "usage stop" in out
+    assert "both ladders exhausted" in out
+    assert not (ws / "runs" / "cos-1.pid").exists()
+
+
+def test_launch_with_force_overrides_a_usage_stop_and_continues(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(usage_window, "gather", _stopped_window)
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main(["route", "launch", "cos", "--dry-run", "--force", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "overridden by --force" in out
+    assert "dry-run:" in out and "cos" in out
+
+
+def test_gather_to_assess_seam_survives_an_aware_now_with_no_stub_on_gather():
+    """Regression for the naive-clock bug: `window_from` builds an aware
+    window from ccusage's own ISO timestamps, and `assess` must accept an
+    aware `now` without `gather` being stubbed at all."""
+    blocks_json = {
+        "blocks": [{
+            "isActive": True,
+            "startTime": "2024-01-01T00:00:00Z",
+            "endTime": "2024-01-01T05:00:00Z",
+            "costUSD": 5.0,
+        }]
+    }
+    now = datetime.datetime(2024, 1, 1, 5, 0, 0, tzinfo=datetime.UTC)
+    window = usage_window.window_from(blocks_json, [], now)
+    result = pacing.assess(window, usage_window.DEFAULT_POLICY, now)
+    assert result.verdict == "go"
+    assert result.reason == "window is unmeasured: no usable ceiling_usd; reporting pace only"
 
 
 def test_launch_refuses_when_the_provider_profile_does_not_parse_to_a_mapping(tmp_path, capsys):
