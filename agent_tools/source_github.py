@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import shlex
-from typing import Mapping, Sequence
+from collections.abc import Mapping, Sequence
 
 from agent_tools.sources import Candidate, Ref, SourceConfig
 
