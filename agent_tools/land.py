@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["land_plan", "pr_body"]
+__all__ = ["checks_argv", "land_plan", "pr_body"]
 
 
 def _proposal(record: dict[str, Any], kind: str) -> dict[str, Any] | None:
@@ -33,7 +33,21 @@ def _verdict(record: dict[str, Any], section: str) -> str | None:
     return (record.get(section) or {}).get("verdict")
 
 
-def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_branch: str) -> list[dict[str, Any]]:
+def checks_argv(repo_facts: dict[str, Any]) -> list[str]:
+    """The checks launch argv, cheapest and most specific first. The executor
+    runs it with `cwd` already at the repo root, so a venv path is relative,
+    not absolute. `uv run` next when the repo pins its dependencies with a
+    lockfile; a bare `pytest -q` only when neither fact holds, and only PATH
+    can say whether that one exists."""
+    if repo_facts.get("venv_python"):
+        return [".venv/bin/python", "-m", "pytest", "-q"]
+    if repo_facts.get("uv_lock"):
+        return ["uv", "run", "pytest", "-q"]
+    return ["pytest", "-q"]
+
+
+def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_branch: str,
+              repo_facts: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """The ordered steps to land `record`, or a one-step `refuse`."""
     if _proposal(record, "draft_pr_create") is None:
         return [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
@@ -61,7 +75,7 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
     return [
         {"kind": "pick_branch", "branch": chosen, "commit_subject": subject},
         {"kind": "cherry_pick", "branch": chosen, "commit_subject": subject, "onto": pr_branch, "from": default_branch},
-        {"kind": "checks", "command": "pytest -q"},
+        {"kind": "checks", "argv": checks_argv(repo_facts or {})},
         {"kind": "push", "branch": pr_branch},
         {"kind": "pr_create", "title": draft.get("title", subject), "body": pr_body(record)},
         {"kind": "wait_checks"},

@@ -159,9 +159,30 @@ def test_execute_cherry_pick_conflict_reports_failure_without_raising_and_leaves
 
 
 def test_execute_checks_reports_pass_and_fail(tmp_path):
-    assert cli._execute_land_step(tmp_path, {"kind": "checks", "command": "true"}) == (True, "true")
-    ok, _ = cli._execute_land_step(tmp_path, {"kind": "checks", "command": "false"})
+    assert cli._execute_land_step(tmp_path, {"kind": "checks", "argv": ["true"]}) == (True, "true")
+    ok, _ = cli._execute_land_step(tmp_path, {"kind": "checks", "argv": ["false"]})
     assert not ok
+
+
+# --- land.checks_argv: pure, cheapest and most specific launch first ---
+
+def test_checks_argv_prefers_the_repos_own_venv():
+    assert land.checks_argv({"venv_python": True, "uv_lock": True}) == [".venv/bin/python", "-m", "pytest", "-q"]
+
+
+def test_checks_argv_falls_back_to_uv_run_without_a_venv():
+    assert land.checks_argv({"venv_python": False, "uv_lock": True}) == ["uv", "run", "pytest", "-q"]
+
+
+def test_checks_argv_falls_back_to_bare_pytest_with_neither_fact():
+    assert land.checks_argv({"venv_python": False, "uv_lock": False}) == ["pytest", "-q"]
+
+
+def test_land_plan_checks_step_carries_the_resolved_argv():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    steps = land.land_plan(_record(), branches, "main", {"venv_python": True, "uv_lock": False})
+    checks = next(s for s in steps if s["kind"] == "checks")
+    assert checks == {"kind": "checks", "argv": [".venv/bin/python", "-m", "pytest", "-q"]}
 
 
 def test_execute_push_reaches_a_real_remote(repo, tmp_path):
@@ -230,3 +251,24 @@ def test_cli_apply_refuses_when_the_pr_branch_already_exists(repo, tmp_path, cap
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply"])
     assert rc == 2
     assert "already exists" in capsys.readouterr().out
+
+
+def test_cli_apply_refuses_a_checks_launch_failure_before_push(repo, tmp_path, capsys, monkeypatch):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    real_run = cli.subprocess.run
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if argv[:1] == ["pytest"]:
+            raise FileNotFoundError(2, "No such file or directory: 'pytest'")
+        return real_run(argv, **kw)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "refuse checks: pytest:" in out
+    assert not any("push" in c for c in calls)
