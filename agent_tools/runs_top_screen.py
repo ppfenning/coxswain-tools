@@ -87,10 +87,19 @@ def _launched_by(root: Path, run: str) -> str:
     return data.get("launched_by", "") if isinstance(data, dict) else ""
 
 
+def _written_at(path: Path) -> tuple[float, str]:
+    """When a trace was last written, name breaking a tie: the node running NOW is the one
+    written last, which alphabetical order does not know."""
+    try:
+        return path.stat().st_mtime, path.name
+    except OSError:
+        return 0.0, path.name
+
+
 def _fact(root: Path, run: str, alive: bool) -> dict:
     lines = _read_lines(root / f"{run}.log")
     trace_dir = root / f"{run}-trace"
-    trace_paths = sorted(trace_dir.glob("*.jsonl")) if trace_dir.exists() else []
+    trace_paths = sorted(trace_dir.glob("*.jsonl"), key=_written_at) if trace_dir.exists() else []
     names = [p.name for p in trace_paths]
     events = events_module.from_log(run, lines) + events_module.from_trace_names(run, names)
     calls = [c for c in (_call(p) for p in trace_paths) if c is not None]
