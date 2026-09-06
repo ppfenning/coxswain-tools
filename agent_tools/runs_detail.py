@@ -95,7 +95,10 @@ def _objection(events: list[Event], record: dict) -> str:
     if not verdicts or verdicts[-1].detail["verdict"] != "revise":
         return ""
     arbitration = record.get("arbitration")
-    reasoning = getattr(arbitration, "reasoning", "") if arbitration is not None else ""
+    if isinstance(arbitration, dict):
+        reasoning = arbitration.get("reasoning", "")
+    else:
+        reasoning = getattr(arbitration, "reasoning", "") if arbitration is not None else ""
     if reasoning:
         return _first_sentence(reasoning)
     adversary = record.get("adversary") or []
