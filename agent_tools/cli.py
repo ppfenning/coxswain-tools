@@ -182,8 +182,8 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
             return False, cp.stderr.strip() or cp.stdout.strip()
         return True, f"cherry-picked {shas[0][:8]} onto {step['onto']}"
     if kind == "checks":
-        r = subprocess.run(step["command"].split(), cwd=repo, capture_output=True, text=True)
-        return r.returncode == 0, step["command"]
+        r = subprocess.run(step["argv"], cwd=repo, capture_output=True, text=True)
+        return r.returncode == 0, " ".join(step["argv"])
     if kind == "push":
         r = subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", step["branch"]], capture_output=True, text=True)
         return r.returncode == 0, (step["branch"] if r.returncode == 0 else r.stderr.strip() or r.stdout.strip())
@@ -221,7 +221,8 @@ def _runs_land(a: argparse.Namespace) -> int:
     record, path = found
     default_branch = "main"
     branches = _land_branches(repo, record, default_branch)
-    steps = _land_enrich(land.land_plan(record, branches, default_branch), path=path, worktree_root=a.worktree_root)
+    repo_facts = {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists()}
+    steps = _land_enrich(land.land_plan(record, branches, default_branch, repo_facts), path=path, worktree_root=a.worktree_root)
     if not a.apply:
         print(json.dumps(steps, indent=2))
         return 2 if any(s["kind"] == "refuse" for s in steps) else 0
@@ -236,7 +237,17 @@ def _runs_land(a: argparse.Namespace) -> int:
         if step["kind"] == "refuse":
             print(f"refused: {step['reason']}")
             return 2
-        ok, detail = _execute_land_step(repo, step)
+        if step["kind"] == "checks":
+            try:
+                ok, detail = _execute_land_step(repo, step)
+            except OSError as exc:
+                # A repo whose pytest lives somewhere `subprocess` can't find
+                # is a refusal, not a traceback, and it fires before `push`
+                # so a failed check never leaves a pushed branch behind.
+                print(f"refuse checks: {step['argv'][0]}: {exc}")
+                return 2
+        else:
+            ok, detail = _execute_land_step(repo, step)
         print(f"{step['kind']}: {detail}")
         if not ok:
             remaining = [s["kind"] for s in steps[i + 1:]]
