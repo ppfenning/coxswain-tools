@@ -78,6 +78,7 @@ here is needed to use Coxswain. `cox release` is a one-release alias that prints
 
 ```
 cox dev release VERSION [--dry-run] [--manifest PATH] [--root DIR] [--checkout NAME=PATH] [--umbrella PATH]   the lockstep plan: tag every component, bump the manifest (skipped on a first cut of the declared version), notes, tag_self; exit 2 on refuse (bad semver, an existing tag, a lesser version, or a checkout that is not a ppfenning/coxswain remote); without --dry-run, executes only a first-cut plan — tags and pushes every component and the umbrella in turn, refusing before tagging anything if a checkout is dirty, off its default branch, the release note is missing, or the plan still carries a bump_manifest step (bump and commit the manifest by hand first)
+cox dev release-check [--json] [--root R] [--manifest PATH]   runs the registered docs checks over facts named by the manifest and prints their drifts; reports rather than blocks (exit 0), says how many checks ran, and refuses (exit 2) only when it cannot read the manifest
 ```
 
 Every command that reads a record is pure over parsed data and unit-tested
