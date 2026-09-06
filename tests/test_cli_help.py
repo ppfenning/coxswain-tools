@@ -27,7 +27,7 @@ def test_every_reachable_subcommand_has_help():
     assert missing == []
 
 
-@pytest.mark.parametrize("group", ["runs", "epic", "hud", "plan", "route"])
+@pytest.mark.parametrize("group", ["runs", "epic", "plan", "route"])
 def test_bare_group_prints_its_help_and_exits_2(group, capsys, monkeypatch):
     monkeypatch.setenv("PYTHON_COLORS", "0")
     monkeypatch.setenv("NO_COLOR", "1")

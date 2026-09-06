@@ -22,7 +22,6 @@ from agent_tools import (
     cleanup,
     doctor,
     epic,
-    hud,
     install,
     install_exec,
     land,
@@ -329,35 +328,8 @@ def _epic_watch(a: argparse.Namespace) -> int:
     return 0 if out["finished"] else 3
 
 
-def _hud_ops(a: argparse.Namespace) -> int:
-    items = json.load(sys.stdin) if a.file == "-" else json.loads(Path(a.file).read_text())
-    print(json.dumps(hud.post_ops(items if isinstance(items, list) else items.get("items", []), base=a.base)))
-    return 0
 
 
-def _hud_say(a: argparse.Namespace) -> int:
-    print(json.dumps(hud.say(a.text, persona=a.persona, voice=a.voice, base=a.base))); return 0
-
-
-def _hud_inbox(a: argparse.Namespace) -> int:
-    if a.action == "show":
-        for i in hud.inbox(base=a.base):
-            print(f"{i.get('ts')}\t{i.get('text')}")
-    elif a.action == "clear":
-        print(json.dumps(hud.clear_inbox(base=a.base)))
-    else:
-        items = hud.wait_for_inbox(base=a.base, max_seconds=a.max_seconds)
-        for i in items:
-            print(f"{i.get('ts')}\t{i.get('text')}")
-        if not items:
-            print("(no directive within the cap)")
-    return 0
-
-
-def _hud_cast(a: argparse.Namespace) -> int:
-    for s in hud.cast(base=a.base):
-        print(f"{s['name']:10} {s.get('voice',''):12} {s.get('lane',''):7} {s.get('surface','')}")
-    return 0
 
 
 def _plan_serve(a: argparse.Namespace) -> int:
@@ -1709,22 +1681,6 @@ def build_parser() -> argparse.ArgumentParser:
     e = epic_p.add_subparsers(dest="cmd", required=False)
     w = e.add_parser("watch", help="poll a detached run's pidfile until it exits"); w.add_argument("pidfile"); w.add_argument("--log"); w.add_argument("--max-seconds", type=float, default=570); w.add_argument("--interval", type=float, default=20); w.add_argument("--json", action="store_true"); w.set_defaults(fn=_epic_watch)
 
-    hud_p = sub.add_parser(
-        "hud", help="the voice HUD's HTTP contracts",
-        description="The voice HUD's HTTP contracts.",
-        epilog="examples:\n  cox hud say \"starting the build\" --persona pat\n  cox hud inbox show",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    hud_p.set_defaults(fn=_bare_group(hud_p))
-    h = hud_p.add_subparsers(dest="cmd", required=False)
-    hud_help = {"ops": "post a batch of HUD operations", "say": "speak one line through the HUD voice",
-                "inbox": "show, arm, or clear the HUD inbox", "cast": "broadcast an announcement to the HUD"}
-    for name, fn in (("ops", _hud_ops), ("say", _hud_say), ("inbox", _hud_inbox), ("cast", _hud_cast)):
-        sp = h.add_parser(name, help=hud_help[name]); sp.add_argument("--base", default=hud.DEFAULT_BASE); sp.set_defaults(fn=fn)
-        if name == "ops": sp.add_argument("file", help="JSON list of items, or - for stdin")
-        if name == "say": sp.add_argument("text"); sp.add_argument("--persona"); sp.add_argument("--voice")
-        if name == "inbox": sp.add_argument("action", choices=["show", "arm", "clear"]); sp.add_argument("--max-seconds", type=float, default=600)
-
     plan_p = sub.add_parser(
         "plan", help="visual plans through the local bridge",
         description="Visual plans through the local bridge.",
@@ -1904,7 +1860,7 @@ def _bare_launcher_split(args: list[str]):
     any `--`, holds nothing but the launcher's own top-level options; returns
     None the moment a subcommand token (or anything else) appears, so `main`
     leaves that invocation, `--` and all, to the ordinary parser untouched —
-    an existing subcommand's own `--` semantics (e.g. `hud say -- -text`)
+    an existing subcommand's own `--` semantics (e.g. `route file -- -title`)
     are not this function's to change."""
     i = 0
     while i < len(args):
