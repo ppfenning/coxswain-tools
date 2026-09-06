@@ -1,7 +1,6 @@
 from agent_tools.home_model import (
     Facts,
     Quit,
-    Refuse,
     Setup,
     State,
     Talk,
@@ -94,10 +93,10 @@ def test_step_q_returns_quit_and_only_quit():
     assert effect == Quit()
 
 
-def test_step_t_refuses_when_another_session_holds_a_live_leader():
+def test_step_t_opens_the_conversation_even_while_another_session_holds_a_live_leader():
     state = State(plugin_dir="/plugins/coxswain", leader_liveness="live", other_holder="s2")
     _, effect = step(state, "t")
-    assert effect == Refuse("s2")
+    assert effect == Talk("/plugins/coxswain")
 
 
 def test_frame_at_80_stacks_the_four_panes_with_the_runs_header_intact():
