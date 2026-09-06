@@ -38,6 +38,21 @@ def _verdict(record: dict[str, Any], section: str) -> str | None:
     return (record.get(section) or {}).get("verdict")
 
 
+def _approved(record: dict[str, Any]) -> str | None:
+    """None when the record's decision is approve, else the reason it is not.
+    An arbiter only runs on disagreement, so unanimous approval leaves no
+    arbitration verdict at all — the best outcome, not a missing one."""
+    arbitration = _verdict(record, "arbitration")
+    if arbitration == "approve":
+        return None
+    if arbitration is not None:
+        return f"arbitration verdict is {arbitration!r}, not 'approve'"
+    reviews = [v for v in (_verdict(record, "review"), _verdict(record, "adversary")) if v is not None]
+    if reviews and all(v == "approve" for v in reviews):
+        return None
+    return f"no arbitration, and the reviewers were {reviews or 'silent'}"
+
+
 def checks_argv(repo_facts: dict[str, Any]) -> list[str]:
     """The checks launch argv, cheapest and most specific first. The executor
     runs it with `cwd` already at the repo root, so a venv path is relative,
@@ -56,9 +71,9 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
     """The ordered steps to land `record`, or a one-step `refuse`."""
     if _proposal(record, "draft_pr_create") is None:
         return [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
-    arbitration = _verdict(record, "arbitration")
-    if arbitration != "approve":
-        return [{"kind": "refuse", "reason": f"arbitration verdict is {arbitration!r}, not 'approve'"}]
+    refusal = _approved(record)
+    if refusal is not None:
+        return [{"kind": "refuse", "reason": refusal}]
 
     run, task, phase = record.get("run"), record.get("task"), record.get("phase")
     initiative = record.get("initiative")
