@@ -1556,7 +1556,12 @@ def _release_check(a: argparse.Namespace) -> int:
 
 def _home(a: argparse.Namespace) -> int:
     from agent_tools import home_screen
-    return home_screen.main()
+    profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    workspace = runs_dir.parent
+    plugin_root = _plugin_root(profile.get("skills_roots") or [])
+    return home_screen.main(runs_dir, workspace / "work", workspace / "intake", str(plugin_root or ""))
 
 
 def _setup_tui(a: argparse.Namespace) -> int:
@@ -1771,6 +1776,7 @@ def build_parser() -> argparse.ArgumentParser:
     old_rel.set_defaults(fn=_release_moved)
 
     home_p = sub.add_parser("home", help="the live dashboard: runs, leader, backlog")
+    home_p.add_argument("--profile")
     home_p.set_defaults(fn=_home)
 
     setup_p = sub.add_parser(
@@ -1890,8 +1896,7 @@ def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
     if not args:
         if sys.stdout.isatty():
-            from agent_tools import home_screen
-            return home_screen.main()
+            return _home(argparse.Namespace(profile=None))
         return _route_status(argparse.Namespace(profile=None, json=False))
     split = _bare_launcher_split(args)
     head, tail = split if split is not None else (args, [])
