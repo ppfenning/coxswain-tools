@@ -27,23 +27,27 @@ def _fresh_iso():
 
 
 def test_liveness_is_none_with_no_record():
-    assert leader.liveness(None, False, _NOW) == "none"
+    assert leader.liveness(None, False, _NOW, "h1") == "none"
 
 
-def test_liveness_is_stale_when_the_pid_is_dead():
-    assert leader.liveness(_LIVE_RECORD, False, _NOW) == "stale"
+def test_liveness_is_crashed_when_the_pid_is_dead_on_the_records_own_host():
+    assert leader.liveness(_LIVE_RECORD, False, _NOW, "h1") == "crashed"
+
+
+def test_liveness_is_live_when_the_pid_is_dead_on_another_host():
+    assert leader.liveness(_LIVE_RECORD, False, _NOW, "h2") == "live"
 
 
 def test_liveness_is_live_when_the_pid_is_alive_and_the_heartbeat_is_fresh():
-    assert leader.liveness(_LIVE_RECORD, True, _NOW) == "live"
+    assert leader.liveness(_LIVE_RECORD, True, _NOW, "h1") == "live"
 
 
-def test_liveness_is_stale_when_the_heartbeat_outages_the_policy_minutes():
-    assert leader.liveness(_STALE_HEARTBEAT_RECORD, True, _NOW, heartbeat_minutes=10) == "stale"
+def test_liveness_is_stale_when_the_heartbeat_outages_the_policy_minutes_regardless_of_pid():
+    assert leader.liveness(_STALE_HEARTBEAT_RECORD, False, _NOW, "h1", heartbeat_minutes=10) == "stale"
 
 
 def test_liveness_is_stale_not_raised_for_an_unparsable_heartbeat_at():
-    assert leader.liveness({**_LIVE_RECORD, "heartbeat_at": "not-a-timestamp"}, True, _NOW) == "stale"
+    assert leader.liveness({**_LIVE_RECORD, "heartbeat_at": "not-a-timestamp"}, True, _NOW, "h1") == "stale"
 
 
 # -- take/beat/release: pure, on literals ------------------------------------------
@@ -56,15 +60,21 @@ def test_take_refuses_a_live_lock_and_names_the_holder():
 
 
 def test_take_refuses_a_stale_lock_without_steal():
-    record, reason = leader.take(_LIVE_RECORD, "bob", 99, "h2", _NOW, 10, False, steal=False)
+    record, reason = leader.take(_STALE_HEARTBEAT_RECORD, "bob", 99, "h2", _NOW, 10, False, steal=False)
     assert record is None
     assert "alice" in reason
 
 
 def test_take_with_steal_succeeds_against_a_stale_lock():
-    record, reason = leader.take(_LIVE_RECORD, "bob", 99, "h2", _NOW, 10, False, steal=True)
+    record, reason = leader.take(_STALE_HEARTBEAT_RECORD, "bob", 99, "h2", _NOW, 10, False, steal=True)
     assert reason == ""
     assert record == {"session": "bob", "pid": 99, "host": "h2", "taken_at": _NOW.isoformat(), "heartbeat_at": _NOW.isoformat(), "runs": []}
+
+
+def test_take_refuses_a_crashed_lock_without_steal_and_names_it_crashed():
+    record, reason = leader.take(_LIVE_RECORD, "bob", 99, "h1", _NOW, 10, False, steal=False)
+    assert record is None
+    assert "crashed" in reason
 
 
 def test_beat_refreshes_the_heartbeat_and_appends_a_run_for_the_matching_triple():
@@ -106,25 +116,27 @@ def test_leader_heartbeat_minutes_is_the_documented_default():
 
 
 def test_leader_launched_by_is_the_holders_session_when_the_lock_is_live():
-    assert _leader_launched_by(_LIVE_RECORD, True, _NOW, 10) == "alice"
+    assert _leader_launched_by(_LIVE_RECORD, True, _NOW, "h1", 10) == "alice"
 
 
 def test_leader_launched_by_is_none_when_the_lock_is_not_live():
-    assert _leader_launched_by(_STALE_HEARTBEAT_RECORD, True, _NOW, 10) is None
+    assert _leader_launched_by(_STALE_HEARTBEAT_RECORD, True, _NOW, "h1", 10) is None
 
 
 # -- CLI: a tmp runs dir under a tmp profile ---------------------------------------
 
 
-def test_cli_status_reports_stale_for_a_lock_whose_pid_is_dead(tmp_path, capsys):
-    """The heartbeat is fresh by the real clock, so only the dead pid can be making
-    this stale — isolating the fact the status wording claims to report."""
+def test_cli_status_reports_crashed_for_a_lock_whose_pid_is_dead_on_this_host(tmp_path, capsys):
+    """The heartbeat is fresh by the real clock and the host matches this one, so only
+    the dead pid can be making this crashed — isolating the fact the status wording
+    claims to report."""
     profile = _profile(tmp_path)
     fresh = _fresh_iso()
     leader.write(tmp_path / "runs", {**_LIVE_RECORD, "host": socket.gethostname(), "pid": _DEAD_PID, "taken_at": fresh, "heartbeat_at": fresh})
     rc = main(["route", "leader", "status", "--profile", str(profile)])
+    out = capsys.readouterr().out
     assert rc == 0
-    assert "stale" in capsys.readouterr().out
+    assert "crashed" in out and "stale" not in out
 
 
 def test_cli_status_treats_a_foreign_hosts_lock_as_live_since_it_cannot_check_the_remote_pid(tmp_path, capsys):
