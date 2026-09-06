@@ -184,10 +184,7 @@ def _toggle_view(state: State) -> State:
 
 
 def _move(state: State, delta: int) -> State:
-    if state.view == "roster":
-        indexes = list(range(len(state.roster)))
-    else:
-        indexes = _editable_indexes(state.rows)
+    indexes = list(range(len(state.roster))) if state.view == "roster" else _editable_indexes(state.rows)
     if not indexes:
         return replace(state, message="no editable rows")
     if delta > 0:
