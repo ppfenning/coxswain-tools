@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import shutil
 import subprocess
+from functools import partial
 from pathlib import Path
 
 from agent_tools.setup_tui import handle, initial, render, with_output
@@ -65,8 +66,11 @@ def run_action(action: dict, *, root: str = "") -> tuple[list[str], int]:
     return (result.stdout + result.stderr).splitlines(), result.returncode
 
 
-def loop(stdscr, screen: dict, *, runner=run_action) -> None:
-    """The curses read/draw/act cycle over the pure model in `setup_tui`."""
+def loop(stdscr, screen: dict, *, runner=run_action) -> tuple[dict, dict | None]:
+    """The curses read/draw/act cycle over `setup_tui`. Returns `(screen,
+    action)`: a `{"kind": "mode", ...}` action comes back unrun, since
+    entering another screen is `main`'s job; `action` is `None` once
+    `quit` is set."""
     import curses
 
     with contextlib.suppress(curses.error):  # no real terminal behind stdscr, e.g. under test
@@ -80,12 +84,25 @@ def loop(stdscr, screen: dict, *, runner=run_action) -> None:
         stdscr.refresh()
         screen, actions = handle(screen, key_name(stdscr.getch()))
         for action in actions:
+            if action.get("kind") == "mode":
+                return screen, action
             lines, returncode = runner(action, root=screen["fields"]["root"])
             screen = with_output(screen, lines, returncode)
+    return screen, None
 
 
 def main(root: str, team: str, workspace: str) -> int:
     import curses
 
-    curses.wrapper(lambda stdscr: loop(stdscr, initial(root, team, workspace)))
-    return 0
+    from agent_tools import cartridge_screen
+
+    screen = initial(root, team, workspace)
+    while True:
+        result = curses.wrapper(partial(loop, screen=screen))
+        if not result:
+            return 0
+        screen, action = result
+        if action is None:
+            return 0
+        cartridge_screen.main(screen["fields"])
+        screen = {**screen, "quit": False}

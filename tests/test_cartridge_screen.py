@@ -1,7 +1,7 @@
 import subprocess
 
 from agent_tools import cartridge_screen, editor_model
-from agent_tools.editor_model import Effect
+from agent_tools.editor_model import Effect, State
 from agent_tools.fragments import FragmentError, load_fragment
 
 
@@ -119,3 +119,81 @@ def test_a_real_run_probe_effect_from_editor_model_has_no_payload_keys_to_assume
     run, calls = _fake_run(stdout="{}")
     assert cartridge_screen.run_effect(effect, {"probe_argv": ["x"]}, run=run, write=None) == {}
     assert calls == [["x"]]
+
+
+class _FakeStdscr:
+    def __init__(self, keys, size=(24, 80)):
+        self._keys = list(keys)
+        self._size = size
+        self.addnstr_calls = []
+
+    def getmaxyx(self):
+        return self._size
+
+    def clear(self):
+        pass
+
+    def refresh(self):
+        pass
+
+    def addnstr(self, y, x, s, n):
+        self.addnstr_calls.append((y, x, s, n))
+
+    def getch(self):
+        return self._keys.pop(0)
+
+
+_EMPTY_STATE = State(rows=(), cursor=0, pending={}, message="")
+
+
+def test_should_quit_is_a_bare_q_outside_of_editing_only():
+    assert cartridge_screen._should_quit(_EMPTY_STATE, "q")
+    assert not cartridge_screen._should_quit(_EMPTY_STATE, "j")
+    editing = State(rows=(), cursor=0, pending={}, message="", editing="k")
+    assert not cartridge_screen._should_quit(editing, "q")
+
+
+def test_q_ends_the_loop_without_calling_the_runner():
+    runs = []
+    stdscr = _FakeStdscr([ord("q")])
+    cartridge_screen.loop(stdscr, _EMPTY_STATE, {}, runner=lambda effect, ctx: runs.append(effect))
+    assert runs == []
+
+
+def test_loop_runs_one_effect_through_the_runner_and_folds_the_result(monkeypatch):
+    effect = Effect("write_fragment", {"edits": {"a": 1}})
+    with_effect = State(rows=(), cursor=0, pending={}, message="", effects=(effect,))
+    monkeypatch.setattr(cartridge_screen, "step", lambda state, key: with_effect)
+
+    runner_calls = []
+    stdscr = _FakeStdscr([ord("x"), ord("q")])
+    cartridge_screen.loop(stdscr, _EMPTY_STATE, {},
+                           runner=lambda eff, ctx: runner_calls.append(eff) or {"provenance_error": "boom"})
+
+    assert runner_calls == [effect]
+    assert any("boom" in call[2] for call in stdscr.addnstr_calls)
+
+
+def test_e_then_typed_characters_then_enter_reaches_apply_text_through_step():
+    # Closes finding 1: the loop makes no text-entry decision; `step` does.
+    row = editor_model.Row(key="cartridges_dir", value="", layer="acme", editable=True, kind="text")
+    state = State(rows=(row,), cursor=0, pending={}, message="", team="acme")
+    for key in ("e", "a", "b", "ENTER"):
+        state = editor_model.step(state, key)
+    assert state.pending == {"cartridges_dir": "ab"}
+
+
+def test_main_wires_the_real_probe_keys_straight_into_editor_model_rows(monkeypatch):
+    import curses
+
+    facts = {"resolved": {"policy": {"review_tier": "2"}}, "provenance": {"policy.review_tier": "acme"}}
+    seen = {}
+    monkeypatch.setattr(cartridge_screen, "loop", lambda stdscr, state, ctx, **kw: seen.update(state=state))
+    monkeypatch.setattr(curses, "wrapper", lambda fn: fn(None))
+
+    rc = cartridge_screen.main({"root": "/root", "team": "acme", "workspace": "/work"},
+                                probe=lambda *a, **kw: facts)
+
+    assert rc == 0
+    assert [r.key for r in seen["state"].rows] == ["policy.review_tier"]
+    assert seen["state"].rows[0].layer == "acme"
