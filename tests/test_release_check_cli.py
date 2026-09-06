@@ -26,11 +26,6 @@ _HELP = {
 }
 
 _HELP_WITH_A_PLAIN_CHOICE = {
-    "cox hud inbox": (
-        "usage: cox hud inbox [-h] {show,arm,clear} [--tier-ceiling {cheap,deep}]\n\n"
-        "positional arguments:\n"
-        "  {show,arm,clear}\n"
-    ),
 }
 
 

@@ -12,7 +12,7 @@ def test_launcher_argv_is_pure_and_takes_the_resolved_plugin_root_as_data():
 
 
 def test_bare_launcher_split_leaves_an_ordinary_subcommands_own_dashdash_untouched():
-    assert _bare_launcher_split(["hud", "say", "--", "-hi"]) is None
+    assert _bare_launcher_split(["route", "file", "--", "-hi"]) is None
 
 
 def _profile(tmp_path: Path, skills_root: Path) -> Path:
