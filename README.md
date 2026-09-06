@@ -48,6 +48,8 @@ cox runs clean RUN --repo PATH [--apply]        the run's worktrees and scratch 
 cox runs land RUN --repo PATH [--task T] [--apply] [--no-merge]   plan and land an approved run: pick branch, cherry-pick, PR, merge on green, clean; dry-run by default
 cox runs events [--runs-dir runs] [--follow] [--json]   tail a run's log, trace and usage files as a live event stream
 cox runs top   — live table of runs in flight (next task wires the screen)
+cox usage assess [--json] [--runs-dir runs]     the pacing verdict for the current spend window against the resolved `policy.pacing.json` in --runs-dir, or the unmeasured default when it is absent
+                                                 prints the one-line reason (or the full Assessment as JSON); exit 0 go/go_degraded, 3 hold, 4 stop
 cox epic watch PIDFILE [--log LOG]              block until a detached run exits (or the cap), then the outcome lines
 cox hud ops FILE|-                              replace the HUD's ops list (id, label, status, persona?, detail?)
 cox hud say TEXT [--persona P] [--voice V]      speak a line through the HUD
