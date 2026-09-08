@@ -116,17 +116,17 @@ def draw(stdscr, facts_obj: home_model.Facts, state: home_model.State, statuses:
 
     stdscr.clear()
     height, width = stdscr.getmaxyx()
-    leader_lines = home_model.leader_pane(facts_obj, width)
+    chair_lines = home_model.chair_pane(facts_obj, width)
     backlog_lines = home_model.backlog_pane(facts_obj, width)
     window_lines = home_model.window_pane(facts_obj, width)
     runs_lines = home_model.runs_pane(facts_obj, width)
     lines = list(home_model.frame(facts_obj, state, width))
-    if len(lines) == len(leader_lines) + len(backlog_lines) + len(window_lines) + len(runs_lines):
+    if len(lines) == len(chair_lines) + len(backlog_lines) + len(window_lines) + len(runs_lines):
         offsets = (
             (0, statuses.get("leader", "fresh")),
-            (len(leader_lines), statuses.get("backlog", "fresh")),
-            (len(leader_lines) + len(backlog_lines), statuses.get("window", "fresh")),
-            (len(leader_lines) + len(backlog_lines) + len(window_lines), statuses.get("runs", "fresh")),
+            (len(chair_lines), statuses.get("backlog", "fresh")),
+            (len(chair_lines) + len(backlog_lines), statuses.get("window", "fresh")),
+            (len(chair_lines) + len(backlog_lines) + len(window_lines), statuses.get("runs", "fresh")),
         )
         for index, status in offsets:
             if status != "fresh" and index < len(lines):
@@ -173,8 +173,8 @@ def main(runs_dir, work_dir, intake_dir, plugin_dir: str, refresh_seconds: float
         state = home_model.State(plugin_dir=plugin_dir, leader_liveness="none", other_holder=None)
         while True:
             facts_obj, cache = facts(runs_dir, work_dir, intake_dir, time.time(), cache)
-            other_holder = facts_obj.leader.get("session") if facts_obj.leader and facts_obj.leader_liveness == "live" else None
-            state = home_model.State(plugin_dir=plugin_dir, leader_liveness=facts_obj.leader_liveness, other_holder=other_holder)
+            other_holder = facts_obj.chair.get("session") if facts_obj.chair and facts_obj.chair_liveness == "live" else None
+            state = home_model.State(plugin_dir=plugin_dir, leader_liveness=facts_obj.chair_liveness, other_holder=other_holder)
             draw(stdscr, facts_obj, state, cache.get("_status", {}))
             ch = stdscr.getch()
             if ch == -1:

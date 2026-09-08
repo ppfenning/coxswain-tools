@@ -51,7 +51,7 @@ line-length = 120
 # are selected. D205 and D209 were tried and dropped: agent_tools/notify.py has
 # multi-line docstrings that run the summary straight into the next line with no
 # blank line, and close the triple quotes on that same last line (e.g.
-# `leader_notifications`'s critical-notice docstring) — one deliberate, compact
+# `chair_notifications`'s critical-notice docstring) — one deliberate, compact
 # thought, not the two-paragraph shape D205/D209 want, and splitting it across
 # three lines buys the reader nothing. D403 is left out too: this sandbox has
 # no ruff to run, so nothing here confirms what it would flag, and selecting it
