@@ -65,7 +65,7 @@ def test_cli_release_check_with_a_valid_manifest_exits_zero_and_reports_no_drift
     monkeypatch.setattr(release_check_notes, "gather_notes_facts", lambda *a, **k: {})
     rc = cli.main(["dev", "release-check", "--root", str(tmp_path), "--manifest", str(manifest_path)])
     assert rc == 0
-    assert "no drift (3 checks)" in capsys.readouterr().out
+    assert "no drift (4 checks)" in capsys.readouterr().out
 
 
 def test_cli_release_check_renders_a_drift_from_a_registered_check(tmp_path, capsys, monkeypatch):
@@ -98,4 +98,4 @@ def test_cli_release_check_json_flag_prints_a_json_list(tmp_path, capsys, monkey
     manifest_path.write_text('[coxswain]\nversion = "0.1.0"\n')
     rc = cli.main(["dev", "release-check", "--root", str(tmp_path), "--manifest", str(manifest_path), "--json"])
     assert rc == 0
-    assert json.loads(capsys.readouterr().out) == {"checks_run": 3, "drifts": []}
+    assert json.loads(capsys.readouterr().out) == {"checks_run": 4, "drifts": []}

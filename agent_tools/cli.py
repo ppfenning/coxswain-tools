@@ -37,6 +37,7 @@ from agent_tools import (
     release_check_cli,
     release_check_manifest,
     release_check_notes,
+    release_check_pages,
     route,
     runs_detail,
     runs_detail_screen,
@@ -1645,6 +1646,7 @@ def _release_check(a: argparse.Namespace) -> int:
         **release_check_cli.gather_cli_facts(a.root or ".", _real_run),
         **release_check_manifest.gather_manifest_facts(manifest, str(manifest_path), plan["component_docs"], plan["release_notes"]),
         **release_check_notes.gather_notes_facts(a.root or ".", manifest, subprocess.run),
+        **release_check_pages.gather_page_facts(a.root or ".", manifest, subprocess.run),
     }
     drifts = release_check.run_checks(facts)
     rendered = release_check.render(drifts, len(release_check.CHECKS))
