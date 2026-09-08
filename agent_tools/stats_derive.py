@@ -35,8 +35,8 @@ def attempt_numbers(calls: Sequence[Mapping[str, Any]]) -> list[int]:
 
 def resolve_outcome(task_record: Mapping[str, Any]) -> tuple[str, str]:
     """(outcome, outcome_source) per spec §3's order: landed, then the last
-    gate_diffs entry targeting this ticket, then a log line naming this ticket,
-    else unknown.
+    gate_diffs entry targeting this ticket, then the work store's own
+    `state: done`, then a log line naming this ticket, else unknown.
 
     A run-level `budget_stop` log event (agent_tools/events.py:51) carries an
     empty detail dict and names no task: a run holds several tickets, so there
@@ -55,6 +55,9 @@ def resolve_outcome(task_record: Mapping[str, Any]) -> tuple[str, str]:
         if outcome in OUTCOMES:
             return outcome, "gate_diffs"
 
+    if task_record.get("work_store_done") is True:
+        return "landed", "work_store"
+
     log_events = task_record.get("log_events") or ()
     if ticket is not None and any(
         e.kind == "task_quarantined" and e.detail.get("task") == ticket for e in log_events
@@ -65,6 +68,8 @@ def resolve_outcome(task_record: Mapping[str, Any]) -> tuple[str, str]:
 
 
 _EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+
+_PATCHING_ROLES = frozenset({"build", "style_pass"})
 
 
 def _final_result(trace: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
@@ -119,16 +124,20 @@ def _succeeded(trace: Sequence[Mapping[str, Any]]) -> bool:
     return bool(result) and not result.get("is_error")
 
 
-def extract_failure_class(trace: Sequence[Mapping[str, Any]], log_excerpt: str) -> str:
+def extract_failure_class(trace: Sequence[Mapping[str, Any]], log_excerpt: str, role: str | None) -> str:
     """One of stats_schema.FAILURE_CLASSES. Trusts only the trace's terminal
     `type: result` entry to decide success, matching the convention
     agent_tools/records.py:102 already uses (`is_error` read from the last
     result only) — a call that hits a failed tool_result or a refusal partway
     through and then finishes clean is `ok`, not `tool_error` or `refused`.
     Assumes trace and log_excerpt are already scoped to this one call by the
-    caller; scoping them is the ingest task's job, not enforced here."""
+    caller; scoping them is the ingest task's job, not enforced here.
+
+    `empty_patch` is only meaningful where a patch was expected: `role` outside
+    `_PATCHING_ROLES` (only `build` and `style_pass` are granted Write/Edit by
+    the provider profile) can never read `empty_patch` on success, only `ok`."""
     if _succeeded(trace):
-        candidate = "empty_patch" if _touched_no_files(trace) else "ok"
+        candidate = "empty_patch" if role in _PATCHING_ROLES and _touched_no_files(trace) else "ok"
     elif _budget_stopped(trace, log_excerpt):
         candidate = "budget_stop"
     elif _tool_errored(trace):
