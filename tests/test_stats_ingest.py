@@ -94,6 +94,34 @@ def test_task_row_ignores_a_budget_stop_event_but_still_honors_a_quarantine_even
     assert (row_t2["outcome"], row_t2["outcome_source"]) == ("quarantined", "log_line")
 
 
+def test_rollup_task_costs_sums_only_joined_calls_and_leaves_none_for_no_joined_call():
+    calls = [
+        {"task_id": "t1", "join_confidence": "heuristic", "cost_usd": 1.5},
+        {"task_id": "t1", "join_confidence": "none", "cost_usd": 9.0},
+    ]
+    tasks = [{"task_id": "t1", "cost_usd": None}, {"task_id": "t2", "cost_usd": None}]
+    rolled = {t["task_id"]: t for t in stats_ingest.rollup_task_costs(calls, tasks)}
+    assert rolled["t1"]["cost_usd"] == 1.5
+    assert rolled["t2"]["cost_usd"] is None
+
+
+def test_ingest_rolls_up_only_the_joined_calls_cost_onto_the_tasks_row(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(
+        runs_dir, "run1",
+        tasks=[("p1", "t1", {"ticket": "t1"})],
+        usage={"calls": [{"role": "build", "cost_usd": 1.5}, {"role": "review", "cost_usd": 9.0}]},
+    )
+    db_path = tmp_path / "stats.db"
+    stats_ingest.ingest(runs_dir, db_path)
+
+    conn = connect(db_path)
+    value = conn.execute("SELECT cost_usd FROM tasks WHERE task_id = 'run1:p1:t1'").fetchone()[0]
+    conn.close()
+    assert value == 1.5
+
+
 def test_ingest_is_idempotent(tmp_path):
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
