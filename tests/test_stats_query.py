@@ -1,0 +1,98 @@
+from agent_tools.stats_query import explain_report, render_capped, roles_report, series_report
+
+
+def _call(task_id, role="build", model="sonnet", join_confidence="heuristic", failure_class=None):
+    return {
+        "role": role,
+        "model": model,
+        "task_id": task_id,
+        "join_confidence": join_confidence,
+        "failure_class": failure_class,
+    }
+
+
+def _task(task_id, outcome="landed", attempt=None, cost_usd=0.0):
+    return {"task_id": task_id, "outcome": outcome, "attempt": attempt, "cost_usd": cost_usd}
+
+
+def test_roles_report_excludes_a_null_attempt_task_from_attempts_to_land_but_counts_it():
+    calls = [_call("t1"), _call("t2"), _call("t3")]
+    tasks = [
+        _task("t1", attempt=2, cost_usd=1.0),
+        _task("t2", attempt=4, cost_usd=1.0),
+        _task("t3", attempt=None, cost_usd=1.0),
+    ]
+    [row] = roles_report(calls, tasks)
+    assert row["attempts_to_land"] == 3.0
+    assert row["attempts_unknown"] == 1
+    assert row["landed_rate"] == 1.0
+
+
+def test_roles_report_reports_coverage_below_one_for_a_partial_join():
+    calls = [
+        _call("t1"),
+        _call("t2"),
+        _call(None, join_confidence="none"),
+    ]
+    tasks = [_task("t1", attempt=1, cost_usd=2.0), _task("t2", outcome="quarantined", attempt=1)]
+    [row] = roles_report(calls, tasks)
+    assert row["n_calls"] == 3
+    assert row["n_joined"] == 2
+    assert row["coverage"] == round(2 / 3, 4)
+    assert row["landed_rate"] == 0.5
+
+
+def test_explain_report_keeps_unclassified_calls_out_of_the_unknown_bucket():
+    calls = [
+        _call("t1", failure_class="ok"),
+        _call("t2", failure_class="ok"),
+        _call("t3", failure_class="budget_stop"),
+        _call("t4", failure_class="unknown"),
+        _call("t5", failure_class=None),
+    ]
+    report = explain_report(calls, [], "build")
+    assert report["by_failure_class"] == {"ok": 2, "budget_stop": 1, "unknown": 1}
+    assert report["unclassified"] == 1
+    assert report["coverage"] == 0.8
+
+
+def test_series_report_reports_none_cost_per_landed_when_a_run_lands_nothing():
+    runs = [
+        {"run_id": "run-a", "cartridge_sha": "abc", "provider_profile": "p1"},
+        {"run_id": "run-b", "cartridge_sha": "def", "provider_profile": "p1"},
+    ]
+    tasks = [
+        {"run_id": "run-a", "outcome": "landed", "cost_usd": 1.0},
+        {"run_id": "run-a", "outcome": "landed", "cost_usd": 2.0},
+        {"run_id": "run-a", "outcome": "quarantined", "cost_usd": 0.5},
+        {"run_id": "run-b", "outcome": "quarantined", "cost_usd": 0.5},
+    ]
+    rows = series_report(runs, tasks)
+    by_id = {r["run_id"]: r for r in rows}
+    assert by_id["run-a"]["cost_per_landed"] == round(3.5 / 2, 2)
+    assert by_id["run-b"]["cost_per_landed"] is None
+    assert by_id["run-b"]["tasks_landed"] == 0
+
+
+def test_series_report_reports_zero_coverage_for_a_run_with_no_task_rows():
+    runs = [{"run_id": "run-z", "cartridge_sha": "zzz", "provider_profile": "p1"}]
+    rows = series_report(runs, [])
+    [row] = rows
+    assert row["coverage"] == 0.0
+    assert row["cost_usd"] == 0.0
+    assert row["cost_per_landed"] is None
+
+
+def test_render_capped_drops_trailing_rows_and_marks_the_drop():
+    rows = [{"role": "build", "model": "sonnet", "n": i} for i in range(50)]
+    result = render_capped(rows, cap_tokens=50)
+    assert "more rows" in result
+    assert len(result) // 4 <= 50
+
+
+def test_render_capped_renders_every_row_verbatim_under_the_cap():
+    rows = [{"role": "build", "n": 1}, {"role": "review", "n": 2}]
+    result = render_capped(rows, cap_tokens=300)
+    assert "role=build" in result
+    assert "role=review" in result
+    assert "more rows" not in result
