@@ -445,6 +445,36 @@ def _read_ledger(path: Path, unparsed: list[str]) -> list[dict[str, Any]]:
     return rows
 
 
+def _read_calls_jsonl(path: Path, unparsed: list[str]) -> list[dict[str, Any]] | None:
+    """Every call dict in `<run>.calls.jsonl`, one per line (observed-record.md §1-3:
+    a usage.json call dict plus `ts`/`ok`/`error`), each tagged `source: calls_jsonl`
+    so downstream code can tell it apart from a usage.json or trace-recovered call.
+    `None` when `path` does not exist, distinct from `[]` for a file present but
+    empty; a line that is not a JSON object is appended to `unparsed` instead of
+    raising, the same rule `_read_ledger` applies to the autonomy ledger."""
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        unparsed.append(str(path))
+        return None
+    rows: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            unparsed.append(f"{path}#{line[:40]}")
+            continue
+        if isinstance(parsed, dict):
+            rows.append({**parsed, "source": "calls_jsonl"})
+        else:
+            unparsed.append(f"{path}#{line[:40]}")
+    return rows
+
+
 def _ledger_run_id(row: Mapping[str, Any]) -> str | None:
     """The run_id half of a ledger row's '<run>:<node>' key (stats-join-spike.md:
     'keys rows on <run>:<node>'), or the row's own `run_id`/`run` field when it
@@ -499,15 +529,21 @@ def provider_profile_source(
 def load_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
     """Every file this ingester reads for one run — usage, launch marker, node
     records, task records and log lines — plus the paths that failed to parse.
-    Trace files are read only when `usage` is absent: a usage record's `calls[]` is
-    authoritative, and `.usage.json` is exactly the file fact 5 says a budget-stopped
-    run never wrote. A run whose usage.json IS present but undercounts a call (a
-    different, already-measured symptom) is out of scope here and reads unrecovered,
-    exactly as before this ticket."""
+    When `usage` is absent, `<run>.calls.jsonl` is read next (observed-record.md
+    §4: the second call source, after usage.json and before trace recovery); its
+    calls are returned tagged `source: calls_jsonl` under the `calls_jsonl` key.
+    Trace files are read only when both `usage` and `calls_jsonl` are absent: a
+    usage record's `calls[]` is authoritative, and `.usage.json` is exactly the
+    file fact 5 says a budget-stopped run never wrote. A run whose usage.json IS
+    present but undercounts a call (a different, already-measured symptom) is out
+    of scope here and reads unrecovered, exactly as before this ticket."""
     unparsed: list[str] = []
     usage = _read_json(runs_dir / f"{run_id}.usage.json", unparsed)
     launched = _read_json(runs_dir / f"{run_id}.launched.json", unparsed)
-    traces = _read_traces(runs_dir / f"{run_id}-trace", unparsed) if usage is None else []
+    calls_jsonl = _read_calls_jsonl(runs_dir / f"{run_id}.calls.jsonl", unparsed) if usage is None else None
+    traces = (
+        _read_traces(runs_dir / f"{run_id}-trace", unparsed) if usage is None and calls_jsonl is None else []
+    )
     call_traces = _read_call_traces(runs_dir, usage, unparsed) if usage is not None else {}
     node_records = [
         parsed
@@ -531,6 +567,7 @@ def load_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
         "log_lines": log_lines,
         "traces": traces,
         "call_traces": call_traces,
+        "calls_jsonl": calls_jsonl or [],
         "unparsed": unparsed,
     }
 
