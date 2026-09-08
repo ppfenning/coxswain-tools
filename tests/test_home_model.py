@@ -12,6 +12,7 @@ from agent_tools.home_model import (
     Talk,
     attention_pane,
     backlog_pane,
+    chair_pane,
     frame,
     leader_pane,
     runs_pane,
@@ -38,23 +39,38 @@ def _live_leader_facts(**over) -> Facts:
 
 
 def test_leader_pane_marks_attention_when_leader_is_stale_and_a_run_is_alive():
-    lines = leader_pane(_facts(leader={"session": "s1"}, leader_liveness="stale"), 80)
+    lines = chair_pane(_facts(leader={"session": "s1"}, leader_liveness="stale"), 80)
     assert lines[0].startswith("!")
 
 
 def test_leader_pane_marks_attention_when_leader_is_crashed_and_a_run_is_alive():
-    lines = leader_pane(_facts(leader={"session": "s1"}, leader_liveness="crashed"), 80)
+    lines = chair_pane(_facts(leader={"session": "s1"}, leader_liveness="crashed"), 80)
     assert lines[0].startswith("!")
 
 
 def test_leader_pane_is_plain_with_no_heartbeat_when_the_leader_carries_none():
-    lines = leader_pane(_facts(leader={"session": "s1"}, leader_liveness="live"), 80)
+    lines = chair_pane(_facts(leader={"session": "s1"}, leader_liveness="live"), 80)
     assert lines == ("LEADER", "holder: s1  status: live  heartbeat: n/a")
 
 
 def test_leader_pane_shows_heartbeat_age_from_facts_now():
-    lines = leader_pane(_live_leader_facts(), 80)
+    lines = chair_pane(_live_leader_facts(), 80)
     assert lines == ("LEADER", "holder: s1  status: live  heartbeat: 60s ago")
+
+
+def test_facts_chair_and_chair_liveness_mirror_the_stored_leader_fields():
+    facts = _facts(leader={"session": "s1"}, leader_liveness="live")
+    assert facts.chair == {"session": "s1"}
+    assert facts.chair_liveness == "live"
+
+
+def test_state_chair_liveness_mirrors_the_stored_leader_liveness():
+    state = State(plugin_dir="/p", leader_liveness="live", other_holder=None)
+    assert state.chair_liveness == "live"
+
+
+def test_leader_pane_is_a_back_compat_alias_for_chair_pane():
+    assert leader_pane is chair_pane
 
 
 def test_runs_pane_returns_runs_top_render_unchanged():
