@@ -79,7 +79,8 @@ def test_runs_notify_cli_dispatch_reads_the_dropped_policy_file_end_to_end(tmp_p
     monkeypatch.setattr(notify.shutil, "which", lambda _: None)
     (tmp_path / "policy.notify.json").write_text(json.dumps({"kinds": ["budget_stop"]}), encoding="utf-8")
     (tmp_path / "run1.log").write_text(
-        "run1 started\nquarantined task: t1 — bad\nfix loop stopped: budget\n", encoding="utf-8")
+        "run1 started\nquarantined task: t1 — bad\nnode 'build' failed in phase1: error_max_budget_usd\n",
+        encoding="utf-8")
     a = argparse.Namespace(runs_dir=str(tmp_path), once=True, interval=10)
     assert cli._runs_notify(a) == 0
     out = capsys.readouterr().out
