@@ -94,6 +94,24 @@ def test_task_row_ignores_a_budget_stop_event_but_still_honors_a_quarantine_even
     assert (row_t2["outcome"], row_t2["outcome_source"]) == ("quarantined", "log_line")
 
 
+def test_task_row_fills_outcome_kind_from_the_last_attempts_kind():
+    record = {"ticket": "t1", "attempts": [{"kind": "refused"}, {"kind": "unverified"}]}
+    row = stats_ingest.task_row("r1", "p1", "t1", record, gate_diffs=(), log_events=())
+    assert row["outcome_kind"] == "unverified"
+
+
+def test_task_row_falls_back_to_the_phase_records_own_kind_with_no_attempts():
+    record = {"ticket": "t1", "kind": "infra"}
+    row = stats_ingest.task_row("r1", "p1", "t1", record, gate_diffs=(), log_events=())
+    assert row["outcome_kind"] == "infra"
+
+
+def test_task_row_leaves_outcome_kind_null_with_neither_attempts_nor_kind():
+    record = {"ticket": "t1", "reason": "no_work"}
+    row = stats_ingest.task_row("r1", "p1", "t1", record, gate_diffs=(), log_events=())
+    assert row["outcome_kind"] is None
+
+
 def test_rollup_task_costs_sums_only_joined_calls_and_leaves_none_for_no_joined_call():
     calls = [
         {"task_id": "t1", "join_confidence": "heuristic", "cost_usd": 1.5},

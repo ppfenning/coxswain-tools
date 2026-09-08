@@ -272,6 +272,12 @@ def task_row(
     outcome, outcome_source = resolve_outcome(scoped)
     arbitration = record.get("arbitration")
     attempt = record.get("attempt")
+    attempts = record.get("attempts")
+    outcome_kind = (
+        attempts[-1].get("kind")
+        if isinstance(attempts, Sequence) and attempts and isinstance(attempts[-1], Mapping)
+        else record.get("kind")
+    )
     return {
         "run_id": run_id,
         "task_id": record.get("run_id") or f"{run_id}:{phase}:{ticket}",
@@ -286,6 +292,7 @@ def task_row(
         "fix_loop_rounds": _rounds(record.get("fix_loop")),
         "cost_usd": record.get("cost_usd"),
         "reason": record.get("reason"),
+        "outcome_kind": outcome_kind,
     }
 
 

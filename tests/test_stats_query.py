@@ -11,8 +11,8 @@ def _call(task_id, role="build", model="sonnet", join_confidence="heuristic", fa
     }
 
 
-def _task(task_id, outcome="landed", attempt=None, cost_usd=0.0):
-    return {"task_id": task_id, "outcome": outcome, "attempt": attempt, "cost_usd": cost_usd}
+def _task(task_id, outcome="landed", attempt=None, cost_usd=0.0, outcome_kind=None):
+    return {"task_id": task_id, "outcome": outcome, "attempt": attempt, "cost_usd": cost_usd, "outcome_kind": outcome_kind}
 
 
 def _call_with_run(run_id, task_id, role="build", model="sonnet"):
@@ -30,6 +30,19 @@ def test_roles_report_excludes_a_null_attempt_task_from_attempts_to_land_but_cou
     assert row["attempts_to_land"] == 3.0
     assert row["attempts_unknown"] == 1
     assert row["landed_rate"] == 1.0
+
+
+def test_roles_report_counts_unverified_and_infra_apart_from_refused():
+    calls = [_call("t1"), _call("t2"), _call("t3")]
+    tasks = [
+        _task("t1", outcome="quarantined", outcome_kind="refused"),
+        _task("t2", outcome="quarantined", outcome_kind="unverified"),
+        _task("t3", outcome="quarantined", outcome_kind="infra"),
+    ]
+    [row] = roles_report(calls, tasks)
+    assert row["refused_tasks"] == 1
+    assert row["unverified_tasks"] == 1
+    assert row["infra_tasks"] == 1
 
 
 def test_roles_report_reports_coverage_below_one_for_a_partial_join():
