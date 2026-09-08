@@ -8,8 +8,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from agent_tools.events import Event, from_log
+
 __all__ = [
     "ceiling_for",
+    "chair_counts",
+    "chair_for",
     "format_table",
     "launched_by_for",
     "load_trace",
@@ -21,6 +25,8 @@ __all__ = [
     "trace_summary",
     "usage_summary",
 ]
+
+_CHAIR_KINDS = {"leader_taken": "taken", "leader_released": "released", "leader_stale": "stale"}
 
 
 def load_usage(path: Path | str) -> dict[str, Any]:
@@ -151,6 +157,24 @@ def ceiling_for(run_id: str, files: Mapping[str, str]) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def chair_counts(events: Sequence[Event]) -> dict[str, int]:
+    """Pure: taken/released/stale tallies under one chair-named field, regardless of
+    whether the source log line events.py parsed said `leader` or `chair`."""
+    counts = {"taken": 0, "released": 0, "stale": 0}
+    for e in events:
+        key = _CHAIR_KINDS.get(e.kind)
+        if key is not None:
+            counts[key] += 1
+    return counts
+
+
+def chair_for(run_id: str, files: Mapping[str, str]) -> dict[str, int]:
+    """Pure: `chair_counts` over the run's own log among `files`, empty counts when absent."""
+    text = files.get(f"{run_id}.log")
+    lines = text.splitlines() if text is not None else []
+    return chair_counts(from_log(run_id, lines))
+
+
 def launched_by_for(run_id: str, files: Mapping[str, str]) -> str | None:
     """None means no session held the leader lock at launch time."""
     text = files.get(f"{run_id}.launched.json")
@@ -167,11 +191,13 @@ def launched_by_for(run_id: str, files: Mapping[str, str]) -> str | None:
 
 
 def series_row(run_id: str, usage: Mapping[str, Any] | None, manifests: Sequence[Mapping[str, Any]],
-                ceiling: Mapping[str, Any] | None = None, launched_by: str | None = None) -> dict[str, Any]:
+                ceiling: Mapping[str, Any] | None = None, launched_by: str | None = None,
+                chair: Mapping[str, int] | None = None) -> dict[str, Any]:
     """Pure: one steward-pass row for a run, from its usage summary and its phase manifests.
     `ceiling` is the run's own parsed ceiling.json (see `ceiling_for`), or None when the
     run carried no tier/effort overlay; its applied tier/effort become the row's own
-    tier_ceiling/effort_ceiling columns, empty when there was no overlay."""
+    tier_ceiling/effort_ceiling columns, empty when there was no overlay. `chair` is the
+    run's own `chair_counts` (see `chair_for`), or None when the run carried no chair events."""
     calls_list = list((usage or {}).get("calls") or [])
     figures = _usage_figures(usage)
     earliest = _earliest_manifest(manifests)
@@ -198,6 +224,7 @@ def series_row(run_id: str, usage: Mapping[str, Any] | None, manifests: Sequence
         "tier_ceiling": applied.get("tier") or "",
         "effort_ceiling": applied.get("effort") or "",
         "launched_by": launched_by or "",
+        "chair": dict(chair) if chair is not None else chair_counts([]),
     }
 
 
@@ -217,7 +244,7 @@ def series(files: Mapping[str, str]) -> list[dict[str, Any]]:
             by_run[name[: -len(".usage.json")]]["usage"] = parsed
         elif ":" in name:
             by_run[name.split(":", 1)[0]]["manifests"].append(parsed)
-    rows = [series_row(run_id, entry["usage"], entry["manifests"], ceiling_for(run_id, files), launched_by_for(run_id, files)) for run_id, entry in by_run.items()]
+    rows = [series_row(run_id, entry["usage"], entry["manifests"], ceiling_for(run_id, files), launched_by_for(run_id, files), chair_for(run_id, files)) for run_id, entry in by_run.items()]
     return sorted(rows, key=lambda r: (r["date"], r["run"]))
 
 
