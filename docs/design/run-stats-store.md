@@ -184,7 +184,8 @@ Everything else below is independent of the spike's outcome.
 **`calls`** — one row per model invocation.
 `run_id` FK, `seq`, `role`, `attempt`, `tier`, `model`, `cost_usd`, `turns`, `duration_ms`,
 `input_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `output_tokens`, `tools`,
-`trace_path`, `failure_class`, `challenger`, `task_id`, `join_confidence`.
+`trace_path`, `failure_class`, `challenger`, `task_id`, `join_confidence`,
+`recovered_from_trace`.
 
 - `attempt` is the ordinal of this call among calls of the same role in the same run. It is
   computed at ingest, not read.
@@ -194,6 +195,10 @@ Everything else below is independent of the spike's outcome.
   That is where P0's token saving actually comes from.
 - `trace_path` is a pointer. Trace CONTENT is never copied into the stats store.
 - `challenger` marks a deliberate exploration call (see §6). Default false.
+- `recovered_from_trace` marks a row built from a trace's terminal `type: result` line
+  because the run wrote no usage record at all (fact 5), rather than from a usage
+  record's `calls[]` entry. Default false; token counts, `duration_ms`, `tier` and
+  `model` are unrecoverable from that line and stay `NULL` on a recovered row.
 
 **`tasks`** — one row per task attempt.
 `run_id` FK, `task_id`, `ticket`, `phase`, `initiative`, `attempt`, `outcome`,
