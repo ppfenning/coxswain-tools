@@ -59,13 +59,13 @@ def test_a_stale_leader_line_highlights_alert_a_live_one_does_not():
 
 
 def test_leader_notifications_fires_only_on_a_live_to_stale_or_none_transition_with_a_live_run():
-    lost = notify.Notification("loop leader", "loop leader lost its heartbeat", "critical")
-    assert notify.leader_notifications("live", "stale", True) == [lost]
-    assert notify.leader_notifications("live", "crashed", True) == [lost]
-    assert notify.leader_notifications("live", "none", True) == [lost]
-    assert notify.leader_notifications("live", "live", True) == []
-    assert notify.leader_notifications("live", "stale", False) == []
-    assert notify.leader_notifications(None, "stale", True) == []
+    lost = notify.Notification("loop chair", "loop chair lost its heartbeat", "critical")
+    assert notify.chair_notifications("live", "stale", True) == [lost]
+    assert notify.chair_notifications("live", "crashed", True) == [lost]
+    assert notify.chair_notifications("live", "none", True) == [lost]
+    assert notify.chair_notifications("live", "live", True) == []
+    assert notify.chair_notifications("live", "stale", False) == []
+    assert notify.chair_notifications(None, "stale", True) == []
 
 
 def test_a_leader_transition_from_live_to_crashed_with_a_live_run_notifies(tmp_path):
@@ -92,7 +92,7 @@ def test_a_leader_transition_from_live_to_crashed_with_a_live_run_notifies(tmp_p
         notify.run_loop(tmp_path, send=calls.append, sleep=fake_sleep, pid_alive=fake_pid_alive)
 
     bodies = [argv[-1] for argv in calls]
-    assert "loop leader lost its heartbeat" in bodies
+    assert "loop chair lost its heartbeat" in bodies
 
 
 def test_cli_runs_top_once_uses_the_resolved_heartbeat_minutes(monkeypatch, tmp_path, capsys):
