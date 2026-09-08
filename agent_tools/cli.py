@@ -99,7 +99,7 @@ def _runs_events(a: argparse.Namespace) -> int:
 def _runs_top(a: argparse.Namespace) -> int:
     heartbeat_minutes = _leader_heartbeat_minutes()
     if a.once:
-        leader_state = runs_top_screen.leader_now(a.runs_dir, heartbeat_minutes)
+        leader_state = runs_top_screen.chair_now(a.runs_dir, heartbeat_minutes)
         print("\n".join(runs_top.render(runs_top_screen.rows_now(a.runs_dir, heartbeat_minutes), 120, leader_state)))
         return 0
     if not sys.stdin.isatty():
