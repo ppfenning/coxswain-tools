@@ -1,3 +1,5 @@
+import pytest
+
 from agent_tools.events import Event
 from agent_tools.stats_derive import attempt_numbers, extract_failure_class, resolve_outcome
 
@@ -63,6 +65,21 @@ def test_resolve_outcome_defaults_to_unknown_with_no_signal_at_all():
     assert resolve_outcome({}) == ("unknown", "unknown")
 
 
+def test_resolve_outcome_reads_the_work_store_ahead_of_the_log_line():
+    record = {
+        "ticket": "some-ticket",
+        "gate_diffs": [],
+        "work_store_done": True,
+        "log_events": [Event("run1", "task_quarantined", 5, {"task": "some-ticket", "reason": "budget"})],
+    }
+    assert resolve_outcome(record) == ("landed", "work_store")
+
+
+def test_resolve_outcome_still_prefers_the_explicit_landed_field_over_the_work_store():
+    record = {"landed": True, "work_store_done": False, "gate_diffs": [{"outcome": "quarantined"}]}
+    assert resolve_outcome(record) == ("landed", "landed_field")
+
+
 def test_a_run_level_budget_stop_never_sets_either_co_resident_tasks_outcome():
     """The deliverable: agent_tools/events.py:51 writes a budget_stop Event
     with an empty detail dict, naming no task. A run with two tickets sharing
@@ -75,12 +92,12 @@ def test_a_run_level_budget_stop_never_sets_either_co_resident_tasks_outcome():
 
 
 def test_extract_failure_class_reads_budget_stop_from_the_log_excerpt():
-    assert extract_failure_class([], "fix loop stopped: budget\n") == "budget_stop"
+    assert extract_failure_class([], "fix loop stopped: budget\n", "build") == "budget_stop"
 
 
 def test_extract_failure_class_reads_tool_error_from_a_tool_result_block():
     trace = [{"type": "user", "message": {"content": [{"type": "tool_result", "is_error": True}]}}]
-    assert extract_failure_class(trace, "") == "tool_error"
+    assert extract_failure_class(trace, "", "build") == "tool_error"
 
 
 def test_extract_failure_class_reads_empty_patch_from_a_success_with_no_edit_tool_call():
@@ -88,12 +105,12 @@ def test_extract_failure_class_reads_empty_patch_from_a_success_with_no_edit_too
         {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {}}]}},
         {"type": "result", "is_error": False, "subtype": "success"},
     ]
-    assert extract_failure_class(trace, "") == "empty_patch"
+    assert extract_failure_class(trace, "", "build") == "empty_patch"
 
 
 def test_extract_failure_class_reads_refused_from_an_assistant_stop_reason():
     trace = [{"type": "assistant", "message": {"stop_reason": "refusal", "content": []}}]
-    assert extract_failure_class(trace, "") == "refused"
+    assert extract_failure_class(trace, "", "build") == "refused"
 
 
 def test_extract_failure_class_reads_ok_from_a_success_with_an_edit_tool_call():
@@ -101,7 +118,7 @@ def test_extract_failure_class_reads_ok_from_a_success_with_an_edit_tool_call():
         {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Write", "input": {}}]}},
         {"type": "result", "is_error": False, "subtype": "success"},
     ]
-    assert extract_failure_class(trace, "") == "ok"
+    assert extract_failure_class(trace, "", "build") == "ok"
 
 
 def test_extract_failure_class_reads_ok_from_a_recovered_tool_error_that_finishes_clean():
@@ -113,8 +130,19 @@ def test_extract_failure_class_reads_ok_from_a_recovered_tool_error_that_finishe
         {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Edit", "input": {}}]}},
         {"type": "result", "is_error": False, "subtype": "success"},
     ]
-    assert extract_failure_class(trace, "") == "ok"
+    assert extract_failure_class(trace, "", "build") == "ok"
 
 
 def test_extract_failure_class_defaults_to_unknown_with_no_signal_at_all():
-    assert extract_failure_class([], "") == "unknown"
+    assert extract_failure_class([], "", "build") == "unknown"
+
+
+@pytest.mark.parametrize("role", ["handoff", "review_charter", "plan", None])
+def test_extract_failure_class_never_reads_empty_patch_for_a_non_patching_role(role):
+    """empty_patch is only meaningful where a patch was expected: only 'build' and
+    'style_pass' are granted Write/Edit by the provider profile."""
+    trace = [
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {}}]}},
+        {"type": "result", "is_error": False, "subtype": "success"},
+    ]
+    assert extract_failure_class(trace, "", role) == "ok"

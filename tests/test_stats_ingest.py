@@ -173,6 +173,42 @@ def test_ingest_raises_naming_the_absolute_path_when_the_runs_dir_holds_no_run_r
     assert str(empty.resolve()) in str(exc_info.value)
 
 
+def _write_work_item(work_store_root, initiative, phase, ticket, state):
+    d = work_store_root / initiative / phase
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{ticket}.md").write_text(f"---\nstate: {state}\n---\n\nbody\n")
+
+
+def test_ingest_reads_landed_from_the_work_store_when_the_run_record_carries_no_landed_field(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(runs_dir, "run1", tasks=[("p1", "t1", {"ticket": "t1", "initiative": "init1"})])
+    work_store_root = tmp_path / "work"
+    _write_work_item(work_store_root, "init1", "p1", "t1", "done")
+    db_path = tmp_path / "stats.db"
+
+    stats_ingest.ingest(runs_dir, db_path, work_store_root=work_store_root)
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT outcome, outcome_source FROM tasks WHERE task_id = 'run1:p1:t1'").fetchone()
+    conn.close()
+    assert row == ("landed", "work_store")
+
+
+def test_ingest_leaves_the_task_unknown_when_no_work_store_root_is_given(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(runs_dir, "run1", tasks=[("p1", "t1", {"ticket": "t1", "initiative": "init1"})])
+    db_path = tmp_path / "stats.db"
+
+    stats_ingest.ingest(runs_dir, db_path)
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT outcome, outcome_source FROM tasks WHERE task_id = 'run1:p1:t1'").fetchone()
+    conn.close()
+    assert row == ("unknown", "unknown")
+
+
 def test_discover_runs_finds_a_run_that_only_has_a_node_record(tmp_path):
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()

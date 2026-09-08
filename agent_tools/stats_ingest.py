@@ -24,6 +24,7 @@ from typing import Any
 
 from agent_tools.events import Event, from_log
 from agent_tools.records import load_trace
+from agent_tools.route import parse_frontmatter
 from agent_tools.runs_detail import NODE_ORDER
 from agent_tools.stats_derive import _final_result, attempt_numbers, extract_failure_class, resolve_outcome
 from agent_tools.stats_schema import CALLS_COLUMNS, RUNS_COLUMNS, TASKS_COLUMNS, connect
@@ -146,7 +147,7 @@ def recovered_call_rows(run_id: str, traces: Sequence[tuple[str, Sequence[Mappin
             "output_tokens": None,
             "tools": None,
             "trace_path": path,
-            "failure_class": extract_failure_class(events, ""),
+            "failure_class": extract_failure_class(events, "", role),
             "challenger": 0,
             "task_id": None,
             "join_confidence": None,
@@ -214,11 +215,26 @@ def fill_failure_classes(
     successful call, never unset where the trace has a result line. A call with
     no trace, or one `recovered_call_rows` already classified, passes through."""
     return [
-        {**call, "failure_class": extract_failure_class(traces_by_path[call["trace_path"]], log_excerpt)}
+        {**call, "failure_class": extract_failure_class(traces_by_path[call["trace_path"]], log_excerpt, call.get("role"))}
         if call.get("failure_class") is None and call.get("trace_path") in traces_by_path
         else dict(call)
         for call in calls
     ]
+
+
+def _work_store_ticket_done(work_store_root: Path, initiative: Any, phase: Any, ticket: Any) -> bool:
+    """True when `work_store_root/initiative/phase/ticket.md`'s frontmatter (parsed
+    the way `route.work_item` reads a work item's own `state` field) carries
+    `state: done`. False when any of `initiative`/`phase`/`ticket` is missing, or
+    the file does not exist — never raises on a work store that doesn't cover
+    this task."""
+    if not initiative or not phase or not ticket:
+        return False
+    path = work_store_root / str(initiative) / str(phase) / f"{ticket}.md"
+    if not path.exists():
+        return False
+    fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+    return fields.get("state") == "done"
 
 
 def task_row(
@@ -228,13 +244,25 @@ def task_row(
     record: Mapping[str, Any],
     gate_diffs: Sequence[Mapping[str, Any]],
     log_events: Sequence[Event],
+    work_store_root: Path | None = None,
 ) -> dict[str, Any]:
     """One `tasks` row from one task record, with `gate_diffs` (gathered from the
     run's node records) and `log_events` (parsed from the run's log) folded in so
     `resolve_outcome` sees the full picture and never guesses from a run-level
-    budget stop, which names no ticket."""
+    budget stop, which names no ticket. `work_store_root`, when given, is checked
+    for this ticket's `state: done` ahead of the log line (spec: the work store
+    outranks a log line but never the record's own explicit `landed` field)."""
     scoped_ticket = record.get("ticket", ticket)
-    scoped = {**record, "ticket": scoped_ticket, "gate_diffs": gate_diffs, "log_events": log_events}
+    work_store_done = work_store_root is not None and _work_store_ticket_done(
+        work_store_root, record.get("initiative"), phase, scoped_ticket
+    )
+    scoped = {
+        **record,
+        "ticket": scoped_ticket,
+        "gate_diffs": gate_diffs,
+        "log_events": log_events,
+        "work_store_done": work_store_done,
+    }
     outcome, outcome_source = resolve_outcome(scoped)
     arbitration = record.get("arbitration")
     attempt = record.get("attempt")
@@ -479,14 +507,22 @@ def _upsert(
         conn.executemany(f"INSERT INTO tasks ({task_cols}) VALUES ({task_placeholders})", tasks)
 
 
-def ingest(runs_dir: Path | str, db_path: Path | str, ledger_path: Path | str | None = None) -> IngestReport:
+def ingest(
+    runs_dir: Path | str,
+    db_path: Path | str,
+    ledger_path: Path | str | None = None,
+    work_store_root: Path | str | None = None,
+) -> IngestReport:
     """Upserts every run under `runs_dir` into the stats store at `db_path`, keyed
     by run_id so re-running over the same directory changes nothing. Errors before
     any write when `runs_dir` does not exist, or exists but holds no run records —
     an empty ingest is not a successful one (charter B4). `ledger_path` defaults to
     the autonomy ledger's own path so `provider_profile_for` has rows to read; tests
-    pass their own fixture instead."""
+    pass their own fixture instead. `work_store_root`, like `runs_dir`, is a runtime
+    path argument resolved here, never a build-time default: `None` (the default)
+    means no task in this ingest can resolve `outcome_source='work_store'`."""
     runs_dir = Path(runs_dir)
+    work_store_root = Path(work_store_root) if work_store_root is not None else None
     if not runs_dir.is_dir():
         raise FileNotFoundError(f"no such runs directory: {runs_dir.resolve()}")
     run_ids = discover_runs(runs_dir)
@@ -516,7 +552,7 @@ def ingest(runs_dir: Path | str, db_path: Path | str, ledger_path: Path | str | 
             else fill_failure_classes(call_rows(run_id, loaded["usage"]), loaded["call_traces"], "")
         )
         tasks = [
-            task_row(run_id, phase, ticket, record, gate_diffs, log_events)
+            task_row(run_id, phase, ticket, record, gate_diffs, log_events, work_store_root)
             for phase, ticket, record in loaded["task_files"]
         ]
         attempts = [_fix_loop_attempts(record) for _, _, record in loaded["task_files"]]
