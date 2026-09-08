@@ -46,6 +46,27 @@ def test_leader_stale_wording():
     assert Event("run1", "leader_stale", 1, {"session": "cos1", "pid": 4242, "host": "host1"}) in events
 
 
+def test_leader_taken_historical_wording_matches_the_chair_wording():
+    old = from_log("run1", ["leader taken: cos1 (pid 4242) on host1"])
+    new = from_log("run1", ["chair taken: cos1 (pid 4242) on host1"])
+    assert old[-1].kind == new[-1].kind == "leader_taken"
+    assert old[-1].detail == new[-1].detail == {"session": "cos1", "pid": 4242, "host": "host1"}
+
+
+def test_leader_released_historical_wording_matches_the_chair_wording():
+    old = from_log("run1", ["leader released: cos1"])
+    new = from_log("run1", ["chair released: cos1"])
+    assert old[-1].kind == new[-1].kind == "leader_released"
+    assert old[-1].detail == new[-1].detail == {"session": "cos1"}
+
+
+def test_leader_stale_historical_wording_matches_the_chair_wording():
+    old = from_log("run1", ["leader stale: cos1 (pid 4242) on host1"])
+    new = from_log("run1", ["chair stale: cos1 (pid 4242) on host1"])
+    assert old[-1].kind == new[-1].kind == "leader_stale"
+    assert old[-1].detail == new[-1].detail == {"session": "cos1", "pid": 4242, "host": "host1"}
+
+
 def test_run_exited_summary_line():
     events = from_log(
         "run1",
