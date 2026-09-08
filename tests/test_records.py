@@ -1,6 +1,7 @@
 import json
 
 from agent_tools import records
+from agent_tools.events import Event
 
 USAGE = {"run_id": "r", "calls": [
     {"role": "build", "model": "sonnet", "turns": 40, "cost_usd": 0.5, "input_tokens": 100, "cache_read_tokens": 900, "input_total": 1000},
@@ -57,3 +58,45 @@ def test_usage_summary_totals_every_token_the_run_spent():
     usage = {"calls": [{"cost_usd": 0.1, "turns": 1, "input_total": 1000, "cache_read_tokens": 900,
                         "cache_creation_tokens": 50, "output_tokens": 25}]}
     assert records.usage_summary(usage)["tokens_total"] == 1075
+
+
+def test_chair_counts_tallies_taken_released_and_stale():
+    events = [
+        Event("r1", "leader_taken", 0, {}),
+        Event("r1", "leader_taken", 1, {}),
+        Event("r1", "leader_released", 2, {}),
+        Event("r1", "leader_stale", 3, {}),
+        Event("r1", "verdict", 4, {}),
+    ]
+    assert records.chair_counts(events) == {"taken": 2, "released": 1, "stale": 1}
+
+
+def test_chair_for_counts_the_same_regardless_of_old_or_new_log_wording():
+    old_log = "leader taken: cos1 (pid 1) on hosta\nleader released: cos1\nleader stale: cos1 (pid 1) on hosta\n"
+    new_log = "chair taken: cos1 (pid 1) on hosta\nchair released: cos1\nchair stale: cos1 (pid 1) on hosta\n"
+    expected = {"taken": 1, "released": 1, "stale": 1}
+    assert records.chair_for("r1", {"r1.log": old_log}) == expected
+    assert records.chair_for("r1", {"r1.log": new_log}) == expected
+
+
+def test_chair_for_is_zero_counts_when_the_run_has_no_log():
+    assert records.chair_for("r1", {"r2.log": "leader taken: cos1 (pid 1) on hosta\n"}) == {"taken": 0, "released": 0, "stale": 0}
+
+
+def test_series_row_carries_the_given_chair_counts():
+    row = records.series_row("r1", None, [], chair={"taken": 1, "released": 1, "stale": 0})
+    assert row["chair"] == {"taken": 1, "released": 1, "stale": 0}
+
+
+def test_series_row_defaults_chair_to_zero_counts():
+    row = records.series_row("r1", None, [])
+    assert row["chair"] == {"taken": 0, "released": 0, "stale": 0}
+
+
+def test_series_wires_chair_counts_from_the_runs_own_log():
+    files = {
+        "r1.usage.json": json.dumps({"calls": []}),
+        "r1.log": "chair taken: cos1 (pid 1) on hosta\nchair released: cos1\n",
+    }
+    rows = records.series(files)
+    assert rows[0]["chair"] == {"taken": 1, "released": 1, "stale": 0}
