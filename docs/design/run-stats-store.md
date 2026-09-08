@@ -206,9 +206,9 @@ Everything else below is independent of the spike's outcome.
 
 `outcome` is a closed enum: `landed`, `quarantined`, `budget_stop`, `skipped`, `unknown`.
 Derivation order is explicit and recorded per row in `outcome_source`: the explicit
-`landed` field where present (6 rows), then `gate_diffs[].outcome`, then the log line.
-`unknown` is a real and acceptable value — an ingester that guesses is worse than one
-that abstains.
+`landed` field where present (6 rows), then the work store's own `state: done`, then
+`gate_diffs[].outcome`, then the log line. `unknown` is a real and acceptable value —
+an ingester that guesses is worse than one that abstains.
 
 ### Why three tables and not one
 

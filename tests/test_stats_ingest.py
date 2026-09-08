@@ -182,9 +182,32 @@ def _write_work_item(work_store_root, initiative, phase, ticket, state):
 def test_ingest_reads_landed_from_the_work_store_when_the_run_record_carries_no_landed_field(tmp_path):
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
-    _write_run(runs_dir, "run1", tasks=[("p1", "t1", {"ticket": "t1", "initiative": "init1"})])
+    _write_run(runs_dir, "run1", tasks=[("p1", "t1", {"ticket": "t1"})])
     work_store_root = tmp_path / "work"
-    _write_work_item(work_store_root, "init1", "p1", "t1", "done")
+    _write_work_item(work_store_root, "other-init", "other-phase", "t1", "done")
+    db_path = tmp_path / "stats.db"
+
+    stats_ingest.ingest(runs_dir, db_path, work_store_root=work_store_root)
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT outcome, outcome_source FROM tasks WHERE task_id = 'run1:p1:t1'").fetchone()
+    conn.close()
+    assert row == ("landed", "work_store")
+
+
+def test_ingest_reads_the_work_store_ahead_of_a_scoped_gate_diffs_entry(tmp_path):
+    """A node record's gate_diffs can carry a 'skipped' outcome for this ticket
+    (a diff taken before the ticket landed) while the work store already shows
+    state: done. The work store must win, not be shadowed by that diff."""
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(
+        runs_dir, "run1",
+        tasks=[("p1", "t1", {"ticket": "t1"})],
+        node={"gate_diffs": [{"target": "t1", "outcome": "skipped"}]},
+    )
+    work_store_root = tmp_path / "work"
+    _write_work_item(work_store_root, "other-init", "other-phase", "t1", "done")
     db_path = tmp_path / "stats.db"
 
     stats_ingest.ingest(runs_dir, db_path, work_store_root=work_store_root)

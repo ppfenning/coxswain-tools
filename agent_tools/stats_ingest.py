@@ -224,18 +224,22 @@ def fill_failure_classes(
     ]
 
 
-def _work_store_ticket_done(work_store_root: Path, initiative: Any, phase: Any, ticket: Any) -> bool:
-    """True when `work_store_root/initiative/phase/ticket.md`'s frontmatter (parsed
-    the way `route.work_item` reads a work item's own `state` field) carries
-    `state: done`. False when any of `initiative`/`phase`/`ticket` is missing, or
-    the file does not exist — never raises on a work store that doesn't cover
-    this task."""
-    if not initiative or not phase or not ticket:
+def _work_store_ticket_done(work_store_root: Path, ticket: Any) -> bool:
+    """True when some `work_store_root/*/*/ticket.md` (work-item ids are unique
+    across the store, so the first match wins) has frontmatter (parsed the way
+    `route.work_item` reads a work item's own `state` field) carrying
+    `state: done`. Never derives the initiative from the run name or the
+    record: older runs are named `<initiative>-epic-N`/`<initiative>-decompose-N`,
+    newer ones `<initiative>-N`, so no single strip is safe, and the record
+    carries no top-level `initiative` in the corpus. False when `ticket` is
+    missing or no file matches — never raises on a work store that doesn't
+    cover this task."""
+    if not ticket:
         return False
-    path = work_store_root / str(initiative) / str(phase) / f"{ticket}.md"
-    if not path.exists():
+    matches = sorted(work_store_root.glob(f"*/*/{ticket}.md"))
+    if not matches:
         return False
-    fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+    fields, _ = parse_frontmatter(matches[0].read_text(encoding="utf-8"))
     return fields.get("state") == "done"
 
 
@@ -252,12 +256,11 @@ def task_row(
     run's node records) and `log_events` (parsed from the run's log) folded in so
     `resolve_outcome` sees the full picture and never guesses from a run-level
     budget stop, which names no ticket. `work_store_root`, when given, is checked
-    for this ticket's `state: done` ahead of the log line (spec: the work store
-    outranks a log line but never the record's own explicit `landed` field)."""
+    for this ticket's `state: done` ahead of `gate_diffs` and the log line (spec:
+    the work store outranks both but never the record's own explicit `landed`
+    field)."""
     scoped_ticket = record.get("ticket", ticket)
-    work_store_done = work_store_root is not None and _work_store_ticket_done(
-        work_store_root, record.get("initiative"), phase, scoped_ticket
-    )
+    work_store_done = work_store_root is not None and _work_store_ticket_done(work_store_root, scoped_ticket)
     scoped = {
         **record,
         "ticket": scoped_ticket,

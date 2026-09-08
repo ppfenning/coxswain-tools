@@ -80,6 +80,18 @@ def test_resolve_outcome_still_prefers_the_explicit_landed_field_over_the_work_s
     assert resolve_outcome(record) == ("landed", "landed_field")
 
 
+def test_resolve_outcome_reads_the_work_store_ahead_of_a_scoped_gate_diffs_entry():
+    """A node record's gate_diffs can carry a 'skipped' outcome for this ticket
+    while the work store already shows state: done — the work store must win,
+    not be shadowed by the diff that ran before the ticket landed."""
+    record = {
+        "ticket": "t1",
+        "gate_diffs": [{"target": "t1", "outcome": "skipped"}],
+        "work_store_done": True,
+    }
+    assert resolve_outcome(record) == ("landed", "work_store")
+
+
 def test_a_run_level_budget_stop_never_sets_either_co_resident_tasks_outcome():
     """The deliverable: agent_tools/events.py:51 writes a budget_stop Event
     with an empty detail dict, naming no task. A run with two tickets sharing
