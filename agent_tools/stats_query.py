@@ -19,7 +19,7 @@ __all__ = ["explain_report", "render_capped", "roles_report", "series_report"]
 
 
 def _joined(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Each call plus `task_outcome`/`task_attempt`/`task_cost_usd`, None where `join_confidence` is 'none'/absent or `task_id` names no task."""
+    """Each call plus `task_outcome`/`task_attempt`/`task_cost_usd`/`task_outcome_kind`, None where `join_confidence` is 'none'/absent or `task_id` names no task."""
     by_id = {t["task_id"]: t for t in tasks if t.get("task_id") is not None}
     rows = []
     for call in calls:
@@ -29,6 +29,7 @@ def _joined(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any
             "task_outcome": task.get("outcome") if task else None,
             "task_attempt": task.get("attempt") if task else None,
             "task_cost_usd": task.get("cost_usd") if task else None,
+            "task_outcome_kind": task.get("outcome_kind") if task else None,
         })
     return rows
 
@@ -100,6 +101,10 @@ def roles_report(
             {regime_by_run[r["run_id"]] for r in rows if r.get("run_id") in regime_by_run},
             key=lambda pair: (pair[0] or "", pair[1] or ""),
         )
+        kind_task_ids: dict[str, set[Any]] = defaultdict(set)
+        for r in joined:
+            if r["task_outcome_kind"] is not None:
+                kind_task_ids[r["task_outcome_kind"]].add(r["task_id"])
         report.append({
             "role": role,
             "model": model,
@@ -112,6 +117,9 @@ def roles_report(
             "cost_unknown": cost_unknown,
             "coverage": round(len(joined) / len(rows), 4) if rows else 0.0,
             "regimes": [{"cartridge_sha": sha, "provider_profile": profile} for sha, profile in regimes],
+            "refused_tasks": len(kind_task_ids["refused"]),
+            "unverified_tasks": len(kind_task_ids["unverified"]),
+            "infra_tasks": len(kind_task_ids["infra"]),
         })
     return report
 

@@ -92,6 +92,7 @@ TASKS_COLUMNS = (
     Column("fix_loop_rounds", "INTEGER"),
     Column("cost_usd", "REAL"),
     Column("reason", "TEXT"),
+    Column("outcome_kind", "TEXT"),
 )
 
 TABLES = {
