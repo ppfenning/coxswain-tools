@@ -15,7 +15,7 @@ from typing import Any
 
 from agent_tools.stats_schema import FAILURE_CLASSES
 
-__all__ = ["roles_report", "explain_report", "series_report", "render_capped"]
+__all__ = ["explain_report", "render_capped", "roles_report", "series_report"]
 
 
 def _joined(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
