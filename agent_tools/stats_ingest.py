@@ -4,8 +4,8 @@ Spec: docs/design/run-stats-store.md §3-§4. Spike verdict:
 agent_tools/stats-join-spike.md — the calls-to-tasks join is heuristic and
 out of scope here; `calls.task_id`/`calls.join_confidence` are left unset by
 this ingester rather than guessed. Row-shaping (`run_row`, `call_rows`,
-`task_row`) is pure over already-parsed JSON; `load_run`, `discover_runs` and
-`ingest` are the edge that reads files and writes the database.
+`recovered_call_rows`, `task_row`) is pure over already-parsed JSON; `load_run`,
+`discover_runs` and `ingest` are the edge that reads files and writes the database.
 """
 
 from __future__ import annotations
@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools.events import Event, from_log
+from agent_tools.records import load_trace
 from agent_tools.runs_detail import NODE_ORDER
-from agent_tools.stats_derive import attempt_numbers, resolve_outcome
+from agent_tools.stats_derive import _final_result, attempt_numbers, extract_failure_class, resolve_outcome
 from agent_tools.stats_schema import CALLS_COLUMNS, RUNS_COLUMNS, TASKS_COLUMNS, connect
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "discover_runs",
     "ingest",
     "load_run",
+    "recovered_call_rows",
     "run_row",
     "task_row",
 ]
@@ -88,8 +90,51 @@ def call_rows(run_id: str, usage: Mapping[str, Any] | None) -> list[dict[str, An
             "challenger": int(bool(call.get("challenger"))),
             "task_id": None,
             "join_confidence": None,
+            "recovered_from_trace": 0,
         }
         for seq, (call, attempt) in enumerate(zip(calls, attempts))
+    ]
+
+
+def recovered_call_rows(run_id: str, traces: Sequence[tuple[str, Sequence[Mapping[str, Any]]]]) -> list[dict[str, Any]]:
+    """One `calls` row per trace file, for a run whose usage record is absent (spec §1
+    fact 5: a budget-stopped run writes no `usage.json` at all, so its cost survives
+    only in each trace's terminal `type: result` line). `traces` is `(trace_path,
+    parsed_events)` pairs already in `_read_traces`' NODE_ORDER order (role, then
+    attempt index) so `seq` reflects execution order across roles, the same guarantee
+    `_node_sort_key` gives `<run>:<node>.json` records; `role` comes from the
+    `<role>-<n>.jsonl` stem, and `_final_result` — the same parser `extract_failure_class`
+    already uses — is the only place `total_cost_usd` and `num_turns` are read from.
+    Every row here carries `recovered_from_trace=1`, so a query can exclude or flag it
+    the way `join_confidence` already flags a heuristic task join. Token counts,
+    `duration_ms`, `tier` and `model` are unrecoverable from the result line and stay
+    unset."""
+    roles = [Path(path).stem.rsplit("-", 1)[0] for path, _ in traces]
+    attempts = attempt_numbers([{"role": role} for role in roles])
+    return [
+        {
+            "run_id": run_id,
+            "seq": seq,
+            "role": role,
+            "attempt": attempt,
+            "tier": None,
+            "model": None,
+            "cost_usd": _final_result(events).get("total_cost_usd"),
+            "turns": _final_result(events).get("num_turns"),
+            "duration_ms": None,
+            "input_tokens": None,
+            "cache_read_tokens": None,
+            "cache_creation_tokens": None,
+            "output_tokens": None,
+            "tools": None,
+            "trace_path": path,
+            "failure_class": extract_failure_class(events, ""),
+            "challenger": 0,
+            "task_id": None,
+            "join_confidence": None,
+            "recovered_from_trace": 1,
+        }
+        for seq, (role, attempt, (path, events)) in enumerate(zip(roles, attempts, traces))
     ]
 
 
@@ -145,13 +190,16 @@ class IngestReport:
 
 def discover_runs(runs_dir: Path) -> list[str]:
     """Run ids present under `runs_dir`, from `.usage.json`, `.launched.json`,
-    `tasks/` stems and `<run>:<node>.json` records — a run that only ever wrote
-    node records (no usage.json, no launched.json, no tasks/) is still a run."""
+    `tasks/` stems, `<run>:<node>.json` records and `<run>-trace/` directories — a run
+    that only ever wrote node records (no usage.json, no launched.json, no tasks/) is
+    still a run, and so is one whose only surviving artifact is its trace directory
+    (spec §1 fact 5: a budget-stopped run can write no usage.json at all)."""
     usage_ids = {p.name[: -len(".usage.json")] for p in runs_dir.glob("*.usage.json")}
     launched_ids = {p.name[: -len(".launched.json")] for p in runs_dir.glob("*.launched.json")}
     task_ids = {p.name for p in runs_dir.glob("*") if p.is_dir() and (p / "tasks").is_dir()}
     node_ids = {p.name.split(":", 1)[0] for p in runs_dir.glob("*:*.json")}
-    return sorted(usage_ids | launched_ids | task_ids | node_ids)
+    trace_ids = {p.name.removesuffix("-trace") for p in runs_dir.glob("*-trace") if p.is_dir()}
+    return sorted(usage_ids | launched_ids | task_ids | node_ids | trace_ids)
 
 
 _NODE_INDEX = {name: i for i, name in enumerate(NODE_ORDER)}
@@ -194,12 +242,45 @@ def _read_log_lines(path: Path, unparsed: list[str]) -> list[str]:
         return []
 
 
+def _read_traces(trace_dir: Path, unparsed: list[str]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Every `<role>-<n>.jsonl` trace file under `trace_dir`, ordered by the graph's own
+    NODE_ORDER (then by `n` within a role) — the same rule `_node_sort_key` already
+    applies to `<run>:<node>.json` records, so a recovered run's calls come out in
+    execution order rather than filename alphabetical order (`build` sorting before
+    `decompose` would otherwise misorder `calls.seq`). A role NODE_ORDER doesn't name
+    sorts after every named one. A name whose stem does not split into a role and a
+    trailing integer, or a file that fails to read, is appended to `unparsed` instead
+    of raising."""
+    if not trace_dir.exists():
+        return []
+    keyed: list[tuple[tuple[int, str, int], Path]] = []
+    for path in trace_dir.glob("*.jsonl"):
+        role, _, idx = path.stem.rpartition("-")
+        if not role or not idx.isdigit():
+            unparsed.append(str(path))
+            continue
+        keyed.append(((_NODE_INDEX.get(role, len(NODE_ORDER)), role, int(idx)), path))
+    pairs: list[tuple[str, list[dict[str, Any]]]] = []
+    for _, path in sorted(keyed, key=lambda kv: kv[0]):
+        try:
+            pairs.append((str(path), load_trace(path)))
+        except (OSError, UnicodeDecodeError):
+            unparsed.append(str(path))
+    return pairs
+
+
 def load_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
     """Every file this ingester reads for one run — usage, launch marker, node
-    records, task records and log lines — plus the paths that failed to parse."""
+    records, task records and log lines — plus the paths that failed to parse.
+    Trace files are read only when `usage` is absent: a usage record's `calls[]` is
+    authoritative, and `.usage.json` is exactly the file fact 5 says a budget-stopped
+    run never wrote. A run whose usage.json IS present but undercounts a call (a
+    different, already-measured symptom) is out of scope here and reads unrecovered,
+    exactly as before this ticket."""
     unparsed: list[str] = []
     usage = _read_json(runs_dir / f"{run_id}.usage.json", unparsed)
     launched = _read_json(runs_dir / f"{run_id}.launched.json", unparsed)
+    traces = _read_traces(runs_dir / f"{run_id}-trace", unparsed) if usage is None else []
     node_records = [
         parsed
         for path in sorted(runs_dir.glob(f"{run_id}:*.json"), key=_node_sort_key)
@@ -220,6 +301,7 @@ def load_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
         "node_records": node_records,
         "task_files": task_files,
         "log_lines": log_lines,
+        "traces": traces,
         "unparsed": unparsed,
     }
 
@@ -269,7 +351,11 @@ def ingest(runs_dir: Path | str, db_path: Path | str) -> IngestReport:
         gate_diffs = [d for node in loaded["node_records"] for d in (node.get("gate_diffs") or [])]
         log_events = from_log(run_id, loaded["log_lines"])
         run = run_row(run_id, loaded["usage"], loaded["node_records"], loaded["launched"])
-        calls = call_rows(run_id, loaded["usage"])
+        calls = (
+            recovered_call_rows(run_id, loaded["traces"])
+            if loaded["usage"] is None and loaded["traces"]
+            else call_rows(run_id, loaded["usage"])
+        )
         tasks = [
             task_row(run_id, phase, ticket, record, gate_diffs, log_events)
             for phase, ticket, record in loaded["task_files"]

@@ -75,6 +75,7 @@ CALLS_COLUMNS = (
     Column("challenger", "INTEGER", default=0, not_null=True),
     Column("task_id", "TEXT"),
     Column("join_confidence", "TEXT"),
+    Column("recovered_from_trace", "INTEGER", default=0, not_null=True),
 )
 
 TASKS_COLUMNS = (

@@ -62,6 +62,7 @@ def test_calls_columns_match_spec_names_verbatim_and_keep_the_join_columns():
         "challenger",
         "task_id",
         "join_confidence",
+        "recovered_from_trace",
     ]
 
 
@@ -69,6 +70,17 @@ def test_challenger_column_has_a_zero_default_and_is_not_null():
     challenger = next(c for c in CALLS_COLUMNS if c.name == "challenger")
     assert challenger.default == 0
     assert challenger.not_null is True
+
+
+def test_recovered_from_trace_column_has_a_zero_default_and_is_not_null():
+    """Named recovered_from_trace, not e.g. 'source', so a query reads its meaning
+    without a lookup: 1 means this row's cost_usd/turns/failure_class came from a
+    trace's terminal result line (spec §1 fact 5) because the run wrote no usage
+    record, not from a usage record's calls[] entry. Zero default so every row a
+    usage record produces reads back distinguishable without the ingester setting it."""
+    recovered = next(c for c in CALLS_COLUMNS if c.name == "recovered_from_trace")
+    assert recovered.default == 0
+    assert recovered.not_null is True
 
 
 def test_tasks_columns_match_spec_names_verbatim():

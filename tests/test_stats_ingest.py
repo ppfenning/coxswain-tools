@@ -22,6 +22,14 @@ def _write_run(runs_dir, run_id, *, tasks=(), log_lines=(), usage=None, node=Non
         (runs_dir / f"{run_id}.log").write_text("\n".join(log_lines) + "\n")
 
 
+def _write_trace(runs_dir, run_id, name, events):
+    d = runs_dir / f"{run_id}-trace"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / name
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+    return path
+
+
 def test_run_row_reads_the_first_nodes_identity_and_sums_human_minutes():
     row = stats_ingest.run_row(
         "r1", {"summary": {}},
@@ -42,6 +50,24 @@ def test_call_rows_numbers_attempts_per_role_in_call_order():
     assert [r["attempt"] for r in rows] == [1, 2, 1]
     assert [r["seq"] for r in rows] == [0, 1, 2]
     assert all(r["task_id"] is None and r["join_confidence"] is None for r in rows)
+    assert all(r["recovered_from_trace"] == 0 for r in rows)
+
+
+def test_recovered_call_rows_reads_cost_turns_and_failure_class_off_each_traces_final_result_line():
+    traces = [
+        ("runs/r1-trace/decompose-1.jsonl", [
+            {"type": "result", "total_cost_usd": 0.3936, "subtype": "error_max_budget_usd", "num_turns": 12, "is_error": True},
+        ]),
+    ]
+    rows = stats_ingest.recovered_call_rows("r1", traces)
+    assert rows[0]["role"] == "decompose"
+    assert rows[0]["attempt"] == 1
+    assert rows[0]["cost_usd"] == 0.3936
+    assert rows[0]["turns"] == 12
+    assert rows[0]["failure_class"] == "budget_stop"
+    assert rows[0]["trace_path"] == "runs/r1-trace/decompose-1.jsonl"
+    assert rows[0]["recovered_from_trace"] == 1
+    assert rows[0]["task_id"] is None and rows[0]["join_confidence"] is None
 
 
 def test_task_row_carries_the_records_own_composite_task_id():
@@ -152,6 +178,126 @@ def test_discover_runs_finds_a_run_that_only_has_a_node_record(tmp_path):
     runs_dir.mkdir()
     (runs_dir / "run1:build.json").write_text("{}")
     assert stats_ingest.discover_runs(runs_dir) == ["run1"]
+
+
+def test_discover_runs_finds_a_run_that_only_has_a_trace_directory(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_trace(runs_dir, "run1", "build-1.jsonl", [{"type": "result", "total_cost_usd": 0.1}])
+    assert stats_ingest.discover_runs(runs_dir) == ["run1"]
+
+
+def test_load_run_reads_trace_files_only_when_there_is_no_usage_record(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    path = _write_trace(runs_dir, "run1", "build-1.jsonl", [{"type": "result", "total_cost_usd": 0.1, "num_turns": 3}])
+
+    loaded = stats_ingest.load_run(runs_dir, "run1")
+
+    assert loaded["traces"] == [(str(path), [{"type": "result", "total_cost_usd": 0.1, "num_turns": 3}])]
+
+
+def test_load_run_ignores_a_trace_directory_when_a_usage_record_is_present(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(runs_dir, "run1", usage={"calls": []})
+    _write_trace(runs_dir, "run1", "build-1.jsonl", [{"type": "result", "total_cost_usd": 0.1}])
+
+    loaded = stats_ingest.load_run(runs_dir, "run1")
+
+    assert loaded["traces"] == []
+
+
+def test_load_run_orders_trace_files_by_node_order_not_alphabetical_filename(tmp_path):
+    """`scope_epic` precedes `build` in NODE_ORDER but follows it alphabetically;
+    `_read_traces` must sort by the graph's own order the same way `_node_sort_key`
+    already does for `<run>:<node>.json`, so a recovered call's `seq` reflects
+    execution order rather than the accident of two role names' alphabet."""
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_trace(runs_dir, "run1", "build-1.jsonl", [{"type": "result", "total_cost_usd": 0.1}])
+    _write_trace(runs_dir, "run1", "scope_epic-1.jsonl", [{"type": "result", "total_cost_usd": 0.2}])
+
+    loaded = stats_ingest.load_run(runs_dir, "run1")
+
+    ordered_paths = [path for path, _ in loaded["traces"]]
+    assert ordered_paths == [
+        str(runs_dir / "run1-trace" / "scope_epic-1.jsonl"),
+        str(runs_dir / "run1-trace" / "build-1.jsonl"),
+    ]
+
+
+def test_ingest_assigns_seq_to_recovered_calls_in_node_order_not_alphabetical_order(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_trace(runs_dir, "run1", "build-1.jsonl", [{"type": "result", "total_cost_usd": 0.1}])
+    _write_trace(runs_dir, "run1", "scope_epic-1.jsonl", [{"type": "result", "total_cost_usd": 0.2}])
+
+    stats_ingest.ingest(runs_dir, tmp_path / "stats.db")
+
+    conn = connect(tmp_path / "stats.db")
+    rows = conn.execute("SELECT seq, role FROM calls WHERE run_id = 'run1' ORDER BY seq").fetchall()
+    conn.close()
+    assert rows == [(0, "scope_epic"), (1, "build")]
+
+
+def test_ingest_recovers_a_budget_stopped_runs_cost_from_its_trace_result_line(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_trace(
+        runs_dir, "run1", "build-1.jsonl",
+        [{"type": "result", "total_cost_usd": 0.3936, "subtype": "error_max_budget_usd", "num_turns": 12, "is_error": True}],
+    )
+
+    stats_ingest.ingest(runs_dir, tmp_path / "stats.db")
+
+    conn = connect(tmp_path / "stats.db")
+    row = conn.execute(
+        "SELECT cost_usd, failure_class, recovered_from_trace FROM calls WHERE run_id = 'run1'"
+    ).fetchone()
+    conn.close()
+    assert row == (0.3936, "budget_stop", 1)
+
+
+def test_ingest_is_idempotent_for_a_trace_recovered_run(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_trace(
+        runs_dir, "run1", "build-1.jsonl",
+        [{"type": "result", "total_cost_usd": 0.3936, "subtype": "error_max_budget_usd", "num_turns": 12, "is_error": True}],
+    )
+    db_path = tmp_path / "stats.db"
+
+    stats_ingest.ingest(runs_dir, db_path)
+    conn = connect(db_path)
+    first = conn.execute("SELECT * FROM calls WHERE run_id = 'run1'").fetchall()
+    conn.close()
+
+    stats_ingest.ingest(runs_dir, db_path)
+    conn = connect(db_path)
+    second = conn.execute("SELECT * FROM calls WHERE run_id = 'run1'").fetchall()
+    conn.close()
+
+    assert first == second
+
+
+def test_ingest_recovers_the_tickets_own_measured_decompose_failure_cost(tmp_path):
+    """2026-09-07: a decompose run died on error_max_budget_usd having spent $0.4454
+    with no usage.json — the first of the two runs the ticket measured as $0.84
+    invisible to every usage-based aggregate."""
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_trace(
+        runs_dir, "run1", "decompose-1.jsonl",
+        [{"type": "result", "total_cost_usd": 0.4454, "subtype": "error_max_budget_usd", "num_turns": 8, "is_error": True}],
+    )
+
+    stats_ingest.ingest(runs_dir, tmp_path / "stats.db")
+
+    conn = connect(tmp_path / "stats.db")
+    cost = conn.execute("SELECT cost_usd FROM calls WHERE run_id = 'run1'").fetchone()[0]
+    conn.close()
+    assert cost == 0.4454
 
 
 def test_ingest_does_not_report_a_runs_dir_empty_when_it_holds_only_node_records(tmp_path):
