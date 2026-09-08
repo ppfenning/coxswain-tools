@@ -38,6 +38,8 @@ __all__ = [
     "ingest",
     "load_run",
     "provider_profile_for",
+    "provider_profile_from_nodes",
+    "provider_profile_source",
     "recovered_call_rows",
     "run_join_holds",
     "run_row",
@@ -60,8 +62,8 @@ def run_row(
     """One `runs` row from a run's usage summary, its node records and its launch
     marker. `host` names the ingesting machine, not necessarily the one the run
     executed on — a backfilled, inferred value, not an observed one — and
-    `provider_profile` comes from the autonomy ledger; both are the edge's job to
-    look up and pass in, never read here."""
+    `provider_profile` comes from the autonomy ledger or, failing that, the run's own
+    node records; both are the edge's job to resolve and pass in, never read here."""
     summary = (usage or {}).get("summary") or {}
     first_node = node_records[0] if node_records else {}
     minutes = sum(float(n.get("human_minutes") or 0.0) for n in node_records)
@@ -288,6 +290,9 @@ class IngestReport:
     runs_ingested: int
     unparsed_count: int
     unparsed_sample: tuple[str, ...]
+    provider_profile_from_ledger: int = 0
+    provider_profile_from_node: int = 0
+    provider_profile_unresolved: int = 0
 
 
 def discover_runs(runs_dir: Path) -> list[str]:
@@ -443,6 +448,34 @@ def provider_profile_for(run_id: str, ledger_rows: Sequence[Mapping[str, Any]]) 
     return None
 
 
+def provider_profile_from_nodes(node_records: Sequence[Mapping[str, Any]]) -> str | None:
+    """This run's `provider_profile` from its own `<run>:<node>.json` records —
+    the same key the ledger uses (chair evidence 2026-09-08: 200/200 node records
+    carry it). None when no node record names it, the case `provider_profile_source`
+    falls back from the ledger into."""
+    for node in node_records:
+        profile = node.get("provider_profile")
+        if profile:
+            return profile
+    return None
+
+
+def provider_profile_source(
+    run_id: str, ledger_rows: Sequence[Mapping[str, Any]], node_records: Sequence[Mapping[str, Any]]
+) -> tuple[str | None, str]:
+    """This run's resolved `provider_profile` and which source supplied it: 'ledger'
+    when an autonomy-ledger row names it, 'node' when only a `<run>:<node>.json`
+    record does, 'none' when neither does. The ledger wins on a conflict, since it is
+    the source `provider_profile_for` already trusted."""
+    ledger_profile = provider_profile_for(run_id, ledger_rows)
+    if ledger_profile:
+        return ledger_profile, "ledger"
+    node_profile = provider_profile_from_nodes(node_records)
+    if node_profile:
+        return node_profile, "node"
+    return None, "none"
+
+
 def load_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
     """Every file this ingester reads for one run — usage, launch marker, node
     records, task records and log lines — plus the paths that failed to parse.
@@ -517,10 +550,13 @@ def ingest(
     by run_id so re-running over the same directory changes nothing. Errors before
     any write when `runs_dir` does not exist, or exists but holds no run records —
     an empty ingest is not a successful one (charter B4). `ledger_path` defaults to
-    the autonomy ledger's own path so `provider_profile_for` has rows to read; tests
-    pass their own fixture instead. `work_store_root`, like `runs_dir`, is a runtime
-    path argument resolved here, never a build-time default: `None` (the default)
-    means no task in this ingest can resolve `outcome_source='work_store'`."""
+    the autonomy ledger's own path so `provider_profile_source` has rows to read;
+    tests pass their own fixture instead. `work_store_root`, like `runs_dir`, is a
+    runtime path argument resolved here, never a build-time default: `None` (the
+    default) means no task in this ingest can resolve `outcome_source='work_store'`.
+    Every run's `provider_profile` is tallied by which source resolved it (ledger,
+    node record, or neither); the three counts in the returned report always sum to
+    `runs_ingested`."""
     runs_dir = Path(runs_dir)
     work_store_root = Path(work_store_root) if work_store_root is not None else None
     if not runs_dir.is_dir():
@@ -533,14 +569,20 @@ def ingest(
     unparsed: list[str] = []
     ledger_rows = _read_ledger(Path(ledger_path) if ledger_path is not None else LEDGER_PATH, unparsed)
     host = socket.gethostname()
+    # profile_sources mirrors `unparsed`'s own accumulation just above: ingest is the
+    # edge, already imperative and already writing the database per run (A7), so one
+    # more per-run list append here costs nothing a pure core would have avoided.
+    profile_sources: list[str] = []
     for run_id in run_ids:
         loaded = load_run(runs_dir, run_id)
         unparsed.extend(loaded["unparsed"])
         gate_diffs = [d for node in loaded["node_records"] for d in (node.get("gate_diffs") or [])]
         log_events = from_log(run_id, loaded["log_lines"])
+        profile, profile_source = provider_profile_source(run_id, ledger_rows, loaded["node_records"])
+        profile_sources.append(profile_source)
         run = run_row(
             run_id, loaded["usage"], loaded["node_records"], loaded["launched"],
-            host=host, provider_profile=provider_profile_for(run_id, ledger_rows),
+            host=host, provider_profile=profile,
         )
         calls = (
             recovered_call_rows(run_id, loaded["traces"])
@@ -560,4 +602,10 @@ def ingest(
         _upsert(conn, run_id, run, joined_calls, tasks)
     conn.commit()
     conn.close()
-    return IngestReport(runs_ingested=len(run_ids), unparsed_count=len(unparsed), unparsed_sample=tuple(unparsed[:5]))
+    assert len(profile_sources) == len(run_ids)
+    return IngestReport(
+        runs_ingested=len(run_ids), unparsed_count=len(unparsed), unparsed_sample=tuple(unparsed[:5]),
+        provider_profile_from_ledger=profile_sources.count("ledger"),
+        provider_profile_from_node=profile_sources.count("node"),
+        provider_profile_unresolved=profile_sources.count("none"),
+    )
