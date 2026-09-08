@@ -560,7 +560,7 @@ def _leader_read_or_refuse(runs_dir: Path):
     try:
         return chair.read(runs_dir), None
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"leader: lock file unreadable ({type(exc).__name__}: {exc})")
+        print(f"chair: lock file unreadable ({type(exc).__name__}: {exc})")
         return None, 2
 
 
@@ -610,7 +610,7 @@ def _leader_refuse_dead_pid(explicit_pid: int | None) -> int | None:
     """Refuses only an explicit `--pid`; the `os.getppid()` default is alive by construction."""
     if explicit_pid is None or chair.pid_alive(explicit_pid):
         return None
-    print(f"leader pid not alive: {explicit_pid}")
+    print(f"chair pid not alive: {explicit_pid}")
     return 2
 
 
@@ -624,14 +624,14 @@ def _leader_launched_by(record: dict | None, pid_alive_: bool, now: datetime.dat
 
 def _print_if_stale(record: dict | None, state: str) -> None:
     if record is not None and state in ("stale", "crashed"):
-        print(f"leader {state}: {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}")
+        print(f"chair {state}: {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}")
 
 
 def _route_chair_take(a: argparse.Namespace) -> int:
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
-    session = a.label or "leader"
+    session = a.label or "chair"
     pid, host = _leader_identity(a.pid)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
@@ -650,7 +650,7 @@ def _route_chair_take(a: argparse.Namespace) -> int:
             print(reason)
             return 2
         chair.write(runs_dir, new_record)
-    print(f"leader taken: {new_record['session']} (pid {new_record['pid']}) on {new_record['host']}")
+    print(f"chair taken: {new_record['session']} (pid {new_record['pid']}) on {new_record['host']}")
     return 0
 
 
@@ -658,7 +658,7 @@ def _route_chair_beat(a: argparse.Namespace) -> int:
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
-    session = a.label or "leader"
+    session = a.label or "chair"
     pid, host = _leader_identity(a.pid)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
@@ -672,7 +672,7 @@ def _route_chair_beat(a: argparse.Namespace) -> int:
             print(reason)
             return 2
         chair.write(runs_dir, new_record)
-    print(f"leader heartbeat: {new_record['session']}")
+    print(f"chair heartbeat: {new_record['session']}")
     return 0
 
 
@@ -680,7 +680,7 @@ def _route_chair_release(a: argparse.Namespace) -> int:
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
-    session = a.label or "leader"
+    session = a.label or "chair"
     pid, host = _leader_identity(a.pid)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
@@ -694,7 +694,7 @@ def _route_chair_release(a: argparse.Namespace) -> int:
             print(reason)
             return 2
         chair.write(runs_dir, None)
-    print(f"leader released: {record['session']}")
+    print(f"chair released: {record['session']}")
     return 0
 
 
@@ -713,9 +713,9 @@ def _route_chair_status(a: argparse.Namespace) -> int:
     if a.json:
         print(json.dumps({**(record or {}), "state": state}, indent=2))
     elif record is None:
-        print("leader: none")
+        print("chair: none")
     else:
-        print(f"leader: {record['session']} (pid {record['pid']}) on {record['host']} — {state}")
+        print(f"chair: {record['session']} (pid {record['pid']}) on {record['host']} — {state}")
     return 0
 
 
