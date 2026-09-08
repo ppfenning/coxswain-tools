@@ -102,7 +102,7 @@ def _runs_events(a: argparse.Namespace) -> int:
 
 def _stats_ingest(a: argparse.Namespace) -> int:
     try:
-        report = stats_ingest.ingest(a.runs_dir, a.db)
+        report = stats_ingest.ingest(a.runs_dir, a.db, work_store_root=a.work_store_root)
     except FileNotFoundError as exc:
         print(exc)
         return 1
@@ -1771,6 +1771,7 @@ def build_parser() -> argparse.ArgumentParser:
     si = st.add_parser("ingest", help="load usage, task, node and launch records into stats.db")
     si.add_argument("runs_dir", nargs="?", default="runs")
     si.add_argument("--db", default="workspace/stats/stats.db")
+    si.add_argument("--work-store-root", default="work")
     si.set_defaults(fn=_stats_ingest)
     ro = st.add_parser("roles", help="landed rate, attempts-to-land and $/landed per role and model")
     ro.add_argument("--db", default="workspace/stats/stats.db")
