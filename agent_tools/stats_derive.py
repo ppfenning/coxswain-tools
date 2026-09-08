@@ -17,7 +17,7 @@ from typing import Any
 
 from agent_tools.stats_schema import FAILURE_CLASSES, OUTCOMES
 
-__all__ = ["attempt_numbers", "resolve_outcome", "extract_failure_class"]
+__all__ = ["attempt_numbers", "extract_failure_class", "resolve_outcome"]
 
 
 def attempt_numbers(calls: Sequence[Mapping[str, Any]]) -> list[int]:
