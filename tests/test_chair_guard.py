@@ -4,7 +4,7 @@ import datetime
 import json
 import os
 
-from agent_tools import cli, chair, leader
+from agent_tools import chair, cli, leader
 
 _NOW = datetime.datetime(2026, 9, 6, 5, 0, tzinfo=datetime.UTC)
 

@@ -9,7 +9,7 @@ of its own until then.
 
 from __future__ import annotations
 
-from agent_tools.chair import (  # noqa: F401
+from agent_tools.chair import (
     CHAIR_FILENAME,
     DEFAULT_HEARTBEAT_MINUTES,
     beat,
