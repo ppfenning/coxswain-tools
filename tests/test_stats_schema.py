@@ -98,6 +98,7 @@ def test_tasks_columns_match_spec_names_verbatim():
         "fix_loop_rounds",
         "cost_usd",
         "reason",
+        "outcome_kind",
     ]
 
 
