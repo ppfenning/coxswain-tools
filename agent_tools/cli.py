@@ -106,12 +106,17 @@ def _stats_ingest(a: argparse.Namespace) -> int:
     except FileNotFoundError as exc:
         print(exc)
         return 1
+    profile_summary = (
+        f"provider_profile: {report.provider_profile_from_ledger} from ledger, "
+        f"{report.provider_profile_from_node} from node record, "
+        f"{report.provider_profile_unresolved} unresolved"
+    )
     if report.unparsed_count:
         print(f"{report.runs_ingested} run(s) ingested; {report.unparsed_count} file(s) failed to parse:")
         for path in report.unparsed_sample:
             print(f"  {path}")
         return 1
-    print(f"{report.runs_ingested} run(s) ingested from {a.runs_dir} into {a.db}")
+    print(f"{report.runs_ingested} run(s) ingested from {a.runs_dir} into {a.db} ({profile_summary})")
     return 0
 
 
@@ -123,7 +128,10 @@ def _stats_fetch(conn: sqlite3.Connection, table: str) -> list[dict]:
 def _stats_roles(a: argparse.Namespace) -> int:
     conn = stats_schema.connect(a.db)
     try:
-        report = stats_query.roles_report(_stats_fetch(conn, "calls"), _stats_fetch(conn, "tasks"))
+        report = stats_query.roles_report(
+            _stats_fetch(conn, "calls"), _stats_fetch(conn, "tasks"), _stats_fetch(conn, "runs"),
+            cartridge_sha=a.cartridge_sha, provider_profile=a.provider_profile,
+        )
     finally:
         conn.close()
     print(json.dumps(report, indent=2) if a.json else stats_query.render_capped(report))
@@ -143,7 +151,10 @@ def _stats_explain(a: argparse.Namespace) -> int:
 def _stats_series(a: argparse.Namespace) -> int:
     conn = stats_schema.connect(a.db)
     try:
-        report = stats_query.series_report(_stats_fetch(conn, "runs"), _stats_fetch(conn, "tasks"))
+        report = stats_query.series_report(
+            _stats_fetch(conn, "runs"), _stats_fetch(conn, "tasks"),
+            cartridge_sha=a.cartridge_sha, provider_profile=a.provider_profile,
+        )
     finally:
         conn.close()
     print(json.dumps(report, indent=2) if a.json else stats_query.render_capped(report))
@@ -1776,6 +1787,8 @@ def build_parser() -> argparse.ArgumentParser:
     ro = st.add_parser("roles", help="landed rate, attempts-to-land and $/landed per role and model")
     ro.add_argument("--db", default="workspace/stats/stats.db")
     ro.add_argument("--json", action="store_true")
+    ro.add_argument("--cartridge-sha", default=None, help="keep only runs on this cartridge_sha")
+    ro.add_argument("--provider-profile", default=None, help="keep only runs on this provider_profile")
     ro.set_defaults(fn=_stats_roles)
     ex = st.add_parser("explain", help="the failure-class breakdown behind one role")
     ex.add_argument("role")
@@ -1785,6 +1798,8 @@ def build_parser() -> argparse.ArgumentParser:
     sr = st.add_parser("series", help="per-run summary rows read from the stats store")
     sr.add_argument("--db", default="workspace/stats/stats.db")
     sr.add_argument("--json", action="store_true")
+    sr.add_argument("--cartridge-sha", default=None, help="keep only runs on this cartridge_sha")
+    sr.add_argument("--provider-profile", default=None, help="keep only runs on this provider_profile")
     sr.set_defaults(fn=_stats_series)
 
     usage_p = sub.add_parser(

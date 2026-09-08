@@ -454,6 +454,21 @@ def test_cli_stats_ingest_exits_zero_on_a_clean_run(tmp_path):
     assert code == 0
 
 
+def test_cli_stats_ingest_reports_provider_profile_counts_by_source(tmp_path, capsys):
+    from agent_tools.cli import main
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(
+        runs_dir, "run1", tasks=[("p1", "t1", {"landed": True})],
+        node={"cartridge_sha": "abc", "provider_profile": "claude-code"},
+    )
+    code = main(["stats", "ingest", str(runs_dir), "--db", str(tmp_path / "stats.db")])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "provider_profile: 0 from ledger, 1 from node record, 0 unresolved" in out
+
+
 def test_run_join_holds_when_attempts_sum_to_the_build_call_count():
     assert stats_ingest.run_join_holds([2, 1], 3) is True
 
@@ -610,3 +625,71 @@ def test_ingest_fills_host_and_provider_profile_from_the_ledger_for_every_run(tm
     assert [r[0] for r in rows] == ["run1", "run2"]
     assert all(r[1] is not None for r in rows)
     assert [r[2] for r in rows] == ["vendor-a", "vendor-b"]
+
+
+def test_provider_profile_from_nodes_reads_the_node_records_own_key():
+    nodes = [{"cartridge_sha": "abc", "provider_profile": "claude-code"}]
+    assert stats_ingest.provider_profile_from_nodes(nodes) == "claude-code"
+
+
+def test_provider_profile_from_nodes_is_none_when_no_node_record_names_it():
+    assert stats_ingest.provider_profile_from_nodes([{"cartridge_sha": "abc"}]) is None
+
+
+def test_provider_profile_source_falls_back_to_the_node_record_when_the_ledger_is_silent():
+    nodes = [{"provider_profile": "claude-code"}]
+    profile, source = stats_ingest.provider_profile_source("run1", [], nodes)
+    assert (profile, source) == ("claude-code", "node")
+
+
+def test_provider_profile_source_prefers_the_ledger_over_the_node_record():
+    rows = [{"key": "run1:build", "provider_profile": "vendor-a"}]
+    nodes = [{"provider_profile": "vendor-b"}]
+    profile, source = stats_ingest.provider_profile_source("run1", rows, nodes)
+    assert (profile, source) == ("vendor-a", "ledger")
+
+
+def test_provider_profile_source_is_none_and_unresolved_when_neither_source_names_the_run():
+    assert stats_ingest.provider_profile_source("run1", [], []) == (None, "none")
+
+
+def test_ingest_fills_provider_profile_from_the_node_record_when_the_ledger_has_no_row_for_this_run(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(
+        runs_dir, "run1", tasks=[("p1", "t1", {"landed": True})],
+        node={"cartridge_sha": "abc", "provider_profile": "claude-code"},
+    )
+    db_path = tmp_path / "stats.db"
+
+    stats_ingest.ingest(runs_dir, db_path, ledger_path=tmp_path / "no-such-ledger.jsonl")
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT provider_profile FROM runs WHERE run_id = 'run1'").fetchone()
+    conn.close()
+    assert row == ("claude-code",)
+
+
+def test_ingest_report_provider_profile_counts_sum_to_runs_ingested(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(runs_dir, "run1", tasks=[("p1", "t1", {"landed": True})])
+    _write_run(
+        runs_dir, "run2", tasks=[("p1", "t2", {"landed": True})],
+        node={"cartridge_sha": "abc", "provider_profile": "claude-code"},
+    )
+    _write_run(runs_dir, "run3", tasks=[("p1", "t3", {"landed": True})])
+    ledger = _write_ledger(tmp_path, [{"key": "run1:build", "provider_profile": "vendor-a"}])
+    db_path = tmp_path / "stats.db"
+
+    report = stats_ingest.ingest(runs_dir, db_path, ledger_path=ledger)
+
+    assert report.provider_profile_from_ledger == 1
+    assert report.provider_profile_from_node == 1
+    assert report.provider_profile_unresolved == 1
+    assert (
+        report.provider_profile_from_ledger
+        + report.provider_profile_from_node
+        + report.provider_profile_unresolved
+        == report.runs_ingested
+    )
