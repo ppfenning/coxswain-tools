@@ -34,9 +34,9 @@ def attempt_numbers(calls: Sequence[Mapping[str, Any]]) -> list[int]:
 
 
 def resolve_outcome(task_record: Mapping[str, Any]) -> tuple[str, str]:
-    """(outcome, outcome_source) per spec §3's order: landed, then the last
-    gate_diffs entry targeting this ticket, then the work store's own
-    `state: done`, then a log line naming this ticket, else unknown.
+    """(outcome, outcome_source) per spec §3's order: landed, then the work
+    store's own `state: done`, then the last gate_diffs entry targeting this
+    ticket, then a log line naming this ticket, else unknown.
 
     A run-level `budget_stop` log event (agent_tools/events.py:51) carries an
     empty detail dict and names no task: a run holds several tickets, so there
@@ -47,6 +47,9 @@ def resolve_outcome(task_record: Mapping[str, Any]) -> tuple[str, str]:
     if task_record.get("landed") is True:
         return "landed", "landed_field"
 
+    if task_record.get("work_store_done") is True:
+        return "landed", "work_store"
+
     ticket = task_record.get("ticket")
     gate_diffs = task_record.get("gate_diffs") or ()
     scoped = [d for d in gate_diffs if ticket is not None and d.get("target") == ticket]
@@ -54,9 +57,6 @@ def resolve_outcome(task_record: Mapping[str, Any]) -> tuple[str, str]:
         outcome = scoped[-1]["outcome"]
         if outcome in OUTCOMES:
             return outcome, "gate_diffs"
-
-    if task_record.get("work_store_done") is True:
-        return "landed", "work_store"
 
     log_events = task_record.get("log_events") or ()
     if ticket is not None and any(
