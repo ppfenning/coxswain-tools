@@ -80,6 +80,8 @@ def roles_report(
         landed_attempts = []
         attempts_unknown = 0
         landed_cost = 0.0
+        landed_costed = 0
+        cost_unknown = 0
         for r in landed_rows:
             task_id = r["task_id"]
             if task_id in seen_landed:
@@ -89,7 +91,11 @@ def roles_report(
                 landed_attempts.append(r["task_attempt"])
             else:
                 attempts_unknown += 1
-            landed_cost += r["task_cost_usd"] or 0.0
+            if r["task_cost_usd"] is not None:
+                landed_cost += r["task_cost_usd"]
+                landed_costed += 1
+            else:
+                cost_unknown += 1
         regimes = sorted(
             {regime_by_run[r["run_id"]] for r in rows if r.get("run_id") in regime_by_run},
             key=lambda pair: (pair[0] or "", pair[1] or ""),
@@ -102,7 +108,8 @@ def roles_report(
             "landed_rate": round(len(landed_task_ids) / len(joined_task_ids), 4) if joined_task_ids else None,
             "attempts_to_land": round(sum(landed_attempts) / len(landed_attempts), 2) if landed_attempts else None,
             "attempts_unknown": attempts_unknown,
-            "cost_per_landed": round(landed_cost / len(landed_task_ids), 2) if landed_task_ids else None,
+            "cost_per_landed": round(landed_cost / landed_costed, 2) if landed_costed else None,
+            "cost_unknown": cost_unknown,
             "coverage": round(len(joined) / len(rows), 4) if rows else 0.0,
             "regimes": [{"cartridge_sha": sha, "provider_profile": profile} for sha, profile in regimes],
         })
@@ -159,6 +166,7 @@ def series_report(
         quarantined = sum(1 for t in run_tasks if t.get("outcome") == "quarantined")
         resolved = sum(1 for t in run_tasks if t.get("outcome") not in (None, "unknown"))
         cost_usd = round(sum(float(t.get("cost_usd") or 0.0) for t in run_tasks), 4)
+        landed_cost_known = any(t.get("outcome") == "landed" and t.get("cost_usd") is not None for t in run_tasks)
         rows.append({
             "run_id": run_id,
             "cartridge_sha": run.get("cartridge_sha"),
@@ -166,7 +174,7 @@ def series_report(
             "tasks_landed": tasks_landed,
             "quarantined": quarantined,
             "cost_usd": cost_usd,
-            "cost_per_landed": round(cost_usd / tasks_landed, 2) if tasks_landed else None,
+            "cost_per_landed": round(cost_usd / tasks_landed, 2) if tasks_landed and landed_cost_known else None,
             "coverage": round(resolved / len(run_tasks), 4) if run_tasks else 0.0,
         })
     return sorted(rows, key=lambda r: r["run_id"])
@@ -174,7 +182,7 @@ def series_report(
 
 def render_capped(rows: Sequence[Mapping[str, Any]], cap_tokens: int = 300) -> str:
     """Default text for a report, one line per row plus a summary line, held under `cap_tokens` via a len(text)//4 proxy (no tokenizer in this repo)."""
-    lines = [" | ".join(f"{k}={v}" for k, v in row.items()) for row in rows]
+    lines = [" | ".join(f"{k}={'-' if v is None else v}" for k, v in row.items()) for row in rows]
     summary = f"{len(rows)} rows"
 
     def render(kept: list[str]) -> str:

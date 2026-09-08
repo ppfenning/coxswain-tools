@@ -41,6 +41,7 @@ __all__ = [
     "provider_profile_from_nodes",
     "provider_profile_source",
     "recovered_call_rows",
+    "rollup_task_costs",
     "run_join_holds",
     "run_row",
     "task_row",
@@ -286,6 +287,22 @@ def task_row(
         "cost_usd": record.get("cost_usd"),
         "reason": record.get("reason"),
     }
+
+
+def rollup_task_costs(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Each task with `cost_usd` replaced by the sum of `cost_usd` over calls whose
+    `task_id` matches and whose `join_confidence` isn't 'none'; `None` (never 0.0)
+    for a task no joined call names, or where every joined call's own cost is unset."""
+    joined_by_task: dict[Any, list[Any]] = {}
+    for call in calls:
+        if call.get("join_confidence") == "none" or call.get("task_id") is None:
+            continue
+        joined_by_task.setdefault(call["task_id"], []).append(call.get("cost_usd"))
+    result = []
+    for task in tasks:
+        costs = [c for c in joined_by_task.get(task["task_id"], []) if c is not None]
+        result.append({**task, "cost_usd": sum(costs) if costs else None})
+    return result
 
 
 @dataclass(frozen=True)
@@ -602,6 +619,7 @@ def ingest(
         ]
         attempts = [_fix_loop_attempts(record) for _, _, record in loaded["task_files"]]
         joined_calls = assign_task_ids(calls, [t["task_id"] for t in tasks], attempts)
+        tasks = rollup_task_costs(joined_calls, tasks)
         _upsert(conn, run_id, run, joined_calls, tasks)
     conn.commit()
     conn.close()
