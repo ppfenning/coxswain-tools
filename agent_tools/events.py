@@ -28,9 +28,9 @@ _VERDICT_ARROW = re.compile(r"^\s+(\S+) -> (\S+)\s*$")
 _QUARANTINED = re.compile(r"^quarantined task: (.+?) — (.+)$")
 _RUN_EXITED = re.compile(r"^epic \S+: (\d+) phase\(s\) complete,.*,\s*(\d+) task\(s\) quarantined")
 _TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)\.jsonl$")
-_LEADER_TAKEN = re.compile(r"^leader taken: (\S+) \(pid (\d+)\) on (\S+)\s*$")
-_LEADER_RELEASED = re.compile(r"^leader released: (\S+)\s*$")
-_LEADER_STALE = re.compile(r"^leader stale: (\S+) \(pid (\d+)\) on (\S+)\s*$")
+_LEADER_TAKEN = re.compile(r"^(?:leader|chair) taken: (\S+) \(pid (\d+)\) on (\S+)\s*$")
+_LEADER_RELEASED = re.compile(r"^(?:leader|chair) released: (\S+)\s*$")
+_LEADER_STALE = re.compile(r"^(?:leader|chair) stale: (\S+) \(pid (\d+)\) on (\S+)\s*$")
 
 
 def from_log(run: str, lines: Sequence[str]) -> list[Event]:
