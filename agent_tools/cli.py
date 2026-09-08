@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -44,6 +45,8 @@ from agent_tools import (
     setup_install,
     setup_screen,
     stats_ingest,
+    stats_query,
+    stats_schema,
     usage_window,
 )
 from agent_tools import runs as runs_module
@@ -109,6 +112,41 @@ def _stats_ingest(a: argparse.Namespace) -> int:
             print(f"  {path}")
         return 1
     print(f"{report.runs_ingested} run(s) ingested from {a.runs_dir} into {a.db}")
+    return 0
+
+
+def _stats_fetch(conn: sqlite3.Connection, table: str) -> list[dict]:
+    conn.row_factory = sqlite3.Row
+    return [dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
+
+
+def _stats_roles(a: argparse.Namespace) -> int:
+    conn = stats_schema.connect(a.db)
+    try:
+        report = stats_query.roles_report(_stats_fetch(conn, "calls"), _stats_fetch(conn, "tasks"))
+    finally:
+        conn.close()
+    print(json.dumps(report, indent=2) if a.json else stats_query.render_capped(report))
+    return 0
+
+
+def _stats_explain(a: argparse.Namespace) -> int:
+    conn = stats_schema.connect(a.db)
+    try:
+        report = stats_query.explain_report(_stats_fetch(conn, "calls"), _stats_fetch(conn, "tasks"), a.role)
+    finally:
+        conn.close()
+    print(json.dumps(report, indent=2) if a.json else stats_query.render_capped([report]))
+    return 0
+
+
+def _stats_series(a: argparse.Namespace) -> int:
+    conn = stats_schema.connect(a.db)
+    try:
+        report = stats_query.series_report(_stats_fetch(conn, "runs"), _stats_fetch(conn, "tasks"))
+    finally:
+        conn.close()
+    print(json.dumps(report, indent=2) if a.json else stats_query.render_capped(report))
     return 0
 
 
@@ -1724,7 +1762,8 @@ def build_parser() -> argparse.ArgumentParser:
     stats_p = sub.add_parser(
         "stats", help="load the run corpus into the stats store",
         description="Load the run corpus into the stats store.",
-        epilog="examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db",
+        epilog="examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db"
+               "\n  cox stats roles --json\n  cox stats explain build --json\n  cox stats series --json",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     stats_p.set_defaults(fn=_bare_group(stats_p))
@@ -1733,6 +1772,19 @@ def build_parser() -> argparse.ArgumentParser:
     si.add_argument("runs_dir", nargs="?", default="runs")
     si.add_argument("--db", default="workspace/stats/stats.db")
     si.set_defaults(fn=_stats_ingest)
+    ro = st.add_parser("roles", help="landed rate, attempts-to-land and $/landed per role and model")
+    ro.add_argument("--db", default="workspace/stats/stats.db")
+    ro.add_argument("--json", action="store_true")
+    ro.set_defaults(fn=_stats_roles)
+    ex = st.add_parser("explain", help="the failure-class breakdown behind one role")
+    ex.add_argument("role")
+    ex.add_argument("--db", default="workspace/stats/stats.db")
+    ex.add_argument("--json", action="store_true")
+    ex.set_defaults(fn=_stats_explain)
+    sr = st.add_parser("series", help="per-run summary rows read from the stats store")
+    sr.add_argument("--db", default="workspace/stats/stats.db")
+    sr.add_argument("--json", action="store_true")
+    sr.set_defaults(fn=_stats_series)
 
     usage_p = sub.add_parser(
         "usage", help="spend pacing against the ceiling for the current window",
