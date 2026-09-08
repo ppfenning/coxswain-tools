@@ -12,12 +12,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent_tools import leader
+from agent_tools import chair
 from agent_tools.events import Event, poll
 
-__all__ = ["DEFAULT_POLICY", "Notification", "fold", "leader_notifications", "notifications", "notify_argv", "run_loop"]
+__all__ = ["DEFAULT_POLICY", "Notification", "chair_notifications", "fold", "notifications", "notify_argv", "run_loop"]
 
-_LEADER_LOST_HEARTBEAT = "loop leader lost its heartbeat"
+_CHAIR_LOST_HEARTBEAT = "loop chair lost its heartbeat"
 
 DEFAULT_POLICY = {
     "kinds": ["run_exited", "task_quarantined", "budget_stop", "run_exited_cost"],
@@ -59,18 +59,18 @@ def notifications(events: Sequence[Event], policy: Mapping | None = None) -> lis
     return out
 
 
-def leader_notifications(previous_state: str | None, current_state: str, any_alive: bool) -> list[Notification]:
+def chair_notifications(previous_state: str | None, current_state: str, any_alive: bool) -> list[Notification]:
     """Pure: one critical notice exactly on a live-to-stale/crashed/none transition
-    while at least one run is still alive; recovery and quiet leaders stay silent."""
+    while at least one run is still alive; recovery and quiet chairs stay silent."""
     if previous_state == "live" and current_state in ("stale", "crashed", "none") and any_alive:
-        return [Notification("loop leader", _LEADER_LOST_HEARTBEAT, "critical")]
+        return [Notification("loop chair", _CHAIR_LOST_HEARTBEAT, "critical")]
     return []
 
 
 def _any_run_alive(states: Mapping[str, dict]) -> bool:
     """Pure: whether any tracked run has not yet logged its `run_exited` line —
     the same `emitted_exit` state `events.poll` already keeps, not a fresh pid probe.
-    Run-pid monitoring is each leader's own job; this only reads what it already wrote."""
+    Run-pid monitoring is each chair's own job; this only reads what it already wrote."""
     return any(not s.get("emitted_exit", False) for s in states.values())
 
 
@@ -137,33 +137,33 @@ def _batches(root: Path, states: Mapping[str, dict]) -> dict[str, tuple]:
     return out
 
 
-def _leader_state(root: Path, pid_alive, heartbeat_minutes: int) -> str:
+def _chair_state(root: Path, pid_alive, heartbeat_minutes: int) -> str:
     try:
-        record = leader.read(root)
+        record = chair.read(root)
     except (OSError, json.JSONDecodeError):
         record = None
     if record is None:
         return "none"
     alive = pid_alive(record["pid"]) if isinstance(record.get("pid"), int) else False
-    return leader.liveness(record, alive, datetime.datetime.now(datetime.UTC), socket.gethostname(), heartbeat_minutes)
+    return chair.liveness(record, alive, datetime.datetime.now(datetime.UTC), socket.gethostname(), heartbeat_minutes)
 
 
 def run_loop(runs_dir, *, once: bool = False, interval: float = 10, send=None, sleep=time.sleep,
-             policy: Mapping | None = None, pid_alive=leader.pid_alive,
-             heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUTES) -> int:
-    """Edge: polls `runs_dir`, sending a notification per event `notifications`     names, plus one on a live-to-stale/none leader transition while a run is alive."""
+             policy: Mapping | None = None, pid_alive=chair.pid_alive,
+             heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES) -> int:
+    """Edge: polls `runs_dir`, sending a notification per event `notifications`     names, plus one on a live-to-stale/none chair transition while a run is alive."""
     root = Path(runs_dir)
     state_path = root / ".notify-state.json"
     runner = send if send is not None else subprocess.run
     can_send = send is not None or shutil.which("notify-send") is not None
     printed_fallback = False
-    previous_leader_state = None
+    previous_chair_state = None
     while True:
         states = _load_states(state_path)
         notes, new_states = fold(states, _batches(root, states), policy)
-        current_leader_state = _leader_state(root, pid_alive, heartbeat_minutes)
-        notes = [*notes, *leader_notifications(previous_leader_state, current_leader_state, _any_run_alive(new_states))]
-        previous_leader_state = current_leader_state
+        current_chair_state = _chair_state(root, pid_alive, heartbeat_minutes)
+        notes = [*notes, *chair_notifications(previous_chair_state, current_chair_state, _any_run_alive(new_states))]
+        previous_chair_state = current_chair_state
         for n in notes:
             if can_send:
                 runner(notify_argv(n))
