@@ -13,14 +13,14 @@ from dataclasses import dataclass
 
 from agent_tools.events import Event
 
-__all__ = ["UNSET", "Row", "column_widths", "highlight", "leader_highlight", "order", "render", "row", "tail_lines"]
+__all__ = ["UNSET", "Row", "chair_highlight", "column_widths", "highlight", "order", "render", "row", "tail_lines"]
 
 _COLUMNS = ("PHASE", "NODE", "ATT", "TURNS", "COST", "VERDICT", "STATUS", "CEIL", "BY")
 _HEADERS = ("RUN", *_COLUMNS)
 _RIGHT = {"ATT", "TURNS", "COST"}
 _NO_RUNS = "no runs in flight"
 
-UNSET = object()  # `render`'s "no leader argument given" default, distinct from a real `None` (no lock file).
+UNSET = object()  # `render`'s "no chair argument given" default, distinct from a real `None` (no lock file).
 
 
 @dataclass(frozen=True)
@@ -58,17 +58,17 @@ def _ceiling_label(ceiling: dict | None) -> str:
     return "/".join(part for part in (tier, effort) if part)
 
 
-def _orphaned(alive: bool, launched_by: str, leader: dict | None) -> bool:
-    """Alive, and either the leader lost its heartbeat, or a known launcher is not the live leader; no leader file is not an alert."""
-    if not alive or leader is None:
+def _orphaned(alive: bool, launched_by: str, chair: dict | None) -> bool:
+    """Alive, and either the chair lost its heartbeat, or a known launcher is not the live chair; no chair file is not an alert."""
+    if not alive or chair is None:
         return False
-    if leader.get("state") in ("stale", "crashed"):
+    if chair.get("state") in ("stale", "crashed"):
         return True
-    return bool(launched_by) and leader.get("state") == "live" and launched_by != leader.get("holder")
+    return bool(launched_by) and chair.get("state") == "live" and launched_by != chair.get("holder")
 
 
 def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: list[dict], ceiling: dict | None = None,
-        launched_by: str = "", leader: dict | None = None) -> Row:
+        launched_by: str = "", chair: dict | None = None) -> Row:
     """Pure: the one row a run's events and finished calls make."""
     starts = [e for e in events if e.kind == "node_started"]
     verdicts = [e for e in events if e.kind == "verdict"]
@@ -84,7 +84,7 @@ def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: li
         turns=sum(c["turns"] for c in calls),
         cost_usd=sum(c["cost_usd"] for c in calls),
         verdict=verdict,
-        status=_status(events, alive, _orphaned(alive, launched_by, leader)),
+        status=_status(events, alive, _orphaned(alive, launched_by, chair)),
         ceiling=_ceiling_label(ceiling),
         launched_by=launched_by,
     )
@@ -104,10 +104,10 @@ def order(rows: list) -> list:
     return sorted(rows, key=lambda r: (not r.alive, r.run))
 
 
-def _leader_line(leader: dict | None) -> str:
-    if leader is None:
-        return "leader: none"
-    return f"leader: {leader['holder']} ({leader['state']}, beat {leader['minutes_ago']}m ago)"
+def _chair_line(chair: dict | None) -> str:
+    if chair is None:
+        return "chair: none"
+    return f"chair: {chair['holder']} ({chair['state']}, beat {chair['minutes_ago']}m ago)"
 
 
 def _cells(r: Row) -> tuple[str, ...]:
@@ -124,11 +124,11 @@ def _padded(cell: str, header: str, w: int) -> str:
     return cell.rjust(w) if header in _RIGHT else cell.ljust(w)
 
 
-def render(rows: list[Row], width: int, leader=UNSET, expanded=None, detail_lines: tuple = ()) -> list[str]:
-    """Pure: the leader line (only when `leader` is passed), the header line,
+def render(rows: list[Row], width: int, chair=UNSET, expanded=None, detail_lines: tuple = ()) -> list[str]:
+    """Pure: the chair line (only when `chair` is passed), the header line,
     one line per row, and `detail_lines` indented two spaces under `expanded`'s
     row (nothing, if `expanded` names no row in `rows`), all cut to `width`."""
-    prefix = [] if leader is UNSET else [_leader_line(leader)]
+    prefix = [] if chair is UNSET else [_chair_line(chair)]
     widths = column_widths(rows, _HEADERS)
     header = " ".join(_padded(h, h, w) for h, w in zip(_HEADERS, widths))
     if not rows:
@@ -151,6 +151,6 @@ def highlight(row: Row) -> str:
     return "normal"
 
 
-def leader_highlight(leader: dict | None) -> str:
-    """Pure: the label the screen maps to a colour for the leader line itself."""
-    return "alert" if leader is not None and leader.get("state") in ("stale", "crashed") else "normal"
+def chair_highlight(chair: dict | None) -> str:
+    """Pure: the label the screen maps to a colour for the chair line itself."""
+    return "alert" if chair is not None and chair.get("state") in ("stale", "crashed") else "normal"

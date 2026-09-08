@@ -16,11 +16,11 @@ import socket
 import time
 from pathlib import Path
 
+from agent_tools import chair, runs_top
 from agent_tools import events as events_module
-from agent_tools import leader, runs_top
 from agent_tools.records import ceiling_for, load_trace
 
-__all__ = ["draw", "facts", "first_visible", "leader_now", "loop", "main", "rows_now"]
+__all__ = ["chair_now", "draw", "facts", "first_visible", "loop", "main", "rows_now"]
 
 _STALE_SECONDS = 600
 _TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)$")
@@ -131,25 +131,25 @@ def _minutes_ago(heartbeat_at, now: datetime.datetime) -> int:
     return max(int((now - beat).total_seconds() // 60), 0)
 
 
-def leader_now(runs_dir, heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUTES, pid_alive=leader.pid_alive) -> dict | None:
-    """Edge: `runs/leader.json` turned into the plain dict `runs_top.render` shows,
+def chair_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES, pid_alive=chair.pid_alive) -> dict | None:
+    """Edge: `runs/chair.json` turned into the plain dict `runs_top.render` shows,
     or None when no lock is held. A file present but unreadable reads as no lock,
-    same as `leader.read`'s own contract for a missing file."""
+    same as `chair.read`'s own contract for a missing file."""
     try:
-        record = leader.read(runs_dir)
+        record = chair.read(runs_dir)
     except (OSError, json.JSONDecodeError):
         record = None
     if record is None:
         return None
     now = datetime.datetime.now(datetime.UTC)
     alive = pid_alive(record["pid"]) if isinstance(record.get("pid"), int) else False
-    state = leader.liveness(record, alive, now, socket.gethostname(), heartbeat_minutes)
+    state = chair.liveness(record, alive, now, socket.gethostname(), heartbeat_minutes)
     return {"holder": record.get("session", ""), "state": state, "minutes_ago": _minutes_ago(record.get("heartbeat_at"), now)}
 
 
-def rows_now(runs_dir, heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUTES) -> list[runs_top.Row]:
-    leader_state = leader_now(runs_dir, heartbeat_minutes)
-    return [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], leader_state)
+def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES) -> list[runs_top.Row]:
+    chair_state = chair_now(runs_dir, heartbeat_minutes)
+    return [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], chair_state)
             for f in facts(runs_dir)]
 
 
@@ -173,10 +173,10 @@ def _attr(row, has_color: bool):
     return curses.A_NORMAL
 
 
-def _leader_attr(leader_state, has_color: bool):
+def _chair_attr(chair_state, has_color: bool):
     import curses
 
-    if runs_top.leader_highlight(leader_state) == "alert":
+    if runs_top.chair_highlight(chair_state) == "alert":
         return (curses.color_pair(1) if has_color else 0) | curses.A_BOLD
     return curses.A_NORMAL
 
@@ -186,7 +186,7 @@ def _ordered(rows: list) -> list:
 
 
 def _line_kinds(ordered: list, expanded, detail_count: int) -> list:
-    """One entry per line `runs_top.render` draws below any leader line: `None`
+    """One entry per line `runs_top.render` draws below any chair line: `None`
     for the header or a detail line, `(row, index)` for a row's own line."""
     kinds = [None]
     for i, r in enumerate(ordered):
@@ -196,10 +196,10 @@ def _line_kinds(ordered: list, expanded, detail_count: int) -> list:
     return kinds
 
 
-def _scroll_facts(ordered: list, expanded, detail_count: int, cursor: int, has_leader: bool) -> tuple[int, int]:
+def _scroll_facts(ordered: list, expanded, detail_count: int, cursor: int, has_chair: bool) -> tuple[int, int]:
     """The cursor's absolute line number and the total line count, for `first_visible`."""
     kinds = _line_kinds(ordered, expanded, detail_count)
-    offset = 1 if has_leader else 0
+    offset = 1 if has_chair else 0
     cursor_line = offset + next(i for i, k in enumerate(kinds) if k is not None and k[1] == cursor)
     return cursor_line, offset + len(kinds)
 
@@ -217,15 +217,15 @@ def first_visible(cursor_index: int, total_lines: int, window_height: int, curre
     return max(min(first, last_first), 0)
 
 
-def draw(stdscr, rows: list, cursor: int | None = None, leader_state=runs_top.UNSET,
+def draw(stdscr, rows: list, cursor: int | None = None, chair_state=runs_top.UNSET,
          expanded=None, detail_lines: tuple = (), first: int = 0) -> None:
     import curses
 
     stdscr.clear()
     height, width = stdscr.getmaxyx()
-    lines = runs_top.render(rows, width, leader_state, expanded, detail_lines)
-    has_leader = leader_state is not runs_top.UNSET
-    offset = 1 if has_leader else 0
+    lines = runs_top.render(rows, width, chair_state, expanded, detail_lines)
+    has_chair = chair_state is not runs_top.UNSET
+    offset = 1 if has_chair else 0
     ordered = _ordered(rows)
     kinds = _line_kinds(ordered, expanded, len(detail_lines))
     has_color = _has_colors()
@@ -236,8 +236,8 @@ def draw(stdscr, rows: list, cursor: int | None = None, leader_state=runs_top.UN
             has_color = False
     for row_i, line in enumerate(lines[first:first + height]):
         i = first + row_i
-        if has_leader and i == 0:
-            attr = _leader_attr(leader_state, has_color)
+        if has_chair and i == 0:
+            attr = _chair_attr(chair_state, has_color)
         else:
             kind = kinds[i - offset] if 0 <= i - offset < len(kinds) else None
             base = _attr(kind[0], has_color) if kind is not None else curses.A_NORMAL
@@ -276,7 +276,7 @@ def _accordion_detail(runs_dir, run: str, width: int, now_alive) -> list[str]:
 
 
 def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_alive,
-         heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUTES) -> int:
+         heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES) -> int:
     import curses
 
     with contextlib.suppress(curses.error):  # no real terminal behind stdscr, e.g. under test
@@ -287,7 +287,7 @@ def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_al
     first = 0
     while True:
         rows = tick(runs_dir)
-        leader_state = leader_now(runs_dir, heartbeat_minutes)
+        chair_state = chair_now(runs_dir, heartbeat_minutes)
         ordered = _ordered(rows)
         cursor = min(cursor, len(ordered) - 1) if ordered else 0
         expanded = expanded if any(r.run == expanded for r in ordered) else None
@@ -295,9 +295,9 @@ def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_al
         detail_lines = _accordion_detail(runs_dir, expanded, width, now_alive) if expanded is not None else ()
         if ordered:
             cursor_line, total_lines = _scroll_facts(ordered, expanded, len(detail_lines), cursor,
-                                                       leader_state is not runs_top.UNSET)
+                                                       chair_state is not runs_top.UNSET)
             first = first_visible(cursor_line, total_lines, height, first)
-        draw(stdscr, rows, cursor if ordered else None, leader_state, expanded, detail_lines, first)
+        draw(stdscr, rows, cursor if ordered else None, chair_state, expanded, detail_lines, first)
         ch = stdscr.getch()
         if ch in (ord("q"), ord("Q")):
             return 0
@@ -314,7 +314,7 @@ def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_al
         # way the next iteration redraws against the current rows and size.
 
 
-def main(runs_dir, interval: float, heartbeat_minutes: int = leader.DEFAULT_HEARTBEAT_MINUTES) -> int:
+def main(runs_dir, interval: float, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES) -> int:
     import curses
     import signal
 
