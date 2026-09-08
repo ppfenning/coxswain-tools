@@ -1,16 +1,21 @@
 """Loads the run corpus into the stats store (workspace/stats/stats.db).
 
 Spec: docs/design/run-stats-store.md §3-§4. Spike verdict:
-agent_tools/stats-join-spike.md — the calls-to-tasks join is heuristic and
-out of scope here; `calls.task_id`/`calls.join_confidence` are left unset by
-this ingester rather than guessed. Row-shaping (`run_row`, `call_rows`,
-`recovered_call_rows`, `task_row`) is pure over already-parsed JSON; `load_run`,
-`discover_runs` and `ingest` are the edge that reads files and writes the database.
+agent_tools/stats-join-spike.md — the calls-to-tasks join is heuristic: a
+run's build calls get `task_id`/`join_confidence='heuristic'` in ticket order
+only where `sum(fix_loop.attempts)` over its task records equals its build
+call count (171/184 runs in the spike); every other call, in every other run,
+gets `join_confidence='none'` and no `task_id` rather than a guess. Row-shaping
+(`run_row`, `call_rows`, `recovered_call_rows`, `task_row`, `run_join_holds`,
+`assign_task_ids`, `fill_failure_classes`) is pure over already-parsed JSON;
+`load_run`, `discover_runs` and `ingest` are the edge that reads files
+(including each call's own trace and the autonomy ledger) and writes the database.
 """
 
 from __future__ import annotations
 
 import json
+import socket
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -25,14 +30,20 @@ from agent_tools.stats_schema import CALLS_COLUMNS, RUNS_COLUMNS, TASKS_COLUMNS,
 
 __all__ = [
     "IngestReport",
+    "assign_task_ids",
     "call_rows",
     "discover_runs",
+    "fill_failure_classes",
     "ingest",
     "load_run",
+    "provider_profile_for",
     "recovered_call_rows",
+    "run_join_holds",
     "run_row",
     "task_row",
 ]
+
+LEDGER_PATH = Path.home() / ".local" / "state" / "agent-graphs" / "ledger.jsonl"
 
 SCHEMA_VERSION = 1
 
@@ -42,8 +53,14 @@ def run_row(
     usage: Mapping[str, Any] | None,
     node_records: Sequence[Mapping[str, Any]],
     launched: Mapping[str, Any] | None,
+    host: str | None = None,
+    provider_profile: str | None = None,
 ) -> dict[str, Any]:
-    """One `runs` row from a run's usage summary, its node records and its launch marker."""
+    """One `runs` row from a run's usage summary, its node records and its launch
+    marker. `host` names the ingesting machine, not necessarily the one the run
+    executed on — a backfilled, inferred value, not an observed one — and
+    `provider_profile` comes from the autonomy ledger; both are the edge's job to
+    look up and pass in, never read here."""
     summary = (usage or {}).get("summary") or {}
     first_node = node_records[0] if node_records else {}
     minutes = sum(float(n.get("human_minutes") or 0.0) for n in node_records)
@@ -53,9 +70,9 @@ def run_row(
         "ended_at": summary.get("ended_at"),
         "cartridge_sha": first_node.get("cartridge_sha"),
         "cartridge_team": first_node.get("cartridge_team"),
-        "provider_profile": None,
+        "provider_profile": provider_profile,
         "vendor": "claude-code",
-        "host": None,
+        "host": host,
         "launched_by": (launched or {}).get("launched_by"),
         "principal": first_node.get("principal"),
         "human_minutes": minutes or None,
@@ -65,8 +82,9 @@ def run_row(
 
 def call_rows(run_id: str, usage: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     """One `calls` row per model invocation in a run's usage record, in call order.
-    `task_id`/`join_confidence` are left unset: assigning them is the heuristic
-    join of a later ticket, not this one."""
+    `task_id`/`join_confidence`/`failure_class` are left unset here: assigning them
+    needs this run's task records and its calls' own trace files, which only the
+    edge (`ingest`, via `assign_task_ids`/`fill_failure_classes`) has."""
     calls = list((usage or {}).get("calls") or [])
     attempts = attempt_numbers(calls)
     return [
@@ -145,6 +163,62 @@ def _rounds(value: Any) -> int | None:
     if isinstance(value, Mapping):
         return value.get("rounds")
     return None
+
+
+def _fix_loop_attempts(record: Mapping[str, Any]) -> int:
+    """A task record's build-attempt count for the join identity (stats-join-spike.md):
+    `fix_loop`'s own 'attempts' field when `fix_loop` is a dict, its length when
+    `fix_loop` is a list of rounds, or 1 when `fix_loop` is absent — a task that never
+    entered the fix loop still made its one build call."""
+    fix_loop = record.get("fix_loop")
+    if isinstance(fix_loop, Mapping):
+        attempts = fix_loop.get("attempts")
+        return attempts if isinstance(attempts, int) else 1
+    if isinstance(fix_loop, list):
+        return len(fix_loop) or 1
+    return 1
+
+
+def run_join_holds(attempts: Sequence[int], build_call_count: int) -> bool:
+    """True when this run's counting identity holds: `sum(attempts)` — one entry
+    per task record, each from `_fix_loop_attempts` — equals its build call count.
+    The spike verifies this in 171/184 runs; a run where it fails gets no task_id."""
+    return sum(attempts) == build_call_count
+
+
+def assign_task_ids(
+    calls: Sequence[Mapping[str, Any]], task_ids: Sequence[str], attempts: Sequence[int]
+) -> list[dict[str, Any]]:
+    """Sets `task_id`/`join_confidence` on every one of this run's calls. When
+    `run_join_holds`, each build call gets the ticket at its position in
+    `task_ids` repeated `attempts` times (ticket order x attempts) and
+    `join_confidence='heuristic'`; every call otherwise — every call in this run
+    when the identity fails, and every non-build call when it holds — gets no
+    `task_id` and `join_confidence='none'`, written per row so an aggregate can
+    always exclude or flag it."""
+    build_seq = [i for i, c in enumerate(calls) if c.get("role") == "build"]
+    ordered_task_ids = [task_id for task_id, n in zip(task_ids, attempts) for _ in range(n)]
+    assigned = dict(zip(build_seq, ordered_task_ids)) if run_join_holds(attempts, len(build_seq)) else {}
+    return [
+        {**call, "task_id": assigned.get(i), "join_confidence": "heuristic" if i in assigned else "none"}
+        for i, call in enumerate(calls)
+    ]
+
+
+def fill_failure_classes(
+    calls: Sequence[Mapping[str, Any]], traces_by_path: Mapping[str, Sequence[Mapping[str, Any]]], log_excerpt: str = ""
+) -> list[dict[str, Any]]:
+    """Sets `failure_class` on every call whose `failure_class` is still unset and
+    whose `trace_path` names a key in `traces_by_path`, via the same
+    `extract_failure_class` `recovered_call_rows` already uses — 'ok' for a
+    successful call, never unset where the trace has a result line. A call with
+    no trace, or one `recovered_call_rows` already classified, passes through."""
+    return [
+        {**call, "failure_class": extract_failure_class(traces_by_path[call["trace_path"]], log_excerpt)}
+        if call.get("failure_class") is None and call.get("trace_path") in traces_by_path
+        else dict(call)
+        for call in calls
+    ]
 
 
 def task_row(
@@ -269,6 +343,78 @@ def _read_traces(trace_dir: Path, unparsed: list[str]) -> list[tuple[str, list[d
     return pairs
 
 
+def _resolve_trace_path(runs_dir: Path, trace: str) -> Path:
+    """A call's own `trace` string, resolved against `runs_dir` when it is not
+    already absolute — the same base `_read_traces` builds `<run>-trace/` under."""
+    path = Path(trace)
+    return path if path.is_absolute() else runs_dir / path
+
+
+def _read_call_traces(runs_dir: Path, usage: Mapping[str, Any] | None, unparsed: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """Every distinct trace a run's `usage.json` calls name, parsed once each and
+    keyed by the call's own `trace` string — the input `fill_failure_classes` needs
+    and `call_rows` itself has no reason to read."""
+    traces: dict[str, list[dict[str, Any]]] = {}
+    for call in (usage or {}).get("calls") or []:
+        trace = call.get("trace")
+        if not trace or trace in traces:
+            continue
+        path = _resolve_trace_path(runs_dir, trace)
+        try:
+            traces[trace] = load_trace(path)
+        except (OSError, UnicodeDecodeError):
+            unparsed.append(str(path))
+    return traces
+
+
+def _read_ledger(path: Path, unparsed: list[str]) -> list[dict[str, Any]]:
+    """Every JSON object in the autonomy ledger, one per line. A missing file reads
+    as no rows (most ingests run without one); a line that is not a JSON object is
+    appended to `unparsed` instead of raising."""
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        unparsed.append(str(path))
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            unparsed.append(f"{path}#{line[:40]}")
+            continue
+        if isinstance(parsed, dict):
+            rows.append(parsed)
+    return rows
+
+
+def _ledger_run_id(row: Mapping[str, Any]) -> str | None:
+    """The run_id half of a ledger row's '<run>:<node>' key (stats-join-spike.md:
+    'keys rows on <run>:<node>'), or the row's own `run_id`/`run` field when it
+    carries one directly instead of a composite key."""
+    key = row.get("key")
+    if isinstance(key, str) and ":" in key:
+        return key.split(":", 1)[0]
+    run_id = row.get("run_id") or row.get("run")
+    return run_id if isinstance(run_id, str) else None
+
+
+def provider_profile_for(run_id: str, ledger_rows: Sequence[Mapping[str, Any]]) -> str | None:
+    """This run's `provider_profile`: the first ledger row whose key names it, since
+    the ledger carries the field on every row (stats-join-spike.md) while the store
+    has it nowhere else. None when no row names this run."""
+    for row in ledger_rows:
+        if _ledger_run_id(row) == run_id:
+            profile = row.get("provider_profile")
+            if profile:
+                return profile
+    return None
+
+
 def load_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
     """Every file this ingester reads for one run — usage, launch marker, node
     records, task records and log lines — plus the paths that failed to parse.
@@ -281,6 +427,7 @@ def load_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
     usage = _read_json(runs_dir / f"{run_id}.usage.json", unparsed)
     launched = _read_json(runs_dir / f"{run_id}.launched.json", unparsed)
     traces = _read_traces(runs_dir / f"{run_id}-trace", unparsed) if usage is None else []
+    call_traces = _read_call_traces(runs_dir, usage, unparsed) if usage is not None else {}
     node_records = [
         parsed
         for path in sorted(runs_dir.glob(f"{run_id}:*.json"), key=_node_sort_key)
@@ -302,6 +449,7 @@ def load_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
         "task_files": task_files,
         "log_lines": log_lines,
         "traces": traces,
+        "call_traces": call_traces,
         "unparsed": unparsed,
     }
 
@@ -331,11 +479,13 @@ def _upsert(
         conn.executemany(f"INSERT INTO tasks ({task_cols}) VALUES ({task_placeholders})", tasks)
 
 
-def ingest(runs_dir: Path | str, db_path: Path | str) -> IngestReport:
+def ingest(runs_dir: Path | str, db_path: Path | str, ledger_path: Path | str | None = None) -> IngestReport:
     """Upserts every run under `runs_dir` into the stats store at `db_path`, keyed
     by run_id so re-running over the same directory changes nothing. Errors before
     any write when `runs_dir` does not exist, or exists but holds no run records —
-    an empty ingest is not a successful one (charter B4)."""
+    an empty ingest is not a successful one (charter B4). `ledger_path` defaults to
+    the autonomy ledger's own path so `provider_profile_for` has rows to read; tests
+    pass their own fixture instead."""
     runs_dir = Path(runs_dir)
     if not runs_dir.is_dir():
         raise FileNotFoundError(f"no such runs directory: {runs_dir.resolve()}")
@@ -345,22 +495,33 @@ def ingest(runs_dir: Path | str, db_path: Path | str) -> IngestReport:
 
     conn = connect(db_path)
     unparsed: list[str] = []
+    ledger_rows = _read_ledger(Path(ledger_path) if ledger_path is not None else LEDGER_PATH, unparsed)
+    host = socket.gethostname()
     for run_id in run_ids:
         loaded = load_run(runs_dir, run_id)
         unparsed.extend(loaded["unparsed"])
         gate_diffs = [d for node in loaded["node_records"] for d in (node.get("gate_diffs") or [])]
         log_events = from_log(run_id, loaded["log_lines"])
-        run = run_row(run_id, loaded["usage"], loaded["node_records"], loaded["launched"])
+        run = run_row(
+            run_id, loaded["usage"], loaded["node_records"], loaded["launched"],
+            host=host, provider_profile=provider_profile_for(run_id, ledger_rows),
+        )
         calls = (
             recovered_call_rows(run_id, loaded["traces"])
             if loaded["usage"] is None and loaded["traces"]
-            else call_rows(run_id, loaded["usage"])
+            # "" mirrors recovered_call_rows: extract_failure_class's log_excerpt must be
+            # scoped to one call, and load_run has no per-call log slice, only the whole
+            # run's — passing that would misclassify every call in a run by any other
+            # call's log line (e.g. one call's budget_stop bleeding onto another's).
+            else fill_failure_classes(call_rows(run_id, loaded["usage"]), loaded["call_traces"], "")
         )
         tasks = [
             task_row(run_id, phase, ticket, record, gate_diffs, log_events)
             for phase, ticket, record in loaded["task_files"]
         ]
-        _upsert(conn, run_id, run, calls, tasks)
+        attempts = [_fix_loop_attempts(record) for _, _, record in loaded["task_files"]]
+        joined_calls = assign_task_ids(calls, [t["task_id"] for t in tasks], attempts)
+        _upsert(conn, run_id, run, joined_calls, tasks)
     conn.commit()
     conn.close()
     return IngestReport(runs_ingested=len(run_ids), unparsed_count=len(unparsed), unparsed_sample=tuple(unparsed[:5]))

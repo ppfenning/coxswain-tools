@@ -416,3 +416,161 @@ def test_cli_stats_ingest_exits_zero_on_a_clean_run(tmp_path):
     _write_run(runs_dir, "run1", tasks=[("p1", "t1", {"landed": True})])
     code = main(["stats", "ingest", str(runs_dir), "--db", str(tmp_path / "stats.db")])
     assert code == 0
+
+
+def test_run_join_holds_when_attempts_sum_to_the_build_call_count():
+    assert stats_ingest.run_join_holds([2, 1], 3) is True
+
+
+def test_run_join_holds_is_false_when_attempts_undercount_the_build_calls():
+    assert stats_ingest.run_join_holds([2, 1], 4) is False
+
+
+def test_assign_task_ids_pairs_build_calls_to_tickets_in_ticket_order_times_attempts():
+    calls = [{"role": "build"}, {"role": "build"}, {"role": "build"}, {"role": "review"}]
+    rows = stats_ingest.assign_task_ids(calls, ["t1", "t2"], [2, 1])
+    assert [r["task_id"] for r in rows] == ["t1", "t1", "t2", None]
+    assert [r["join_confidence"] for r in rows] == ["heuristic", "heuristic", "heuristic", "none"]
+
+
+def test_assign_task_ids_leaves_every_call_unjoined_when_the_identity_fails():
+    calls = [{"role": "build"}, {"role": "build"}]
+    rows = stats_ingest.assign_task_ids(calls, ["t1"], [5])
+    assert [r["task_id"] for r in rows] == [None, None]
+    assert [r["join_confidence"] for r in rows] == ["none", "none"]
+
+
+def test_fill_failure_classes_reads_ok_off_a_successful_calls_trace():
+    calls = [{"trace_path": "run1-trace/build-1.jsonl", "failure_class": None}]
+    traces = {
+        "run1-trace/build-1.jsonl": [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Edit"}]}},
+            {"type": "result", "is_error": False},
+        ]
+    }
+    rows = stats_ingest.fill_failure_classes(calls, traces)
+    assert rows[0]["failure_class"] == "ok"
+
+
+def test_fill_failure_classes_reads_the_enum_value_off_a_failed_calls_trace():
+    calls = [{"trace_path": "run1-trace/build-1.jsonl", "failure_class": None}]
+    traces = {"run1-trace/build-1.jsonl": [{"type": "result", "is_error": True, "subtype": "error_max_budget_usd"}]}
+    rows = stats_ingest.fill_failure_classes(calls, traces)
+    assert rows[0]["failure_class"] == "budget_stop"
+
+
+def test_fill_failure_classes_leaves_a_call_with_no_matching_trace_unset():
+    calls = [{"trace_path": None, "failure_class": None}]
+    rows = stats_ingest.fill_failure_classes(calls, {})
+    assert rows[0]["failure_class"] is None
+
+
+def _write_ledger(tmp_path, rows):
+    path = tmp_path / "ledger.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return path
+
+
+def test_provider_profile_for_reads_the_ledgers_run_colon_node_keyed_row():
+    rows = [{"key": "run1:build", "provider_profile": "vendor-a"}]
+    assert stats_ingest.provider_profile_for("run1", rows) == "vendor-a"
+
+
+def test_provider_profile_for_is_none_when_no_ledger_row_names_the_run():
+    assert stats_ingest.provider_profile_for("run1", [{"key": "run2:build", "provider_profile": "vendor-a"}]) is None
+
+
+def test_ingest_applies_the_join_only_where_the_counting_identity_holds(tmp_path):
+    """Corpus-level coverage assertion: the fraction of calls carrying a non-NULL
+    task_id must equal exactly what the identity predicts, not merely be > 0."""
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(
+        runs_dir, "run1",
+        tasks=[("p1", "t1", {"ticket": "t1", "fix_loop": {"attempts": 2}}), ("p1", "t2", {"ticket": "t2"})],
+        usage={"calls": [{"role": "build"}, {"role": "build"}, {"role": "build"}, {"role": "review"}]},
+    )
+    _write_run(
+        runs_dir, "run2",
+        tasks=[("p1", "t3", {"ticket": "t3", "fix_loop": {"attempts": 5}})],
+        usage={"calls": [{"role": "build"}, {"role": "build"}, {"role": "review"}]},
+    )
+    db_path = tmp_path / "stats.db"
+
+    stats_ingest.ingest(runs_dir, db_path)
+
+    conn = connect(db_path)
+    total = conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
+    joined = conn.execute("SELECT COUNT(*) FROM calls WHERE task_id IS NOT NULL").fetchone()[0]
+    run1_task_ids = conn.execute(
+        "SELECT task_id FROM calls WHERE run_id = 'run1' AND role = 'build' ORDER BY seq"
+    ).fetchall()
+    run2_confidence = conn.execute("SELECT DISTINCT join_confidence FROM calls WHERE run_id = 'run2'").fetchall()
+    conn.close()
+
+    assert (total, joined) == (7, 3)
+    assert run1_task_ids == [("run1:p1:t1",), ("run1:p1:t1",), ("run1:p1:t2",)]
+    assert run2_confidence == [("none",)]
+
+
+def test_ingest_fills_failure_class_from_each_calls_own_trace_and_never_leaves_a_resulted_call_null(tmp_path):
+    """Two failing calls in one run: a review call whose own trace shows a tool
+    error (no budget signal in it at all) and a build call whose own trace shows
+    a real budget stop, plus a run-level log line naming budget_stop that
+    belongs to the build call, not the review one. A failure_class reader that
+    shared the whole run's log across both calls, instead of scoping to each
+    call's own trace, would bleed that log line onto the review call too and
+    misclassify it budget_stop; it must read tool_error there instead."""
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(
+        runs_dir, "run1",
+        usage={"calls": [
+            {"role": "review", "trace": "run1-trace/review-1.jsonl"},
+            {"role": "build", "trace": "run1-trace/build-1.jsonl"},
+        ]},
+        log_lines=["boom: error_max_budget_usd"],
+    )
+    _write_trace(
+        runs_dir, "run1", "review-1.jsonl",
+        [
+            {"type": "user", "message": {"content": [{"type": "tool_result", "is_error": True}]}},
+            {"type": "result", "is_error": True},
+        ],
+    )
+    _write_trace(
+        runs_dir, "run1", "build-1.jsonl",
+        [{"type": "result", "is_error": True, "subtype": "error_max_budget_usd"}],
+    )
+    db_path = tmp_path / "stats.db"
+
+    stats_ingest.ingest(runs_dir, db_path)
+
+    conn = connect(db_path)
+    rows = conn.execute("SELECT role, failure_class FROM calls WHERE run_id = 'run1' ORDER BY seq").fetchall()
+    conn.close()
+    assert rows == [("review", "tool_error"), ("build", "budget_stop")]
+
+
+def test_ingest_fills_host_and_provider_profile_from_the_ledger_for_every_run(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(runs_dir, "run1", tasks=[("p1", "t1", {"landed": True})])
+    _write_run(runs_dir, "run2", tasks=[("p1", "t2", {"landed": True})])
+    ledger = _write_ledger(
+        tmp_path,
+        [
+            {"key": "run1:build", "provider_profile": "vendor-a"},
+            {"key": "run2:build", "provider_profile": "vendor-b"},
+        ],
+    )
+    db_path = tmp_path / "stats.db"
+
+    stats_ingest.ingest(runs_dir, db_path, ledger_path=ledger)
+
+    conn = connect(db_path)
+    rows = conn.execute("SELECT run_id, host, provider_profile FROM runs ORDER BY run_id").fetchall()
+    conn.close()
+    assert [r[0] for r in rows] == ["run1", "run2"]
+    assert all(r[1] is not None for r in rows)
+    assert [r[2] for r in rows] == ["vendor-a", "vendor-b"]
