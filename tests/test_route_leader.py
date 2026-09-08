@@ -138,6 +138,7 @@ def test_cli_status_reports_crashed_for_a_lock_whose_pid_is_dead_on_this_host(tm
     out = capsys.readouterr().out
     assert rc == 0
     assert "crashed" in out and "stale" not in out
+    assert "leader" not in out
 
 
 def test_cli_status_treats_a_foreign_hosts_lock_as_live_since_it_cannot_check_the_remote_pid(tmp_path, capsys):
@@ -150,6 +151,7 @@ def test_cli_status_treats_a_foreign_hosts_lock_as_live_since_it_cannot_check_th
     out = capsys.readouterr().out
     assert rc == 0
     assert "live" in out and "stale" not in out
+    assert "leader" not in out
 
 
 def test_cli_take_refuses_a_fresh_live_lock(tmp_path, capsys):
@@ -160,6 +162,7 @@ def test_cli_take_refuses_a_fresh_live_lock(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 2
     assert "alice" in out
+    assert "leader" not in out
 
 
 def test_cli_take_steal_succeeds_against_a_stale_lock(tmp_path, capsys):
@@ -170,6 +173,14 @@ def test_cli_take_steal_succeeds_against_a_stale_lock(tmp_path, capsys):
     rc = main(["route", "chair", "take", "--profile", str(profile), "--label", "bob", "--steal"])
     assert rc == 0
     assert chair.read(runs_dir)["session"] == "bob"
+
+
+def test_cli_take_then_beat_prints_the_chair_worded_lines(tmp_path, capsys):
+    profile = _profile(tmp_path)
+    assert main(["route", "chair", "take", "--profile", str(profile), "--label", "cos1"]) == 0
+    assert "chair taken:" in capsys.readouterr().out
+    assert main(["route", "chair", "beat", "--profile", str(profile), "--label", "cos1", "--run", "run-42"]) == 0
+    assert "chair heartbeat:" in capsys.readouterr().out
 
 
 def test_cli_take_then_beat_succeeds_for_the_same_session(tmp_path, capsys):
@@ -225,6 +236,7 @@ def test_cli_clear_removes_a_dead_pid_lock_and_names_what_it_removed(tmp_path, c
     out = capsys.readouterr().out
     assert rc == 0
     assert "alice" in out
+    assert "leader" not in out
     assert chair.read(runs_dir) is None
 
 
