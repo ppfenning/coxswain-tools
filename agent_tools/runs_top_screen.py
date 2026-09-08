@@ -16,8 +16,8 @@ import socket
 import time
 from pathlib import Path
 
-from agent_tools import chair, events as events_module
-from agent_tools import runs_top
+from agent_tools import chair, runs_top
+from agent_tools import events as events_module
 from agent_tools.records import ceiling_for, load_trace
 
 __all__ = ["chair_now", "draw", "facts", "first_visible", "loop", "main", "rows_now"]
