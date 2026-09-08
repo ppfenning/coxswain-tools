@@ -314,6 +314,45 @@ def test_load_run_orders_trace_files_by_node_order_not_alphabetical_filename(tmp
     ]
 
 
+def test_load_run_leaves_calls_jsonl_empty_when_only_usage_json_is_present(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(runs_dir, "run1", usage={"calls": []})
+
+    loaded = stats_ingest.load_run(runs_dir, "run1")
+
+    assert loaded["calls_jsonl"] == []
+    assert loaded["usage"] == {"calls": []}
+    assert loaded["traces"] == []
+
+
+def test_load_run_reads_calls_jsonl_and_tags_its_source_when_usage_is_absent(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    calls = [
+        {"role": "build", "cost_usd": 0.1, "trace": "run1-trace/build-1.jsonl", "ts": "t1", "ok": True},
+        {"role": "review", "cost_usd": 0.2, "trace": "run1-trace/review-1.jsonl", "ts": "t2", "ok": False, "error": "e"},
+    ]
+    (runs_dir / "run1.calls.jsonl").write_text("\n".join(json.dumps(c) for c in calls) + "\n")
+    _write_trace(runs_dir, "run1", "build-1.jsonl", [{"type": "result", "total_cost_usd": 0.1}])
+
+    loaded = stats_ingest.load_run(runs_dir, "run1")
+
+    assert loaded["calls_jsonl"] == [{**c, "source": "calls_jsonl"} for c in calls]
+    assert loaded["traces"] == []
+
+
+def test_load_run_falls_back_to_trace_recovery_when_neither_usage_json_nor_calls_jsonl_exist(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    path = _write_trace(runs_dir, "run1", "build-1.jsonl", [{"type": "result", "total_cost_usd": 0.1, "num_turns": 3}])
+
+    loaded = stats_ingest.load_run(runs_dir, "run1")
+
+    assert loaded["calls_jsonl"] == []
+    assert loaded["traces"] == [(str(path), [{"type": "result", "total_cost_usd": 0.1, "num_turns": 3}])]
+
+
 def test_ingest_assigns_seq_to_recovered_calls_in_node_order_not_alphabetical_order(tmp_path):
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
