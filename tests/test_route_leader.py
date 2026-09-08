@@ -1,8 +1,9 @@
+import contextlib
 import datetime
 import os
 import socket
 
-from agent_tools import leader
+from agent_tools import chair
 from agent_tools.cli import _leader_heartbeat_minutes, _leader_identity, _leader_launched_by, main
 
 _NOW = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
@@ -27,89 +28,89 @@ def _fresh_iso():
 
 
 def test_liveness_is_none_with_no_record():
-    assert leader.liveness(None, False, _NOW, "h1") == "none"
+    assert chair.liveness(None, False, _NOW, "h1") == "none"
 
 
 def test_liveness_is_crashed_when_the_pid_is_dead_on_the_records_own_host():
-    assert leader.liveness(_LIVE_RECORD, False, _NOW, "h1") == "crashed"
+    assert chair.liveness(_LIVE_RECORD, False, _NOW, "h1") == "crashed"
 
 
 def test_liveness_is_live_when_the_pid_is_dead_on_another_host():
-    assert leader.liveness(_LIVE_RECORD, False, _NOW, "h2") == "live"
+    assert chair.liveness(_LIVE_RECORD, False, _NOW, "h2") == "live"
 
 
 def test_liveness_is_live_when_the_pid_is_alive_and_the_heartbeat_is_fresh():
-    assert leader.liveness(_LIVE_RECORD, True, _NOW, "h1") == "live"
+    assert chair.liveness(_LIVE_RECORD, True, _NOW, "h1") == "live"
 
 
 def test_liveness_is_stale_when_the_heartbeat_outages_the_policy_minutes_regardless_of_pid():
-    assert leader.liveness(_STALE_HEARTBEAT_RECORD, False, _NOW, "h1", heartbeat_minutes=10) == "stale"
+    assert chair.liveness(_STALE_HEARTBEAT_RECORD, False, _NOW, "h1", heartbeat_minutes=10) == "stale"
 
 
 def test_liveness_is_stale_not_raised_for_an_unparsable_heartbeat_at():
-    assert leader.liveness({**_LIVE_RECORD, "heartbeat_at": "not-a-timestamp"}, True, _NOW, "h1") == "stale"
+    assert chair.liveness({**_LIVE_RECORD, "heartbeat_at": "not-a-timestamp"}, True, _NOW, "h1") == "stale"
 
 
 # -- take/beat/release: pure, on literals ------------------------------------------
 
 
 def test_take_refuses_a_live_lock_and_names_the_holder():
-    record, reason = leader.take(_LIVE_RECORD, "bob", 99, "h2", _NOW, 10, True)
+    record, reason = chair.take(_LIVE_RECORD, "bob", 99, "h2", _NOW, 10, True)
     assert record is None
     assert "alice" in reason and "4242" in reason and "h1" in reason
 
 
 def test_take_refuses_a_stale_lock_without_steal():
-    record, reason = leader.take(_STALE_HEARTBEAT_RECORD, "bob", 99, "h2", _NOW, 10, False, steal=False)
+    record, reason = chair.take(_STALE_HEARTBEAT_RECORD, "bob", 99, "h2", _NOW, 10, False, steal=False)
     assert record is None
     assert "alice" in reason
 
 
 def test_take_with_steal_succeeds_against_a_stale_lock():
-    record, reason = leader.take(_STALE_HEARTBEAT_RECORD, "bob", 99, "h2", _NOW, 10, False, steal=True)
+    record, reason = chair.take(_STALE_HEARTBEAT_RECORD, "bob", 99, "h2", _NOW, 10, False, steal=True)
     assert reason == ""
     assert record == {"session": "bob", "pid": 99, "host": "h2", "taken_at": _NOW.isoformat(), "heartbeat_at": _NOW.isoformat(), "runs": []}
 
 
 def test_take_refuses_a_crashed_lock_without_steal_and_names_it_crashed():
-    record, reason = leader.take(_LIVE_RECORD, "bob", 99, "h1", _NOW, 10, False, steal=False)
+    record, reason = chair.take(_LIVE_RECORD, "bob", 99, "h1", _NOW, 10, False, steal=False)
     assert record is None
     assert "crashed" in reason
 
 
 def test_beat_refreshes_the_heartbeat_and_appends_a_run_for_the_matching_triple():
-    record, reason = leader.beat(_LIVE_RECORD, "alice", 4242, "h1", _NOW + datetime.timedelta(minutes=1), run_id="cos-1")
+    record, reason = chair.beat(_LIVE_RECORD, "alice", 4242, "h1", _NOW + datetime.timedelta(minutes=1), run_id="cos-1")
     assert reason == ""
     assert record["heartbeat_at"] == (_NOW + datetime.timedelta(minutes=1)).isoformat()
     assert record["runs"] == ["cos-1"]
 
 
 def test_beat_errors_for_a_session_that_does_not_hold_it():
-    record, reason = leader.beat(_LIVE_RECORD, "bob", 4242, "h1", _NOW)
+    record, reason = chair.beat(_LIVE_RECORD, "bob", 4242, "h1", _NOW)
     assert record is None and "not held by bob" in reason
 
 
 def test_beat_errors_for_the_right_session_with_the_wrong_pid():
     """The label alone is not proof of identity: a matching session with a pid the
     lock did not record is not the process that took it."""
-    record, reason = leader.beat(_LIVE_RECORD, "alice", 99999, "h1", _NOW)
+    record, reason = chair.beat(_LIVE_RECORD, "alice", 99999, "h1", _NOW)
     assert record is None and "not held by alice" in reason
 
 
 def test_release_clears_the_lock_for_the_matching_triple():
-    record, reason = leader.release(_LIVE_RECORD, "alice", 4242, "h1")
+    record, reason = chair.release(_LIVE_RECORD, "alice", 4242, "h1")
     assert record is None and reason == ""
 
 
 def test_release_refuses_a_session_that_does_not_hold_it():
-    record, reason = leader.release(_LIVE_RECORD, "bob", 99, "h2")
+    record, reason = chair.release(_LIVE_RECORD, "bob", 99, "h2")
     assert record == _LIVE_RECORD and "not held by bob" in reason
 
 
 def test_leader_heartbeat_minutes_is_the_documented_default():
     """Cartridge policy resolution is another repository's item (out of scope here);
     this always answers the default until that lands."""
-    assert _leader_heartbeat_minutes() == leader.DEFAULT_HEARTBEAT_MINUTES == 10
+    assert _leader_heartbeat_minutes() == chair.DEFAULT_HEARTBEAT_MINUTES == 10
 
 
 # -- _leader_launched_by: pure, on literals ----------------------------------------
@@ -132,8 +133,8 @@ def test_cli_status_reports_crashed_for_a_lock_whose_pid_is_dead_on_this_host(tm
     claims to report."""
     profile = _profile(tmp_path)
     fresh = _fresh_iso()
-    leader.write(tmp_path / "runs", {**_LIVE_RECORD, "host": socket.gethostname(), "pid": _DEAD_PID, "taken_at": fresh, "heartbeat_at": fresh})
-    rc = main(["route", "leader", "status", "--profile", str(profile)])
+    chair.write(tmp_path / "runs", {**_LIVE_RECORD, "host": socket.gethostname(), "pid": _DEAD_PID, "taken_at": fresh, "heartbeat_at": fresh})
+    rc = main(["route", "chair", "status", "--profile", str(profile)])
     out = capsys.readouterr().out
     assert rc == 0
     assert "crashed" in out and "stale" not in out
@@ -144,8 +145,8 @@ def test_cli_status_treats_a_foreign_hosts_lock_as_live_since_it_cannot_check_th
     the number happens to look unused on this machine."""
     profile = _profile(tmp_path)
     fresh = _fresh_iso()
-    leader.write(tmp_path / "runs", {**_LIVE_RECORD, "host": "some-other-host", "pid": _DEAD_PID, "taken_at": fresh, "heartbeat_at": fresh})
-    rc = main(["route", "leader", "status", "--profile", str(profile)])
+    chair.write(tmp_path / "runs", {**_LIVE_RECORD, "host": "some-other-host", "pid": _DEAD_PID, "taken_at": fresh, "heartbeat_at": fresh})
+    rc = main(["route", "chair", "status", "--profile", str(profile)])
     out = capsys.readouterr().out
     assert rc == 0
     assert "live" in out and "stale" not in out
@@ -154,8 +155,8 @@ def test_cli_status_treats_a_foreign_hosts_lock_as_live_since_it_cannot_check_th
 def test_cli_take_refuses_a_fresh_live_lock(tmp_path, capsys):
     profile = _profile(tmp_path)
     fresh = _fresh_iso()
-    leader.write(tmp_path / "runs", {**_LIVE_RECORD, "host": socket.gethostname(), "pid": os.getpid(), "taken_at": fresh, "heartbeat_at": fresh})
-    rc = main(["route", "leader", "take", "--profile", str(profile), "--label", "bob"])
+    chair.write(tmp_path / "runs", {**_LIVE_RECORD, "host": socket.gethostname(), "pid": os.getpid(), "taken_at": fresh, "heartbeat_at": fresh})
+    rc = main(["route", "chair", "take", "--profile", str(profile), "--label", "bob"])
     out = capsys.readouterr().out
     assert rc == 2
     assert "alice" in out
@@ -165,10 +166,10 @@ def test_cli_take_steal_succeeds_against_a_stale_lock(tmp_path, capsys):
     profile = _profile(tmp_path)
     runs_dir = tmp_path / "runs"
     fresh = _fresh_iso()
-    leader.write(runs_dir, {**_LIVE_RECORD, "host": socket.gethostname(), "pid": _DEAD_PID, "taken_at": fresh, "heartbeat_at": fresh})
-    rc = main(["route", "leader", "take", "--profile", str(profile), "--label", "bob", "--steal"])
+    chair.write(runs_dir, {**_LIVE_RECORD, "host": socket.gethostname(), "pid": _DEAD_PID, "taken_at": fresh, "heartbeat_at": fresh})
+    rc = main(["route", "chair", "take", "--profile", str(profile), "--label", "bob", "--steal"])
     assert rc == 0
-    assert leader.read(runs_dir)["session"] == "bob"
+    assert chair.read(runs_dir)["session"] == "bob"
 
 
 def test_cli_take_then_beat_succeeds_for_the_same_session(tmp_path, capsys):
@@ -177,19 +178,19 @@ def test_cli_take_then_beat_succeeds_for_the_same_session(tmp_path, capsys):
     invocations from the same long-running session are the same holder."""
     profile = _profile(tmp_path)
     runs_dir = tmp_path / "runs"
-    assert main(["route", "leader", "take", "--profile", str(profile), "--label", "cos1"]) == 0
+    assert main(["route", "chair", "take", "--profile", str(profile), "--label", "cos1"]) == 0
     capsys.readouterr()
-    assert main(["route", "leader", "beat", "--profile", str(profile), "--label", "cos1", "--run", "run-42"]) == 0
-    assert leader.read(runs_dir)["runs"] == ["run-42"]
+    assert main(["route", "chair", "beat", "--profile", str(profile), "--label", "cos1", "--run", "run-42"]) == 0
+    assert chair.read(runs_dir)["runs"] == ["run-42"]
 
 
 def test_cli_take_then_release_succeeds_for_the_same_session(tmp_path, capsys):
     profile = _profile(tmp_path)
     runs_dir = tmp_path / "runs"
-    assert main(["route", "leader", "take", "--profile", str(profile), "--label", "cos1"]) == 0
+    assert main(["route", "chair", "take", "--profile", str(profile), "--label", "cos1"]) == 0
     capsys.readouterr()
-    assert main(["route", "leader", "release", "--profile", str(profile), "--label", "cos1"]) == 0
-    assert leader.read(runs_dir) is None
+    assert main(["route", "chair", "release", "--profile", str(profile), "--label", "cos1"]) == 0
+    assert chair.read(runs_dir) is None
 
 
 def test_identity_prefers_an_explicit_pid_over_the_parent():
@@ -200,16 +201,81 @@ def test_identity_prefers_an_explicit_pid_over_the_parent():
 def test_cli_take_refuses_an_explicit_dead_pid_and_writes_nothing(tmp_path, capsys):
     profile = _profile(tmp_path)
     runs_dir = tmp_path / "runs"
-    rc = main(["route", "leader", "take", "--profile", str(profile), "--pid", str(_DEAD_PID)])
+    rc = main(["route", "chair", "take", "--profile", str(profile), "--pid", str(_DEAD_PID)])
     out = capsys.readouterr().out
     assert rc == 2
     assert str(_DEAD_PID) in out
-    assert leader.read(runs_dir) is None
+    assert chair.read(runs_dir) is None
 
 
 def test_cli_take_with_an_explicit_live_pid_still_takes(tmp_path, capsys):
     profile = _profile(tmp_path)
     runs_dir = tmp_path / "runs"
-    rc = main(["route", "leader", "take", "--profile", str(profile), "--pid", str(os.getpid())])
+    rc = main(["route", "chair", "take", "--profile", str(profile), "--pid", str(os.getpid())])
     assert rc == 0
-    assert leader.read(runs_dir)["pid"] == os.getpid()
+    assert chair.read(runs_dir)["pid"] == os.getpid()
+
+
+def test_cli_clear_removes_a_dead_pid_lock_and_names_what_it_removed(tmp_path, capsys):
+    profile = _profile(tmp_path)
+    runs_dir = tmp_path / "runs"
+    fresh = _fresh_iso()
+    chair.write(runs_dir, {**_LIVE_RECORD, "host": socket.gethostname(), "pid": _DEAD_PID, "taken_at": fresh, "heartbeat_at": fresh})
+    rc = main(["route", "chair", "clear", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "alice" in out
+    assert chair.read(runs_dir) is None
+
+
+def test_cli_clear_refuses_a_live_lock_without_force(tmp_path, capsys):
+    profile = _profile(tmp_path)
+    runs_dir = tmp_path / "runs"
+    fresh = _fresh_iso()
+    chair.write(runs_dir, {**_LIVE_RECORD, "host": socket.gethostname(), "pid": os.getpid(), "taken_at": fresh, "heartbeat_at": fresh})
+    rc = main(["route", "chair", "clear", "--profile", str(profile)])
+    assert rc == 0
+    assert chair.read(runs_dir) is not None
+
+
+def test_cli_clear_with_force_removes_a_live_lock(tmp_path, capsys):
+    profile = _profile(tmp_path)
+    runs_dir = tmp_path / "runs"
+    fresh = _fresh_iso()
+    chair.write(runs_dir, {**_LIVE_RECORD, "host": socket.gethostname(), "pid": os.getpid(), "taken_at": fresh, "heartbeat_at": fresh})
+    rc = main(["route", "chair", "clear", "--profile", str(profile), "--force"])
+    assert rc == 0
+    assert chair.read(runs_dir) is None
+
+
+def test_cli_clear_holds_the_chair_lock_across_the_read_decide_unlink_sequence(tmp_path, capsys, monkeypatch):
+    """A `take` landing between clear's read and its unlink must not be discarded
+    silently, so `_route_chair_clear` must hold `chair.locked` while `chair.clear` runs."""
+    profile = _profile(tmp_path)
+    runs_dir = tmp_path / "runs"
+    fresh = _fresh_iso()
+    chair.write(runs_dir, {**_LIVE_RECORD, "host": socket.gethostname(), "pid": _DEAD_PID, "taken_at": fresh, "heartbeat_at": fresh})
+
+    held = []
+    real_locked = chair.locked
+
+    @contextlib.contextmanager
+    def spying_locked(runs_dir_):
+        with real_locked(runs_dir_):
+            held.append(True)
+            try:
+                yield
+            finally:
+                held.append(False)
+
+    real_clear = chair.clear
+
+    def spying_clear(runs_dir_, force=False):
+        assert held and held[-1] is True, "chair.clear ran without chair.locked held"
+        return real_clear(runs_dir_, force=force)
+
+    monkeypatch.setattr(chair, "locked", spying_locked)
+    monkeypatch.setattr(chair, "clear", spying_clear)
+    rc = main(["route", "chair", "clear", "--profile", str(profile)])
+    assert rc == 0
+    assert held == [True, False]
