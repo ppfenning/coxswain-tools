@@ -21,6 +21,7 @@ __all__ = [
     "Talk",
     "attention_pane",
     "backlog_pane",
+    "chair_pane",
     "frame",
     "leader_pane",
     "panel_status",
@@ -48,6 +49,14 @@ class Facts:
     window: dict
     now: float
 
+    @property
+    def chair(self) -> dict | None:
+        return self.leader
+
+    @property
+    def chair_liveness(self) -> str:
+        return self.leader_liveness
+
 
 @dataclass(frozen=True)
 class State:
@@ -57,6 +66,10 @@ class State:
     selected_run: str | None = None
     selected_status: str | None = None
     land_armed: str | None = None
+
+    @property
+    def chair_liveness(self) -> str:
+        return self.leader_liveness
 
 
 @dataclass(frozen=True)
@@ -100,7 +113,7 @@ Effect = Talk | Setup | Quit | Refuse | Drill | Land | Intake
 
 
 def _refused(state: State) -> bool:
-    return state.leader_liveness == "live" and bool(state.other_holder)
+    return state.chair_liveness == "live" and bool(state.other_holder)
 
 
 def step(state: State, key: str) -> tuple[State, Effect | None]:
@@ -138,12 +151,12 @@ def _cut(line: str, width: int) -> str:
     return line[: max(width - 1, 0)] + _ELLIPSIS
 
 
-def _heartbeat_age(leader: dict | None, now: float) -> float | None:
-    """Seconds between `now` and the leader's own `heartbeat_at`, or None with no leader or no parseable timestamp."""
-    if leader is None:
+def _heartbeat_age(chair: dict | None, now: float) -> float | None:
+    """Seconds between `now` and the chair's own `heartbeat_at`, or None with no chair or no parseable timestamp."""
+    if chair is None:
         return None
     try:
-        heartbeat_at = datetime.datetime.fromisoformat(leader["heartbeat_at"])
+        heartbeat_at = datetime.datetime.fromisoformat(chair["heartbeat_at"])
     except (KeyError, TypeError, ValueError):
         return None
     return now - heartbeat_at.timestamp()
@@ -158,15 +171,19 @@ def panel_status(last_value, age_seconds: float | None, timeout_seconds: float) 
     return "fresh"
 
 
-def leader_pane(facts: Facts, width: int) -> tuple[str, ...]:
-    holder = (facts.leader or {}).get("session", "none")
+def chair_pane(facts: Facts, width: int) -> tuple[str, ...]:
+    holder = (facts.chair or {}).get("session", "none")
     live_runs = any(r.alive for r in facts.runs_rows)
-    attention = facts.leader_liveness in ("none", "stale", "crashed") and live_runs
+    attention = facts.chair_liveness in ("none", "stale", "crashed") and live_runs
     mark = _ATTENTION_MARK if attention else ""
-    age = _heartbeat_age(facts.leader, facts.now)
+    age = _heartbeat_age(facts.chair, facts.now)
     heartbeat = f"{age:.0f}s ago" if age is not None else "n/a"
-    lines = (f"{mark}LEADER", f"holder: {holder}  status: {facts.leader_liveness}  heartbeat: {heartbeat}")
+    lines = (f"{mark}LEADER", f"holder: {holder}  status: {facts.chair_liveness}  heartbeat: {heartbeat}")
     return tuple(_cut(line, width) for line in lines)
+
+
+# Back-compat alias: home_screen.py still calls `leader_pane` until its own rename ticket lands.
+leader_pane = chair_pane
 
 
 def runs_pane(facts: Facts, width: int) -> tuple[str, ...]:
@@ -222,9 +239,9 @@ def frame(facts: Facts, state: State, width: int) -> tuple[str, ...]:
     if width >= _SIDE_BY_SIDE_WIDTH:
         widths = _columns(width, _COLUMN_COUNT)
         top = _side_by_side(
-            (leader_pane(facts, widths[0]), backlog_pane(facts, widths[1]), window_pane(facts, widths[2])),
+            (chair_pane(facts, widths[0]), backlog_pane(facts, widths[1]), window_pane(facts, widths[2])),
             widths,
         )
     else:
-        top = (*leader_pane(facts, width), *backlog_pane(facts, width), *window_pane(facts, width))
+        top = (*chair_pane(facts, width), *backlog_pane(facts, width), *window_pane(facts, width))
     return (*top, *runs)
