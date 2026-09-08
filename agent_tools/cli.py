@@ -43,6 +43,7 @@ from agent_tools import (
     runs_top_screen,
     setup_install,
     setup_screen,
+    stats_ingest,
     usage_window,
 )
 from agent_tools import runs as runs_module
@@ -93,6 +94,21 @@ def _runs_events(a: argparse.Namespace) -> int:
         else:
             detail = " ".join(f"{k}={v}" for k, v in ev.detail.items())
             print(f"{ev.run} {ev.kind} {detail}".rstrip(), flush=True)
+    return 0
+
+
+def _stats_ingest(a: argparse.Namespace) -> int:
+    try:
+        report = stats_ingest.ingest(a.runs_dir, a.db)
+    except FileNotFoundError as exc:
+        print(exc)
+        return 1
+    if report.unparsed_count:
+        print(f"{report.runs_ingested} run(s) ingested; {report.unparsed_count} file(s) failed to parse:")
+        for path in report.unparsed_sample:
+            print(f"  {path}")
+        return 1
+    print(f"{report.runs_ingested} run(s) ingested from {a.runs_dir} into {a.db}")
     return 0
 
 
@@ -1704,6 +1720,19 @@ def build_parser() -> argparse.ArgumentParser:
     tp = runs.add_parser("top", help="live table of runs in flight; --once prints it and exits"); tp.add_argument("--runs-dir", default="runs"); tp.add_argument("--interval", type=float, default=3); tp.add_argument("--once", action="store_true"); tp.set_defaults(fn=_runs_top)
     no = runs.add_parser("notify", help="desktop notifications for exits, quarantines, budget stops and cost"); no.add_argument("--runs-dir", default="runs"); no.add_argument("--once", action="store_true"); no.add_argument("--interval", type=float, default=10); no.set_defaults(fn=_runs_notify)
     de = runs.add_parser("detail", help="one run's timeline, objection and last tool calls"); de.add_argument("run_id"); de.add_argument("--runs-dir", default="runs"); de.add_argument("--json", action="store_true"); de.set_defaults(fn=_runs_detail)
+
+    stats_p = sub.add_parser(
+        "stats", help="load the run corpus into the stats store",
+        description="Load the run corpus into the stats store.",
+        epilog="examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    stats_p.set_defaults(fn=_bare_group(stats_p))
+    st = stats_p.add_subparsers(dest="cmd", required=False)
+    si = st.add_parser("ingest", help="load usage, task, node and launch records into stats.db")
+    si.add_argument("runs_dir", nargs="?", default="runs")
+    si.add_argument("--db", default="workspace/stats/stats.db")
+    si.set_defaults(fn=_stats_ingest)
 
     usage_p = sub.add_parser(
         "usage", help="spend pacing against the ceiling for the current window",
