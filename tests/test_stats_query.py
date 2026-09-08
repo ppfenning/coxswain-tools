@@ -84,6 +84,22 @@ def test_roles_report_cartridge_sha_filter_drops_calls_from_the_other_regime():
     assert row["regimes"] == [{"cartridge_sha": "sha-new", "provider_profile": "p1"}]
 
 
+def test_roles_report_cost_per_landed_counts_only_priced_landed_tasks():
+    calls = [_call("t1"), _call("t2")]
+    tasks = [_task("t1", attempt=1, cost_usd=2.0), _task("t2", attempt=1, cost_usd=None)]
+    [row] = roles_report(calls, tasks)
+    assert row["cost_per_landed"] == 2.0
+    assert row["cost_unknown"] == 1
+
+
+def test_roles_report_cost_per_landed_is_none_when_no_landed_task_carries_a_cost():
+    calls = [_call("t1")]
+    tasks = [_task("t1", attempt=1, cost_usd=None)]
+    [row] = roles_report(calls, tasks)
+    assert row["cost_per_landed"] is None
+    assert row["cost_unknown"] == 1
+
+
 def test_series_report_cartridge_sha_filter_keeps_only_matching_runs():
     runs = [
         {"run_id": "run-a", "cartridge_sha": "abc", "provider_profile": "p1"},
@@ -125,6 +141,14 @@ def test_series_report_reports_none_cost_per_landed_when_a_run_lands_nothing():
     assert by_id["run-b"]["tasks_landed"] == 0
 
 
+def test_series_report_cost_per_landed_is_none_when_the_landed_task_carries_no_cost():
+    runs = [{"run_id": "run-a", "cartridge_sha": "abc", "provider_profile": "p1"}]
+    tasks = [{"run_id": "run-a", "outcome": "landed", "cost_usd": None}]
+    [row] = series_report(runs, tasks)
+    assert row["tasks_landed"] == 1
+    assert row["cost_per_landed"] is None
+
+
 def test_series_report_reports_zero_coverage_for_a_run_with_no_task_rows():
     runs = [{"run_id": "run-z", "cartridge_sha": "zzz", "provider_profile": "p1"}]
     rows = series_report(runs, [])
@@ -147,3 +171,9 @@ def test_render_capped_renders_every_row_verbatim_under_the_cap():
     assert "role=build" in result
     assert "role=review" in result
     assert "more rows" not in result
+
+
+def test_render_capped_prints_a_dash_not_0_0_for_an_uncomputed_value():
+    result = render_capped([{"cost_per_landed": None}], cap_tokens=300)
+    assert "cost_per_landed=-" in result
+    assert "0.0" not in result
