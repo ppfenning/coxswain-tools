@@ -33,10 +33,41 @@ def _joined(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any
     return rows
 
 
-def roles_report(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Landed rate, attempts-to-land and $/landed per (role, model), with sample size and coverage (spec §5)."""
+def _regime_map(runs: Sequence[Mapping[str, Any]]) -> dict[Any, tuple[Any, Any]]:
+    """Each run's `(cartridge_sha, provider_profile)` regime, keyed by `run_id`."""
+    return {run.get("run_id"): (run.get("cartridge_sha"), run.get("provider_profile")) for run in runs}
+
+
+def _regime_matches(regime: tuple[Any, Any], cartridge_sha: str | None, provider_profile: str | None) -> bool:
+    sha, profile = regime
+    return (cartridge_sha is None or sha == cartridge_sha) and (provider_profile is None or profile == provider_profile)
+
+
+def roles_report(
+    calls: Sequence[Mapping[str, Any]],
+    tasks: Sequence[Mapping[str, Any]],
+    runs: Sequence[Mapping[str, Any]] = (),
+    *,
+    cartridge_sha: str | None = None,
+    provider_profile: str | None = None,
+) -> list[dict[str, Any]]:
+    """Landed rate, attempts-to-land and $/landed per (role, model), with sample size
+    and coverage (spec §5). `runs` supplies each call's `(cartridge_sha,
+    provider_profile)` regime by `run_id`; `cartridge_sha`/`provider_profile` narrow
+    calls (and their tasks) to runs matching the given value(s) before grouping.
+    Every row carries `regimes`, the distinct regimes among its calls' runs — more
+    than one means the row averages across a configuration change, and the row says
+    so rather than presenting a single silent number."""
+    regime_by_run = _regime_map(runs)
+    filtering = cartridge_sha is not None or provider_profile is not None
+    matching_run_ids = {
+        run_id for run_id, regime in regime_by_run.items() if _regime_matches(regime, cartridge_sha, provider_profile)
+    }
+    matching_calls = [c for c in calls if c.get("run_id") in matching_run_ids] if filtering else calls
+    matching_tasks = [t for t in tasks if t.get("run_id") in matching_run_ids] if filtering else tasks
+
     groups: dict[tuple[Any, Any], list[dict[str, Any]]] = defaultdict(list)
-    for row in _joined(calls, tasks):
+    for row in _joined(matching_calls, matching_tasks):
         groups[(row.get("role"), row.get("model"))].append(row)
 
     report = []
@@ -59,6 +90,10 @@ def roles_report(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str
             else:
                 attempts_unknown += 1
             landed_cost += r["task_cost_usd"] or 0.0
+        regimes = sorted(
+            {regime_by_run[r["run_id"]] for r in rows if r.get("run_id") in regime_by_run},
+            key=lambda pair: (pair[0] or "", pair[1] or ""),
+        )
         report.append({
             "role": role,
             "model": model,
@@ -69,6 +104,7 @@ def roles_report(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str
             "attempts_unknown": attempts_unknown,
             "cost_per_landed": round(landed_cost / len(landed_task_ids), 2) if landed_task_ids else None,
             "coverage": round(len(joined) / len(rows), 4) if rows else 0.0,
+            "regimes": [{"cartridge_sha": sha, "provider_profile": profile} for sha, profile in regimes],
         })
     return report
 
@@ -95,14 +131,28 @@ def explain_report(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[s
     }
 
 
-def series_report(runs: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """One row per run from the runs/tasks tables, `cost_per_landed` matching agent_tools.records.series_row's formula."""
+def series_report(
+    runs: Sequence[Mapping[str, Any]],
+    tasks: Sequence[Mapping[str, Any]],
+    *,
+    cartridge_sha: str | None = None,
+    provider_profile: str | None = None,
+) -> list[dict[str, Any]]:
+    """One row per run from the runs/tasks tables, `cost_per_landed` matching
+    agent_tools.records.series_row's formula. `cartridge_sha`/`provider_profile`
+    narrow the rows to runs matching the given value(s); each row already carries
+    its own regime, so no aggregate here ever spans one silently."""
+    filtering = cartridge_sha is not None or provider_profile is not None
+    matching_runs = (
+        [r for r in runs if _regime_matches((r.get("cartridge_sha"), r.get("provider_profile")), cartridge_sha, provider_profile)]
+        if filtering else runs
+    )
     by_run: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for task in tasks:
         by_run[task["run_id"]].append(task)
 
     rows = []
-    for run in runs:
+    for run in matching_runs:
         run_id = run["run_id"]
         run_tasks = by_run.get(run_id, [])
         tasks_landed = sum(1 for t in run_tasks if t.get("outcome") == "landed")
