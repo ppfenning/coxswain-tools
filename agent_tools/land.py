@@ -25,6 +25,8 @@ from typing import Any
 __all__ = [
     "checks_argv",
     "land_plan",
+    "phase_landable",
+    "phase_pr_body",
     "pr_body",
     "wait_decision",
 ]
@@ -66,9 +68,80 @@ def checks_argv(repo_facts: dict[str, Any]) -> list[str]:
     return ["pytest", "-q"]
 
 
+def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any]]) -> str | None:
+    """None when every item in the phase is landable, else the first reason it
+    is not: every item must be `done` or `dropped`, and every `done` item's
+    task record must be approved (`_approved` returns None)."""
+    for item in items:
+        status = item.get("status")
+        if status not in ("done", "dropped"):
+            return f"{item.get('id')} is {status!r}, not done or dropped"
+        if status == "dropped":
+            continue
+        record = records.get(item.get("id"))
+        if record is None:
+            return f"{item.get('id')} has no task record"
+        refusal = _approved(record)
+        if refusal is not None:
+            return f"{item.get('id')}: {refusal}"
+    return None
+
+
+def phase_pr_body(phase_record: dict[str, Any], task_records: list[dict[str, Any]]) -> str:
+    """The phase PR body (§2): the phase's own verdict reasoning, then one
+    block per landed ticket, dropped tickets listed last with their reason."""
+    verdict = (phase_record.get("phase_verdict") or {}).get("reasoning", "")
+    lines = [f"Phase: {phase_record.get('phase')}", verdict]
+    dropped = [r for r in task_records if r.get("status") == "dropped"]
+    for r in (r for r in task_records if r.get("status") != "dropped"):
+        facts = r.get("change_facts") or {}
+        lines += [
+            "",
+            f"- {r.get('task')}: {r.get('title', r.get('task'))}",
+            f"  Review: {_verdict(r, 'review')}",
+            f"  Adversary: {_verdict(r, 'adversary')}",
+            f"  Arbitration: {_verdict(r, 'arbitration') or 'unanimous'}",
+            f"  Fix-loop attempts: {facts.get('fix_loop_attempts')}",
+            f"  Files touched: {', '.join(facts.get('files_touched', []))}",
+        ]
+    if dropped:
+        lines += ["", "Dropped:"]
+        lines += [f"- {r.get('task')}: {r.get('reason', '')}" for r in dropped]
+    return "\n".join(lines)
+
+
+def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
+                repo_facts: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """§1's phase step list, or a one-step `refuse` from `phase_landable`. The
+    `checks` step names the phase `branch` instead of running in place; the
+    edge builds a throwaway worktree from it rather than switching the
+    working repo's own branch out from under whatever else uses it."""
+    refusal = phase_landable(items, {r.get("task"): r for r in task_records})
+    if refusal is not None:
+        return [{"kind": "refuse", "reason": refusal}]
+    run, phase, initiative = phase_record.get("run"), phase_record.get("phase"), phase_record.get("initiative")
+    phase_branch = f"epic/{initiative}/{phase}"
+    landed_tasks = [r.get("task") for r in task_records if r.get("status") != "dropped"]
+    return [
+        {"kind": "pick_branch", "branch": phase_branch, "commit_subject": f"phase {phase}"},
+        {"kind": "checks", "argv": checks_argv(repo_facts or {}), "branch": phase_branch},
+        {"kind": "push", "branch": phase_branch},
+        {"kind": "pr_create", "title": f"epic {initiative}: {phase}", "body": phase_pr_body(phase_record, task_records)},
+        {"kind": "wait_checks"},
+        {"kind": "merge", "squash": True, "delete_branch": True},
+        {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "tasks": landed_tasks},
+        *[{"kind": "mark_done", "task": t} for t in landed_tasks],
+    ]
+
+
 def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_branch: str,
-              repo_facts: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """The ordered steps to land `record`, or a one-step `refuse`."""
+              repo_facts: dict[str, Any] | None = None, *, items: list[dict[str, Any]] | None = None,
+              task_records: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """The ordered steps to land `record`, or a one-step `refuse`. Phase mode
+    (`items` given) lands the whole phase off its own branch instead of one
+    task's commit."""
+    if items is not None:
+        return _phase_plan(record, items, task_records or [], repo_facts)
     if _proposal(record, "draft_pr_create") is None:
         return [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
     refusal = _approved(record)
@@ -100,7 +173,7 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
         {"kind": "pr_create", "title": draft.get("title", subject), "body": pr_body(record)},
         {"kind": "wait_checks"},
         {"kind": "merge", "squash": True, "delete_branch": True},
-        {"kind": "clean", "run": run},
+        {"kind": "clean", "run": run, "task": task, "branch": scratch_branch},
         {"kind": "mark_done", "task": task},
     ]
 

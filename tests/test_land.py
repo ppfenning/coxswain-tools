@@ -165,6 +165,148 @@ def test_execute_checks_reports_pass_and_fail(tmp_path):
     assert not ok
 
 
+def test_execute_checks_with_a_branch_runs_in_a_worktree_and_removes_it(repo, tmp_path, monkeypatch):
+    wt = tmp_path / "checks-wt"
+    monkeypatch.setattr(cli.tempfile, "mkdtemp", lambda prefix="": str(wt))
+    ok, detail = cli._execute_land_step(repo, {"kind": "checks", "argv": ["true"], "branch": "agents/epic-x-5/seams-task"})
+    assert ok, detail
+    assert not wt.exists()
+    current = sp.run(["git", "-C", str(repo), "branch", "--show-current"], capture_output=True, text=True).stdout.strip()
+    assert current == "main"
+
+
+# --- land.phase_landable: pure, no I/O (§7) ---
+
+def _item(id_, status):
+    return {"id": id_, "status": status}
+
+
+def test_phase_landable_all_done():
+    items = [_item("a", "done"), _item("b", "done")]
+    records = {"a": _record(task="a"), "b": _record(task="b")}
+    assert land.phase_landable(items, records) is None
+
+
+def test_phase_landable_one_item_not_ready():
+    items = [_item("a", "in_progress"), _item("b", "done")]
+    records = {"b": _record(task="b")}
+    assert land.phase_landable(items, records) == "a is 'in_progress', not done or dropped"
+
+
+def test_phase_landable_one_dropped_rest_done():
+    items = [_item("a", "dropped"), _item("b", "done")]
+    records = {"b": _record(task="b")}
+    assert land.phase_landable(items, records) is None
+
+
+def test_phase_landable_one_done_but_unapproved():
+    items = [_item("a", "done"), _item("b", "done")]
+    records = {"a": _record(task="a", arbitration={"verdict": "revise"}), "b": _record(task="b")}
+    assert land.phase_landable(items, records) == "a: arbitration verdict is 'revise', not 'approve'"
+
+
+def test_phase_landable_a_done_item_with_no_filed_task_record():
+    items = [_item("a", "done"), _item("b", "done")]
+    records = {"b": _record(task="b")}
+    assert land.phase_landable(items, records) == "a has no task record"
+
+
+# --- land_plan: phase mode (§1, §7) ---
+
+def test_phase_plan_step_list_and_clean_phase_scoping():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}
+    task_records = [{
+        "task": "seams-task", "run": "epic-x-5", "phase": "seams", "status": "done",
+        "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+        "change_facts": {"fix_loop_attempts": 1, "files_touched": ["a.py"]},
+    }]
+    items = [{"id": "seams-task", "status": "done"}]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
+    assert [s["kind"] for s in steps] == ["pick_branch", "checks", "push", "pr_create", "wait_checks", "merge", "clean_phase", "mark_done"]
+    assert next(s for s in steps if s["kind"] == "checks")["branch"] == "epic/x/seams"
+    assert next(s for s in steps if s["kind"] == "clean_phase") == {
+        "kind": "clean_phase", "run": "epic-x-5", "phase_branch": "epic/x/seams", "tasks": ["seams-task"],
+    }
+
+
+def test_phase_plan_refuses_on_an_unlandable_item():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    items = [{"id": "seams-task", "status": "in_progress"}]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=[])
+    assert steps == [{"kind": "refuse", "reason": "seams-task is 'in_progress', not done or dropped"}]
+
+
+# --- land_plan: --task mode's clean step is narrowed to its own branch (§7) ---
+
+def test_task_mode_clean_step_names_only_this_tasks_branch():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    steps = land.land_plan(_record(), branches, "main")
+    assert next(s for s in steps if s["kind"] == "clean") == {
+        "kind": "clean", "run": "epic-x-5", "task": "seams-task", "branch": "agents/epic-x-5/seams-task",
+    }
+
+
+# --- land.phase_pr_body: pure, no I/O (§2, §7) ---
+
+def test_phase_pr_body_two_tickets_one_arbitrated_one_unanimous():
+    phase_record = {"phase": "seams", "phase_verdict": {"reasoning": "Both tickets landed cleanly."}}
+    task_records = [
+        {"task": "seams-a", "title": "Add seams", "status": "done",
+         "review": {"verdict": "approve"}, "adversary": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+         "change_facts": {"fix_loop_attempts": 0, "files_touched": ["a.py"]}},
+        {"task": "seams-b", "title": "Wire seams", "status": "done",
+         "review": {"verdict": "approve"}, "adversary": {"verdict": "approve"},
+         "change_facts": {"fix_loop_attempts": 1, "files_touched": ["b.py", "c.py"]}},
+    ]
+    body = land.phase_pr_body(phase_record, task_records)
+    assert body == "\n".join([
+        "Phase: seams",
+        "Both tickets landed cleanly.",
+        "",
+        "- seams-a: Add seams",
+        "  Review: approve",
+        "  Adversary: approve",
+        "  Arbitration: approve",
+        "  Fix-loop attempts: 0",
+        "  Files touched: a.py",
+        "",
+        "- seams-b: Wire seams",
+        "  Review: approve",
+        "  Adversary: approve",
+        "  Arbitration: unanimous",
+        "  Fix-loop attempts: 1",
+        "  Files touched: b.py, c.py",
+    ])
+
+
+# --- cli._execute_land_step: the narrowed clean and the new clean_phase (§7) ---
+
+def test_execute_clean_deletes_only_the_named_branch_not_a_sibling(repo):
+    sp.run(["git", "-C", str(repo), "branch", "agents/epic-x-5/other-task", "main"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "clean", "run": "epic-x-5", "task": "seams-task",
+        "branch": "agents/epic-x-5/seams-task", "worktree_root": str(repo.parent / "wt"),
+    })
+    assert ok, detail
+    branches = cleanup.git_branches(repo)
+    assert "agents/epic-x-5/seams-task" not in branches
+    assert "agents/epic-x-5/other-task" in branches
+
+
+def test_execute_clean_phase_deletes_only_this_phases_branches(repo):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "main"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/other-phase", "main"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "clean_phase", "run": "epic-x-5", "phase_branch": "epic/x/seams",
+        "tasks": ["seams-task"], "worktree_root": str(repo.parent / "wt"),
+    })
+    assert ok, detail
+    branches = cleanup.git_branches(repo)
+    assert "epic/x/seams" not in branches
+    assert "agents/epic-x-5/seams-task" not in branches
+    assert "epic/x/other-phase" in branches
+
+
 # --- land.checks_argv: pure, cheapest and most specific launch first ---
 
 def test_checks_argv_prefers_the_repos_own_venv():
@@ -203,9 +345,12 @@ def test_execute_clean_uses_the_given_worktree_root_not_a_hardcoded_one(tmp_path
     sp.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True, env=_ENV)
     sp.run(["git", "-C", str(root), "branch", "epic/x/seams"], check=True)
     sp.run(["git", "-C", str(root), "branch", "agents/epic-x-5/seams-task"], check=True)
-    wt = tmp_path / "wt/epic-x-5/seams"; wt.parent.mkdir(parents=True)
+    wt = tmp_path / "wt/epic-x-5/seams-task"; wt.parent.mkdir(parents=True)
     sp.run(["git", "-C", str(root), "worktree", "add", "-q", str(wt), "agents/epic-x-5/seams-task"], check=True)
-    ok, detail = cli._execute_land_step(root, {"kind": "clean", "run": "epic-x-5", "worktree_root": str(tmp_path / "wt")})
+    ok, detail = cli._execute_land_step(root, {
+        "kind": "clean", "run": "epic-x-5", "task": "seams-task",
+        "branch": "agents/epic-x-5/seams-task", "worktree_root": str(tmp_path / "wt"),
+    })
     assert ok, detail
     assert "agents/epic-x-5/seams-task" not in cleanup.git_branches(root)
     assert "epic/x/seams" in cleanup.git_branches(root)
@@ -307,8 +452,12 @@ def test_land_refusal_names_the_absolute_dir_and_the_count(repo, tmp_path, capsy
     expected = task_dir.parent.resolve()
     assert f"land: looked in {expected}, found 0 task records, expected 1" in out
 
+    # Two records, but in two different phase directories — no single phase
+    # holds more than one, so this stays ambiguous for task mode rather than
+    # auto-selecting a phase.
     (task_dir / "a.json").write_text(json.dumps(_record()), encoding="utf-8")
-    (task_dir / "b.json").write_text(json.dumps(_record()), encoding="utf-8")
+    other_dir = runs_dir / "epic-x-5/tasks/other"; other_dir.mkdir(parents=True)
+    (other_dir / "b.json").write_text(json.dumps(_record()), encoding="utf-8")
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(runs_dir)])
     out = capsys.readouterr().out
     assert rc == 2
