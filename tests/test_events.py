@@ -21,14 +21,14 @@ def test_task_quarantined():
     assert Event("run1", "task_quarantined", 1, {"task": "fix_thing", "reason": "budget exceeded"}) in events
 
 
-def test_budget_stop_error_wording():
-    events = from_log("run1", ["run1 started", "error_max_budget_usd hit at node build"])
+def test_budget_stop_anchors_to_the_real_emitter_line():
+    events = from_log("run1", ["run1 started", "node 'build' failed in phase1: error_max_budget_usd"])
     assert Event("run1", "budget_stop", 1, {}) in events
 
 
-def test_budget_stop_fix_loop_wording():
-    events = from_log("run1", ["run1 started", "fix loop stopped: budget"])
-    assert Event("run1", "budget_stop", 1, {}) in events
+def test_budget_stop_ignores_a_prose_mention():
+    events = from_log("run1", ["run1 started", "reviewer note: error_max_budget_usd appears only in the quoted code above"])
+    assert not any(e.kind == "budget_stop" for e in events)
 
 
 def test_leader_taken_wording():

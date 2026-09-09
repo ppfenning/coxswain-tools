@@ -31,6 +31,7 @@ _TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)\.jsonl$")
 _LEADER_TAKEN = re.compile(r"^(?:leader|chair) taken: (\S+) \(pid (\d+)\) on (\S+)\s*$")
 _LEADER_RELEASED = re.compile(r"^(?:leader|chair) released: (\S+)\s*$")
 _LEADER_STALE = re.compile(r"^(?:leader|chair) stale: (\S+) \(pid (\d+)\) on (\S+)\s*$")
+_BUDGET_STOP = re.compile(r"^\s*node '.+' failed in .+: error_max_budget_usd")
 
 
 def from_log(run: str, lines: Sequence[str]) -> list[Event]:
@@ -48,7 +49,8 @@ def from_log(run: str, lines: Sequence[str]) -> list[Event]:
         if m:
             events.append(Event(run, "task_quarantined", seq, {"task": m.group(1), "reason": m.group(2)}))
             continue
-        if "error_max_budget_usd" in line or "fix loop stopped: budget" in line:
+        m = _BUDGET_STOP.match(line)
+        if m:
             events.append(Event(run, "budget_stop", seq, {}))
             continue
         m = _LEADER_TAKEN.match(line)
