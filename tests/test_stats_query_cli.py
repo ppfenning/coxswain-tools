@@ -3,7 +3,7 @@ import json
 import pytest
 
 from agent_tools.cli import build_parser, main
-from agent_tools.stats_query import explain_report, roles_report, series_report
+from agent_tools.stats_query import coverage_report, explain_report, roles_report, series_report
 from agent_tools.stats_schema import connect
 
 
@@ -86,6 +86,35 @@ def test_cli_stats_series_json_matches_the_direct_report(tmp_path, capsys):
     assert out == series_report(runs, tasks)
 
 
+def test_cli_stats_coverage_json_matches_the_direct_report(tmp_path, capsys):
+    db = tmp_path / "stats.db"
+    calls, tasks, runs = _seed(db)
+    code = main(["stats", "coverage", "--db", str(db), "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert out == coverage_report(calls, tasks, runs)
+    assert len(out) == 7
+
+
+def test_cli_stats_coverage_default_text_over_a_three_run_corpus_prints_seven_rows(tmp_path, capsys):
+    db = tmp_path / "stats.db"
+    conn = connect(db)
+    for row in [
+        {"run_id": "r1", "cartridge_sha": "abc", "provider_profile": "default", "host": "box1"},
+        {"run_id": "r2", "cartridge_sha": "abc", "provider_profile": None, "host": "box1"},
+        {"run_id": "r3", "cartridge_sha": "abc", "provider_profile": "default", "host": None},
+    ]:
+        _insert(conn, "runs", row)
+    conn.commit()
+    conn.close()
+    code = main(["stats", "coverage", "--db", str(db)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out.strip().endswith("7 rows")
+    assert "question=runs_with_provider_profile | known=2 | total=3 | fraction=0.6667" in out
+    assert "question=runs_with_host | known=2 | total=3 | fraction=0.6667" in out
+
+
 def _seed_two_regimes(db_path):
     conn = connect(db_path)
     for row in [
@@ -157,7 +186,7 @@ def test_cli_stats_series_cartridge_sha_filter_narrows_to_the_matching_regime(tm
     assert [r["run_id"] for r in rows] == ["r1"]
 
 
-@pytest.mark.parametrize("cmd", ["roles", "explain", "series"])
+@pytest.mark.parametrize("cmd", ["roles", "explain", "series", "coverage"])
 def test_stats_subcommand_help_exits_zero(cmd):
     argv = ["stats", cmd, "role", "--help"] if cmd == "explain" else ["stats", cmd, "--help"]
     with pytest.raises(SystemExit) as exc_info:
