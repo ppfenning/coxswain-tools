@@ -1186,6 +1186,36 @@ def _route_launch(a: argparse.Namespace) -> int:
     return 0
 
 
+def _route_lint(a: argparse.Namespace) -> int:
+    """work-shape.md §3: `cox route lint <initiative>`, before dispatch.
+    `--repo` falls back to the initiative's own `repo:` frontmatter; only
+    when neither names one does the reach rule stand down, and that is
+    said once here rather than left for `lint_items` to flag every path.
+    """
+    initiative_dir = Path(a.initiative_dir)
+    items = []
+    for path in sorted(initiative_dir.glob("*/*.md")):
+        fields, body = route.parse_frontmatter(path.read_text(encoding="utf-8"))
+        items.append({
+            "task": fields.get("id", path.stem),
+            "phase": fields.get("phase", path.parent.name),
+            "surfaces": fields.get("surfaces", []),
+            "body": body,
+        })
+    repo = a.repo
+    if not repo:
+        init_path = initiative_dir / "initiative.md"
+        if init_path.exists():
+            init_fields, _ = route.parse_frontmatter(init_path.read_text(encoding="utf-8"))
+            repo = init_fields.get("repo")
+    if not repo:
+        print(f"routing: no repo found for {a.initiative_dir}; reach check skipped")
+    problems = route.lint_items(items, repo, ("pytest", "git status", "git diff"))
+    for problem in problems:
+        print(f"{problem.task} {problem.rule}: {problem.detail} -> {problem.fix}")
+    return 2 if any(p.rule in ("reach", "coupling") for p in problems) else 0
+
+
 def _route_launch_sweep(a: argparse.Namespace) -> int:
     """work-shape.md §1: no harness graph exists yet, so only `--dry-run` runs."""
     argv = route.build_sweep_argv(a.idea, a.initiative_id, a.label)
@@ -1998,6 +2028,8 @@ def build_parser() -> argparse.ArgumentParser:
     f = r.add_parser("file", help="file a new ticket for the harness"); f.add_argument("--profile"); f.add_argument("--repo"); f.add_argument("--title")
     f.add_argument("--body"); f.add_argument("--phase", default="build"); f.add_argument("--intake", action="store_true")
     f.add_argument("--from-intake", help="link and file an existing intake file's initiative, then retire it"); f.set_defaults(fn=_route_file)
+    li = r.add_parser("lint", help="static ticket lint over a filed initiative, work-shape.md §3")
+    li.add_argument("initiative_dir"); li.add_argument("--repo", default=None); li.set_defaults(fn=_route_lint)
     ld = r.add_parser("chair", help="the chair lock for the landing loop (runs/chair.json)")
     ld.set_defaults(fn=_bare_group(ld))
     lds = ld.add_subparsers(dest="chair_cmd", required=False)

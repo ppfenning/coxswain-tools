@@ -1,8 +1,9 @@
+import argparse
 import json
 
 import pytest
 
-from agent_tools import pacing, route
+from agent_tools import cli, pacing, route
 
 VALID_PROFILE = """\
 team: acme
@@ -1010,3 +1011,129 @@ def test_launch_gate_go_is_silent():
     code, lines = route.launch_gate(_assessment("go", "on pace"), force=False)
     assert code is None
     assert lines == []
+
+
+def test_lint_items_flags_a_reach_violation():
+    # work-shape.md §8: "a `~/` path" is the fixture named for this rule.
+    items = [{"task": "t1", "phase": "build", "surfaces": [], "body": "see ~/notes/plan.md for context"}]
+    problems = route.lint_items(items, "acme/widgets", ())
+    assert problems == [
+        route.Problem(
+            "t1", "reach", "'~/notes/plan.md' is outside 'acme/widgets'",
+            "move the artifact into the repository or drop the reference",
+        )
+    ]
+
+
+def test_lint_items_does_not_flag_an_absolute_path_inside_the_repo():
+    # work-shape.md §3: reach excludes a path "that is not inside the target repository".
+    items = [{"task": "t1", "phase": "build", "surfaces": [],
+              "body": "see /home/acme/widgets/agent_tools/route.py for the schema"}]
+    problems = route.lint_items(items, "/home/acme/widgets", ())
+    assert problems == []
+
+
+def test_lint_items_flags_a_reach_violation_inside_a_backtick_span():
+    # 2026-09-09 revise: this project's own house style wraps every file
+    # reference in backticks, so the path sits right after one, not a space.
+    items = [{"task": "t1", "phase": "build", "surfaces": [], "body": "see `/tmp/notes.md` for context"}]
+    problems = route.lint_items(items, "acme/widgets", ())
+    assert problems == [
+        route.Problem(
+            "t1", "reach", "'/tmp/notes.md' is outside 'acme/widgets'",
+            "move the artifact into the repository or drop the reference",
+        )
+    ]
+
+
+def test_lint_items_stands_the_reach_rule_down_when_repo_is_unresolved():
+    # 2026-09-09 revise: no repo to check against means no reach findings,
+    # not a reach finding on every path.
+    items = [{"task": "t1", "phase": "build", "surfaces": [], "body": "see ~/notes/plan.md for context"}]
+    assert route.lint_items(items, None, ()) == []
+
+
+def test_lint_items_flags_a_grant_violation():
+    # work-shape.md §8: "a `cox` command" is the fixture named for this rule.
+    items = [{"task": "t1", "phase": "build", "surfaces": [], "body": "evidence: run `cox route status`"}]
+    problems = route.lint_items(items, "acme/widgets", ("pytest", "git status", "git diff"))
+    assert problems == [
+        route.Problem(
+            "t1", "grant", "command 'cox' is not in this role's grant",
+            "name only pytest, git status, git diff",
+        )
+    ]
+
+
+def test_lint_items_flags_a_coupling_violation():
+    # work-shape.md §8: "two tickets sharing a test file" is the fixture named for this rule.
+    items = [
+        {"task": "t1", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "first ticket"},
+        {"task": "t2", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "second ticket"},
+    ]
+    problems = route.lint_items(items, "acme/widgets", ())
+    assert problems == [
+        route.Problem(
+            "t1", "coupling", "t1 and t2 both surface 'tests/test_route.py'",
+            "merge, or order with needs",
+        )
+    ]
+
+
+def test_lint_items_flags_a_size_violation():
+    # work-shape.md §8: "a 750-word body" is the fixture this rule's test carries.
+    items = [{"task": "t1", "phase": "build", "surfaces": [], "body": " ".join(["word"] * 750)}]
+    problems = route.lint_items(items, "acme/widgets", ())
+    assert problems == [
+        route.Problem("t1", "size", "body is 750 words", "point at a spec file in the repository")
+    ]
+
+
+def test_lint_items_returns_empty_list_for_a_clean_dag():
+    # work-shape.md §8: "a clean DAG yields `[]`."
+    items = [{"task": "t1", "phase": "build", "surfaces": ["agent_tools/route.py"], "body": "plain ticket body"}]
+    assert route.lint_items(items, "acme/widgets", ()) == []
+
+
+def _lint_ns(initiative_dir, repo=None):
+    return argparse.Namespace(initiative_dir=str(initiative_dir), repo=repo)
+
+
+def test_route_lint_cli_resolves_repo_from_initiative_frontmatter(tmp_path, capsys):
+    # 2026-09-09 revise: `--repo` defaults to None, and the CLI handler
+    # falls back to the filed initiative's own `repo:` field, so the
+    # default invocation does not flag every path as unreachable.
+    initiative = tmp_path / "widget-fix"
+    initiative.mkdir()
+    (initiative / "initiative.md").write_text(
+        '---\nid: "widget-fix"\ntitle: "Widget fix"\nrepo: "acme/widgets"\n---\nfix the widget\n',
+        encoding="utf-8",
+    )
+    build = initiative / "build"
+    build.mkdir()
+    (build / "widget-fix.md").write_text(
+        '---\nid: "widget-fix"\nphase: "build"\nsurfaces: []\n---\nsee ~/notes/plan.md for context\n',
+        encoding="utf-8",
+    )
+    code = cli._route_lint(_lint_ns(initiative))
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "widget-fix reach: '~/notes/plan.md' is outside 'acme/widgets' -> " in out
+
+
+def test_route_lint_cli_stands_reach_down_and_says_so_once_with_no_repo_anywhere(tmp_path, capsys):
+    initiative = tmp_path / "widget-fix"
+    initiative.mkdir()
+    (initiative / "initiative.md").write_text(
+        '---\nid: "widget-fix"\ntitle: "Widget fix"\n---\nfix the widget\n', encoding="utf-8",
+    )
+    build = initiative / "build"
+    build.mkdir()
+    (build / "widget-fix.md").write_text(
+        '---\nid: "widget-fix"\nphase: "build"\nsurfaces: []\n---\nsee ~/notes/plan.md for context\n',
+        encoding="utf-8",
+    )
+    code = cli._route_lint(_lint_ns(initiative))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out == f"routing: no repo found for {initiative}; reach check skipped\n"
