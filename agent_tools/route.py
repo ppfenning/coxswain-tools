@@ -761,9 +761,12 @@ def intake_entries(files: dict) -> list:
     ]
 
 
+TERMINAL = frozenset({"done", "dropped"})
+
+
 def initiative_states(ids: list, items: list) -> dict:
-    """`id -> True` when every item naming it has state `"done"` (vacuously true for an id with none)."""
-    return {i: all(item["state"] == "done" for item in items if item["initiative"] == i) for i in ids}
+    """`id -> True` when every item naming it has state `"done"` or `"dropped"` (vacuously true for an id with none)."""
+    return {i: all(item["state"] in TERMINAL for item in items if item["initiative"] == i) for i in ids}
 
 
 def _intake_group(entry: dict, initiatives_by_id: dict, initiatives: list) -> str:
@@ -814,7 +817,7 @@ def _ready_unblocked(item: dict, done_ids: set) -> bool:
 
 
 def _initiative_summary(initiative_id: str, own_items: list):
-    done_ids = {item["id"] for item in own_items if item["state"] == "done"}
+    done_ids = {item["id"] for item in own_items if item["state"] in TERMINAL}
     ready_phases = sorted(
         {item["phase"] for item in own_items if _ready_unblocked(item, done_ids)}
     )
@@ -837,7 +840,7 @@ def initiative_summaries(items: list) -> list:
     `{"id": <initiative>, "phase": <sorted-first phase holding a ready,
     unblocked task>, "ready": <count of such tasks in that phase>}`.
     "Unblocked" means every id in `needs` names a task, anywhere in the same
-    initiative, whose state is "done". An initiative with no ready,
+    initiative, whose state is "done" or "dropped". An initiative with no ready,
     unblocked task is omitted. Sorted by initiative id.
     """
     initiative_ids = sorted({item["initiative"] for item in items})
