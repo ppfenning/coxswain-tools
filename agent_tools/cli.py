@@ -1186,6 +1186,16 @@ def _route_launch(a: argparse.Namespace) -> int:
     return 0
 
 
+def _route_launch_sweep(a: argparse.Namespace) -> int:
+    """work-shape.md §1: no harness graph exists yet, so only `--dry-run` runs."""
+    argv = route.build_sweep_argv(a.idea, a.initiative_id, a.label)
+    if a.dry_run:
+        print(f"dry-run: {' '.join(argv)}")
+        return 0
+    print("routing: sweep has no harness graph to launch yet; use --dry-run")
+    return 2
+
+
 _CORE_PROBE_SCRIPT = '''
 import json, os, sys
 
@@ -2008,6 +2018,8 @@ def build_parser() -> argparse.ArgumentParser:
     de.add_argument("--dry-run", action="store_true"); de.set_defaults(fn=_route_launch, graph="decompose")
     co = lc.add_parser("cos", help="launch the cos graph"); co.add_argument("--profile"); co.add_argument("--dry-run", action="store_true")
     co.set_defaults(fn=_route_launch, graph="cos")
+    sw = lc.add_parser("sweep", help="launch the sweep graph against an idea"); sw.add_argument("--idea", required=True); sw.add_argument("--initiative-id", required=True)
+    sw.add_argument("--label"); sw.add_argument("--dry-run", action="store_true"); sw.set_defaults(fn=_route_launch_sweep)
     for _launch_parser in (ep, de, co):
         _launch_parser.add_argument("--tier-ceiling", choices=("cheap", "standard", "deep"))
         _launch_parser.add_argument("--effort-ceiling", choices=("low", "high"))
