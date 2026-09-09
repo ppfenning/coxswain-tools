@@ -554,6 +554,29 @@ def test_launch_cos_dry_run_prints_argv_pid_log_and_trace(tmp_path, capsys):
     assert not (ws / "runs" / "cos-1.pid").exists()
 
 
+def test_launch_sweep_dry_run_prints_the_built_argv_with_a_label(capsys):
+    rc = main([
+        "route", "launch", "sweep", "--dry-run",
+        "--idea", "plans/idea.md",
+        "--initiative-id", "fix-thing",
+        "--label", "alice",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out == "dry-run: sweep --idea plans/idea.md --initiative-id fix-thing --label alice\n"
+
+
+def test_launch_sweep_dry_run_omits_label_when_not_passed(capsys):
+    rc = main([
+        "route", "launch", "sweep", "--dry-run",
+        "--idea", "plans/idea.md",
+        "--initiative-id", "fix-thing",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out == "dry-run: sweep --idea plans/idea.md --initiative-id fix-thing\n"
+
+
 def test_launch_refuses_a_missing_profile(tmp_path, capsys):
     missing = tmp_path / "no-such-profile.yaml"
     rc = main(["route", "launch", "epic", "--profile", str(missing), "--initiative", str(tmp_path / "x")])
