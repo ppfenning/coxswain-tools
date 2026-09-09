@@ -15,7 +15,7 @@ from typing import Any
 
 from agent_tools.stats_schema import FAILURE_CLASSES
 
-__all__ = ["explain_report", "render_capped", "roles_report", "series_report"]
+__all__ = ["coverage_report", "explain_report", "render_capped", "roles_report", "series_report"]
 
 
 def _joined(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -186,6 +186,29 @@ def series_report(
             "coverage": round(resolved / len(run_tasks), 4) if run_tasks else 0.0,
         })
     return sorted(rows, key=lambda r: r["run_id"])
+
+
+def coverage_report(
+    calls: Sequence[Mapping[str, Any]],
+    tasks: Sequence[Mapping[str, Any]],
+    runs: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Seven provenance rows, `known`/`total` plus their `fraction`, in the fixed order of spec §4: runs with
+    provider_profile, runs with host, runs with cartridge_sha, calls with a task, calls with a failure_class,
+    tasks with a known outcome, tasks with an outcome_kind (ticket body, RETURNED note)."""
+
+    def _row(question: str, known: int, total: int) -> dict[str, Any]:
+        return {"question": question, "known": known, "total": total, "fraction": round(known / total, 4) if total else 0.0}
+
+    return [
+        _row("runs_with_provider_profile", sum(1 for r in runs if r.get("provider_profile") is not None), len(runs)),
+        _row("runs_with_host", sum(1 for r in runs if r.get("host") is not None), len(runs)),
+        _row("runs_with_cartridge_sha", sum(1 for r in runs if r.get("cartridge_sha") is not None), len(runs)),
+        _row("calls_with_a_task", sum(1 for c in calls if c.get("task_id") is not None), len(calls)),
+        _row("calls_with_a_failure_class", sum(1 for c in calls if c.get("failure_class") is not None), len(calls)),
+        _row("tasks_with_a_known_outcome", sum(1 for t in tasks if t.get("outcome") not in (None, "unknown")), len(tasks)),
+        _row("tasks_with_an_outcome_kind", sum(1 for t in tasks if t.get("outcome_kind") is not None), len(tasks)),
+    ]
 
 
 def render_capped(rows: Sequence[Mapping[str, Any]], cap_tokens: int = 300) -> str:
