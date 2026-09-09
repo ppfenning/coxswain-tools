@@ -38,6 +38,7 @@ from agent_tools import (
     release_check_manifest,
     release_check_notes,
     release_check_pages,
+    release_check_readmes,
     route,
     runs_detail,
     runs_detail_screen,
@@ -1647,6 +1648,9 @@ def _release_check(a: argparse.Namespace) -> int:
         **release_check_manifest.gather_manifest_facts(manifest, str(manifest_path), plan["component_docs"], plan["release_notes"]),
         **release_check_notes.gather_notes_facts(a.root or ".", manifest, subprocess.run),
         **release_check_pages.gather_page_facts(a.root or ".", manifest, subprocess.run),
+        **release_check_readmes.gather_readmes_facts(
+            plan["readmes"], manifest, release_check_readmes.resolve_docs_base(str(Path(plan["umbrella"]) / "mkdocs.yml"))
+        ),
     }
     drifts = release_check.run_checks(facts)
     rendered = release_check.render(drifts, len(release_check.CHECKS))
