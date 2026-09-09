@@ -13,6 +13,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from pathlib import Path
@@ -287,16 +288,70 @@ def _land_branches(repo: Path, record: dict, default_branch: str) -> dict[str, l
     return branches
 
 
-def _land_enrich(steps: list[dict], *, path: str, worktree_root: str) -> list[dict]:
-    """Steps enriched with what only the edge knows: the record's own file
-    path for `mark_done`, and the configured worktree root for `clean`."""
+def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None) -> list[dict]:
+    """Steps enriched with what only the edge knows: each `mark_done`'s own
+    record file path (`task_paths` maps task name to path in phase mode), and
+    the configured worktree root for `clean`/`clean_phase`. A `checks` step
+    that names a `branch` (phase mode) gets no filesystem write here — a dry
+    run must stay read-only, so the actual worktree is only ever created at
+    execution time, inside `_execute_land_step`, under `--apply`."""
     def enrich(step: dict) -> dict:
         if step["kind"] == "mark_done":
-            return {**step, "path": path}
-        if step["kind"] == "clean":
+            return {**step, "path": (task_paths or {}).get(step["task"], path)}
+        if step["kind"] in ("clean", "clean_phase"):
             return {**step, "worktree_root": worktree_root}
         return step
     return [enrich(s) for s in steps]
+
+
+def _land_phase_record(runs_dir: Path, run_id: str, phase: str) -> tuple[dict | None, list[dict], dict[str, str], str]:
+    """The phase record at `runs/<run>:<phase>.json` and every task record
+    filed under it, keyed by task name for `mark_done`'s own file path."""
+    phase_path = runs_dir / f"{run_id}:{phase}.json"
+    if not phase_path.exists():
+        return None, [], {}, str(phase_path.resolve())
+    phase_record = json.loads(phase_path.read_text(encoding="utf-8"))
+    phase_record.setdefault("run", run_id)
+    phase_record.setdefault("phase", phase)
+    task_records, task_paths = [], {}
+    for p in sorted((runs_dir / run_id / "tasks" / phase).glob("*.json")):
+        r = json.loads(p.read_text(encoding="utf-8"))
+        r.setdefault("run", run_id); r.setdefault("task", p.stem); r.setdefault("phase", phase)
+        task_records.append(r)
+        task_paths[r["task"]] = str(p)
+    return phase_record, task_records, task_paths, str(phase_path)
+
+
+def _phase_items(work_root: Path, initiative: str, phase: str) -> tuple[list[dict] | None, str]:
+    """The phase's own tickets from the work store (`work/<initiative>/<phase>/*.md`,
+    `route.work_item`'s `state`), or `None` with the directory searched when
+    there is nothing there to read — a phase can never be waved through by a
+    missing ticket file."""
+    phase_dir = work_root / initiative / phase
+    paths = sorted(phase_dir.glob("*.md")) if phase_dir.is_dir() else []
+    if not paths:
+        return None, str(phase_dir)
+    items = []
+    for p in paths:
+        text = _read_text_or_none(p)
+        if text is None:
+            continue
+        fields = route.parse_frontmatter(text)[0]
+        item = route.work_item(fields, initiative=initiative, phase_dir=phase, stem=p.stem)
+        items.append({"id": item["id"], "status": item["state"]})
+    return items, str(phase_dir)
+
+
+def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
+    """The one phase under `runs/<run_id>/tasks/*/` holding more than one
+    task record — phase mode's default trigger when neither `--phase` nor
+    `--task` is given. `None` when no single phase qualifies, leaving task
+    mode's own record count to speak (including its "found 0" refusal)."""
+    tasks_root = runs_dir / run_id / "tasks"
+    if not tasks_root.is_dir():
+        return None
+    candidates = [d.name for d in tasks_root.iterdir() if d.is_dir() and len(list(d.glob("*.json"))) > 1]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
@@ -320,6 +375,21 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
             return False, cp.stderr.strip() or cp.stdout.strip()
         return True, f"cherry-picked {shas[0][:8]} onto {step['onto']}"
     if kind == "checks":
+        if "branch" in step:
+            # Phase mode: never check out the phase branch in the working
+            # repo (that races anything else using it) — build it fresh in
+            # its own worktree instead, and remove it whatever happens. The
+            # directory is allocated here, at execution, not in the plan
+            # (`land.py`/`_land_enrich`), so a dry run never touches disk.
+            wt = Path(tempfile.mkdtemp(prefix="land-checks-"))
+            add = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(wt), step["branch"]], capture_output=True, text=True)
+            if add.returncode != 0:
+                return False, add.stderr.strip() or add.stdout.strip()
+            try:
+                r = subprocess.run(step["argv"], cwd=wt, capture_output=True, text=True)
+                return r.returncode == 0, " ".join(step["argv"])
+            finally:
+                subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
         r = subprocess.run(step["argv"], cwd=repo, capture_output=True, text=True)
         return r.returncode == 0, " ".join(step["argv"])
     if kind == "push":
@@ -334,8 +404,21 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
         r = subprocess.run(["gh", "pr", "merge", "--squash", "--delete-branch"], cwd=repo, capture_output=True, text=True)
         return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
     if kind == "clean":
-        p = cleanup.plan_cleanup(run_id=step["run"], worktrees=cleanup.git_worktrees(repo), branches=cleanup.git_branches(repo), worktree_root=step["worktree_root"])
-        return True, "; ".join(cleanup.apply_cleanup(repo, p, dry_run=False))
+        wt = Path(step["worktree_root"]).expanduser() / step["run"] / step["task"]
+        if wt.exists():
+            subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "branch", "-D", step["branch"]], capture_output=True)
+        return True, f"deleted branch {step['branch']}"
+    if kind == "clean_phase":
+        doomed = [b for b in cleanup.git_branches(repo) if b == step["phase_branch"] or b.startswith(step["phase_branch"] + "--")]
+        doomed += [f"agents/{step['run']}/{t}" for t in step["tasks"]]
+        for t in step["tasks"]:
+            wt = Path(step["worktree_root"]).expanduser() / step["run"] / t
+            if wt.exists():
+                subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
+        for b in doomed:
+            subprocess.run(["git", "-C", str(repo), "branch", "-D", b], capture_output=True)
+        return True, "deleted " + ", ".join(doomed)
     if kind == "mark_done":
         record_path = Path(step["path"])
         record = json.loads(record_path.read_text(encoding="utf-8"))
@@ -376,15 +459,29 @@ def _runs_land(a: argparse.Namespace) -> int:
         guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force)
         if guard_rc is not None:
             return guard_rc
-    record, searched, count = _land_record(runs_dir, a.run_id, a.task)
-    if record is None:
-        print(f"land: looked in {searched}, found {count} task records, expected 1")
-        return 2
-    path = searched
     default_branch = "main"
-    branches = _land_branches(repo, record, default_branch)
     repo_facts = {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists()}
-    steps = _land_enrich(land.land_plan(record, branches, default_branch, repo_facts), path=path, worktree_root=a.worktree_root)
+    phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, a.run_id))
+    if phase:
+        phase_record, task_records, task_paths, searched = _land_phase_record(runs_dir, a.run_id, phase)
+        if phase_record is None:
+            print(f"land: no phase record at {searched}")
+            return 2
+        initiative = phase_record.get("initiative")
+        items, items_path = (_phase_items(runs_dir.parent / "work", initiative, phase)
+                              if initiative else (None, f"{runs_dir.parent / 'work'} (no initiative on the phase record)"))
+        if items is None:
+            print(f"land: no work items at {items_path}, expected the phase's tickets")
+            return 2
+        plan_steps = land.land_plan(phase_record, {}, default_branch, repo_facts, items=items, task_records=task_records)
+        steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths)
+    else:
+        record, searched, count = _land_record(runs_dir, a.run_id, a.task)
+        if record is None:
+            print(f"land: looked in {searched}, found {count} task records, expected 1")
+            return 2
+        branches = _land_branches(repo, record, default_branch)
+        steps = _land_enrich(land.land_plan(record, branches, default_branch, repo_facts), path=searched, worktree_root=a.worktree_root)
     if not a.apply:
         print(json.dumps(steps, indent=2))
         return 2 if any(s["kind"] == "refuse" for s in steps) else 0
@@ -1802,7 +1899,7 @@ def build_parser() -> argparse.ArgumentParser:
     u = runs.add_parser("usage", help="usage stats and cost for one run"); u.add_argument("run_id"); u.add_argument("--runs-dir", default="runs"); u.add_argument("--json", action="store_true"); u.set_defaults(fn=_runs_usage)
     t = runs.add_parser("trace", help="the tool-call trace for one run"); t.add_argument("run_id"); t.add_argument("--runs-dir", default="runs"); t.add_argument("--role"); t.add_argument("-v", "--verbose", action="store_true"); t.set_defaults(fn=_runs_trace)
     c = runs.add_parser("clean", help="delete a run's worktree and branches locally"); c.add_argument("run_id"); c.add_argument("--repo", required=True); c.add_argument("--worktree-root", default="~/worktrees"); c.add_argument("--apply", action="store_true"); c.set_defaults(fn=_runs_clean)
-    la = runs.add_parser("land", help="merge a run's branch into the target repo"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task"); la.add_argument("--label"); la.add_argument("--force", action="store_true", help="land despite a foreign live leader")
+    la = runs.add_parser("land", help="merge a run's branch into the target repo"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task"); la.add_argument("--phase", help="land the whole phase off its own epic branch instead of one task"); la.add_argument("--label"); la.add_argument("--force", action="store_true", help="land despite a foreign live leader")
     la.add_argument("--worktree-root", default="~/worktrees"); la.add_argument("--apply", action="store_true"); la.add_argument("--no-merge", action="store_true")
     la.add_argument("--runs-dir", help="override: resolve task records here instead of the profile's workspace_dir"); la.add_argument("--profile"); la.set_defaults(fn=_runs_land)
     se = runs.add_parser("series", help="per-run summary rows across a runs directory"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
