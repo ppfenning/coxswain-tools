@@ -1216,6 +1216,35 @@ def _route_lint(a: argparse.Namespace) -> int:
     return 2 if any(p.rule in ("reach", "coupling") for p in problems) else 0
 
 
+def _route_groups(a: argparse.Namespace) -> int:
+    """work-shape.md §5: `cox route groups` prints the newest
+    `plans/intake-groups/<date>.md` file under the profile's workspace, or
+    `no groups filed` when none exist.
+    """
+    profile_path = _profile_path(a)
+    text = _read_text_or_none(profile_path)
+    if text is None:
+        print(f"routing: no profile at {profile_path}")
+        return 2
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError as exc:
+        print(f"routing: profile unreadable: {exc}")
+        return 2
+    workspace = profile.get("workspace_dir", "")
+    if not workspace:
+        print(f"routing: workspace_dir not set in profile {profile_path}")
+        return 2
+    groups_dir = Path(workspace).expanduser() / "plans" / "intake-groups"
+    names = sorted(p.name for p in groups_dir.glob("*.md")) if groups_dir.is_dir() else []
+    latest = route.latest_groups_file(names)
+    if latest is None:
+        print("no groups filed")
+        return 0
+    print(str(groups_dir / latest))
+    return 0
+
+
 def _route_launch_sweep(a: argparse.Namespace) -> int:
     """work-shape.md §1: no harness graph exists yet, so only `--dry-run` runs."""
     argv = route.build_sweep_argv(a.idea, a.initiative_id, a.label)
@@ -2030,6 +2059,8 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--from-intake", help="link and file an existing intake file's initiative, then retire it"); f.set_defaults(fn=_route_file)
     li = r.add_parser("lint", help="static ticket lint over a filed initiative, work-shape.md §3")
     li.add_argument("initiative_dir"); li.add_argument("--repo", default=None); li.set_defaults(fn=_route_lint)
+    gr = r.add_parser("groups", help="print the newest plans/intake-groups/<date>.md file, work-shape.md §5")
+    gr.add_argument("--profile"); gr.set_defaults(fn=_route_groups)
     ld = r.add_parser("chair", help="the chair lock for the landing loop (runs/chair.json)")
     ld.set_defaults(fn=_bare_group(ld))
     lds = ld.add_subparsers(dest="chair_cmd", required=False)

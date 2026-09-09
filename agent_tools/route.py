@@ -20,6 +20,7 @@ __all__ = [
     "initiative_summaries",
     "intake_entries",
     "intake_file",
+    "latest_groups_file",
     "launch_gate",
     "lint_items",
     "next_run_id",
@@ -857,6 +858,14 @@ def parse_pid(text: str) -> int | None:
     """
     stripped = text.strip()
     return int(stripped) if stripped.isdigit() else None
+
+
+def latest_groups_file(names: list) -> str | None:
+    """work-shape.md §5: the newest `plans/intake-groups/<date>.md`
+    filename, picked by lexicographic max (ISO dates sort naturally); `None`
+    when `names` is empty.
+    """
+    return max(names) if names else None
 
 
 def work_item(fields: dict, *, initiative: str, phase_dir: str, stem: str) -> dict:

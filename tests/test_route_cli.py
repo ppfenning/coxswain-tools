@@ -968,3 +968,30 @@ def test_launch_refuses_when_the_provider_profile_does_not_parse_to_a_mapping(tm
     assert rc == 2
     assert "provider profile" in out
     assert not (ws / "runs" / "fix-thing-1.pid").exists()
+
+
+def test_route_groups_prints_the_latest_dated_file(tmp_path, capsys):
+    ws = tmp_path / "workspace"
+    groups_dir = ws / "plans" / "intake-groups"
+    groups_dir.mkdir(parents=True)
+    (groups_dir / "2026-09-01.md").write_text("older\n")
+    (groups_dir / "2026-09-08.md").write_text("newer\n")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"team: acme\nworkspace_dir: {ws}\n")
+
+    rc = main(["route", "groups", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out == f"{groups_dir / '2026-09-08.md'}\n"
+
+
+def test_route_groups_with_no_groups_prints_no_groups_filed(tmp_path, capsys):
+    ws = tmp_path / "workspace"
+    ws.mkdir(parents=True)
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"team: acme\nworkspace_dir: {ws}\n")
+
+    rc = main(["route", "groups", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out == "no groups filed\n"
