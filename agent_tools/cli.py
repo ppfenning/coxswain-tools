@@ -243,17 +243,35 @@ def _runs_clean(a: argparse.Namespace) -> int:
     return 0
 
 
-def _land_record(run_id: str, task: str | None) -> tuple[dict, str] | None:
-    tasks_root = Path("runs") / run_id / "tasks"
+def _runs_dir_for_land(a: argparse.Namespace) -> tuple[Path | None, str | None]:
+    """`--runs-dir` overrides; otherwise `runs/` under the profile's `workspace_dir`."""
+    if a.runs_dir:
+        return Path(a.runs_dir).expanduser(), None
+    profile_path = _profile_path(a)
+    text = _read_text_or_none(profile_path)
+    if text is None:
+        return None, f"no profile at {profile_path}"
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError as exc:
+        return None, f"profile unreadable: {exc}"
+    workspace = profile.get("workspace_dir", "")
+    if not workspace:
+        return None, f"workspace_dir not set in profile {profile_path}"
+    return Path(workspace).expanduser() / "runs", None
+
+
+def _land_record(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | None, str, int]:
+    tasks_root = runs_dir / run_id / "tasks"
     matches = sorted(tasks_root.glob(f"*/{task}.json" if task else "*/*.json"))
     if len(matches) != 1:
-        return None
+        return None, str(tasks_root.resolve()), len(matches)
     path = matches[0]
     record = json.loads(path.read_text(encoding="utf-8"))
     record.setdefault("run", run_id)
     record.setdefault("task", path.stem)
     record.setdefault("phase", path.parent.name)
-    return record, str(path)
+    return record, str(path), 1
 
 
 def _land_branches(repo: Path, record: dict, default_branch: str) -> dict[str, list[str]]:
@@ -350,15 +368,19 @@ def _repo_is_dirty(repo: Path) -> bool:
 
 def _runs_land(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser()
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"land: {reason}")
+        return 2
     if a.apply:
-        guard_rc = _leader_guard_or_refuse(Path("runs"), _holder_label(a), a.force)
+        guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force)
         if guard_rc is not None:
             return guard_rc
-    found = _land_record(a.run_id, a.task)
-    if found is None:
-        print(f"land: expected exactly one task record under runs/{a.run_id}/tasks, found something else")
+    record, searched, count = _land_record(runs_dir, a.run_id, a.task)
+    if record is None:
+        print(f"land: looked in {searched}, found {count} task records, expected 1")
         return 2
-    record, path = found
+    path = searched
     default_branch = "main"
     branches = _land_branches(repo, record, default_branch)
     repo_facts = {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists()}
@@ -1781,7 +1803,8 @@ def build_parser() -> argparse.ArgumentParser:
     t = runs.add_parser("trace", help="the tool-call trace for one run"); t.add_argument("run_id"); t.add_argument("--runs-dir", default="runs"); t.add_argument("--role"); t.add_argument("-v", "--verbose", action="store_true"); t.set_defaults(fn=_runs_trace)
     c = runs.add_parser("clean", help="delete a run's worktree and branches locally"); c.add_argument("run_id"); c.add_argument("--repo", required=True); c.add_argument("--worktree-root", default="~/worktrees"); c.add_argument("--apply", action="store_true"); c.set_defaults(fn=_runs_clean)
     la = runs.add_parser("land", help="merge a run's branch into the target repo"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task"); la.add_argument("--label"); la.add_argument("--force", action="store_true", help="land despite a foreign live leader")
-    la.add_argument("--worktree-root", default="~/worktrees"); la.add_argument("--apply", action="store_true"); la.add_argument("--no-merge", action="store_true"); la.set_defaults(fn=_runs_land)
+    la.add_argument("--worktree-root", default="~/worktrees"); la.add_argument("--apply", action="store_true"); la.add_argument("--no-merge", action="store_true")
+    la.add_argument("--runs-dir", help="override: resolve task records here instead of the profile's workspace_dir"); la.add_argument("--profile"); la.set_defaults(fn=_runs_land)
     se = runs.add_parser("series", help="per-run summary rows across a runs directory"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
     ev = runs.add_parser("events", help="poll a run's log for structured events"); ev.add_argument("--runs-dir", default="runs"); ev.add_argument("--follow", action="store_true"); ev.add_argument("--json", action="store_true"); ev.set_defaults(fn=_runs_events)
     tp = runs.add_parser("top", help="live table of runs in flight; --once prints it and exits"); tp.add_argument("--runs-dir", default="runs"); tp.add_argument("--interval", type=float, default=3); tp.add_argument("--once", action="store_true"); tp.set_defaults(fn=_runs_top)

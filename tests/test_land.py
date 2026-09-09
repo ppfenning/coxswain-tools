@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import subprocess as sp
@@ -5,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import cleanup, cli, land
+from agent_tools import chair, cleanup, cli, land
 
 _STEP_ORDER = ["pick_branch", "cherry_pick", "checks", "push", "pr_create", "wait_checks", "merge", "clean", "mark_done"]
 _ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
@@ -225,7 +226,7 @@ def test_cli_dry_run_is_the_default_and_prints_the_plan(repo, tmp_path, capsys, 
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo)])
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
     out = capsys.readouterr().out
     assert rc == 0
     assert '"kind": "pick_branch"' in out
@@ -233,22 +234,20 @@ def test_cli_dry_run_is_the_default_and_prints_the_plan(repo, tmp_path, capsys, 
     assert all(kind in out for kind in _STEP_ORDER)
 
 
-def test_cli_apply_refuses_on_a_dirty_checkout(repo, tmp_path, capsys, monkeypatch):
+def test_cli_apply_refuses_on_a_dirty_checkout(repo, tmp_path, capsys):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     (repo / "f").write_text("dirty")
-    monkeypatch.chdir(tmp_path)
-    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply"])
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
     assert rc == 2
     assert "dirty" in capsys.readouterr().out
 
 
-def test_cli_apply_refuses_when_the_pr_branch_already_exists(repo, tmp_path, capsys, monkeypatch):
+def test_cli_apply_refuses_when_the_pr_branch_already_exists(repo, tmp_path, capsys):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     sp.run(["git", "-C", str(repo), "branch", "pr/seams-task"], check=True, capture_output=True)
-    monkeypatch.chdir(tmp_path)
-    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply"])
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
     assert rc == 2
     assert "already exists" in capsys.readouterr().out
 
@@ -256,7 +255,6 @@ def test_cli_apply_refuses_when_the_pr_branch_already_exists(repo, tmp_path, cap
 def test_cli_apply_refuses_a_checks_launch_failure_before_push(repo, tmp_path, capsys, monkeypatch):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
     calls = []
     real_run = cli.subprocess.run
 
@@ -267,11 +265,66 @@ def test_cli_apply_refuses_a_checks_launch_failure_before_push(repo, tmp_path, c
         return real_run(argv, **kw)
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
-    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply"])
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
     out = capsys.readouterr().out
     assert rc == 2
     assert "refuse checks: pytest:" in out
     assert not any("push" in c for c in calls)
+
+
+# --- §1 paths: runs/ resolves against workspace_dir, --runs-dir overrides, refusal names dir+count ---
+
+def test_land_default_resolves_against_the_profiles_workspace_dir(repo, tmp_path, capsys, monkeypatch):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(f"workspace_dir: {tmp_path}\n", encoding="utf-8")
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert '"kind": "pick_branch"' in out
+
+
+def test_land_runs_dir_flag_overrides_the_profile(repo, tmp_path, capsys):
+    empty_workspace = tmp_path / "empty"; empty_workspace.mkdir()
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(f"workspace_dir: {empty_workspace}\n", encoding="utf-8")
+    real_runs = tmp_path / "elsewhere/runs"
+    task_dir = real_runs / "epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile_path), "--runs-dir", str(real_runs)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert '"kind": "pick_branch"' in out
+
+
+def test_land_refusal_names_the_absolute_dir_and_the_count(repo, tmp_path, capsys):
+    runs_dir = tmp_path / "runs"
+    task_dir = runs_dir / "epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(runs_dir)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    expected = task_dir.parent.resolve()
+    assert f"land: looked in {expected}, found 0 task records, expected 1" in out
+
+    (task_dir / "a.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (task_dir / "b.json").write_text(json.dumps(_record()), encoding="utf-8")
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(runs_dir)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert f"land: looked in {expected}, found 2 task records, expected 1" in out
+
+
+def test_cli_apply_checks_the_leader_guard_against_the_resolved_runs_dir(repo, tmp_path, capsys):
+    runs_dir = tmp_path / "runs"
+    task_dir = runs_dir / "epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+    chair.write(runs_dir, {"session": "loop-a", "pid": 999999, "host": "some-other-host", "taken_at": now, "heartbeat_at": now})
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(runs_dir)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "held by loop-a" in out
 
 
 def test_wait_decision_retries_only_while_no_check_has_registered():
