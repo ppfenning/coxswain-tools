@@ -302,6 +302,14 @@ def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
     return argv
 
 
+def build_sweep_argv(idea: str, initiative_id: str, label: str | None = None) -> list:
+    """`cox route launch sweep --idea <file> --initiative-id <id>`, work-shape.md §1."""
+    argv = ["sweep", "--idea", idea, "--initiative-id", initiative_id]
+    if label is not None:
+        argv += ["--label", label]
+    return argv
+
+
 _TIER_LADDER = ("cheap", "standard", "deep")
 _EFFORT_LADDER = ("low", "high")
 
