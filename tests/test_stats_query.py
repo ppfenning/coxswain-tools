@@ -1,4 +1,4 @@
-from agent_tools.stats_query import explain_report, render_capped, roles_report, series_report
+from agent_tools.stats_query import coverage_report, explain_report, render_capped, roles_report, series_report
 
 
 def _call(task_id, role="build", model="sonnet", join_confidence="heuristic", failure_class=None):
@@ -190,3 +190,31 @@ def test_render_capped_prints_a_dash_not_0_0_for_an_uncomputed_value():
     result = render_capped([{"cost_per_landed": None}], cap_tokens=300)
     assert "cost_per_landed=-" in result
     assert "0.0" not in result
+
+
+def test_coverage_report_reports_full_coverage_when_every_field_is_present():
+    runs = [{"run_id": "r1", "provider_profile": "default", "host": "box1", "cartridge_sha": "abc"}]
+    calls = [{"run_id": "r1", "task_id": "r1:p1:t1", "failure_class": "ok"}]
+    tasks = [{"run_id": "r1", "task_id": "r1:p1:t1", "outcome": "landed", "outcome_kind": "refused"}]
+    report = coverage_report(calls, tasks, runs)
+    assert len(report) == 7
+    assert all(row["known"] == row["total"] and row["fraction"] == 1.0 for row in report)
+
+
+def test_coverage_report_fractions_reflect_a_gap_in_outcome_kind_and_call_source():
+    runs = [{"run_id": "r1", "provider_profile": "default", "host": "box1", "cartridge_sha": "abc"}]
+    calls = [
+        {"run_id": "r1", "task_id": "r1:p1:t1", "failure_class": "ok"},
+        {"run_id": "r1", "task_id": None, "failure_class": "ok"},
+    ]
+    tasks = [
+        {"run_id": "r1", "task_id": "r1:p1:t1", "outcome": "landed", "outcome_kind": "refused"},
+        {"run_id": "r1", "task_id": "r1:p1:t2", "outcome": "landed", "outcome_kind": None},
+    ]
+    report = {row["question"]: row for row in coverage_report(calls, tasks, runs)}
+    assert report["calls_with_a_task"] == {"question": "calls_with_a_task", "known": 1, "total": 2, "fraction": 0.5}
+    assert report["tasks_with_an_outcome_kind"] == {
+        "question": "tasks_with_an_outcome_kind", "known": 1, "total": 2, "fraction": 0.5,
+    }
+    assert report["runs_with_provider_profile"]["fraction"] == 1.0
+    assert report["tasks_with_a_known_outcome"]["fraction"] == 1.0

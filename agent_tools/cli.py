@@ -140,6 +140,18 @@ def _stats_roles(a: argparse.Namespace) -> int:
     return 0
 
 
+def _stats_coverage(a: argparse.Namespace) -> int:
+    conn = stats_schema.connect(a.db)
+    try:
+        report = stats_query.coverage_report(
+            _stats_fetch(conn, "calls"), _stats_fetch(conn, "tasks"), _stats_fetch(conn, "runs"),
+        )
+    finally:
+        conn.close()
+    print(json.dumps(report, indent=2) if a.json else stats_query.render_capped(report))
+    return 0
+
+
 def _stats_explain(a: argparse.Namespace) -> int:
     conn = stats_schema.connect(a.db)
     try:
@@ -1780,7 +1792,8 @@ def build_parser() -> argparse.ArgumentParser:
         "stats", help="load the run corpus into the stats store",
         description="Load the run corpus into the stats store.",
         epilog="examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db"
-               "\n  cox stats roles --json\n  cox stats explain build --json\n  cox stats series --json",
+               "\n  cox stats roles --json\n  cox stats explain build --json\n  cox stats series --json"
+               "\n  cox stats coverage --json",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     stats_p.set_defaults(fn=_bare_group(stats_p))
@@ -1807,6 +1820,10 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--cartridge-sha", default=None, help="keep only runs on this cartridge_sha")
     sr.add_argument("--provider-profile", default=None, help="keep only runs on this provider_profile")
     sr.set_defaults(fn=_stats_series)
+    co = st.add_parser("coverage", help="known/total provenance rows for runs, calls and tasks")
+    co.add_argument("--db", default="workspace/stats/stats.db")
+    co.add_argument("--json", action="store_true")
+    co.set_defaults(fn=_stats_coverage)
 
     usage_p = sub.add_parser(
         "usage", help="spend pacing against the ceiling for the current window",
