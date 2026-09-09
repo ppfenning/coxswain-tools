@@ -160,19 +160,44 @@ def test_execute_cherry_pick_conflict_reports_failure_without_raising_and_leaves
 
 
 def test_execute_checks_reports_pass_and_fail(tmp_path):
-    assert cli._execute_land_step(tmp_path, {"kind": "checks", "argv": ["true"]}) == (True, "true")
-    ok, _ = cli._execute_land_step(tmp_path, {"kind": "checks", "argv": ["false"]})
+    assert cli._execute_land_step(tmp_path, {"kind": "checks", "checks": [("tests", ["true"])]}) == (True, "1 checks passed")
+    ok, _ = cli._execute_land_step(tmp_path, {"kind": "checks", "checks": [("tests", ["false"])]})
     assert not ok
 
 
 def test_execute_checks_with_a_branch_runs_in_a_worktree_and_removes_it(repo, tmp_path, monkeypatch):
     wt = tmp_path / "checks-wt"
     monkeypatch.setattr(cli.tempfile, "mkdtemp", lambda prefix="": str(wt))
-    ok, detail = cli._execute_land_step(repo, {"kind": "checks", "argv": ["true"], "branch": "agents/epic-x-5/seams-task"})
+    ok, detail = cli._execute_land_step(repo, {"kind": "checks", "checks": [("tests", ["true"])], "branch": "agents/epic-x-5/seams-task"})
     assert ok, detail
     assert not wt.exists()
     current = sp.run(["git", "-C", str(repo), "branch", "--show-current"], capture_output=True, text=True).stdout.strip()
     assert current == "main"
+
+
+def test_execute_checks_runs_every_check_in_order_on_a_passing_fixture(tmp_path):
+    ok, detail = cli._execute_land_step(tmp_path, {
+        "kind": "checks", "checks": [("lint", ["true"]), ("tests", ["true"])],
+    })
+    assert ok
+    assert detail == "2 checks passed"
+
+
+def test_execute_checks_stops_at_the_first_failing_check_and_names_it_not_its_command(tmp_path, monkeypatch):
+    calls = []
+    real_run = cli.subprocess.run
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return real_run(argv, **kw)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    ok, detail = cli._execute_land_step(tmp_path, {
+        "kind": "checks", "checks": [("lint", ["false"]), ("tests", ["true"])],
+    })
+    assert not ok
+    assert detail.startswith("lint:")
+    assert calls == [["false"]]
 
 
 # --- land.phase_landable: pure, no I/O (§7) ---
@@ -307,25 +332,29 @@ def test_execute_clean_phase_deletes_only_this_phases_branches(repo):
     assert "epic/x/other-phase" in branches
 
 
-# --- land.checks_argv: pure, cheapest and most specific launch first ---
+# --- land.checks_argv: pure, one (name, argv) pair per resolved check (§4, §7) ---
 
-def test_checks_argv_prefers_the_repos_own_venv():
-    assert land.checks_argv({"venv_python": True, "uv_lock": True}) == [".venv/bin/python", "-m", "pytest", "-q"]
-
-
-def test_checks_argv_falls_back_to_uv_run_without_a_venv():
-    assert land.checks_argv({"venv_python": False, "uv_lock": True}) == ["uv", "run", "pytest", "-q"]
+def test_checks_argv_returns_one_pair_per_configured_check_in_order():
+    facts = {"checks": [{"name": "lint", "cmd": "ruff check ."}, {"name": "tests", "cmd": "pytest -q"}]}
+    assert land.checks_argv(facts) == [("lint", ["ruff", "check", "."]), ("tests", ["pytest", "-q"])]
 
 
-def test_checks_argv_falls_back_to_bare_pytest_with_neither_fact():
-    assert land.checks_argv({"venv_python": False, "uv_lock": False}) == ["pytest", "-q"]
+def test_checks_argv_with_no_checks_key_returns_todays_single_pair_named_tests():
+    assert land.checks_argv({}) == [("tests", ["pytest", "-q"])]
+    assert land.checks_argv({"checks": []}) == [("tests", ["pytest", "-q"])]
 
 
-def test_land_plan_checks_step_carries_the_resolved_argv():
+def test_checks_argv_with_no_checks_key_still_prefers_the_repos_own_venv():
+    assert land.checks_argv({"venv_python": True, "uv_lock": True}) == [("tests", [".venv/bin/python", "-m", "pytest", "-q"])]
+    assert land.checks_argv({"venv_python": False, "uv_lock": True}) == [("tests", ["uv", "run", "pytest", "-q"])]
+
+
+def test_land_plan_checks_step_carries_the_configured_checks():
     branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
-    steps = land.land_plan(_record(), branches, "main", {"venv_python": True, "uv_lock": False})
+    repo_facts = {"checks": [{"name": "lint", "cmd": "ruff check ."}, {"name": "tests", "cmd": "pytest -q"}]}
+    steps = land.land_plan(_record(), branches, "main", repo_facts)
     checks = next(s for s in steps if s["kind"] == "checks")
-    assert checks == {"kind": "checks", "argv": [".venv/bin/python", "-m", "pytest", "-q"]}
+    assert checks == {"kind": "checks", "checks": [("lint", ["ruff", "check", "."]), ("tests", ["pytest", "-q"])]}
 
 
 def test_execute_push_reaches_a_real_remote(repo, tmp_path):
@@ -413,7 +442,7 @@ def test_cli_apply_refuses_a_checks_launch_failure_before_push(repo, tmp_path, c
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
     out = capsys.readouterr().out
     assert rc == 2
-    assert "refuse checks: pytest:" in out
+    assert "refuse checks: tests:" in out
     assert not any("push" in c for c in calls)
 
 
