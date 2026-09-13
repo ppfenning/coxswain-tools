@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import os
 import re
+from typing import NamedTuple
 
 from agent_tools.pacing import Assessment
 
 __all__ = [
+    "Problem",
     "ProfileError",
     "child_env",
     "context_document",
@@ -19,6 +21,7 @@ __all__ = [
     "intake_entries",
     "intake_file",
     "launch_gate",
+    "lint_items",
     "next_run_id",
     "overlay",
     "parse_frontmatter",
@@ -308,6 +311,93 @@ def build_sweep_argv(idea: str, initiative_id: str, label: str | None = None) ->
     if label is not None:
         argv += ["--label", label]
     return argv
+
+
+class Problem(NamedTuple):
+    """work-shape.md §3: one static-lint finding."""
+
+    task: str
+    rule: str
+    detail: str
+    fix: str
+
+
+# The character before an unsafe path may be whitespace, start-of-string, a
+# backtick, an opening parenthesis or a quote — this project's own house
+# style wraps every file reference in backticks, so a bare `\s` boundary
+# misses a real out-of-repo path inside a code span.
+_UNSAFE_PATH = re.compile(r"(?:^|[\s\x60\x28\x27\x22])(/[\w./-]+|workspace/[\w./-]*|~/[\w./-]*)")
+_DISALLOWED_COMMANDS = ("cox", "uv", "gh", "git push", "ruff")
+
+
+def _inside_repo(path: str, repo: str) -> bool:
+    """§3 excludes a path only when it is inside `repo`; wrong belief this
+    guards: that any absolute/workspace/~ path is automatically reach-unsafe.
+    A path is a prefix match on `repo` (a filesystem root, not a slug) —
+    plain-data comparison, no filesystem read.
+    """
+    root = repo.rstrip("/") if repo else ""
+    return bool(root) and (path == root or path.startswith(root + "/"))
+
+
+def _item_problems(item: dict, repo: str | None, grants) -> list:
+    """reach, grant and size, each scoped to one ticket item. `repo` falsy
+    (no repo could be resolved) stands the reach rule down instead of
+    flagging every path — there is no target to check against."""
+    task, body = item["task"], item.get("body", "")
+    text = body + " " + " ".join(item.get("surfaces", []))
+    allowed = set(grants or ())
+    reach = [
+        Problem(task, "reach", f"{p!r} is outside {repo!r}",
+                "move the artifact into the repository or drop the reference")
+        for p in _UNSAFE_PATH.findall(text)
+        if not _inside_repo(p, repo)
+    ] if repo else []
+    grant = [
+        Problem(task, "grant", f"command {cmd!r} is not in this role's grant",
+                "name only pytest, git status, git diff")
+        for cmd in _DISALLOWED_COMMANDS
+        if cmd not in allowed and re.search(rf"(?<!\w){re.escape(cmd)}(?!\w)", body)
+    ]
+    words = len(body.split())
+    size = [Problem(task, "size", f"body is {words} words",
+                     "point at a spec file in the repository")] if words > 700 else []
+    return reach + grant + size
+
+
+def _coupling_problems(items) -> list:
+    """Two tickets in one phase sharing a test-file surface.
+
+    §3's coupling rule has a second clause — "or whose named modules
+    import one another" — not checked here. Wrong belief to avoid: that
+    this function covers coupling in full; `items` carries surface paths,
+    not import graphs, so the import clause is undetected.
+    """
+    by_phase: dict = {}
+    for item in items:
+        by_phase.setdefault(item.get("phase"), []).append(item)
+    problems = []
+    for group in by_phase.values():
+        for i, first in enumerate(group):
+            for second in group[i + 1:]:
+                shared = sorted(
+                    s for s in first.get("surfaces", [])
+                    if ("test_" in s or s.startswith("tests/")) and s in second.get("surfaces", [])
+                )
+                if shared:
+                    problems.append(Problem(
+                        first["task"], "coupling",
+                        f"{first['task']} and {second['task']} both surface {shared[0]!r}",
+                        "merge, or order with needs",
+                    ))
+    return problems
+
+
+def lint_items(items, repo: str | None, grants) -> list:
+    """work-shape.md §3: reach, grant, size and coupling over a decomposed
+    DAG's parsed ticket items; no model, no I/O."""
+    problems = [p for item in items for p in _item_problems(item, repo, grants)]
+    return problems + _coupling_problems(items)
 
 
 _TIER_LADDER = ("cheap", "standard", "deep")
