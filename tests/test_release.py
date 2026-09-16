@@ -234,14 +234,19 @@ def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success"):
 
 
 def test_wait_workflows_proceeds_when_every_run_for_the_tag_sha_succeeds():
+    cwds = []
+
     def run(argv, cwd):
         if argv[3] == "rev-list":
             return (0, "abc1234\n")
+        cwds.append(cwd)
         return (0, json.dumps([
             {"status": "completed", "conclusion": "success", "name": "CI", "url": "https://x/1"},
             {"status": "completed", "conclusion": "success", "name": "Publish", "url": "https://x/2"}]))
     ok, detail = cli._wait_workflows("/root/harness", "v0.2.0", "harness", run)
     assert ok and "2 run" in detail
+    # gh infers the repository from its working directory; the first real cut ran it from the release root
+    assert cwds == ["/root/harness"]
 
 
 def test_wait_workflows_fails_naming_the_component_workflow_and_url_when_one_run_is_not_success():
