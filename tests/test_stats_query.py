@@ -1,3 +1,6 @@
+import sqlite3
+
+from agent_tools import stats_derive, stats_schema
 from agent_tools.stats_query import (
     bounds_report,
     coverage_report,
@@ -5,6 +8,7 @@ from agent_tools.stats_query import (
     render_capped,
     roles_report,
     series_report,
+    spend_mix_report,
 )
 
 
@@ -212,6 +216,32 @@ def test_render_capped_drops_trailing_rows_and_marks_the_drop():
     result = render_capped(rows, cap_tokens=50)
     assert "more rows" in result
     assert len(result) // 4 <= 50
+
+
+def _insert_call(conn, run_id, seq, role, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens):
+    conn.execute(
+        "INSERT INTO calls (run_id, seq, role, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, seq, role, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens),
+    )
+
+
+def test_spend_mix_report_groups_calls_by_model_against_a_literal_stats_db(tmp_path):
+    conn = stats_schema.connect(tmp_path / "stats.db")
+    _insert_call(conn, "r1", 1, "build", "sonnet", 100, 50, 0, 0)
+    _insert_call(conn, "r1", 2, "plan", "sonnet", 200, 10, 5, 5)
+    _insert_call(conn, "r1", 3, "build", "haiku", 40, 20, 0, 0)
+    conn.commit()
+    conn.row_factory = sqlite3.Row
+    calls = [dict(row) for row in conn.execute("SELECT * FROM calls").fetchall()]
+    conn.close()
+
+    report = spend_mix_report(calls)
+
+    assert {row["model"] for row in report} == {"sonnet", "haiku"}
+    sonnet_rows = [c for c in calls if c["model"] == "sonnet"]
+    [sonnet_report] = [row for row in report if row["model"] == "sonnet"]
+    assert sonnet_report == stats_derive.spend_mix_for_model(sonnet_rows, "sonnet")
 
 
 def test_render_capped_renders_every_row_verbatim_under_the_cap():
