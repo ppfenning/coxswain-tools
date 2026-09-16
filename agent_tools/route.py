@@ -272,6 +272,15 @@ def initiative_files(title: str, body: str, repo: str, phase: str = "build") -> 
     }
 
 
+def initiative_text(id: str, title: str, repo: str, intake: str, body: str) -> str:
+    """`work/<id>/initiative.md` for `route launch decompose` (spec §3),
+    written from data the launcher already has rather than proposed by a
+    seat: the idea's `title`/`repo` and its path relative to the workspace
+    as `intake`, with the idea's own body carried through unchanged.
+    """
+    return _frontmatter([("id", id), ("title", title), ("repo", repo), ("intake", intake)], body)
+
+
 def intake_file(title: str, body: str, repo: str, date: str) -> dict:
     """Content for `route file --intake` (spec §3):
     `intake/<date>-<slug>.md`, same frontmatter shape as the initiative

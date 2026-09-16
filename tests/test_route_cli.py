@@ -572,6 +572,59 @@ def test_launch_decompose_starts_the_harness_detached_with_the_recorded_argv(tmp
     assert argv == expected[1:]
 
 
+def test_launch_decompose_writes_initiative_md_from_the_idea_before_launching(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "2026-09-04-fix-thing.md"
+    idea.write_text(
+        "---\nid: fix-thing\ntitle: Fix thing\nrepo: git@example.com:acme/widget.git\n---\n\nDo the thing.\n"
+    )
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+    ])
+    assert rc == 0
+    initiative_md = ws / "fix-thing" / "initiative.md"
+    fields, body = route.parse_frontmatter(initiative_md.read_text())
+    assert fields == {
+        "id": "fix-thing",
+        "title": "Fix thing",
+        "repo": "git@example.com:acme/widget.git",
+        "intake": "intake/2026-09-04-fix-thing.md",
+    }
+    assert body == "Do the thing."
+
+
+def test_launch_decompose_leaves_an_existing_initiative_md_untouched(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    initiative_md = ws / "fix-thing" / "initiative.md"
+    initiative_md.parent.mkdir(parents=True)
+    initiative_md.write_text("hand-written\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert initiative_md.read_text() == "hand-written\n"
+    assert sum(1 for line in out.splitlines() if "already exists" in line) == 1
+
+
 def test_launch_writes_launched_json_naming_the_lock_holder(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
@@ -637,6 +690,29 @@ def test_launch_dry_run_prints_argv_and_starts_nothing(tmp_path, capsys):
     assert f"trace {ws / 'runs' / 'fix-thing-1-trace'}" in out
     assert not (ws / "runs" / "fix-thing-1.pid").exists()
     assert not (ws / "runs" / "fix-thing-1.log").exists()
+    assert not (harness_dir / "recorded_argv.json").exists()
+
+
+def test_launch_decompose_dry_run_prints_the_initiative_path_and_writes_nothing(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main([
+        "route", "launch", "decompose", "--dry-run",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+    ])
+    out = capsys.readouterr().out
+    initiative_md = ws / "fix-thing" / "initiative.md"
+    assert rc == 0
+    assert str(initiative_md) in out
+    assert not initiative_md.exists()
     assert not (harness_dir / "recorded_argv.json").exists()
 
 

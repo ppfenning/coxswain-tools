@@ -1291,6 +1291,21 @@ def _route_launch(a: argparse.Namespace) -> int:
         if not idea_path.exists():
             print(f"routing: no idea file at {idea_path}")
             return 2
+        workspace_dir = Path(profile["workspace_dir"]).expanduser()
+        initiative_md = workspace_dir / a.initiative_id / "initiative.md"
+        if initiative_md.exists():
+            print(f"routing: {initiative_md} already exists, left untouched")
+        else:
+            idea_fields, idea_body = route.parse_frontmatter(idea_path.read_text(encoding="utf-8"))
+            intake = os.path.relpath(idea_path, workspace_dir)
+            initiative_content = route.initiative_text(
+                a.initiative_id, idea_fields.get("title", ""), idea_fields.get("repo", ""), intake, idea_body,
+            )
+            if a.dry_run:
+                print(f"dry-run: would write {initiative_md}")
+            else:
+                initiative_md.parent.mkdir(parents=True, exist_ok=True)
+                initiative_md.write_text(initiative_content, encoding="utf-8")
         run_id = route.next_run_id([p.name for p in runs_dir.iterdir()], a.initiative_id)
         needs = {"idea": a.idea, "initiative_id": a.initiative_id}
         env_repo = ""
