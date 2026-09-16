@@ -7,6 +7,8 @@ import datetime
 import fcntl
 import json
 import os
+import socket
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,7 @@ __all__ = [
     "CHAIR_FILENAME",
     "DEFAULT_HEARTBEAT_MINUTES",
     "beat",
+    "beat_loop",
     "chair_path",
     "clear",
     "guard",
@@ -86,6 +89,38 @@ def beat(record: dict[str, Any] | None, session: str, pid: int, host: str, now: 
     existing_runs = record.get("runs", [])
     runs = existing_runs if run_id is None or run_id in existing_runs else [*existing_runs, run_id]
     return {**record, "heartbeat_at": now.isoformat(), "runs": runs}, ""
+
+
+def beat_loop(
+    label: str,
+    pid: int,
+    *,
+    runs_dir: Path | str,
+    interval: float | None = None,
+    clock=time,
+    alive=os.kill,
+) -> int:
+    """Edge. Beats the chair at `runs_dir` for `label`/`pid` every `interval`
+    seconds (default: half of DEFAULT_HEARTBEAT_MINUTES) while `pid` is alive;
+    prints `beat`'s reason and returns 2 the first time it can't renew, 0 once
+    `alive(pid, 0)` raises `ProcessLookupError`. A `PermissionError` from
+    `alive` means the pid is alive but unsignallable, same as `pid_alive`."""
+    tick = DEFAULT_HEARTBEAT_MINUTES * 60 / 2 if interval is None else interval
+    host = socket.gethostname()
+    while True:
+        try:
+            alive(pid, 0)
+        except ProcessLookupError:
+            return 0
+        except PermissionError:
+            pass
+        with locked(runs_dir):
+            new_record, reason = beat(read(runs_dir), label, pid, host, datetime.datetime.now(datetime.UTC))
+            if new_record is None:
+                print(f"chair: {reason}")
+                return 2
+            write(runs_dir, new_record)
+        clock.sleep(tick)
 
 
 def release(record: dict[str, Any] | None, session: str, pid: int, host: str) -> tuple[dict[str, Any] | None, str]:
@@ -179,3 +214,16 @@ def locked(runs_dir: Path):
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m agent_tools.chair")
+    subparsers = parser.add_subparsers(dest="cmd", required=True)
+    beat_loop_parser = subparsers.add_parser("beat-loop", help="beat the chair for --label/--pid until the pid is gone")
+    beat_loop_parser.add_argument("--label", required=True)
+    beat_loop_parser.add_argument("--pid", type=int, required=True)
+    beat_loop_parser.add_argument("--runs-dir", required=True, type=Path)
+    args = parser.parse_args()
+    raise SystemExit(beat_loop(args.label, args.pid, runs_dir=args.runs_dir))
