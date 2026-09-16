@@ -284,6 +284,79 @@ def test_cli_stats_bounds_a_per_tier_budget_usd_mapping_falls_back_to_the_standa
     assert row["ceiling"] == 0.35
 
 
+def _write_full_provider(tmp_path, *, role_budget_usd="", tier_overrides="", defaults=""):
+    provider = tmp_path / "provider.yaml"
+    provider.write_text(
+        "budget_usd:\n  cheap: 0.15\n  standard: 0.35\n  deep: 0.80\n"
+        f"role_budget_usd:\n{role_budget_usd}"
+        f"tier_overrides:\n{tier_overrides}"
+        f"defaults:\n{defaults}"
+    )
+    routing = tmp_path / "profile.yaml"
+    routing.write_text(f"provider_profile: {provider}\n")
+    return routing
+
+
+def test_cli_stats_bounds_role_budget_usd_wins_over_tier_maps(tmp_path, capsys):
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    routing = _write_full_provider(
+        tmp_path,
+        role_budget_usd="  build: 9.0\n",
+        tier_overrides="  build: cheap\n",
+        defaults="  build: deep\n",
+    )
+    code = main(["stats", "bounds", "--db", str(db), "--json", "--profile", str(routing)])
+    [row] = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert row["ceiling"] == 9.0
+
+
+def test_cli_stats_bounds_tier_overrides_resolves_the_tier_then_budget_usd(tmp_path, capsys):
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    routing = _write_full_provider(
+        tmp_path,
+        role_budget_usd="  other_role: 9.0\n",
+        tier_overrides="  build: cheap\n",
+        defaults="  build: deep\n",
+    )
+    code = main(["stats", "bounds", "--db", str(db), "--json", "--profile", str(routing)])
+    [row] = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert row["ceiling"] == 0.15
+
+
+def test_cli_stats_bounds_defaults_resolves_the_tier_when_no_override(tmp_path, capsys):
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    routing = _write_full_provider(
+        tmp_path,
+        role_budget_usd="  other_role: 9.0\n",
+        tier_overrides="  other_role: cheap\n",
+        defaults="  build: deep\n",
+    )
+    code = main(["stats", "bounds", "--db", str(db), "--json", "--profile", str(routing)])
+    [row] = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert row["ceiling"] == 0.80
+
+
+def test_cli_stats_bounds_role_in_no_map_falls_back_to_standard(tmp_path, capsys):
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    routing = _write_full_provider(
+        tmp_path,
+        role_budget_usd="  other_role: 9.0\n",
+        tier_overrides="  other_role: cheap\n",
+        defaults="  other_role: deep\n",
+    )
+    code = main(["stats", "bounds", "--db", str(db), "--json", "--profile", str(routing)])
+    [row] = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert row["ceiling"] == 0.35
+
+
 def test_cli_stats_bounds_default_invocation_resolves_a_real_ceiling_via_agent_tools_profile(tmp_path, capsys, monkeypatch):
     """No `--profile` on the command line, the doc's own signature
     (docs/design/cost-bounds.md §2: `cox stats bounds [--json] [--level ...]`)
