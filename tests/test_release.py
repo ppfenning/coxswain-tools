@@ -19,6 +19,13 @@ repo = "org/cartridges"
 tag = "v0.1.0"
 """
 
+_MANIFEST_TOML_WITH_PINNED = _MANIFEST_TOML + """
+[components.crew]
+repo = "org/crew"
+tag = "v0.6.0"
+lockstep = false
+"""
+
 
 def _no_tags(manifest):
     """Every repo component reachable with no tags — the clean case."""
@@ -98,6 +105,39 @@ def test_a_component_already_at_the_target_version_yields_no_bump_steps_for_it()
         {"kind": "wait_workflows", "component": "harness", "tag": "v0.2.0"}]
 
 
+def test_a_lockstep_false_component_gets_a_pinned_step_and_no_tag_step():
+    manifest = {"coxswain": {"version": "0.1.0"},
+                "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
+                                "crew": {"repo": "org/crew", "tag": "v0.6.0", "lockstep": False}}}
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest))
+    assert [s for s in steps if s["component"] == "crew"] == [
+        {"kind": "pinned", "component": "crew", "tag": "v0.6.0"}]
+    assert "tag" not in [s["kind"] for s in steps if s["component"] == "crew"]
+    assert {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"} in steps
+
+
+def test_a_pinned_components_unreadable_remote_or_colliding_tag_does_not_refuse_the_release():
+    """The two preflight guards select only lockstep components: a pinned
+    repository the plan will never tag cannot block the release, whether its
+    remote is unreadable (None) or already carries the umbrella's next tag."""
+    manifest = {"coxswain": {"version": "0.1.0"},
+                "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
+                                "crew": {"repo": "org/crew", "tag": "v0.6.0", "lockstep": False}}}
+    for crew_tags in (None, ["v0.6.0", "v0.2.0"]):
+        steps = release.release_plan(manifest, "0.2.0", {"harness": [], "crew": crew_tags})
+        assert [s["kind"] for s in steps if s["component"] == "crew"] == ["pinned"]
+        assert {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"} in steps
+    # A lockstep component's unknown or colliding tag still refuses, as before.
+    assert release.release_plan(manifest, "0.2.0", {"harness": None, "crew": []})[0]["kind"] == "refuse"
+    assert release.release_plan(manifest, "0.2.0", {"harness": ["v0.2.0"], "crew": []})[0]["kind"] == "refuse"
+
+
+def test_a_manifest_with_no_lockstep_key_tags_every_component_as_before():
+    manifest = _manifest()
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest))
+    assert [s["kind"] for s in steps if s["component"] in ("harness", "cartridges") and s["kind"] == "tag"] == ["tag", "tag"]
+
+
 def test_wait_workflows_is_inserted_only_after_tag_and_tag_self_steps():
     manifest = _manifest()
     steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.1.0"})
@@ -152,6 +192,16 @@ def test_bumped_manifest_text_preserves_comments_and_changes_only_the_values():
     before["coxswain"]["version"] = after["coxswain"]["version"]
     before["components"]["harness"]["tag"] = after["components"]["harness"]["tag"]
     assert before == after
+
+
+def test_bumped_manifest_text_leaves_a_lockstep_false_components_tag_untouched():
+    text = ('[coxswain]\nversion = "0.1.0"\n\n'
+            '[components.harness]\nrepo = "org/harness"\ntag = "v0.1.0"\n\n'
+            '[components.crew]\nrepo = "org/crew"\ntag = "v0.6.0"\nlockstep = false\n')
+    after = tomllib.loads(release.bumped_manifest_text(text, "0.2.0"))
+    assert after["coxswain"]["version"] == "0.2.0"
+    assert after["components"]["harness"]["tag"] == "v0.2.0"
+    assert after["components"]["crew"]["tag"] == "v0.6.0"
 
 
 def test_declares_tag_trigger_reads_the_dict_form_and_skips_the_list_form():
@@ -314,6 +364,21 @@ def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umb
     ]
     gh_calls = [c for c in calls if c[0] == "gh"]
     assert gh_calls == [["gh", "run", "list", "--commit", "deadbeef", "--json", "status,conclusion,name,url"]] * 3
+
+
+def test_cli_release_execute_runs_a_pinned_component_to_success_with_no_tag_or_push_for_it(tmp_path, monkeypatch, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML_WITH_PINNED)
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("notes")
+    calls, fake_run = _fake_git_run()
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 0
+    assert str(tmp_path / "crew") not in {c[2] for c in calls if c[0] == "git" and c[3] in ("tag", "push")}
+    assert "pinned crew: v0.6.0" in capsys.readouterr().out
 
 
 def test_cli_release_execute_fails_the_release_when_a_wait_workflows_run_is_not_success(tmp_path, monkeypatch, capsys):

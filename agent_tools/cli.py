@@ -1961,6 +1961,7 @@ _RELEASE_DETAIL = {
     "notes": lambda step: step["path"],
     "tag_self": lambda step: step["tag"],
     "wait_workflows": lambda step: step["tag"],
+    "pinned": lambda step: step["tag"],
 }
 
 
@@ -2046,8 +2047,10 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     that will be tagged — every component, plus the umbrella when
     `tag_self` is in the plan — and the umbrella's release note are all
     checked before a single tag is made. Then each `tag` step's tag and
-    push run in turn, and `tag_self` tags and pushes the umbrella. One line
-    per step; the first failure stops the rest."""
+    push run in turn, and `tag_self` tags and pushes the umbrella; a
+    `pinned` step runs no git command at all, since its component keeps the
+    tag the manifest already names. One line per step; the first failure
+    stops the rest."""
     refusal = next((s for s in steps if s["kind"] == "refuse"), None)
     if refusal is not None:
         print(f"refuse {refusal['component']}: {refusal['detail']}")
@@ -2088,6 +2091,8 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             print(f"notes notes: {step['path']}")
         elif kind == "note":
             print(f"note {step['component']}: {step['detail']}")
+        elif kind == "pinned":
+            print(f"pinned {step['component']}: {step['tag']}")
         elif kind == "tag_self":
             self_tag_rc, self_tag_out = run(release.tag_argv(umbrella, version), None)
             if self_tag_rc != 0:
