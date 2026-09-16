@@ -119,7 +119,9 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
                   component_versions: Mapping[str, str | None] | None = None) -> list[dict]:
     """Steps in order: per `repo` component, either a plain `tag` (its
     `component_versions` entry is missing or already at `version`) or a
-    `bump_pyproject`-and-land sequence ending in `tag`; one `notes`; then
+    `bump_pyproject`-and-land sequence ending in `tag` — unless its manifest
+    entry declares `lockstep = false`, in which case it gets one `pinned`
+    step naming its own manifest `tag` and nothing else; one `notes`; then
     either a plain `tag_self` or the manifest's own `bump_manifest`-and-land
     sequence ending in `tag_self`. `component_versions` is the version each
     component's own checkout pyproject.toml currently declares — a fact this
@@ -145,11 +147,14 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     # Three states per component: a list of tags, an empty list (reachable, no
     # tags), or None (the remote could not be read). Unknown is not clean: a
     # reused tag is the one thing a release must never risk, so None refuses.
-    unknown = sorted(name for name, _ in repo_components if existing_tags.get(name) is None)
+    # A `lockstep = false` component is never tagged here, so its remote's
+    # readability and its existing tags are not this release's concern.
+    lockstep_components = [(name, spec) for name, spec in repo_components if spec.get("lockstep", True)]
+    unknown = sorted(name for name, _ in lockstep_components if existing_tags.get(name) is None)
     if unknown:
         return _refuse(", ".join(unknown), f"tags unknown for {', '.join(unknown)} (remote unreadable); refusing rather than risk reusing {new_tag}")
 
-    collision_sources = [name for name, _ in repo_components] + (["coxswain"] if "coxswain" in existing_tags else [])
+    collision_sources = [name for name, _ in lockstep_components] + (["coxswain"] if "coxswain" in existing_tags else [])
     colliding = sorted(name for name in collision_sources if new_tag in (existing_tags.get(name) or []))
     if colliding:
         return _refuse(", ".join(colliding), f"tag {new_tag} already exists on {', '.join(colliding)}")
@@ -158,6 +163,9 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     current_parsed = _parse_semver(current) if current is not None else None
     tag_steps = []
     for name, spec in repo_components:
+        if not spec.get("lockstep", True):
+            tag_steps.append({"kind": "pinned", "component": name, "tag": spec["tag"]})
+            continue
         tag_step = {"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
         found = component_versions.get(name)
         found_parsed = _parse_semver(found) if found is not None else None
@@ -223,13 +231,43 @@ def push_argv(directory: str, version: str) -> list[str]:
     return ["git", "-C", directory, "push", "origin", "v" + version]
 
 
-_MANIFEST_VERSION_RE = re.compile(r'(?m)^(\s*version\s*=\s*")[^"]*(")')
-_MANIFEST_TAG_RE = re.compile(r'(?m)^(\s*tag\s*=\s*")v[^"]*(")')
+_MANIFEST_SECTION_RE = re.compile(r"^\[components\.([\w-]+)\]\s*$")
+_MANIFEST_LOCKSTEP_FALSE_RE = re.compile(r"^\s*lockstep\s*=\s*false\s*$", re.IGNORECASE)
+_MANIFEST_VERSION_RE = re.compile(r'(\s*version\s*=\s*")[^"]*(")')
+_MANIFEST_TAG_RE = re.compile(r'(\s*tag\s*=\s*")v[^"]*(")')
+
+
+def _pinned_components(text: str) -> set[str]:
+    """Component names whose `[components.<name>]` section declares
+    `lockstep = false` anywhere in it."""
+    section = None
+    pinned = set()
+    for line in text.splitlines():
+        m = _MANIFEST_SECTION_RE.match(line)
+        if m:
+            section = m.group(1)
+        elif section and _MANIFEST_LOCKSTEP_FALSE_RE.match(line):
+            pinned.add(section)
+    return pinned
 
 
 def bumped_manifest_text(text: str, version: str) -> str:
-    """`text` with every `version = "..."` and `tag = "v..."` value
-    rewritten to `version` — comments, blank lines and layout untouched."""
+    """`text` with every `version = "..."` value, and every `tag = "v..."`
+    value outside a `lockstep = false` component's section, rewritten to
+    `version` — comments, blank lines and layout untouched; a pinned
+    component's own `tag` line is left exactly as it reads."""
     new_tag = "v" + version
-    with_version = _MANIFEST_VERSION_RE.sub(lambda m: f"{m.group(1)}{version}{m.group(2)}", text)
-    return _MANIFEST_TAG_RE.sub(lambda m: f"{m.group(1)}{new_tag}{m.group(2)}", with_version)
+    pinned = _pinned_components(text)
+    section = None
+    out = []
+    for line in text.splitlines(keepends=True):
+        m = _MANIFEST_SECTION_RE.match(line.rstrip("\n"))
+        if m:
+            section = m.group(1)
+        if _MANIFEST_VERSION_RE.match(line):
+            out.append(_MANIFEST_VERSION_RE.sub(lambda m: f"{m.group(1)}{version}{m.group(2)}", line))
+        elif _MANIFEST_TAG_RE.match(line) and section not in pinned:
+            out.append(_MANIFEST_TAG_RE.sub(lambda m: f"{m.group(1)}{new_tag}{m.group(2)}", line))
+        else:
+            out.append(line)
+    return "".join(out)
