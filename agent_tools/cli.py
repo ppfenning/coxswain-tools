@@ -43,6 +43,7 @@ from agent_tools import (
     route,
     runs_detail,
     runs_detail_screen,
+    runs_stranded,
     runs_top,
     runs_top_screen,
     setup_install,
@@ -298,6 +299,35 @@ def _runs_detail(a: argparse.Namespace) -> int:
         print(json.dumps(dataclasses.asdict(d)))
     else:
         print("\n".join(runs_detail.render(d, 120)))
+    return 0
+
+
+def _runs_stranded(a: argparse.Namespace) -> int:
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"stranded: {reason}")
+        return 2
+    task_records = []
+    for path in sorted(runs_dir.glob("*/tasks/*/*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record.setdefault("run", path.parent.parent.parent.name)
+        record.setdefault("task", path.stem)
+        record.setdefault("phase", path.parent.name)
+        task_records.append(record)
+    ws = runs_dir.parent
+    initiative_texts = _initiative_texts(ws)
+    items = [
+        {**item, "repo": route.parse_frontmatter(initiative_texts.get(item["initiative"], ""))[0].get("repo")}
+        for item in _work_items(ws)
+    ]
+    rows = runs_stranded.stranded(task_records, items)
+    if a.json:
+        print(json.dumps(rows))
+        return 0
+    if not rows:
+        print("no stranded work")
+        return 0
+    print(records.format_table(rows, ["run", "task", "phase", "branch", "remedy"]))
     return 0
 
 
@@ -2275,6 +2305,9 @@ def build_parser() -> argparse.ArgumentParser:
     tp = runs.add_parser("top", help="live table of runs in flight; --once prints it and exits"); tp.add_argument("--runs-dir", default="runs"); tp.add_argument("--interval", type=float, default=3); tp.add_argument("--once", action="store_true"); tp.set_defaults(fn=_runs_top)
     no = runs.add_parser("notify", help="desktop notifications for exits, quarantines, budget stops and cost"); no.add_argument("--runs-dir", default="runs"); no.add_argument("--once", action="store_true"); no.add_argument("--interval", type=float, default=10); no.add_argument("--replay", action="store_true", help="emit history on first start; default is silent for existing runs when no state file is present"); no.set_defaults(fn=_runs_notify)
     de = runs.add_parser("detail", help="one run's timeline, objection and last tool calls"); de.add_argument("run_id"); de.add_argument("--runs-dir", default="runs"); de.add_argument("--json", action="store_true"); de.set_defaults(fn=_runs_detail)
+    st = runs.add_parser("stranded", help="every approved task record whose work item is not done, with its remedy")
+    st.add_argument("--runs-dir", help="override: resolve task records here instead of the profile's workspace_dir")
+    st.add_argument("--profile"); st.add_argument("--json", action="store_true"); st.set_defaults(fn=_runs_stranded)
 
     stats_p = sub.add_parser(
         "stats", help="load the run corpus into the stats store",
