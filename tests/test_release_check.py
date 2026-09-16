@@ -45,6 +45,13 @@ def test_facts_plan_names_the_umbrella_component_dirs_and_docs_paths():
     assert facts["readmes"] == {"cox": "/root/cox/README.md"}
 
 
+def test_facts_plan_does_not_double_join_coxswain_when_the_root_is_already_the_umbrella_checkout():
+    manifest = {"coxswain": {"version": "0.2.0"}, "components": {"cox": {"repo": "x"}}}
+    facts = facts_plan("/repo/coxswain", manifest)
+    assert facts["umbrella"] == "/repo/coxswain"
+    assert facts["component_docs"] == {"cox": "/repo/coxswain/docs/components/cox.md"}
+
+
 def test_cli_release_check_with_a_component_missing_its_docs_finds_the_manifest_drift(tmp_path, capsys):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text('[coxswain]\nversion = "0.1.0"\n[components.cox]\ntag = "v0.1.0"\n')
