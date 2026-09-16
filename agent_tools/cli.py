@@ -800,7 +800,14 @@ def _route_status(a: argparse.Namespace) -> int:
         groups = _intake_groups_for(ws)
         problems = route.state_problems(_work_items(ws))
         if a.json:
-            doc = rows if groups is None else {"runs": rows, "intake": groups, "problems": problems}
+            # The bare rows list is the shape older callers read; it stays when there
+            # is nothing else to say. A problem is never dropped for lack of an intake dir.
+            if groups is None and not problems:
+                doc = rows
+            elif groups is None:
+                doc = {"runs": rows, "problems": problems}
+            else:
+                doc = {"runs": rows, "intake": groups, "problems": problems}
             print(json.dumps(doc, indent=2))
         else:
             print(route.render_status(rows, groups, problems))
