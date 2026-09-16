@@ -270,6 +270,20 @@ def test_cli_stats_bounds_profile_flag_resolves_the_provider_profile_and_flags_c
     assert row["censored"] is True
 
 
+def test_cli_stats_bounds_a_per_tier_budget_usd_mapping_falls_back_to_the_standard_tier(tmp_path, capsys):
+    """A real provider profile declares budget_usd per TIER; the first live run crashed on `0.95 * mapping`."""
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    provider = tmp_path / "provider.yaml"
+    provider.write_text("budget_usd:\n  cheap: 0.15\n  standard: 0.35\n  deep: 0.80\nrole_budget_usd:\n  review_charter: 0.80\n")
+    routing = tmp_path / "profile.yaml"
+    routing.write_text(f"provider_profile: {provider}\n")
+    code = main(["stats", "bounds", "--db", str(db), "--json", "--profile", str(routing)])
+    [row] = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert row["ceiling"] == 0.35
+
+
 def test_cli_stats_bounds_default_invocation_resolves_a_real_ceiling_via_agent_tools_profile(tmp_path, capsys, monkeypatch):
     """No `--profile` on the command line, the doc's own signature
     (docs/design/cost-bounds.md §2: `cox stats bounds [--json] [--level ...]`)
