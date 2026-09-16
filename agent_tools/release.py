@@ -10,6 +10,8 @@ import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+import yaml
+
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$")
 
 
@@ -69,6 +71,35 @@ def parse_ls_remote(text: str) -> list[str]:
     Pure: the edge fetches the text, this decides what it means."""
     refs = (line.split("\t", 1)[1] for line in text.splitlines() if "\t" in line)
     return [ref[len("refs/tags/"):] for ref in refs if ref.startswith("refs/tags/") and not ref.endswith("^{}")]
+
+
+def _with_wait_workflows(steps: list[dict]) -> list[dict]:
+    """`steps` with a `wait_workflows` step inserted immediately after every
+    `tag` or `tag_self` step, naming that same component and tag — the
+    release refusing to call itself done until the workflows the tag
+    started finish. No other kind gets one."""
+    out = []
+    for step in steps:
+        out.append(step)
+        if step["kind"] in ("tag", "tag_self"):
+            out.append({"kind": "wait_workflows", "component": step["component"], "tag": step["tag"]})
+    return out
+
+
+def declares_tag_trigger(workflow_text: str) -> bool:
+    """True when a GitHub Actions workflow's `on: push: tags:` block names
+    at least one pattern. PyYAML's default loader reads a bare `on` key as
+    the boolean `True` under YAML 1.1, so both spellings are read; a list
+    form of `on:` (e.g. `on: [push, pull_request]`) never names a tag."""
+    try:
+        doc = yaml.safe_load(workflow_text) or {}
+    except yaml.YAMLError:
+        return False
+    if not isinstance(doc, dict):
+        return False
+    on = doc.get("on", doc.get(True))
+    push = on.get("push") if isinstance(on, dict) else None
+    return bool(push.get("tags")) if isinstance(push, dict) else False
 
 
 def _bump_and_land(bump_step: dict, branch: str, body: str) -> list[dict]:
@@ -150,14 +181,14 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
         if _sort_key(parsed) < _sort_key(current_parsed):
             return _refuse(version, f"{version} is not greater than the current version {current}")
         if _sort_key(parsed) == _sort_key(current_parsed):
-            return tag_steps + [notes_step, tag_self_step]
+            return _with_wait_workflows(tag_steps + [notes_step, tag_self_step])
 
     branch = f"release/{version}"
     subject = f"manifest: bump to {version} to match the tag"
     bump_step = {"kind": "bump_manifest", "component": "manifest", "from": current, "to": version,
                  "branch": branch, "commit_subject": subject}
     body = f"Bumps manifest.toml version to {version} to match tag {new_tag}."
-    return tag_steps + [notes_step] + _bump_and_land(bump_step, branch, body) + [tag_self_step]
+    return _with_wait_workflows(tag_steps + [notes_step] + _bump_and_land(bump_step, branch, body) + [tag_self_step])
 
 
 def component_dir(root: str, name: str, overrides: Mapping[str, str] | None = None) -> str:

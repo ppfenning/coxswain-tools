@@ -1,3 +1,4 @@
+import json
 import tomllib
 
 import pytest
@@ -40,19 +41,23 @@ def _maintainer_checkout(monkeypatch):
 def test_step_order_for_a_two_component_manifest():
     steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()))
     assert [s["kind"] for s in steps] == [
-        "tag", "tag", "notes", "bump_manifest", "push", "pr_create", "wait_checks", "merge", "tag_self"]
+        "tag", "wait_workflows", "tag", "wait_workflows", "notes", "bump_manifest",
+        "push", "pr_create", "wait_checks", "merge", "tag_self", "wait_workflows"]
     assert steps[0] == {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}
-    assert steps[1] == {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"}
-    assert steps[2] == {"kind": "notes", "component": "notes", "path": "docs/releases/0.2.0.md"}
-    assert steps[3] == {"kind": "bump_manifest", "component": "manifest", "from": "0.1.0", "to": "0.2.0",
+    assert steps[1] == {"kind": "wait_workflows", "component": "harness", "tag": "v0.2.0"}
+    assert steps[2] == {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"}
+    assert steps[4] == {"kind": "notes", "component": "notes", "path": "docs/releases/0.2.0.md"}
+    assert steps[5] == {"kind": "bump_manifest", "component": "manifest", "from": "0.1.0", "to": "0.2.0",
                          "branch": "release/0.2.0", "commit_subject": "manifest: bump to 0.2.0 to match the tag"}
-    assert steps[8] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
+    assert steps[10] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
+    assert steps[11] == {"kind": "wait_workflows", "component": "coxswain", "tag": "v0.2.0"}
 
 
 def test_manifest_below_target_gets_its_own_bump_and_land_and_tag_sequence():
     steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()))
     manifest_steps = [s for s in steps if s["component"] in ("manifest", "coxswain")]
-    assert [s["kind"] for s in manifest_steps] == ["bump_manifest", "push", "pr_create", "wait_checks", "merge", "tag_self"]
+    assert [s["kind"] for s in manifest_steps] == [
+        "bump_manifest", "push", "pr_create", "wait_checks", "merge", "tag_self", "wait_workflows"]
     assert manifest_steps[1] == {"kind": "push", "component": "manifest", "branch": "release/0.2.0"}
     assert manifest_steps[2] == {"kind": "pr_create", "component": "manifest",
                                   "title": "manifest: bump to 0.2.0 to match the tag",
@@ -66,7 +71,8 @@ def test_a_component_below_the_target_version_yields_bump_pyproject_then_the_lan
     manifest = _manifest("0.2.0")
     steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.1.0"})
     harness_steps = [s for s in steps if s["component"] == "harness"]
-    assert [s["kind"] for s in harness_steps] == ["bump_pyproject", "push", "pr_create", "wait_checks", "merge", "tag"]
+    assert [s["kind"] for s in harness_steps] == [
+        "bump_pyproject", "push", "pr_create", "wait_checks", "merge", "tag", "wait_workflows"]
     assert harness_steps[0] == {"kind": "bump_pyproject", "component": "harness", "repo": "org/harness",
                                  "branch": "release/0.2.0", "commit_subject": "pyproject: bump to 0.2.0 to match the tag",
                                  "from": "0.1.0", "to": "0.2.0"}
@@ -77,16 +83,32 @@ def test_a_component_below_the_target_version_yields_bump_pyproject_then_the_lan
     assert harness_steps[3] == {"kind": "wait_checks", "component": "harness"}
     assert harness_steps[4] == {"kind": "merge", "component": "harness"}
     assert harness_steps[5] == {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}
+    assert harness_steps[6] == {"kind": "wait_workflows", "component": "harness", "tag": "v0.2.0"}
     # cartridges carries no component_versions fact, so it gets no bump.
     assert [s for s in steps if s["component"] == "cartridges"] == [
-        {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"}]
+        {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"},
+        {"kind": "wait_workflows", "component": "cartridges", "tag": "v0.2.0"}]
 
 
 def test_a_component_already_at_the_target_version_yields_no_bump_steps_for_it():
     manifest = _manifest("0.2.0")
     steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.2.0"})
     assert [s for s in steps if s["component"] == "harness"] == [
-        {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}]
+        {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"},
+        {"kind": "wait_workflows", "component": "harness", "tag": "v0.2.0"}]
+
+
+def test_wait_workflows_is_inserted_only_after_tag_and_tag_self_steps():
+    manifest = _manifest()
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.1.0"})
+    kinds = [s["kind"] for s in steps]
+    assert "bump_pyproject" in kinds and "push" in kinds and "pr_create" in kinds
+    assert "wait_checks" in kinds and "merge" in kinds and "notes" in kinds and "bump_manifest" in kinds
+    for i, kind in enumerate(kinds[:-1]):
+        if kind in ("tag", "tag_self"):
+            assert kinds[i + 1] == "wait_workflows"
+        else:
+            assert kinds[i + 1] != "wait_workflows"
 
 
 def test_refuse_on_bad_semver():
@@ -132,6 +154,11 @@ def test_bumped_manifest_text_preserves_comments_and_changes_only_the_values():
     assert before == after
 
 
+def test_declares_tag_trigger_reads_the_dict_form_and_skips_the_list_form():
+    assert release.declares_tag_trigger('on:\n  push:\n    tags: ["v*"]\n') is True
+    assert release.declares_tag_trigger("on: [push, pull_request]\n") is False
+
+
 class _LsRemote:
     def __init__(self, returncode, stdout):
         self.returncode, self.stdout = returncode, stdout
@@ -163,8 +190,10 @@ def test_cli_release_dry_run_prints_every_step_and_exits_zero(tmp_path, capsys, 
 
 def test_first_cut_of_the_declared_version_yields_tag_notes_tag_self_with_no_bump():
     steps = release.release_plan(_manifest("0.2.0"), "0.2.0", _no_tags(_manifest("0.2.0")))
-    assert [s["kind"] for s in steps] == ["tag", "tag", "notes", "tag_self"]
-    assert steps[-1] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
+    assert [s["kind"] for s in steps] == [
+        "tag", "wait_workflows", "tag", "wait_workflows", "notes", "tag_self", "wait_workflows"]
+    assert steps[-2] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
+    assert steps[-1] == {"kind": "wait_workflows", "component": "coxswain", "tag": "v0.2.0"}
 
 
 def test_equal_version_with_an_existing_tag_still_refuses():
@@ -180,13 +209,16 @@ def test_component_dir_tag_argv_and_push_argv_shape():
     assert release.push_argv("/dev/harness", "0.2.0") == ["git", "-C", "/dev/harness", "push", "origin", "v0.2.0"]
 
 
-def _fake_git_run(dirty=(), fail=None, off_branch=()):
+def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success"):
     """`fail`, when given, is `(directory, kind)` for the one call that
-    should return non-zero — everything else in a clean, on-branch tree."""
+    should return non-zero — everything else in a clean, on-branch tree.
+    Every `gh run list` call reports one run with `gh_conclusion`."""
     calls: list = []
 
     def run(argv, cwd):
         calls.append(argv)
+        if argv[0] == "gh":
+            return (0, json.dumps([{"status": "completed", "conclusion": gh_conclusion, "name": "ci", "url": "https://x/1"}]))
         if fail and argv[2] == fail[0] and argv[3] == fail[1]:
             return (1, f"{fail[1]} failed")
         if argv[3] == "status":
@@ -195,8 +227,64 @@ def _fake_git_run(dirty=(), fail=None, off_branch=()):
             return (0, "feature/x\n") if argv[2] in off_branch else (0, "main\n")
         if argv[3] == "symbolic-ref":
             return (0, "refs/remotes/origin/main\n")
+        if argv[3] == "rev-list":
+            return (0, "deadbeef\n")
         return (0, "")
     return calls, run
+
+
+def test_wait_workflows_proceeds_when_every_run_for_the_tag_sha_succeeds():
+    def run(argv, cwd):
+        if argv[3] == "rev-list":
+            return (0, "abc1234\n")
+        return (0, json.dumps([
+            {"status": "completed", "conclusion": "success", "name": "CI", "url": "https://x/1"},
+            {"status": "completed", "conclusion": "success", "name": "Publish", "url": "https://x/2"}]))
+    ok, detail = cli._wait_workflows("/root/harness", "v0.2.0", "harness", run)
+    assert ok and "2 run" in detail
+
+
+def test_wait_workflows_fails_naming_the_component_workflow_and_url_when_one_run_is_not_success():
+    def run(argv, cwd):
+        if argv[3] == "rev-list":
+            return (0, "abc1234\n")
+        return (0, json.dumps([
+            {"status": "completed", "conclusion": "success", "name": "CI", "url": "https://x/1"},
+            {"status": "completed", "conclusion": "failure", "name": "Publish", "url": "https://x/2"}]))
+    ok, detail = cli._wait_workflows("/root/harness", "v0.2.0", "harness", run)
+    assert not ok
+    assert "harness" in detail and "Publish" in detail and "https://x/2" in detail
+
+
+def test_wait_workflows_retries_a_pending_run_then_succeeds_once_it_concludes():
+    gh_replies = [
+        json.dumps([{"status": "in_progress", "conclusion": None, "name": "CI", "url": "https://x/1"}]),
+        json.dumps([{"status": "completed", "conclusion": "success", "name": "CI", "url": "https://x/1"}]),
+    ]
+    sleeps = []
+
+    def run(argv, cwd):
+        if argv[3] == "rev-list":
+            return (0, "abc1234\n")
+        return (0, gh_replies.pop(0))
+    ok, detail = cli._wait_workflows("/root/harness", "v0.2.0", "harness", run,
+                                      timeout_s=900, sleep=sleeps.append, now=iter([0.0, 0.0, 10.0]).__next__)
+    assert ok and "1 run" in detail and sleeps == [10]
+
+
+def test_wait_workflows_fails_after_timeout_on_zero_runs_only_when_a_workflow_declares_a_tag_trigger(tmp_path):
+    def run(argv, cwd):
+        return (0, "abc1234\n") if argv[3] == "rev-list" else (0, "[]")
+    triggered = tmp_path / "with_trigger"
+    (triggered / ".github" / "workflows").mkdir(parents=True)
+    (triggered / ".github" / "workflows" / "publish.yml").write_text('on:\n  push:\n    tags: ["v*"]\n')
+    ok, detail = cli._wait_workflows(str(triggered), "v0.2.0", "harness", run, timeout_s=0)
+    assert not ok and "harness" in detail
+
+    untriggered = tmp_path / "without_trigger"
+    untriggered.mkdir()
+    ok, detail = cli._wait_workflows(str(untriggered), "v0.2.0", "harness", run, timeout_s=0)
+    assert ok
 
 
 def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umbrella(tmp_path, monkeypatch):
@@ -218,6 +306,29 @@ def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umb
         ["git", "-C", str(tmp_path / "cartridges"), "push", "origin", "v0.1.0"],
         ["git", "-C", str(umbrella_dir), "tag", "-a", "v0.1.0", "-m", "coxswain 0.1.0"],
         ["git", "-C", str(umbrella_dir), "push", "origin", "v0.1.0"],
+    ]
+    gh_calls = [c for c in calls if c[0] == "gh"]
+    assert gh_calls == [["gh", "run", "list", "--commit", "deadbeef", "--json", "status,conclusion,name,url"]] * 3
+
+
+def test_cli_release_execute_fails_the_release_when_a_wait_workflows_run_is_not_success(tmp_path, monkeypatch, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("notes")
+    calls, fake_run = _fake_git_run(gh_conclusion="failure")
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "FAILED wait_workflows harness: harness: ci did not succeed (https://x/1)" in out
+    # the release stops at harness's wait_workflows: cartridges and the umbrella are never tagged.
+    tag_push = [c for c in calls if c[3] in ("tag", "push")]
+    assert tag_push == [
+        ["git", "-C", str(tmp_path / "harness"), "tag", "-a", "v0.1.0", "-m", "coxswain 0.1.0"],
+        ["git", "-C", str(tmp_path / "harness"), "push", "origin", "v0.1.0"],
     ]
 
 
