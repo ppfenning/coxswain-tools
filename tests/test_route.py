@@ -64,6 +64,42 @@ def test_parse_profile_nested_key_names_the_line():
     assert "nested: bad" in message
 
 
+def test_parse_profile_has_no_spend_keys_when_the_block_is_absent():
+    profile = route.parse_profile(VALID_PROFILE)
+    assert "window_ceiling_usd" not in profile
+    assert "node_cap_usd" not in profile
+
+
+def test_parse_profile_reads_both_spend_keys_when_both_are_set():
+    text = VALID_PROFILE + "spend:\n  window_ceiling_usd: 300\n  node_cap_usd: 2.00\n"
+    profile = route.parse_profile(text)
+    assert profile["window_ceiling_usd"] == 300.0
+    assert profile["node_cap_usd"] == 2.0
+
+
+def test_parse_profile_leaves_the_other_spend_key_absent_when_only_one_is_set():
+    text = VALID_PROFILE + "spend:\n  window_ceiling_usd: 300\n"
+    profile = route.parse_profile(text)
+    assert profile["window_ceiling_usd"] == 300.0
+    assert "node_cap_usd" not in profile
+
+
+def test_parse_profile_unknown_key_inside_spend_names_the_line():
+    text = VALID_PROFILE + "spend:\n  bogus: 1\n"
+    with pytest.raises(route.ProfileError) as exc_info:
+        route.parse_profile(text)
+    assert "bogus: 1" in str(exc_info.value)
+
+
+def test_parse_profile_non_numeric_spend_value_names_the_line():
+    text = VALID_PROFILE + "spend:\n  window_ceiling_usd: 300 USD\n"
+    with pytest.raises(route.ProfileError) as exc_info:
+        route.parse_profile(text)
+    message = str(exc_info.value)
+    assert message.startswith("line 9:")
+    assert "window_ceiling_usd: 300 USD" in message
+
+
 def test_slugify_handles_punctuation_unicode_and_whitespace():
     assert route.slugify("  Fix the Bug!! ") == "fix-the-bug"
     assert route.slugify("Café Résumé — draft") == "caf-r-sum-draft"
@@ -309,6 +345,18 @@ def test_harness_argv_omits_fix_attempts_for_epic_when_absent():
         profile, "epic", "myinit-1", initiative="/work/myinit", repo="/repos/widget",
     )
     assert "--fix-attempts" not in argv
+
+
+def test_harness_argv_appends_node_cap_usd_when_set_in_the_profile():
+    profile = route.parse_profile(VALID_PROFILE + "spend:\n  node_cap_usd: 2.00\n")
+    argv = route.harness_argv(profile, "cos", "cos-1")
+    assert argv[-2:] == ["--node-cap-usd", "2.0"]
+
+
+def test_harness_argv_omits_node_cap_usd_when_unset_in_the_profile():
+    profile = route.parse_profile(VALID_PROFILE)
+    argv = route.harness_argv(profile, "cos", "cos-1")
+    assert "--node-cap-usd" not in argv
 
 
 # The shape providers/claude-code.yaml actually has: tiers map a tier to a model,

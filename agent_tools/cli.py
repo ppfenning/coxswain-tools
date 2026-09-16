@@ -684,7 +684,9 @@ def _route_context(a: argparse.Namespace) -> int:
     # Computed once via the gatherer, same reason `route launch` gates on;
     # only when there is a workspace to gather usage files from.
     usage_reason = (
-        _usage_assessment(Path(profile["workspace_dir"]).expanduser() / "runs").reason
+        _usage_assessment(
+            Path(profile["workspace_dir"]).expanduser() / "runs", profile.get("window_ceiling_usd")
+        ).reason
         if not reason and profile is not None else None
     )
     if a.json:
@@ -1161,7 +1163,9 @@ def _route_launch(a: argparse.Namespace) -> int:
     guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force)
     if guard_rc is not None:
         return guard_rc
-    usage_code, usage_lines = route.launch_gate(_usage_assessment(runs_dir), a.force)
+    usage_code, usage_lines = route.launch_gate(
+        _usage_assessment(runs_dir, profile.get("window_ceiling_usd")), a.force
+    )
     for line in usage_lines:
         print(line)
     if usage_code is not None:
@@ -2017,7 +2021,10 @@ def _home(a: argparse.Namespace) -> int:
         return refuse_rc
     workspace = runs_dir.parent
     plugin_root = _plugin_root(profile.get("skills_roots") or [])
-    return home_screen.main(runs_dir, workspace / "work", workspace / "intake", str(plugin_root or ""))
+    return home_screen.main(
+        runs_dir, workspace / "work", workspace / "intake", str(plugin_root or ""),
+        window_ceiling_usd=profile.get("window_ceiling_usd"),
+    )
 
 
 def _setup_tui(a: argparse.Namespace) -> int:
@@ -2056,13 +2063,13 @@ def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
     )
 
 
-def _usage_assessment(runs_dir) -> pacing.Assessment:
+def _usage_assessment(runs_dir, window_ceiling_usd: float | None = None) -> pacing.Assessment:
     """Computed once via the gatherer and shared by every surface that
     narrates it: `usage assess`, `route context`'s docket line, and `route
     launch`'s gate all call this so the same window yields the same reason.
     """
     now = datetime.datetime.now(datetime.UTC)
-    window = usage_window.gather(runs_dir, now)
+    window = usage_window.gather(runs_dir, now, ceiling_usd=window_ceiling_usd)
     policy = _resolved_pacing_policy(Path(runs_dir))
     return pacing.assess(window, policy, now)
 
