@@ -113,6 +113,48 @@ def test_check_manifest_with_agreeing_facts_has_no_drift():
     assert check_manifest(facts) == []
 
 
+def test_check_manifest_does_not_read_lockstep_a_pages_own_tag_agreeing_with_it_is_not_a_drift():
+    """`check_manifest` never reads `spec["lockstep"]`; a `lockstep = False`
+    component's page is still compared only against the component's own
+    manifest `tag`, so a tag that differs from `coxswain.version` is not
+    itself a drift — this is pre-existing tag-vs-page behavior, unchanged by
+    the `lockstep` key's presence."""
+    facts = {
+        "manifest": {"coxswain": {"version": "0.6.0"},
+                     "components": {"crew": {"tag": "v0.4.0", "lockstep": False}}},
+        "manifest_path": "/repo/manifest.toml",
+        "component_docs": {"crew": "/repo/coxswain/docs/components/crew.md"},
+        "release_notes": "/repo/coxswain/docs/releases/0.6.0.md",
+        "component_pages": {"crew": "crew is at v0.4.0"},
+        "notes_page": "crew landed in this release",
+    }
+    assert check_manifest(facts) == []
+
+
+def test_check_manifest_flags_a_stale_page_the_same_way_whether_or_not_lockstep_is_set():
+    """A page that disagrees with its component's own manifest `tag` is a
+    drift regardless of `lockstep`; the flag plays no part in this
+    comparison, since `check_manifest` does not compare a component's tag
+    against `coxswain.version` at all — only `check_versions`
+    (`agent_tools/release_check.py`) touches `coxswain.version`."""
+    facts = {
+        "manifest": {"coxswain": {"version": "0.6.0"},
+                     "components": {"cox": {"tag": "v0.6.0", "lockstep": True}}},
+        "manifest_path": "/repo/manifest.toml",
+        "component_docs": {"cox": "/repo/coxswain/docs/components/cox.md"},
+        "release_notes": "/repo/coxswain/docs/releases/0.6.0.md",
+        "component_pages": {"cox": "cox is at v0.4.0"},
+        "notes_page": "cox landed in this release",
+    }
+    assert check_manifest(facts) == [
+        Drift(
+            "manifest", "/repo/manifest.toml", None,
+            "/repo/coxswain/docs/components/cox.md", 1,
+            "update /repo/coxswain/docs/components/cox.md to v0.6.0",
+        ),
+    ]
+
+
 def test_gather_manifest_facts_reads_the_pages_and_notes_named_by_facts_plan(tmp_path):
     manifest = {"coxswain": {"version": "0.2.0"}, "components": {"cox": {"tag": "v0.2.0"}}}
     manifest_path = tmp_path / "manifest.toml"
