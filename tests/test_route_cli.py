@@ -104,6 +104,36 @@ def test_context_json_with_full_profile_lists_initiative_and_runs(tmp_path, caps
     }
 
 
+def test_context_reports_an_unknown_state_as_a_problem_under_its_initiative(tmp_path, capsys):
+    profile = _write_workspace(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "work" / "demo" / "1-build" / "task.md").write_text("---\nstate: superseded\n---\n\nDo the task\n")
+    rc = main(["route", "context", "--profile", str(profile), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert doc["initiatives"] == [{"id": "demo", "phase": None, "ready": 0}]
+    assert doc["problems"] == ["demo: 1-build/task.md: unknown state 'superseded'"]
+
+    rc = main(["route", "context", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    ready_line = next(i for i, line in enumerate(lines) if line.startswith("ready:"))
+    assert lines[ready_line] == "ready: demo (unlaunchable)"
+    assert lines[ready_line + 1] == "problem: demo: 1-build/task.md: unknown state 'superseded'"
+
+
+def test_status_json_without_an_intake_dir_still_carries_problems(tmp_path, capsys):
+    """The validator's finding on run 1: the bare-rows branch dropped the problem list."""
+    profile = _write_workspace(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "work" / "demo" / "1-build" / "task.md").write_text("---\nstate: superseded\n---\n\nDo the task\n")
+    rc = main(["route", "status", "--profile", str(profile), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert isinstance(doc["runs"], list)
+    assert doc["problems"] == ["demo: 1-build/task.md: unknown state 'superseded'"]
+
+
 def test_context_text_with_full_profile_lists_initiative_and_runs(tmp_path, capsys):
     profile = _write_workspace(tmp_path)
     rc = main(["route", "context", "--profile", str(profile)])
