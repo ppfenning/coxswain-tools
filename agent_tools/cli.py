@@ -1371,7 +1371,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(f"routing: no idea file at {idea_path}")
             return 2
         workspace_dir = Path(profile["workspace_dir"]).expanduser()
-        initiative_md = workspace_dir / a.initiative_id / "initiative.md"
+        initiative_md = workspace_dir / "work" / a.initiative_id / "initiative.md"
         if initiative_md.exists():
             print(f"routing: {initiative_md} already exists, left untouched")
         else:
