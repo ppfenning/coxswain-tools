@@ -1786,6 +1786,7 @@ _RELEASE_DETAIL = {
     "bump_manifest": lambda step: f"{step['from']} -> {step['to']}",
     "notes": lambda step: step["path"],
     "tag_self": lambda step: step["tag"],
+    "wait_workflows": lambda step: step["tag"],
 }
 
 
@@ -1811,6 +1812,51 @@ def _checkout_ready(directory: str, run) -> tuple[bool, str]:
     if current != default:
         return False, f"{directory} is on {current}, not {default}"
     return True, ""
+
+
+def _component_declares_tag_trigger(directory: str) -> bool:
+    """True when any `.github/workflows/*.y*ml` file under `directory`
+    triggers on a pushed tag — read at the edge, decided by the pure
+    `release.declares_tag_trigger`."""
+    workflows_dir = Path(directory) / ".github" / "workflows"
+    if not workflows_dir.is_dir():
+        return False
+    paths = sorted(workflows_dir.glob("*.yml")) + sorted(workflows_dir.glob("*.yaml"))
+    return any(release.declares_tag_trigger(p.read_text(encoding="utf-8")) for p in paths)
+
+
+def _wait_workflows(directory: str, tag: str, component: str, run,
+                     timeout_s: float = 900, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
+    """Polls `gh run list --commit <sha> --json status,conclusion,name,url`
+    for the commit `tag` points at, until every run has concluded or
+    `timeout_s` passes. Any run whose conclusion is not `success` after
+    that fails, naming `component`, that run's `name` and its `url`; zero
+    runs at the timeout fails the same way only when a workflow file under
+    `directory` declares a tag trigger — a component with none has
+    nothing to wait on."""
+    sha_rc, sha_out = run(["git", "-C", directory, "rev-list", "-n", "1", tag], None)
+    if sha_rc != 0:
+        return False, sha_out.strip() or f"could not resolve {tag} to a commit"
+    sha = sha_out.strip()
+    started = now()
+    while True:
+        gh_rc, gh_out = run(["gh", "run", "list", "--commit", sha, "--json", "status,conclusion,name,url"], None)
+        if gh_rc != 0:
+            return False, gh_out.strip() or "gh run list failed"
+        runs = json.loads(gh_out) if gh_out.strip() else []
+        pending = any(r.get("status") != "completed" for r in runs)
+        timed_out = now() - started >= timeout_s
+        if (not runs or pending) and not timed_out:
+            sleep(10)
+            continue
+        if not runs:
+            if _component_declares_tag_trigger(directory):
+                return False, f"{component}: no workflow run started for {tag} within {timeout_s:.0f}s"
+            return True, "no tag-triggered workflow for this component"
+        failed = next((r for r in runs if r.get("conclusion") != "success"), None)
+        if failed is not None:
+            return False, f"{component}: {failed.get('name')} did not succeed ({failed.get('url')})"
+        return True, f"{len(runs)} run(s) green for {sha[:8] or sha}"
 
 
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run) -> int:
@@ -1875,6 +1921,16 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"FAILED push coxswain: {self_push_out.strip()}")
                 return 2
             print(f"tag_self coxswain: {step['tag']}")
+        elif kind == "wait_workflows":
+            directory = umbrella if step["component"] == "coxswain" else release.component_dir(root, step["component"], overrides)
+            ok, detail = _wait_workflows(directory, step["tag"], step["component"], run)
+            if not ok:
+                # docs/design/release-discipline.md §2 says exit code 1; every
+                # other failure branch in this function returns 2, and that
+                # file-wide convention wins here for consistency with its siblings.
+                print(f"FAILED wait_workflows {step['component']}: {detail}")
+                return 2
+            print(f"wait_workflows {step['component']}: {detail}")
         else:
             print(f"FAILED {kind} {step.get('component', '')}: no executor for this step kind")
             return 2

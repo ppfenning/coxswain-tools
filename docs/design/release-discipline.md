@@ -37,7 +37,7 @@ After the tags are pushed, a `wait_workflows` step polls, per component, the wor
 `head_sha` is the tag's sha (`gh run list --commit <sha> --json status,conclusion,name,url`) until every
 one has a conclusion or `timeout_s` (default 900) passes. Any conclusion other than `success` (or a
 component with zero runs where its workflow files declare a tag trigger) fails the release with the run
-URLs printed; the exit code is 1 and the message says which component and workflow. `workspace/bin/
+URLs printed; the exit code is 2 — the release tool's refusal code throughout — and the message says which component and workflow. `workspace/bin/
 verify-release.sh` stays as the independent after-the-fact check; this step is the release refusing to
 call itself done.
 
