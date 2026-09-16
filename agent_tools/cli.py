@@ -2038,39 +2038,40 @@ def _component_declares_tag_trigger(directory: str) -> bool:
 
 def _wait_workflows(directory: str, tag: str, component: str, run,
                      timeout_s: float = 900, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
-    """Polls `gh run list --commit <sha> --json status,conclusion,name,url`
-    for the commit `tag` points at, until every run has concluded or
-    `timeout_s` passes. Any run whose conclusion is not `success` after
-    that fails, naming `component`, that run's `name` and its `url`; zero
-    runs at the timeout fails the same way only when a workflow file under
-    `directory` declares a tag trigger — a component with none has
-    nothing to wait on."""
-    sha_rc, sha_out = run(["git", "-C", directory, "rev-list", "-n", "1", tag], None)
-    if sha_rc != 0:
-        return False, sha_out.strip() or f"could not resolve {tag} to a commit"
-    sha = sha_out.strip()
+    """A component with no tag-triggered workflow has nothing to wait on and
+    returns immediately, before ever polling — otherwise it would stall for
+    the full `timeout_s` on every release. Otherwise polls `gh run list
+    --branch <tag> --json status,conclusion,name,url,event,headBranch`,
+    keeping only the runs the tag itself started — event `push` on that
+    exact `headBranch` — until every one has concluded or `timeout_s`
+    passes; zero matching runs inside that loop is always still pending.
+    Any run whose conclusion is not `success` after that fails, naming
+    `component`, that run's `name` and its `url`; so does a timeout with
+    zero matching runs, since a declared trigger means one was expected."""
+    if not _component_declares_tag_trigger(directory):
+        return True, "no tag-triggered workflow for this component"
     started = now()
     while True:
         # `gh` infers the repository from its working directory; from the
         # release root (not a git repository) it fails before asking GitHub —
         # the first real 0.7.0 cut stopped on exactly that after tagging one component.
-        gh_rc, gh_out = run(["gh", "run", "list", "--commit", sha, "--json", "status,conclusion,name,url"], directory)
+        gh_rc, gh_out = run(["gh", "run", "list", "--branch", tag, "--json",
+                              "status,conclusion,name,url,event,headBranch"], directory)
         if gh_rc != 0:
             return False, gh_out.strip() or "gh run list failed"
-        runs = json.loads(gh_out) if gh_out.strip() else []
+        all_runs = json.loads(gh_out) if gh_out.strip() else []
+        runs = [r for r in all_runs if r.get("event") == "push" and r.get("headBranch") == tag]
         pending = any(r.get("status") != "completed" for r in runs)
         timed_out = now() - started >= timeout_s
         if (not runs or pending) and not timed_out:
             sleep(10)
             continue
         if not runs:
-            if _component_declares_tag_trigger(directory):
-                return False, f"{component}: no workflow run started for {tag} within {timeout_s:.0f}s"
-            return True, "no tag-triggered workflow for this component"
+            return False, f"{component}: no workflow run started for {tag} within {timeout_s:.0f}s"
         failed = next((r for r in runs if r.get("conclusion") != "success"), None)
         if failed is not None:
             return False, f"{component}: {failed.get('name')} did not succeed ({failed.get('url')})"
-        return True, f"{len(runs)} run(s) green for {sha[:8] or sha}"
+        return True, f"{len(runs)} run(s) green for {tag}"
 
 
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run) -> int:
