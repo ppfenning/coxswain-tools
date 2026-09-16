@@ -1,5 +1,6 @@
 import json
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,8 @@ tag = "v0.6.0"
 lockstep = false
 """
 
+_TOOLS_REPO_URL = "https://github.com/ppfenning/coxswain-tools"
+
 
 def _no_tags(manifest):
     """Every repo component reachable with no tags — the clean case."""
@@ -46,25 +49,32 @@ def _maintainer_checkout(monkeypatch):
 
 
 def test_step_order_for_a_two_component_manifest():
-    steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()))
+    steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()), tools_repository_url=_TOOLS_REPO_URL)
     assert [s["kind"] for s in steps] == [
-        "tag", "wait_workflows", "tag", "wait_workflows", "notes", "bump_manifest",
-        "push", "pr_create", "wait_checks", "merge", "tag_self", "wait_workflows"]
+        "tag", "wait_workflows", "github_release", "tag", "wait_workflows", "github_release", "notes",
+        "bump_manifest", "push", "pr_create", "wait_checks", "merge", "tag_self", "wait_workflows", "github_release"]
     assert steps[0] == {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}
     assert steps[1] == {"kind": "wait_workflows", "component": "harness", "tag": "v0.2.0"}
-    assert steps[2] == {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"}
-    assert steps[4] == {"kind": "notes", "component": "notes", "path": "docs/releases/0.2.0.md"}
-    assert steps[5] == {"kind": "bump_manifest", "component": "manifest", "from": "0.1.0", "to": "0.2.0",
+    assert steps[2] == {"kind": "github_release", "component": "harness", "repo": "org/harness", "tag": "v0.2.0",
+                         "title": "coxswain-harness 0.2.0", "notes_path": "docs/releases/0.2.0.md",
+                         "heading": "## coxswain-harness", "from": "v0.1.0",
+                         "link": "https://github.com/ppfenning/coxswain/releases/tag/v0.2.0"}
+    assert steps[3] == {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"}
+    assert steps[6] == {"kind": "notes", "component": "notes", "path": "docs/releases/0.2.0.md"}
+    assert steps[7] == {"kind": "bump_manifest", "component": "manifest", "from": "0.1.0", "to": "0.2.0",
                          "branch": "release/0.2.0", "commit_subject": "manifest: bump to 0.2.0 to match the tag"}
-    assert steps[10] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
-    assert steps[11] == {"kind": "wait_workflows", "component": "coxswain", "tag": "v0.2.0"}
+    assert steps[12] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
+    assert steps[13] == {"kind": "wait_workflows", "component": "coxswain", "tag": "v0.2.0"}
+    assert steps[14] == {"kind": "github_release", "component": "coxswain", "repo": "ppfenning/coxswain",
+                          "tag": "v0.2.0", "title": "coxswain 0.2.0", "notes_path": "docs/releases/0.2.0.md",
+                          "heading": None}
 
 
 def test_manifest_below_target_gets_its_own_bump_and_land_and_tag_sequence():
     steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()))
     manifest_steps = [s for s in steps if s["component"] in ("manifest", "coxswain")]
     assert [s["kind"] for s in manifest_steps] == [
-        "bump_manifest", "push", "pr_create", "wait_checks", "merge", "tag_self", "wait_workflows"]
+        "bump_manifest", "push", "pr_create", "wait_checks", "merge", "tag_self", "wait_workflows", "github_release"]
     assert manifest_steps[1] == {"kind": "push", "component": "manifest", "branch": "release/0.2.0"}
     assert manifest_steps[2] == {"kind": "pr_create", "component": "manifest",
                                   "title": "manifest: bump to 0.2.0 to match the tag",
@@ -79,7 +89,7 @@ def test_a_component_below_the_target_version_yields_bump_pyproject_then_the_lan
     steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.1.0"})
     harness_steps = [s for s in steps if s["component"] == "harness"]
     assert [s["kind"] for s in harness_steps] == [
-        "bump_pyproject", "push", "pr_create", "wait_checks", "merge", "tag", "wait_workflows"]
+        "bump_pyproject", "push", "pr_create", "wait_checks", "merge", "tag", "wait_workflows", "github_release"]
     assert harness_steps[0] == {"kind": "bump_pyproject", "component": "harness", "repo": "org/harness",
                                  "branch": "release/0.2.0", "commit_subject": "pyproject: bump to 0.2.0 to match the tag",
                                  "from": "0.1.0", "to": "0.2.0"}
@@ -92,17 +102,13 @@ def test_a_component_below_the_target_version_yields_bump_pyproject_then_the_lan
     assert harness_steps[5] == {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}
     assert harness_steps[6] == {"kind": "wait_workflows", "component": "harness", "tag": "v0.2.0"}
     # cartridges carries no component_versions fact, so it gets no bump.
-    assert [s for s in steps if s["component"] == "cartridges"] == [
-        {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"},
-        {"kind": "wait_workflows", "component": "cartridges", "tag": "v0.2.0"}]
+    assert [s["kind"] for s in steps if s["component"] == "cartridges"] == ["tag", "wait_workflows", "github_release"]
 
 
 def test_a_component_already_at_the_target_version_yields_no_bump_steps_for_it():
     manifest = _manifest("0.2.0")
     steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.2.0"})
-    assert [s for s in steps if s["component"] == "harness"] == [
-        {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"},
-        {"kind": "wait_workflows", "component": "harness", "tag": "v0.2.0"}]
+    assert [s["kind"] for s in steps if s["component"] == "harness"] == ["tag", "wait_workflows", "github_release"]
 
 
 def test_a_lockstep_false_component_gets_a_pinned_step_and_no_tag_step():
@@ -136,10 +142,16 @@ def test_a_lockstep_false_component_with_commits_past_its_tag_gets_a_rejoin_step
     manifest = {"coxswain": {"version": "0.1.0"},
                 "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
                                 "crew": {"repo": "org/crew", "tag": "v0.7.0", "lockstep": False}}}
-    steps = release.release_plan(manifest, "0.9.0", _no_tags(manifest), pinned_commits={"crew": 3})
-    assert [s for s in steps if s["component"] == "crew" and s["kind"] != "wait_workflows"] == [
-        {"kind": "rejoin", "component": "crew", "repo": "org/crew", "tag": "v0.9.0", "from": "v0.7.0", "commits": 3}]
-    assert {"kind": "wait_workflows", "component": "crew", "tag": "v0.9.0"} in steps
+    steps = release.release_plan(manifest, "0.9.0", _no_tags(manifest), pinned_commits={"crew": 3},
+                                  tools_repository_url=_TOOLS_REPO_URL)
+    crew_steps = [s for s in steps if s["component"] == "crew"]
+    assert [s["kind"] for s in crew_steps] == ["rejoin", "wait_workflows", "github_release"]
+    assert crew_steps[0] == {"kind": "rejoin", "component": "crew", "repo": "org/crew", "tag": "v0.9.0",
+                              "from": "v0.7.0", "commits": 3}
+    assert crew_steps[2] == {"kind": "github_release", "component": "crew", "repo": "org/crew", "tag": "v0.9.0",
+                              "title": "coxswain-crew 0.9.0", "notes_path": "docs/releases/0.9.0.md",
+                              "heading": "## coxswain-crew", "from": "v0.7.0",
+                              "link": "https://github.com/ppfenning/coxswain/releases/tag/v0.9.0"}
 
 
 def test_a_lockstep_false_component_with_zero_or_no_pinned_commits_still_gets_pinned():
@@ -316,9 +328,11 @@ def test_cli_release_dry_run_prints_every_step_and_exits_zero(tmp_path, capsys, 
 def test_first_cut_of_the_declared_version_yields_tag_notes_tag_self_with_no_bump():
     steps = release.release_plan(_manifest("0.2.0"), "0.2.0", _no_tags(_manifest("0.2.0")))
     assert [s["kind"] for s in steps] == [
-        "tag", "wait_workflows", "tag", "wait_workflows", "notes", "tag_self", "wait_workflows"]
-    assert steps[-2] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
-    assert steps[-1] == {"kind": "wait_workflows", "component": "coxswain", "tag": "v0.2.0"}
+        "tag", "wait_workflows", "github_release", "tag", "wait_workflows", "github_release",
+        "notes", "tag_self", "wait_workflows", "github_release"]
+    assert steps[-3] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
+    assert steps[-2] == {"kind": "wait_workflows", "component": "coxswain", "tag": "v0.2.0"}
+    assert steps[-1]["kind"] == "github_release" and steps[-1]["component"] == "coxswain"
 
 
 def test_equal_version_with_an_existing_tag_still_refuses():
@@ -352,8 +366,12 @@ def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success"):
 
     def run(argv, cwd):
         calls.append(argv)
-        if argv[0] == "gh":
+        if argv[0] == "gh" and argv[1] == "run":
             return (0, json.dumps([{"status": "completed", "conclusion": gh_conclusion, "name": "ci", "url": "https://x/1"}]))
+        if argv[0] == "gh" and argv[1] == "release" and argv[2] == "view":
+            return (1, "release not found")
+        if argv[0] == "gh":
+            return (0, "")
         if fail and argv[2] == fail[0] and argv[3] == fail[1]:
             return (1, f"{fail[1]} failed")
         if argv[3] == "status":
@@ -448,7 +466,10 @@ def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umb
         ["git", "-C", str(umbrella_dir), "push", "origin", "v0.1.0"],
     ]
     gh_calls = [c for c in calls if c[0] == "gh"]
-    assert gh_calls == [["gh", "run", "list", "--commit", "deadbeef", "--json", "status,conclusion,name,url"]] * 3
+    run_list_calls = [c for c in gh_calls if c[1] == "run"]
+    assert run_list_calls == [["gh", "run", "list", "--commit", "deadbeef", "--json", "status,conclusion,name,url"]] * 3
+    release_calls = [(c[2], c[3]) for c in gh_calls if c[1] == "release"]
+    assert release_calls == [("view", "v0.1.0"), ("create", "v0.1.0")] * 3
 
 
 def test_cli_release_execute_runs_a_pinned_component_to_success_with_no_tag_or_push_for_it(tmp_path, monkeypatch, capsys):
@@ -694,3 +715,120 @@ def test_component_dir_falls_back_to_the_coxswain_prefixed_checkout(tmp_path):
     (tmp_path / "tools").mkdir()
     assert release.component_dir(str(tmp_path), "tools") == str(tmp_path / "tools")
     assert release.component_dir(str(tmp_path), "crew") == str(tmp_path / "crew")
+
+
+def test_extract_release_notes_returns_the_section_up_to_the_next_heading(tmp_path):
+    notes = tmp_path / "0.2.0.md"
+    notes.write_text("# Release 0.2.0\n\n## coxswain-harness\nharness notes\n\n## coxswain-cartridges\ncartridges notes\n")
+    assert release.extract_release_notes(str(notes), "## coxswain-harness") == "## coxswain-harness\nharness notes\n\n"
+
+
+def test_extract_release_notes_returns_none_for_a_missing_heading_or_file(tmp_path):
+    notes = tmp_path / "0.2.0.md"
+    notes.write_text("## coxswain-harness\nharness notes\n")
+    assert release.extract_release_notes(str(notes), "## coxswain-crew") is None
+    assert release.extract_release_notes(str(tmp_path / "missing.md"), "## coxswain-harness") is None
+
+
+def test_github_release_argv_shapes():
+    assert release.github_release_view_argv("v0.2.0") == ["gh", "release", "view", "v0.2.0"]
+    assert release.github_release_create_argv("v0.2.0", "coxswain 0.2.0", "docs/releases/0.2.0.md") == [
+        "gh", "release", "create", "v0.2.0", "--verify-tag", "--title", "coxswain 0.2.0",
+        "--notes-file", "docs/releases/0.2.0.md"]
+    assert release.github_release_edit_argv("v0.2.0", "docs/releases/0.2.0.md") == [
+        "gh", "release", "edit", "v0.2.0", "--notes-file", "docs/releases/0.2.0.md"]
+
+
+def test_umbrella_release_slug_prefers_the_manifests_own_repo_entry():
+    manifest = {"coxswain": {"version": "0.1.0", "repo": "ppfenning/coxswain"}}
+    assert release.umbrella_release_slug(manifest) == "ppfenning/coxswain"
+
+
+def test_umbrella_release_slug_falls_back_to_the_tools_repository_url_minus_tools():
+    manifest = {"coxswain": {"version": "0.1.0"}}
+    assert release.umbrella_release_slug(manifest, "https://github.com/ppfenning/coxswain-tools") == "ppfenning/coxswain"
+
+
+def test_umbrella_release_slug_is_none_with_no_manifest_repo_and_no_url_and_reads_no_file():
+    """Neither source given: `None`, not a `pyproject.toml` read off disk —
+    this pure function never touches the filesystem."""
+    assert release.umbrella_release_slug({"coxswain": {"version": "0.1.0"}}) is None
+    assert release.umbrella_release_slug({"coxswain": {"version": "0.1.0"}}, None) is None
+
+
+def test_tools_repository_url_reads_installed_package_metadata_not_a_checkout_path():
+    """No monkeypatch: proves the lookup survives being installed (editable
+    counts), unlike a `pyproject.toml` path that only exists in a checkout."""
+    assert cli._tools_repository_url() == _TOOLS_REPO_URL
+
+
+def test_cli_release_dry_run_prints_the_umbrella_github_release_command(tmp_path, capsys, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_tools_repository_url", lambda: _TOOLS_REPO_URL)
+    rc = cli.main(["dev", "release", "0.2.0", "--dry-run", "--manifest", str(manifest_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert ("github_release coxswain: ppfenning/coxswain -> gh release create v0.2.0 --verify-tag "
+            "--title coxswain 0.2.0 --notes-file docs/releases/0.2.0.md") in out
+
+
+def test_cli_release_execute_edits_an_existing_github_release_instead_of_creating_one(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("## coxswain-harness\nharness notes\n")
+    calls, fake_run = _fake_git_run()
+
+    def run(argv, cwd):
+        if argv[:3] == ["gh", "release", "view"]:
+            calls.append(argv)
+            return (0, "")
+        return fake_run(argv, cwd)
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 0
+    release_calls = [(c[2], c[3]) for c in calls if c[0] == "gh" and c[1] == "release"]
+    assert release_calls == [("view", "v0.1.0"), ("edit", "v0.1.0")] * 3
+
+
+def test_cli_release_execute_writes_a_components_section_and_link_line_to_its_notes_file(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text(
+        "## coxswain-harness\nharness notes\n\n## coxswain-cartridges\ncartridges notes\n")
+    calls, fake_run = _fake_git_run()
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    monkeypatch.setattr(cli, "_tools_repository_url", lambda: _TOOLS_REPO_URL)
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 0
+    create_calls = [c for c in calls if c[0] == "gh" and c[1] == "release" and c[2] == "create"]
+    harness_create = next(c for c in create_calls if c[6] == "coxswain-harness 0.1.0")
+    content = Path(harness_create[-1]).read_text()
+    assert content.startswith("## coxswain-harness\nharness notes\n")
+    assert "https://github.com/ppfenning/coxswain/releases/tag/v0.1.0" in content
+
+
+def test_cli_release_execute_falls_back_to_unchanged_since_when_crews_section_is_absent(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML_WITH_PINNED)
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("## coxswain-harness\nharness notes\n")
+    calls, fake_run = _fake_git_run()
+
+    def run(argv, cwd):
+        return (0, "3\n") if argv[3] == "rev-list" and "--count" in argv else fake_run(argv, cwd)
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 0
+    create_calls = [c for c in calls if c[0] == "gh" and c[1] == "release" and c[2] == "create"]
+    crew_create = next(c for c in create_calls if c[6] == "coxswain-crew 0.1.0")
+    assert Path(crew_create[-1]).read_text().startswith("unchanged since v0.6.0")

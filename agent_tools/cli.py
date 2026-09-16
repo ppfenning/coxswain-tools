@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime
+import importlib.metadata
 import json
 import os
 import re
@@ -1995,6 +1996,8 @@ _RELEASE_DETAIL = {
     "wait_workflows": lambda step: step["tag"],
     "pinned": lambda step: step["tag"],
     "rejoin": lambda step: f"{step['from']} -> {step['tag']} ({step['commits']} commits)",
+    "github_release": lambda step: (f"{step['repo']} -> "
+        f"{' '.join(release.github_release_create_argv(step['tag'], step['title'], step['notes_path']))}"),
 }
 
 
@@ -2082,8 +2085,9 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     checked before a single tag is made. Then each `tag` step's tag and
     push run in turn, and `tag_self` tags and pushes the umbrella; a
     `pinned` step runs no git command at all, since its component keeps the
-    tag the manifest already names. One line per step; the first failure
-    stops the rest."""
+    tag the manifest already names. A `github_release` step checks
+    `gh release view` first and edits an existing release instead of
+    creating one. One line per step; the first failure stops the rest."""
     refusal = next((s for s in steps if s["kind"] == "refuse"), None)
     if refusal is not None:
         print(f"refuse {refusal['component']}: {refusal['detail']}")
@@ -2146,6 +2150,25 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"FAILED wait_workflows {step['component']}: {detail}")
                 return 2
             print(f"wait_workflows {step['component']}: {detail}")
+        elif kind == "github_release":
+            directory = umbrella if step["component"] == "coxswain" else release.component_dir(root, step["component"], overrides)
+            if step["heading"] is None:
+                notes_path = str(Path(umbrella) / step["notes_path"])
+            else:
+                section = release.extract_release_notes(str(Path(umbrella) / step["notes_path"]), step["heading"])
+                body = section if section is not None else f"unchanged since {step['from']}\n"
+                link_line = f"\nSee the full release notes: {step['link']}\n" if "link" in step else "\n"
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
+                    tmp.write(body + link_line)
+                notes_path = tmp.name
+            view_rc, _ = run(release.github_release_view_argv(step["tag"]), directory)
+            argv = (release.github_release_edit_argv(step["tag"], notes_path) if view_rc == 0 else
+                    release.github_release_create_argv(step["tag"], step["title"], notes_path))
+            gr_rc, gr_out = run(argv, directory)
+            if gr_rc != 0:
+                print(f"FAILED github_release {step['component']}: {gr_out.strip()}")
+                return 2
+            print(f"github_release {step['component']}: {step['tag']}")
         else:
             print(f"FAILED {kind} {step.get('component', '')}: no executor for this step kind")
             return 2
@@ -2158,6 +2181,22 @@ def _maintainer_remote_url(directory: str) -> str | None:
     result = subprocess.run(["git", "-C", directory, "remote", "get-url", "origin"],
                              capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _tools_repository_url() -> str | None:
+    """coxswain-tools' own `Repository` project URL, from installed package
+    metadata — a live read that survives shipping as a wheel, unlike a
+    `pyproject.toml` path that only resolves in a checkout. `None` when the
+    package (or that URL) can't be found, e.g. an uninstalled checkout."""
+    try:
+        urls = importlib.metadata.metadata("coxswain-tools").get_all("Project-URL") or []
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    for entry in urls:
+        name, _, url = entry.partition(",")
+        if name.strip() == "Repository":
+            return url.strip()
+    return None
 
 
 def _release_moved(a: argparse.Namespace) -> int:
@@ -2199,7 +2238,8 @@ def _release(a: argparse.Namespace) -> int:
         if found is not None:
             component_versions[name] = found
     steps = release.gate(drifts, a.allow_doc_drift) + release.release_plan(
-        manifest, a.version, existing_tags, component_versions=component_versions, pinned_commits=pinned_commits)
+        manifest, a.version, existing_tags, component_versions=component_versions, pinned_commits=pinned_commits,
+        tools_repository_url=_tools_repository_url())
     if a.dry_run:
         for step in steps:
             print(f"{step['kind']} {step['component']}: {_release_detail(step)}")

@@ -117,9 +117,28 @@ def _bump_and_land(bump_step: dict, branch: str, body: str) -> list[dict]:
             {"kind": "merge", "component": component}]
 
 
+def _component_github_release_step(name: str, repo: str, tag: str, version: str, umbrella_slug: str | None,
+                                    fallback_from: str | None = None) -> dict:
+    """A `github_release` step for a component tagged this run: its own
+    `## coxswain-<name>` section of the umbrella's release notes, linked back
+    to the umbrella's release. `fallback_from` names the tag `cli.py` reports
+    "unchanged since" when that section doesn't exist — only a `rejoin`
+    component isn't always written one. No `link` at all when `umbrella_slug`
+    couldn't be resolved."""
+    step = {"kind": "github_release", "component": name, "repo": repo, "tag": tag,
+            "title": f"coxswain-{name} {version}", "notes_path": f"docs/releases/{version}.md",
+            "heading": f"## coxswain-{name}"}
+    if fallback_from is not None:
+        step["from"] = fallback_from
+    if umbrella_slug is not None:
+        step["link"] = f"https://github.com/{umbrella_slug}/releases/tag/{tag}"
+    return step
+
+
 def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, list[str] | None],
                   component_versions: Mapping[str, str | None] | None = None,
-                  pinned_commits: Mapping[str, int] | None = None) -> list[dict]:
+                  pinned_commits: Mapping[str, int] | None = None,
+                  tools_repository_url: str | None = None) -> list[dict]:
     """Steps in order: per `repo` component, either a plain `tag` (its
     `component_versions` entry is missing or already at `version`) or a
     `bump_pyproject`-and-land sequence ending in `tag` — unless its manifest
@@ -137,7 +156,16 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
 
     `version` equal to the current version is the first cut of the version
     the manifest already declares: nothing is tagged yet, so the plan
-    proceeds with no `bump_manifest` step — the manifest already says so."""
+    proceeds with no `bump_manifest` step — the manifest already says so.
+
+    A `github_release` step follows every step that actually tags a repo
+    this run — a `tag`, a `rejoin`, or the umbrella's `tag_self` — naming
+    the `gh release` command `cli.py`'s executor runs through the idempotent
+    view-then-create-or-edit check; a `pinned` component gets none, since its
+    old release must never be rewritten by a later cut. `tools_repository_url`
+    is this package's own `Repository` URL, another fact gathered at the edge
+    (from installed package metadata) rather than read here, used only as a
+    fallback for the umbrella's slug when the manifest names none."""
     parsed = _parse_semver(version)
     if parsed is None:
         return _refuse(version, f"{version!r} is not a valid version (expected X.Y.Z or X.Y.Z-beta.N)")
@@ -164,45 +192,56 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
 
     current = manifest.get("coxswain", {}).get("version")
     current_parsed = _parse_semver(current) if current is not None else None
+    umbrella_slug = umbrella_release_slug(manifest, tools_repository_url)
     tag_steps = []
     for name, spec in repo_components:
         if not spec.get("lockstep", True):
             commits = (pinned_commits or {}).get(name) or 0
-            tag_steps.append({"kind": "rejoin", "component": name, "repo": spec["repo"], "tag": new_tag,
-                               "from": spec["tag"], "commits": commits} if commits else
-                              {"kind": "pinned", "component": name, "tag": spec["tag"]})
+            if commits:
+                rejoin_step = {"kind": "rejoin", "component": name, "repo": spec["repo"], "tag": new_tag,
+                               "from": spec["tag"], "commits": commits}
+                tag_steps.extend([rejoin_step,
+                                   _component_github_release_step(name, spec["repo"], new_tag, version,
+                                                                   umbrella_slug, fallback_from=spec["tag"])])
+            else:
+                tag_steps.append({"kind": "pinned", "component": name, "tag": spec["tag"]})
             continue
         tag_step = {"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
+        gr_step = _component_github_release_step(name, spec["repo"], new_tag, version, umbrella_slug,
+                                                   fallback_from=spec["tag"])
         found = component_versions.get(name)
         found_parsed = _parse_semver(found) if found is not None else None
         if found_parsed is None or _sort_key(found_parsed) >= _sort_key(parsed):
-            tag_steps.append(tag_step)
+            tag_steps.extend([tag_step, gr_step])
             continue
         branch = f"release/{version}"
         subject = f"pyproject: bump to {version} to match the tag"
         bump_step = {"kind": "bump_pyproject", "component": name, "repo": spec["repo"],
                      "branch": branch, "commit_subject": subject, "from": found, "to": version}
         body = f"Bumps {name}'s pyproject.toml version to {version} to match tag {new_tag}."
-        tag_steps.extend(_bump_and_land(bump_step, branch, body) + [tag_step])
+        tag_steps.extend(_bump_and_land(bump_step, branch, body) + [tag_step, gr_step])
 
     # The release notes are a page of the docs site, so they live under `docs/`
     # with every other page. A copy at the repository root would be a second
     # source of truth for the same text and would drift on the first edit.
     notes_step = {"kind": "notes", "component": "notes", "path": f"docs/releases/{version}.md"}
     tag_self_step = {"kind": "tag_self", "component": "coxswain", "tag": new_tag}
+    umbrella_gr_step = {"kind": "github_release", "component": "coxswain", "repo": umbrella_slug, "tag": new_tag,
+                         "title": f"coxswain {version}", "notes_path": f"docs/releases/{version}.md", "heading": None}
 
     if current_parsed is not None:
         if _sort_key(parsed) < _sort_key(current_parsed):
             return _refuse(version, f"{version} is not greater than the current version {current}")
         if _sort_key(parsed) == _sort_key(current_parsed):
-            return _with_wait_workflows(tag_steps + [notes_step, tag_self_step])
+            return _with_wait_workflows(tag_steps + [notes_step, tag_self_step, umbrella_gr_step])
 
     branch = f"release/{version}"
     subject = f"manifest: bump to {version} to match the tag"
     bump_step = {"kind": "bump_manifest", "component": "manifest", "from": current, "to": version,
                  "branch": branch, "commit_subject": subject}
     body = f"Bumps manifest.toml version to {version} to match tag {new_tag}."
-    return _with_wait_workflows(tag_steps + [notes_step] + _bump_and_land(bump_step, branch, body) + [tag_self_step])
+    return _with_wait_workflows(tag_steps + [notes_step] + _bump_and_land(bump_step, branch, body) +
+                                 [tag_self_step, umbrella_gr_step])
 
 
 def component_dir(root: str, name: str, overrides: Mapping[str, str] | None = None) -> str:
@@ -244,6 +283,56 @@ def tag_argv(directory: str, version: str) -> list[str]:
 def push_argv(directory: str, version: str) -> list[str]:
     """`git -C <directory> push origin v<version>`."""
     return ["git", "-C", directory, "push", "origin", "v" + version]
+
+
+def github_release_view_argv(tag: str) -> list[str]:
+    """`gh release view <tag>` — the idempotence check `github_release` runs first."""
+    return ["gh", "release", "view", tag]
+
+
+def github_release_create_argv(tag: str, title: str, notes_path: str) -> list[str]:
+    """`gh release create <tag> --verify-tag --title "<title>" --notes-file <notes_path>`."""
+    return ["gh", "release", "create", tag, "--verify-tag", "--title", title, "--notes-file", notes_path]
+
+
+def github_release_edit_argv(tag: str, notes_path: str) -> list[str]:
+    """`gh release edit <tag> --notes-file <notes_path>` — run instead of `create`
+    once `github_release_view_argv` shows the release already exists."""
+    return ["gh", "release", "edit", tag, "--notes-file", notes_path]
+
+
+def extract_release_notes(notes_path: str, heading: str) -> str | None:
+    """The text of `notes_path` from the line equal to `heading` (e.g.
+    `"## coxswain-crew"`) through the line before the next `"## "` heading or
+    end of file, or `None` when the file is missing or `heading` is absent.
+    Reads the file itself, unlike the rest of this module: a later backfill
+    task calls this the same way against a past release's notes file, with
+    nothing else here to import alongside it."""
+    try:
+        lines = Path(notes_path).read_text(encoding="utf-8").splitlines(keepends=True)
+    except OSError:
+        return None
+    start = next((i for i, line in enumerate(lines) if line.rstrip("\n") == heading), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return "".join(lines[start:end])
+
+
+def umbrella_release_slug(manifest: Mapping, tools_repository_url: str | None = None) -> str | None:
+    """The umbrella's `org/repo`: `manifest["coxswain"]["repo"]` when the
+    manifest names one, else `tools_repository_url` (the tools package's own
+    `Repository` URL, gathered by the edge — `cli.py` reads it from installed
+    package metadata, the way `existing_tags` is gathered) with a trailing
+    `-tools` stripped from the repo name — `coxswain-tools` ships one name
+    away from the umbrella it releases. `None` when neither source is given."""
+    repo = manifest.get("coxswain", {}).get("repo")
+    if repo:
+        return repo
+    if not tools_repository_url:
+        return None
+    org, name = tools_repository_url.rstrip("/").split("/")[-2:]
+    return f"{org}/{name[:-len('-tools')] if name.endswith('-tools') else name}"
 
 
 _MANIFEST_SECTION_RE = re.compile(r"^\[components\.([\w-]+)\]\s*$")
