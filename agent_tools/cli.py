@@ -46,6 +46,7 @@ from agent_tools import (
     runs_stranded,
     runs_top,
     runs_top_screen,
+    schema,
     setup_install,
     setup_screen,
     stats_ingest,
@@ -1679,7 +1680,8 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
 
 def _setup_doctor(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser() if a.repo else Path.cwd()
-    rows = doctor.checks(_gather_doctor_facts(_profile_path(a), repo))
+    facts = {**_gather_doctor_facts(_profile_path(a), repo), "schema_versions": _schema_versions()}
+    rows = doctor.checks(facts)
     rc = doctor.exit_code(rows)
     print(json.dumps({"rows": rows, "ok": rc == 0}, indent=2) if a.json else doctor.render(rows))
     return rc
@@ -1901,6 +1903,9 @@ def _install(a: argparse.Namespace) -> int:
         "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, a.provider)) is not None,
     }
     options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team, "workspace": a.workspace}
+    schema_state, schema_detail = schema.status(_schema_versions())
+    if schema_state != "ok":
+        print(f"schema  WARN  {schema_detail}")
     steps = install.plan(manifest, facts, options)
     for step in steps:
         print(f"{step['kind']} {step['component']}: {step['detail']}")
@@ -1935,6 +1940,23 @@ def _upgrade(a: argparse.Namespace) -> int:
     return _install_execute(steps, manifest, options, root)
 
 
+def _schema_versions() -> dict[str, str | None]:
+    """The schema each of the three tools was built against, `None` where the
+    package is not importable here (a graphs or cartridges checkout absent
+    from this environment) rather than a raise."""
+    try:
+        import core
+        cartridges = core.SCHEMA_VERSION
+    except (ImportError, AttributeError):
+        cartridges = None
+    try:
+        import harness
+        graphs = harness.CORE_SCHEMA
+    except (ImportError, AttributeError):
+        graphs = None
+    return {"cartridges": cartridges, "graphs": graphs, "tools": schema.TOOLS_SCHEMA}
+
+
 def _versions(a: argparse.Namespace) -> int:
     manifest_path = Path(a.manifest) if a.manifest else Path(a.root or ".") / "coxswain" / "manifest.toml"
     manifest = _load_manifest(manifest_path)
@@ -1944,9 +1966,11 @@ def _versions(a: argparse.Namespace) -> int:
     root = Path(a.root) if a.root else manifest_path.resolve().parent.parent
     facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
               "provider_cli_on_path": False}
-    display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s}
+    schema_versions = _schema_versions()
+    display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s,
+                "schema": schema.cell(schema_versions.get(c)) if c in schema_versions else "?"}
                for c, p, i, s in install.rows(manifest, facts)]
-    print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status"]))
+    print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status", "schema"]))
     return 0
 
 
