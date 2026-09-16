@@ -1906,7 +1906,8 @@ def _release(a: argparse.Namespace) -> int:
         print(f"refuse: {checkout} is not a ppfenning/coxswain checkout (cox dev release runs on a maintainer's machine)")
         return 2
     root = a.root or "."
-    facts = release_check.facts_plan(root, manifest)
+    plan = release_check.facts_plan(root, manifest)
+    facts = {**plan, **release_check.gather_version_facts(manifest, str(manifest_path), plan["component_dirs"], plan["umbrella"])}
     drifts = release_check.run_checks(facts)
     existing_tags = {name: _remote_tags(spec["repo"]) for name, spec in manifest.get("components", {}).items()
                       if spec.get("repo")}
@@ -1936,6 +1937,7 @@ def _release_check(a: argparse.Namespace) -> int:
         **release_check_readmes.gather_readmes_facts(
             plan["readmes"], manifest, release_check_readmes.resolve_docs_base(str(Path(plan["umbrella"]) / "mkdocs.yml"))
         ),
+        **release_check.gather_version_facts(manifest, str(manifest_path), plan["component_dirs"], plan["umbrella"]),
     }
     drifts = release_check.run_checks(facts)
     rendered = release_check.render(drifts, len(release_check.CHECKS))

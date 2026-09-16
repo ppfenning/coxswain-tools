@@ -42,14 +42,20 @@ def _drift_line(d) -> str:
 
 def gate(drifts: Sequence, allow_reason: str | None) -> list[dict]:
     """Refuse steps naming each drift, or one note step when `allow_reason`
-    says why they stand; empty when `drifts` is empty."""
+    says why they stand; empty when `drifts` is empty. A `versions` drift is
+    never folded into the allowed-reason note — it always refuses."""
     if not drifts:
         return []
+    blocking = [d for d in drifts if d.check == "versions"]
+    allowable = [d for d in drifts if d.check != "versions"]
+    blocking_steps = [{"kind": "refuse", "component": d.check, "detail": _drift_line(d)} for d in blocking]
+    if not allowable:
+        return blocking_steps
     if allow_reason is None:
-        return [{"kind": "refuse", "component": d.check, "detail": _drift_line(d)} for d in drifts]
-    plural = "" if len(drifts) == 1 else "s"
-    return [{"kind": "note", "component": "release-check",
-             "detail": f"{allow_reason} ({len(drifts)} drift{plural} allowed)"}]
+        return blocking_steps + [{"kind": "refuse", "component": d.check, "detail": _drift_line(d)} for d in allowable]
+    plural = "" if len(allowable) == 1 else "s"
+    return blocking_steps + [{"kind": "note", "component": "release-check",
+             "detail": f"{allow_reason} ({len(allowable)} drift{plural} allowed)"}]
 
 
 def is_maintainer_remote(url: str) -> bool:
