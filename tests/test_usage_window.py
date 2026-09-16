@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from agent_tools import cli, home_screen
 from agent_tools.pacing import Window, assess
 from agent_tools.usage_window import DEFAULT_POLICY, block_remaining, ceiling_remaining, gather, window_from
 
@@ -185,3 +186,38 @@ def test_ceiling_remaining_clamps_a_spend_over_the_ceiling_to_zero():
 def test_ceiling_remaining_is_none_with_no_ceiling_set():
     window = _window(ceiling_usd=None, spent_usd=15.0)
     assert ceiling_remaining(window) is None
+
+
+def _capturing_gather(captured):
+    def fake_gather(runs_dir, now, ceiling_usd=None):
+        captured["ceiling_usd"] = ceiling_usd
+        return window_from({"blocks": []}, [], now, window_hours=5.0)
+    return fake_gather
+
+
+def test_cli_usage_assessment_threads_the_profile_ceiling_into_gather(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli.usage_window, "gather", _capturing_gather(captured))
+    cli._usage_assessment(tmp_path, window_ceiling_usd=250.0)
+    assert captured["ceiling_usd"] == 250.0
+
+
+def test_cli_usage_assessment_passes_none_when_the_profile_has_no_ceiling(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli.usage_window, "gather", _capturing_gather(captured))
+    cli._usage_assessment(tmp_path)
+    assert captured["ceiling_usd"] is None
+
+
+def test_home_screen_read_window_threads_the_profile_ceiling_into_gather(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(home_screen.usage_window, "gather", _capturing_gather(captured))
+    home_screen._read_window(tmp_path, _NOW, window_ceiling_usd=125.0)
+    assert captured["ceiling_usd"] == 125.0
+
+
+def test_home_screen_read_window_passes_none_when_the_profile_has_no_ceiling(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(home_screen.usage_window, "gather", _capturing_gather(captured))
+    home_screen._read_window(tmp_path, _NOW)
+    assert captured["ceiling_usd"] is None

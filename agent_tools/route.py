@@ -58,19 +58,33 @@ _KNOWN_KEYS = {
     "assume",
 }
 
+_SPEND_KEYS = {"window_ceiling_usd", "node_cap_usd"}
+
 
 class ProfileError(Exception):
     """A profile file line is nested, unknown, or otherwise unparsable."""
 
 
-def parse_profile(text: str) -> dict:
-    """Parse the flat `key: scalar` / `key: [a, b]` YAML subset in spec §1.
+def _stripped_content(line: str) -> str:
+    # An inline `#` (preceded by whitespace, per spec §1's own sample
+    # `assume: a          # gate answer ...`) starts a trailing comment;
+    # strip it before splitting key/value so it never lands in a value.
+    comment = re.search(r"(?<=\s)#", line)
+    return line[: comment.start()].rstrip() if comment else line
 
-    A nested key (leading whitespace) or a key outside the known set raises
-    ProfileError naming the offending line (number + text). `assume`
-    defaults to 'a' when absent.
+
+def parse_profile(text: str) -> dict:
+    """Parse the flat `key: scalar` / `key: [a, b]` YAML subset in spec §1,
+    plus one nested block: a bare `spend:` line followed by indented
+    `window_ceiling_usd:`/`node_cap_usd:` lines, both optional, parsed as
+    floats onto the flat result.
+
+    A nested key outside a `spend:` block, an unrecognized key inside one,
+    or a key outside the known set raises ProfileError naming the offending
+    line (number + text). `assume` defaults to 'a' when absent.
     """
     result: dict = {}
+    in_spend = False
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.rstrip("\n")
         if not line.strip():
@@ -78,17 +92,32 @@ def parse_profile(text: str) -> dict:
         if line.lstrip().startswith("#"):
             continue
         if line != line.lstrip():
-            raise ProfileError(f"line {lineno}: {raw_line}")
-        # An inline `#` (preceded by whitespace, per spec §1's own sample
-        # `assume: a          # gate answer ...`) starts a trailing comment;
-        # strip it before splitting key/value so it never lands in a value.
-        comment = re.search(r"(?<=\s)#", line)
-        content = line[: comment.start()].rstrip() if comment else line
+            if not in_spend:
+                raise ProfileError(f"line {lineno}: {raw_line}")
+            content = _stripped_content(line)
+            if ":" not in content:
+                raise ProfileError(f"line {lineno}: {raw_line}")
+            key, _, value = content.partition(":")
+            key, value = key.strip(), value.strip()
+            if key not in _SPEND_KEYS:
+                raise ProfileError(f"line {lineno}: {raw_line}")
+            try:
+                result[key] = float(value)
+            except ValueError:
+                raise ProfileError(f"line {lineno}: {raw_line}") from None
+            continue
+        in_spend = False
+        content = _stripped_content(line)
         if ":" not in content:
             raise ProfileError(f"line {lineno}: {raw_line}")
         key, _, value = content.partition(":")
         key = key.strip()
         value = value.strip()
+        if key == "spend":
+            if value:
+                raise ProfileError(f"line {lineno}: {raw_line}")
+            in_spend = True
+            continue
         if key not in _KNOWN_KEYS:
             raise ProfileError(f"line {lineno}: {raw_line}")
         if value.startswith("[") and value.endswith("]"):
@@ -304,6 +333,8 @@ def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
         # profile schema grows a key for it.
         argv += ["--max-parallel", "3"]
     argv += ["--workdir", workspace_dir]
+    if "node_cap_usd" in profile:
+        argv += ["--node-cap-usd", str(profile["node_cap_usd"])]
     return argv
 
 
