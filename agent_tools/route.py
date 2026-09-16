@@ -677,6 +677,20 @@ def _parse_list(raw: str) -> list:
     return [] if inner == "" else [item.strip() for item in inner.split(",")]
 
 
+def _block_list(header_lines: list, start: int) -> tuple:
+    """Items under a block-list key, from `header_lines[start]` to the first
+    zero-indent line or the end of `header_lines`: `(items, next_index)`. Each
+    `- item` line is stripped the same way a flow item is — no quote handling,
+    since neither form ever quotes an individual item.
+    """
+    items = []
+    index = start
+    while index < len(header_lines) and header_lines[index][:1].isspace():
+        items.append(header_lines[index].strip()[2:].strip())
+        index += 1
+    return items, index
+
+
 def _parse_field(line: str):
     """One `key: value` header line back to `(key, value)`, dispatching on
     the value's first character the same three ways `_yaml_scalar` and the
@@ -716,8 +730,18 @@ def parse_frontmatter(text: str) -> tuple:
     header_block = after_opening[:close_index]
     after_closing = after_opening[close_index + len(closing):]
     header_lines = [line for line in header_block.split("\n") if line]
-    parsed_fields = [_parse_field(line) for line in header_lines]
-    fields = dict(field for field in parsed_fields if field is not None)
+    fields = {}
+    index = 0
+    while index < len(header_lines):
+        line = header_lines[index]
+        field = _parse_field(line)
+        if field is None and line.endswith(":"):
+            items, index = _block_list(header_lines, index + 1)
+            fields[line[:-1]] = items
+            continue
+        if field is not None:
+            fields[field[0]] = field[1]
+        index += 1
     with_leading_blank_stripped = (
         after_closing[1:] if after_closing.startswith("\n") else after_closing
     )
