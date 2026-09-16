@@ -24,6 +24,7 @@ import shlex
 from typing import Any
 
 __all__ = [
+    "approve_to_done",
     "checks_argv",
     "land_plan",
     "phase_landable",
@@ -251,3 +252,28 @@ def pr_body(record: dict[str, Any]) -> str:
     if cost is not None:
         lines.append(f"Cost: ${cost:.2f}")
     return "\n".join(lines)
+
+
+def approve_to_done(text: str) -> tuple[str | None, str | None]:
+    """The work item's frontmatter `state: approved` line rewritten to
+    `state: done`, with every other byte of `text` untouched, paired with
+    `None`; or `None` paired with `None` when the state is already `done`
+    (nothing to do); or `None` paired with a one-line message naming the
+    state when it is anything else — land never moves an unapproved item.
+    Only the `---`-delimited header is searched for `state:`, so a body line
+    that happens to start with `state:` is never mistaken for the field."""
+    if not text.startswith("---\n"):
+        return None, "land: work item has no state field"
+    close = text.find("\n---\n", 4)
+    header = text[:close] if close != -1 else text
+    for line in header.splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped.startswith("state:"):
+            continue
+        state = stripped[len("state:"):].strip()
+        if state == "done":
+            return None, None
+        if state != "approved":
+            return None, f"land: work item state is {state!r}, not moving to done"
+        return text.replace(line, line.replace("approved", "done", 1), 1), None
+    return None, "land: work item has no state field"
