@@ -10,12 +10,13 @@ directly; `render_capped` is only the default-text path's cap.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from agent_tools import stats_derive
 from agent_tools.stats_schema import FAILURE_CLASSES
 
-__all__ = ["coverage_report", "explain_report", "render_capped", "roles_report", "series_report"]
+__all__ = ["bounds_report", "coverage_report", "explain_report", "render_capped", "roles_report", "series_report"]
 
 
 def _joined(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -209,6 +210,36 @@ def coverage_report(
         _row("tasks_with_a_known_outcome", sum(1 for t in tasks if t.get("outcome") not in (None, "unknown")), len(tasks)),
         _row("tasks_with_an_outcome_kind", sum(1 for t in tasks if t.get("outcome_kind") is not None), len(tasks)),
     ]
+
+
+def bounds_report(
+    calls: Sequence[Mapping[str, Any]],
+    ceiling_for: Callable[[Any, Any], float | None],
+) -> list[dict[str, Any]]:
+    """Per (role, model): `ceiling` from `ceiling_for(role, model)`, `censored`
+    when the group's max cost sits within 5% of a known ceiling or any call
+    carries `failure_class: "budget_stop"` (cost-bounds.md §2/§6 rule 3), plus
+    n/p50/p95/max/strict/moderate/liberal from `stats_derive.bounds_for_costs`.
+    Resolving `ceiling_for` from a provider profile file is the caller's job;
+    this function opens no file and no db connection."""
+    groups: dict[tuple[Any, Any], list[Mapping[str, Any]]] = defaultdict(list)
+    for call in calls:
+        groups[(call.get("role"), call.get("model"))].append(call)
+
+    report = []
+    for (role, model), rows in groups.items():
+        ceiling = ceiling_for(role, model)
+        costs = [r["cost_usd"] for r in rows if r.get("cost_usd") is not None]
+        budget_stopped = any(r.get("failure_class") == "budget_stop" for r in rows)
+        near_ceiling = ceiling is not None and bool(costs) and max(costs) >= 0.95 * ceiling
+        report.append({
+            "role": role,
+            "model": model,
+            "ceiling": ceiling,
+            "censored": near_ceiling or budget_stopped,
+            **stats_derive.bounds_for_costs(costs),
+        })
+    return report
 
 
 def render_capped(rows: Sequence[Mapping[str, Any]], cap_tokens: int = 300) -> str:
