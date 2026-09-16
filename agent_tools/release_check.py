@@ -27,7 +27,8 @@ class Drift:
 
 def check_versions(facts: Mapping) -> list[Drift]:
     """Every component pyproject and the umbrella's must equal `expected_version`
-    (the manifest's `coxswain.version`, gathered by `gather_version_facts`)."""
+    (the manifest's `coxswain.version`, gathered by `gather_version_facts`); a
+    `lockstep = false` component compares against its own `tag` instead (advisory)."""
     expected = facts.get("expected_version")
     if expected is None:
         return []
@@ -44,14 +45,24 @@ def check_versions(facts: Mapping) -> list[Drift]:
     umbrella_found = facts.get("umbrella_pyproject", {}).get("project", {}).get("version")
     umbrella_drift = mismatch("umbrella", umbrella_file, umbrella_found)
 
+    pinned = {name for name, spec in facts.get("components", {}).items() if not spec.get("lockstep", True)}
     pyprojects = facts.get("pyprojects", {})
     component_drifts = [
         d
         for name, pyproject in facts.get("component_pyprojects", {}).items()
+        if name not in pinned
         for d in [mismatch(name, pyprojects.get(name, f"{name}/pyproject.toml"), (pyproject or {}).get("project", {}).get("version"))]
         if d is not None
     ]
-    return ([umbrella_drift] if umbrella_drift is not None else []) + component_drifts
+    # Advisory: `cox dev release` folds a changed pinned component back in on its own (`rejoin`).
+    lockstep_drifts = [
+        Drift("lockstep", manifest_file, None, pyprojects.get(name, f"{name}/pyproject.toml"), None,
+              f"{name} is pinned at {facts['components'][name]['tag']} but its pyproject.toml is {found}")
+        for name in pinned
+        for found in [(facts.get("component_pyprojects", {}).get(name) or {}).get("project", {}).get("version")]
+        if found is not None and "v" + found != facts["components"][name]["tag"]
+    ]
+    return ([umbrella_drift] if umbrella_drift is not None else []) + component_drifts + lockstep_drifts
 
 
 def gather_version_facts(manifest: Mapping, manifest_path: str, component_dirs: Mapping[str, str], umbrella: str) -> dict:
@@ -64,6 +75,7 @@ def gather_version_facts(manifest: Mapping, manifest_path: str, component_dirs: 
     return {
         "expected_version": manifest.get("coxswain", {}).get("version"),
         "manifest_path": manifest_path,
+        "components": manifest.get("components", {}),
         "component_pyprojects": {name: read(Path(d) / "pyproject.toml") for name, d in component_dirs.items()},
         "umbrella_pyproject": read(Path(umbrella) / "pyproject.toml"),
     }

@@ -7,7 +7,7 @@ runs the git commands at the edge."""
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 import yaml
@@ -81,7 +81,8 @@ def _with_wait_workflows(steps: list[dict]) -> list[dict]:
     out = []
     for step in steps:
         out.append(step)
-        if step["kind"] in ("tag", "tag_self"):
+        # `rejoin` tags and pushes exactly like `tag`, so it waits the same way.
+        if step["kind"] in ("tag", "tag_self", "rejoin"):
             out.append({"kind": "wait_workflows", "component": step["component"], "tag": step["tag"]})
     return out
 
@@ -116,12 +117,13 @@ def _bump_and_land(bump_step: dict, branch: str, body: str) -> list[dict]:
 
 
 def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, list[str] | None],
-                  component_versions: Mapping[str, str | None] | None = None) -> list[dict]:
+                  component_versions: Mapping[str, str | None] | None = None,
+                  pinned_commits: Mapping[str, int] | None = None) -> list[dict]:
     """Steps in order: per `repo` component, either a plain `tag` (its
     `component_versions` entry is missing or already at `version`) or a
     `bump_pyproject`-and-land sequence ending in `tag` — unless its manifest
     entry declares `lockstep = false`, in which case it gets one `pinned`
-    step naming its own manifest `tag` and nothing else; one `notes`; then
+    step naming its own `tag`, or `rejoin` tagging it at `version` when `pinned_commits` shows commits; one `notes`; then
     either a plain `tag_self` or the manifest's own `bump_manifest`-and-land
     sequence ending in `tag_self`. `component_versions` is the version each
     component's own checkout pyproject.toml currently declares — a fact this
@@ -164,7 +166,10 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     tag_steps = []
     for name, spec in repo_components:
         if not spec.get("lockstep", True):
-            tag_steps.append({"kind": "pinned", "component": name, "tag": spec["tag"]})
+            commits = (pinned_commits or {}).get(name) or 0
+            tag_steps.append({"kind": "rejoin", "component": name, "repo": spec["repo"], "tag": new_tag,
+                               "from": spec["tag"], "commits": commits} if commits else
+                              {"kind": "pinned", "component": name, "tag": spec["tag"]})
             continue
         tag_step = {"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
         found = component_versions.get(name)
@@ -251,13 +256,18 @@ def _pinned_components(text: str) -> set[str]:
     return pinned
 
 
-def bumped_manifest_text(text: str, version: str) -> str:
+def rejoined(steps: list[dict]) -> set[str]:
+    """Component names `release_plan` gave a `rejoin` step, for `bumped_manifest_text`'s `rejoining`."""
+    return {s["component"] for s in steps if s["kind"] == "rejoin"}
+
+
+def bumped_manifest_text(text: str, version: str, rejoining: Iterable[str] = ()) -> str:
     """`text` with every `version = "..."` value, and every `tag = "v..."`
     value outside a `lockstep = false` component's section, rewritten to
     `version` — comments, blank lines and layout untouched; a pinned
-    component's own `tag` line is left exactly as it reads."""
+    component's own `tag` line is left exactly as it reads, unless named in `rejoining`."""
     new_tag = "v" + version
-    pinned = _pinned_components(text)
+    pinned = _pinned_components(text) - set(rejoining)
     section = None
     out = []
     for line in text.splitlines(keepends=True):

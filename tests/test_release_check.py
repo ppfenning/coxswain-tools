@@ -90,16 +90,46 @@ def test_check_versions_drifts_on_a_component_pyproject_below_the_manifest_versi
     assert "cox dev release 0.2.0" in d.correction
 
 
+def test_check_versions_drifts_advisory_on_a_lockstep_false_component_past_its_pinned_tag():
+    facts = {
+        "expected_version": "0.9.0",
+        "manifest_path": "manifest.toml",
+        "components": {"crew": {"tag": "v0.7.0", "lockstep": False}},
+        "umbrella_pyproject": {"project": {"version": "0.9.0"}},
+        "component_pyprojects": {"crew": {"project": {"version": "0.8.0"}}},
+        "pyprojects": {"crew": "/root/crew/pyproject.toml"},
+    }
+    drifts = release_check.check_versions(facts)
+    assert len(drifts) == 1
+    d = drifts[0]
+    assert d.check == "lockstep"
+    assert d.b_file == "/root/crew/pyproject.toml"
+    assert "crew" in d.correction and "v0.7.0" in d.correction and "0.8.0" in d.correction
+
+
+def test_check_versions_is_silent_on_a_lockstep_false_component_still_at_its_pinned_tag():
+    facts = {
+        "expected_version": "0.9.0",
+        "manifest_path": "manifest.toml",
+        "components": {"crew": {"tag": "v0.7.0", "lockstep": False}},
+        "umbrella_pyproject": {"project": {"version": "0.9.0"}},
+        "component_pyprojects": {"crew": {"project": {"version": "0.7.0"}}},
+        "pyprojects": {"crew": "/root/crew/pyproject.toml"},
+    }
+    assert release_check.check_versions(facts) == []
+
+
 def test_gather_version_facts_reads_each_component_and_the_umbrella_pyproject_off_disk(tmp_path):
     (tmp_path / "cox").mkdir()
     (tmp_path / "cox" / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
     (tmp_path / "coxswain").mkdir()
     (tmp_path / "coxswain" / "pyproject.toml").write_text('[project]\nversion = "0.2.0"\n')
-    manifest = {"coxswain": {"version": "0.2.0"}}
+    manifest = {"coxswain": {"version": "0.2.0"}, "components": {"cox": {"tag": "v0.2.0"}}}
     facts = release_check.gather_version_facts(
         manifest, "manifest.toml", {"cox": str(tmp_path / "cox")}, str(tmp_path / "coxswain")
     )
     assert facts["expected_version"] == "0.2.0"
+    assert facts["components"] == {"cox": {"tag": "v0.2.0"}}
     assert facts["component_pyprojects"] == {"cox": {"project": {"version": "0.1.0"}}}
     assert facts["umbrella_pyproject"] == {"project": {"version": "0.2.0"}}
 

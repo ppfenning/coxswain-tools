@@ -1993,6 +1993,7 @@ _RELEASE_DETAIL = {
     "tag_self": lambda step: step["tag"],
     "wait_workflows": lambda step: step["tag"],
     "pinned": lambda step: step["tag"],
+    "rejoin": lambda step: f"{step['from']} -> {step['tag']} ({step['commits']} commits)",
 }
 
 
@@ -2092,7 +2093,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
         return 2
 
     tag_checkouts = [(s["component"], release.component_dir(root, s["component"], overrides))
-                      for s in steps if s["kind"] == "tag"]
+                      for s in steps if s["kind"] in ("tag", "rejoin")]
     umbrella_checkouts = [("coxswain", umbrella)] if any(s["kind"] == "tag_self" for s in steps) else []
     for name, directory in tag_checkouts + umbrella_checkouts:
         ready, reason = _checkout_ready(directory, run)
@@ -2107,7 +2108,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
 
     for step in steps:
         kind = step["kind"]
-        if kind == "tag":
+        if kind in ("tag", "rejoin"):
             directory = release.component_dir(root, step["component"], overrides)
             tag_rc, tag_out = run(release.tag_argv(directory, version), None)
             if tag_rc != 0:
@@ -2117,7 +2118,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             if push_rc != 0:
                 print(f"FAILED push {step['component']}: {push_out.strip()}")
                 return 2
-            print(f"tag {step['component']}: {step['tag']}")
+            print(f"{kind} {step['component']}: {step['tag']}")
         elif kind == "notes":
             print(f"notes notes: {step['path']}")
         elif kind == "note":
@@ -2175,17 +2176,23 @@ def _release(a: argparse.Namespace) -> int:
         print(f"refuse: {checkout} is not a ppfenning/coxswain checkout (cox dev release runs on a maintainer's machine)")
         return 2
     root = a.root or "."
+    overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
     plan = release_check.facts_plan(root, manifest)
     facts = {**plan, **release_check.gather_version_facts(manifest, str(manifest_path), plan["component_dirs"], plan["umbrella"])}
     drifts = release_check.run_checks(facts)
     existing_tags = {name: _remote_tags(spec["repo"]) for name, spec in manifest.get("components", {}).items()
                       if spec.get("repo")}
-    steps = release.gate(drifts, a.allow_doc_drift) + release.release_plan(manifest, a.version, existing_tags)
+    pinned_commits = {}
+    for name, spec in manifest.get("components", {}).items():
+        if spec.get("repo") and not spec.get("lockstep", True):
+            directory = release.component_dir(root, name, overrides)
+            rc, out = _real_run(["git", "-C", directory, "rev-list", f"{spec['tag']}..HEAD", "--count"], None)
+            pinned_commits[name] = int(out.strip()) if rc == 0 and out.strip().isdigit() else 0
+    steps = release.gate(drifts, a.allow_doc_drift) + release.release_plan(manifest, a.version, existing_tags, pinned_commits=pinned_commits)
     if a.dry_run:
         for step in steps:
             print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
         return 2 if any(step["kind"] == "refuse" for step in steps) else 0
-    overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
     umbrella = a.umbrella or str(Path(root) / "coxswain")
     return _release_execute(steps, a.version, root, overrides, umbrella, _real_run)
 
