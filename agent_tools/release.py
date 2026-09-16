@@ -198,13 +198,18 @@ def component_dir(root: str, name: str, overrides: Mapping[str, str] | None = No
     if overrides and name in overrides:
         return overrides[name]
     plain = Path(root) / name
-    if not plain.is_dir():
-        # A developer checkout is cloned under its repository name
-        # (`coxswain-graphs`), not its manifest key (`graphs`); without an
-        # override, prefer the directory that exists over one that does not.
-        prefixed = Path(root) / f"coxswain-{name}"
-        if prefixed.is_dir():
-            return str(prefixed)
+    try:
+        if not plain.is_dir():
+            # A developer checkout is cloned under its repository name
+            # (`coxswain-graphs`), not its manifest key (`graphs`); without an
+            # override, prefer the directory that exists over one that does not.
+            prefixed = Path(root) / f"coxswain-{name}"
+            if prefixed.is_dir():
+                return str(prefixed)
+    except OSError:
+        # An unreadable root (CI runs the pure-shape tests against "/root")
+        # is not a reason to change the answer this function always gave.
+        pass
     return str(plain)
 
 
