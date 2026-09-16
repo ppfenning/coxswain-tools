@@ -31,6 +31,11 @@ second executor. The umbrella's `manifest.toml` bump (`bumped_manifest_text`) tr
 are created only after every bump has merged, on the merged sha. `--dry-run` prints the full plan
 including the bump PRs. A component whose pyproject already carries the version gets no bump step.
 
+A `lockstep = false` component (pinned since tools #156) must not walk a private semver on its own: `release_plan`
+checks `git rev-list <tag>..HEAD --count` on its default branch, and any commits past the tag turn its
+`pinned` step into a `rejoin` — tag and push `v<version>` like a lockstep component, with
+`bumped_manifest_text` rewriting its `tag` but leaving `lockstep = false`, so the next release pins it again.
+
 ## 2. The release waits on what it triggers  (tools)
 
 After the tags are pushed, a `wait_workflows` step polls, per component, the workflow runs whose
