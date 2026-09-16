@@ -27,6 +27,44 @@ def test_check_notes_resolves_against_facts_plans_own_component_dirs_and_release
     assert check_notes(facts) == []
 
 
+def test_check_notes_has_no_drift_for_a_coxswain_bullet_citing_a_pr_in_the_umbrella_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(release_check_notes.shutil, "which", lambda name: "/usr/bin/gh")
+    (tmp_path / "coxswain").mkdir()
+    notes_dir = tmp_path / "coxswain" / "docs" / "releases"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "0.1.0.md").write_text("- coxswain: fixed releasable.yml (#101)\n")
+    manifest = {"coxswain": {"version": "0.1.0"}, "components": {}}
+
+    def fake_run(cmd, cwd, capture_output, text):
+        stdout = "" if cmd[0] == "git" else '[{"number": 101}]'
+        return type("Result", (), {"stdout": stdout})()
+
+    facts = release_check.facts_plan(str(tmp_path), manifest) | release_check_notes.gather_notes_facts(
+        str(tmp_path), manifest, fake_run
+    )
+    assert check_notes(facts) == []
+
+
+def test_check_notes_drifts_for_a_coxswain_bullet_whose_citation_is_absent_from_the_umbrella_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(release_check_notes.shutil, "which", lambda name: "/usr/bin/gh")
+    (tmp_path / "coxswain").mkdir()
+    notes_dir = tmp_path / "coxswain" / "docs" / "releases"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "0.1.0.md").write_text("- coxswain: fixed releasable.yml (#101)\n")
+    manifest = {"coxswain": {"version": "0.1.0"}, "components": {}}
+
+    def fake_run(cmd, cwd, capture_output, text):
+        stdout = "" if cmd[0] == "git" else '[{"number": 7}]'
+        return type("Result", (), {"stdout": stdout})()
+
+    facts = release_check.facts_plan(str(tmp_path), manifest) | release_check_notes.gather_notes_facts(
+        str(tmp_path), manifest, fake_run
+    )
+    drifts = check_notes(facts)
+    assert len(drifts) == 1
+    assert drifts[0].check == "notes_citation"
+
+
 def test_parse_bullet_finds_a_prefixed_component_and_a_pr_citation():
     assert parse_bullet("- cox: fixed the thing (#42)", {"cox", "route"}) == ("cox", {"42"})
 
