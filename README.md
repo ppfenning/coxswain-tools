@@ -38,7 +38,9 @@ uv tool install -e .            # `coxswain-tools` on PATH for every seat
 
 Bare `cox`, with no subcommand, opens the coxswain session: a real Claude Code
 session with the `coxswain` plugin loaded, working directory at the profile's
-`workspace_dir`. `agent-tools` still works this release as an alias for `cox`.
+`workspace_dir`. It also takes the chair lock under `chair-<YYYY-MM-DD>` before
+starting; a live foreign holder is printed, not stolen, and the session starts
+anyway. `agent-tools` still works this release as an alias for `cox`.
 
 ```
 cox runs usage RUN [--runs-dir runs] [--json]   cost, turns, cache share — by role and by model
