@@ -89,8 +89,8 @@ def _bullet_drift(notes_path: str, line_no: int, text: str, components: set[str]
 
 def check_notes(facts: Mapping) -> list[Drift]:
     component_dirs: Mapping[str, str] = facts.get("component_dirs", {})
-    components: set[str] = set(component_dirs)
     landed: Mapping[str, set[str]] = facts.get("landed", {})
+    components: set[str] = set(component_dirs) | set(landed)
     measured: Mapping[str, bool] = facts.get("pr_numbers_measured", {})
     notes_path = facts.get("release_notes", "")
     drifts = [
@@ -116,9 +116,11 @@ def gather_notes_facts(root: str, manifest: Mapping, run: Callable) -> dict:
     components = manifest.get("components", {})
     version = manifest.get("coxswain", {}).get("version")
     notes_path = Path(root) / "coxswain" / "docs" / "releases" / f"{version}.md" if version else None
+    umbrella_dir = str(Path(root) / "coxswain")
     gh_available = shutil.which("gh") is not None
     return {
         "notes_bullets": bullets_from_notes(notes_path.read_text()) if notes_path and notes_path.exists() else [],
-        "landed": {name: _component_landed(release.component_dir(root, name), run, gh_available) for name in components},
-        "pr_numbers_measured": dict.fromkeys(components, gh_available),
+        "landed": {name: _component_landed(release.component_dir(root, name), run, gh_available) for name in components}
+        | {"coxswain": _component_landed(umbrella_dir, run, gh_available)},
+        "pr_numbers_measured": dict.fromkeys(components, gh_available) | {"coxswain": gh_available},
     }
