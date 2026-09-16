@@ -29,6 +29,7 @@ __all__ = [
     "phase_landable",
     "phase_pr_body",
     "pr_body",
+    "recover_plan",
     "wait_decision",
 ]
 
@@ -182,6 +183,36 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
         {"kind": "clean", "run": run, "task": task, "branch": scratch_branch},
         {"kind": "mark_done", "task": task},
     ]
+
+
+def recover_plan(record: dict[str, Any], branches: dict[str, list[str]]) -> list[dict[str, Any]]:
+    """The one-step merge that recovers `record`'s task commit into its phase
+    branch, a one-step `already_recovered`, or a one-step `refuse`. Unlike
+    `land_plan`, the target is always the phase branch, never a default
+    branch: this is the remedy for a merge the harness itself refused
+    because the task escalated to `self_modification`, not an ordinary land.
+    `branches` maps each candidate branch this function names to the commit
+    subjects the edge found ahead of the phase branch — empty means the
+    branch's commit is already an ancestor (already recovered); a candidate
+    absent from `branches` was not found in the repo at all."""
+    run, task, phase = record.get("run"), record.get("task"), record.get("phase")
+    initiative = record.get("initiative")
+    if not initiative or not phase:
+        return [{"kind": "refuse", "reason": f"{task}: record names no initiative/phase, cannot resolve a phase branch"}]
+    phase_branch = f"epic/{initiative}/{phase}"
+    candidates = [f"agents/{run}/{task}", f"epic/{initiative}/{phase}--{task}"]
+    for candidate in candidates:
+        if candidate not in branches:
+            continue
+        subjects = branches[candidate]
+        if not subjects:
+            return [{"kind": "already_recovered", "branch": phase_branch,
+                     "reason": f"{candidate} has no commits ahead of {phase_branch}"}]
+        if len(subjects) == 1:
+            return [{"kind": "merge", "source": candidate, "target": phase_branch, "commit_subject": subjects[0]}]
+        return [{"kind": "refuse",
+                 "reason": f"{candidate} is {len(subjects)} commits ahead of {phase_branch}, expected exactly one"}]
+    return [{"kind": "refuse", "reason": f"no candidate branch found for {task}: tried {', '.join(candidates)}"}]
 
 
 _NO_CHECKS = "no checks reported"
