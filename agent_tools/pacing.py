@@ -5,7 +5,10 @@ in as plain data; `now` is always supplied by the caller.
 
 The provider profile is a ceiling, never a setting: `assess` only ever
 tightens `tier_ceiling`/`effort_ceiling` down a ladder read from `policy`,
-and never loosens them back up within one call. `stop` outranks `hold`: a
+and never loosens them back up within one call. Raw spend outranks pace:
+`spent_fraction >= policy.hard_stop_fraction` returns `stop` before the pace
+ratio is even computed, so a window that is merely on pace still stops once
+it has actually spent the ceiling. Short of that, `stop` outranks `hold`: a
 pace ratio that has climbed past the last rung either ladder can offer
 returns `stop` before headroom is even considered, so a temporary spike in
 `burn_usd_per_hour` can never mask the harsher pace verdict as the softer
@@ -44,6 +47,7 @@ class Policy:
     tier_ladder: tuple[str, ...]
     effort_ladder: tuple[str, ...]
     min_headroom_usd: float
+    hard_stop_fraction: float = 0.99
 
 
 @dataclass(frozen=True)
@@ -117,6 +121,16 @@ def assess(window: Window, policy: Policy, now: datetime) -> Assessment:
     spent_fraction = window.spent_usd / window.ceiling_usd
     projected_total = _projected_total(window, now)
     headroom_usd = window.ceiling_usd - projected_total
+
+    if spent_fraction >= policy.hard_stop_fraction:
+        return Assessment(
+            spent_fraction=spent_fraction, elapsed_fraction=elapsed_fraction,
+            projected_total=projected_total, headroom_usd=headroom_usd,
+            verdict="stop", tier_ceiling=policy.tier_ladder[-1], effort_ceiling=policy.effort_ladder[-1],
+            hold_until=None,
+            reason=f"spent {spent_fraction:.0%} of ceiling (hard stop at {policy.hard_stop_fraction:.0%})",
+        )
+
     ratio = _ratio(spent_fraction, elapsed_fraction)
     # The last combined ladder index (cheapest tier, lowest effort) is still
     # a degraded rung, not a stop; stop needs one threshold past it.

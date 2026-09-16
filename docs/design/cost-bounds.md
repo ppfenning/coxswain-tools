@@ -38,6 +38,9 @@ every session prints "window is unmeasured".
 - A stop at the shape ceiling stays `error_max_budget_usd` ("split the task"). A stop at the node cap is
   `error_spend_cap` ("the operator's limit"), recorded on the task record and in the quarantine reason
   with both numbers. The two are never conflated in a message.
+- `pacing.assess` hard-stops once `spent_usd` reaches 99% of `window_ceiling_usd` (`Policy.hard_stop_fraction`),
+  ahead of any pace-ladder or headroom check. `cox setup install --window-ceiling-usd N` writes that ceiling
+  into the profile's `spend:` block for you.
 
 ## 2. Bounds earned from the store  (tools)
 

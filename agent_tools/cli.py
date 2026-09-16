@@ -1705,6 +1705,7 @@ def _install_facts(a: argparse.Namespace) -> dict:
         "config_dir": config_dir,
         "claude_settings_path": claude_settings_path,
         "assume": a.assume,
+        "window_ceiling_usd": a.window_ceiling_usd,
     }
 
 
@@ -2229,6 +2230,7 @@ def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
         tier_ladder=tuple(raw.get("tier_ladder", default.tier_ladder)),
         effort_ladder=tuple(raw.get("effort_ladder", default.effort_ladder)),
         min_headroom_usd=float(raw.get("min_headroom_usd", default.min_headroom_usd)),
+        hard_stop_fraction=float(raw.get("hard_stop_fraction", default.hard_stop_fraction)),
     )
 
 
@@ -2244,7 +2246,14 @@ def _usage_assessment(runs_dir, window_ceiling_usd: float | None = None) -> paci
 
 
 def _usage_assess(a: argparse.Namespace) -> int:
-    result = _usage_assessment(a.runs_dir)
+    # Resolved the same tolerant way `_route_context` resolves its profile:
+    # a missing or unreadable profile just means no ceiling, not a raise.
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(text) if text is not None else {}
+    except route.ProfileError:
+        profile = {}
+    result = _usage_assessment(a.runs_dir, profile.get("window_ceiling_usd"))
     if a.json:
         d = dataclasses.asdict(result)
         d["hold_until"] = result.hold_until.isoformat() if result.hold_until else None
@@ -2370,7 +2379,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     usage_p.set_defaults(fn=_bare_group(usage_p))
     us = usage_p.add_subparsers(dest="cmd", required=False)
-    ua = us.add_parser("assess", help="the pacing verdict for the current spend window"); ua.add_argument("--json", action="store_true"); ua.add_argument("--runs-dir", default="runs"); ua.set_defaults(fn=_usage_assess)
+    ua = us.add_parser("assess", help="the pacing verdict for the current spend window"); ua.add_argument("--json", action="store_true"); ua.add_argument("--runs-dir", default="runs"); ua.add_argument("--profile", help="the routing profile naming the window ceiling (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"); ua.set_defaults(fn=_usage_assess)
 
     epic_p = sub.add_parser(
         "epic", help="watch a detached run",
@@ -2492,6 +2501,8 @@ def build_parser() -> argparse.ArgumentParser:
     si.add_argument("--provider-profile"); si.add_argument("--skills-root"); si.add_argument("--assume", default="a", choices=("a", "r"))
     si.add_argument("--plugins", action="store_true"); si.add_argument("--hook", action="store_true")
     si.add_argument("--force-profile", action="store_true"); si.add_argument("--dry-run", action="store_true")
+    si.add_argument("--window-ceiling-usd", type=float, default=None, dest="window_ceiling_usd",
+                     help="write spend: window_ceiling_usd into the profile")
     si.set_defaults(fn=_setup_install)
     return p
 
