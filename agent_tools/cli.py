@@ -206,7 +206,7 @@ def _resolved_notify_policy(runs_dir: Path) -> dict:
 def _runs_notify(a: argparse.Namespace) -> int:
     policy = _resolved_notify_policy(Path(a.runs_dir))
     return notify.run_loop(a.runs_dir, once=a.once, interval=a.interval, policy=policy,
-                            heartbeat_minutes=_leader_heartbeat_minutes())
+                            heartbeat_minutes=_leader_heartbeat_minutes(), replay=a.replay)
 
 
 def _runs_detail(a: argparse.Namespace) -> int:
@@ -2123,7 +2123,7 @@ def build_parser() -> argparse.ArgumentParser:
     se = runs.add_parser("series", help="per-run summary rows across a runs directory"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
     ev = runs.add_parser("events", help="poll a run's log for structured events"); ev.add_argument("--runs-dir", default="runs"); ev.add_argument("--follow", action="store_true"); ev.add_argument("--json", action="store_true"); ev.set_defaults(fn=_runs_events)
     tp = runs.add_parser("top", help="live table of runs in flight; --once prints it and exits"); tp.add_argument("--runs-dir", default="runs"); tp.add_argument("--interval", type=float, default=3); tp.add_argument("--once", action="store_true"); tp.set_defaults(fn=_runs_top)
-    no = runs.add_parser("notify", help="desktop notifications for exits, quarantines, budget stops and cost"); no.add_argument("--runs-dir", default="runs"); no.add_argument("--once", action="store_true"); no.add_argument("--interval", type=float, default=10); no.set_defaults(fn=_runs_notify)
+    no = runs.add_parser("notify", help="desktop notifications for exits, quarantines, budget stops and cost"); no.add_argument("--runs-dir", default="runs"); no.add_argument("--once", action="store_true"); no.add_argument("--interval", type=float, default=10); no.add_argument("--replay", action="store_true", help="emit history on first start; default is silent for existing runs when no state file is present"); no.set_defaults(fn=_runs_notify)
     de = runs.add_parser("detail", help="one run's timeline, objection and last tool calls"); de.add_argument("run_id"); de.add_argument("--runs-dir", default="runs"); de.add_argument("--json", action="store_true"); de.set_defaults(fn=_runs_detail)
 
     stats_p = sub.add_parser(
