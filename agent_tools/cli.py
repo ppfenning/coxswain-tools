@@ -288,6 +288,25 @@ def _land_branches(repo: Path, record: dict, default_branch: str) -> dict[str, l
     return branches
 
 
+def _recover_branches(repo: Path, record: dict, phase_branch: str) -> dict[str, list[str]]:
+    """Commit subjects ahead of the phase branch, per recover candidate
+    branch — the same `git log --no-merges` shape `_land_branches` uses, but
+    against the phase branch instead of the default branch, since recover
+    merges INTO the phase branch rather than cherry-picking off it."""
+    candidates = [f"agents/{record['run']}/{record['task']}", f"epic/{record.get('initiative')}/{record['phase']}--{record['task']}"]
+    branches: dict[str, list[str]] = {}
+    for b in candidates:
+        out = subprocess.run(["git", "-C", str(repo), "log", "--no-merges", "--format=%s", f"{phase_branch}..{b}"], capture_output=True, text=True)
+        if out.returncode == 0:
+            branches[b] = [line for line in out.stdout.splitlines() if line]
+    return branches
+
+
+def _branch_exists(repo: Path, branch: str) -> bool:
+    r = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", branch], capture_output=True, text=True)
+    return r.returncode == 0
+
+
 def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None) -> list[dict]:
     """Steps enriched with what only the edge knows: each `mark_done`'s own
     record file path (`task_paths` maps task name to path in phase mode), and
@@ -525,6 +544,62 @@ def _runs_land(a: argparse.Namespace) -> int:
         if step["kind"] == "wait_checks" and a.no_merge:
             print("stopping after wait_checks (--no-merge)")
             return 0
+    return 0
+
+
+def _runs_recover(a: argparse.Namespace) -> int:
+    """Merge one approved task's commit into its phase branch, the remedy for
+    a merge the harness escalated to `self_modification` and so never
+    applied. Never runs the repo's checks, never pushes: this only lands one
+    commit on a local phase branch, and the gate to `main` stays a person's."""
+    repo = Path(a.repo).expanduser()
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"recover: {reason}")
+        return 2
+    record, searched, count = _land_record(runs_dir, a.run_id, a.task_id)
+    if record is None:
+        print(f"recover: looked in {searched}, found {count} task records, expected 1")
+        return 2
+    initiative, phase = record.get("initiative"), record.get("phase")
+    if not initiative or not phase:
+        print(f"recover: {a.task_id}: record names no initiative/phase, cannot resolve a phase branch")
+        return 2
+    phase_branch = f"epic/{initiative}/{phase}"
+    if not _branch_exists(repo, phase_branch):
+        print(f"recover: phase branch {phase_branch} does not exist in {repo}")
+        return 2
+    branches = _recover_branches(repo, record, phase_branch)
+    step = land.recover_plan(record, branches)[0]
+    if step["kind"] == "already_recovered":
+        print(f"recover: {step['branch']} already contains the commit ({step['reason']}); nothing to do")
+        return 0
+    if step["kind"] == "refuse":
+        print(f"refused: {step['reason']}")
+        return 2
+    source, target, subject = step["source"], step["target"], step["commit_subject"]
+    message = f"Merge branch '{source}' into {target}"
+    if a.dry_run:
+        print(f"recover: would merge {source} into {target} --no-ff -m {message!r} ({subject!r})")
+        return 0
+    before = subprocess.run(["git", "-C", str(repo), "rev-parse", target], capture_output=True, text=True).stdout.strip()
+    wt = Path(tempfile.mkdtemp(prefix="recover-"))
+    add = subprocess.run(["git", "-C", str(repo), "worktree", "add", str(wt), target], capture_output=True, text=True)
+    if add.returncode != 0:
+        print(f"refused: could not check out {target}: {add.stderr.strip() or add.stdout.strip()}")
+        return 2
+    try:
+        merge = subprocess.run(["git", "-C", str(wt), "merge", "--no-ff", source, "-m", message], capture_output=True, text=True)
+        if merge.returncode != 0:
+            subprocess.run(["git", "-C", str(wt), "merge", "--abort"], capture_output=True, text=True)
+            print(f"refused: merge of {source} into {target} was not clean: {merge.stderr.strip() or merge.stdout.strip()}")
+            return 2
+    finally:
+        subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
+    after = subprocess.run(["git", "-C", str(repo), "rev-parse", target], capture_output=True, text=True).stdout.strip()
+    diff = subprocess.run(["git", "-C", str(repo), "diff", "--stat", before, after], capture_output=True, text=True)
+    print(f"recover: {target} {before[:8]} -> {after[:8]}")
+    print(diff.stdout.strip())
     return 0
 
 
@@ -1970,7 +2045,8 @@ def build_parser() -> argparse.ArgumentParser:
     runs_p = sub.add_parser(
         "runs", help="what a harness run recorded, and cleaning up after it",
         description="What a harness run recorded, and cleaning up after it.",
-        epilog="examples:\n  cox runs land <run> --repo PATH --apply\n  cox runs usage <run> --json\n  cox runs detail <run> --json",
+        epilog="examples:\n  cox runs land <run> --repo PATH --apply\n  cox runs recover <run> <task> --repo PATH\n"
+               "  cox runs usage <run> --json\n  cox runs detail <run> --json",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     runs_p.set_defaults(fn=_bare_group(runs_p))
@@ -1981,6 +2057,11 @@ def build_parser() -> argparse.ArgumentParser:
     la = runs.add_parser("land", help="merge a run's branch into the target repo"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task"); la.add_argument("--phase", help="land the whole phase off its own epic branch instead of one task"); la.add_argument("--label"); la.add_argument("--force", action="store_true", help="land despite a foreign live leader")
     la.add_argument("--worktree-root", default="~/worktrees"); la.add_argument("--apply", action="store_true"); la.add_argument("--no-merge", action="store_true")
     la.add_argument("--runs-dir", help="override: resolve task records here instead of the profile's workspace_dir"); la.add_argument("--profile"); la.set_defaults(fn=_runs_land)
+    re_ = runs.add_parser("recover", help="merge an approved task's commit into its phase branch after an escalated merge")
+    re_.add_argument("run_id"); re_.add_argument("task_id"); re_.add_argument("--repo", required=True)
+    re_.add_argument("--runs-dir", help="override: resolve task records here instead of the profile's workspace_dir")
+    re_.add_argument("--profile"); re_.add_argument("--dry-run", action="store_true", help="print the merge that would be made and exit without touching anything")
+    re_.set_defaults(fn=_runs_recover)
     se = runs.add_parser("series", help="per-run summary rows across a runs directory"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
     ev = runs.add_parser("events", help="poll a run's log for structured events"); ev.add_argument("--runs-dir", default="runs"); ev.add_argument("--follow", action="store_true"); ev.add_argument("--json", action="store_true"); ev.set_defaults(fn=_runs_events)
     tp = runs.add_parser("top", help="live table of runs in flight; --once prints it and exits"); tp.add_argument("--runs-dir", default="runs"); tp.add_argument("--interval", type=float, default=3); tp.add_argument("--once", action="store_true"); tp.set_defaults(fn=_runs_top)

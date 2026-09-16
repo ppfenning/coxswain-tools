@@ -77,6 +77,40 @@ def test_a_record_silent_on_initiative_refuses_cleanly_when_only_a_phase_branch_
     assert steps == [{"kind": "refuse", "reason": "no branch is exactly one commit ahead of main", "found": {"epic/x/seams": 1}}]
 
 
+# --- recover_plan: pure ---
+
+def test_recover_plan_resolves_the_scratch_branch_into_the_phase_branch():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    steps = land.recover_plan(_record(), branches)
+    assert steps == [{
+        "kind": "merge",
+        "source": "agents/epic-x-5/seams-task",
+        "target": "epic/x/seams",
+        "commit_subject": "Add seams module",
+    }]
+
+
+def test_recover_plan_a_commit_already_on_the_phase_branch_plans_nothing():
+    branches = {"agents/epic-x-5/seams-task": []}
+    steps = land.recover_plan(_record(), branches)
+    assert steps == [{
+        "kind": "already_recovered",
+        "branch": "epic/x/seams",
+        "reason": "agents/epic-x-5/seams-task has no commits ahead of epic/x/seams",
+    }]
+
+
+def test_recover_plan_an_unresolvable_task_refuses_rather_than_a_partial_plan():
+    assert land.recover_plan(_record(), {}) == [{
+        "kind": "refuse",
+        "reason": "no candidate branch found for seams-task: tried agents/epic-x-5/seams-task, epic/x/seams--seams-task",
+    }]
+    assert land.recover_plan(_record(initiative=None), {"agents/epic-x-5/seams-task": ["x"]}) == [{
+        "kind": "refuse",
+        "reason": "seams-task: record names no initiative/phase, cannot resolve a phase branch",
+    }]
+
+
 # --- pr_body: pure ---
 
 def test_pr_body_contains_verdicts_and_run_id():
