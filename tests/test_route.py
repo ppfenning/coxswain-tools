@@ -220,6 +220,20 @@ def test_initiative_files_defaults_phase_to_build_and_body_to_title():
     assert task_text.endswith("\nFix the Bug\n")
 
 
+def test_initiative_text_writes_id_title_repo_intake_and_body():
+    text = route.initiative_text(
+        "fix-thing", "Fix thing", "git@example.com:acme/widget.git", "intake/2026-09-04-fix-thing.md", "Do the thing.",
+    )
+    fields, body = route.parse_frontmatter(text)
+    assert fields == {
+        "id": "fix-thing",
+        "title": "Fix thing",
+        "repo": "git@example.com:acme/widget.git",
+        "intake": "intake/2026-09-04-fix-thing.md",
+    }
+    assert body == "Do the thing."
+
+
 def test_intake_file_returns_the_dated_path_and_text():
     files = route.intake_file(
         "Fix the Bug", "Do the thing.", "git@example.com:acme/widget.git", "2026-09-03"
