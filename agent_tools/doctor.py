@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from agent_tools import records, route
+from agent_tools import records, route, schema
 
 __all__ = ["checks", "exit_code", "render"]
 
@@ -164,6 +164,13 @@ def _workspace_row(facts: Mapping, cascade: bool) -> dict:
     return {"check": "workspace", "ok": True, "detail": f"{len(dirs)} dirs present"}
 
 
+def _schema_row(facts: Mapping, cascade: bool) -> dict:
+    if cascade:
+        return _skip("schema")
+    state, detail = schema.status(facts.get("schema_versions", {}))
+    return {"check": "schema", "ok": state == "ok", "detail": detail}
+
+
 def _cast_row(facts: Mapping, cascade: bool) -> dict:
     """A `cast_seats` fact absent from `facts` passes rather than fails,
     unlike every row above it: the edge that gathers it is not yet wired,
@@ -188,8 +195,8 @@ def checks(facts: Mapping) -> list[dict]:
     """Judge a Facts mapping. Returns rows `{"check", "ok", "detail"}` in a
     fixed check order: profile, profile paths, harness venv, core
     importable, cartridge, project overlay, skills, provider, workspace,
-    cast. A fact that was never gathered fails as "not checked", except
-    `cast` which passes when ungathered; a profile that fails to parse
+    schema, cast. A fact that was never gathered fails as "not checked",
+    except `cast` which passes when ungathered; a profile that fails to parse
     fails every row after it as "skipped: no profile"; an empty collection
     where paths, skill roots or workspace dirs belong fails naming that
     nothing was configured to check, rather than passing vacuously."""
@@ -204,6 +211,7 @@ def checks(facts: Mapping) -> list[dict]:
         _skills_row(facts, cascade, parsed),
         _provider_row(facts, cascade),
         _workspace_row(facts, cascade),
+        _schema_row(facts, cascade),
         _cast_row(facts, cascade),
     ]
 

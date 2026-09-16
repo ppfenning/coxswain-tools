@@ -308,3 +308,35 @@ def test_a_trailing_yaml_comment_on_the_provider_command_is_not_part_of_the_comm
     rows = _rows(capsys)
     assert rows["provider"]["ok"], rows["provider"]
     assert rc == 0
+
+
+# ── schema_versions is gathered through a real, in-process `import core` /
+# `import harness`, using the same write-a-fake-package technique as the probe. ─
+
+def _fake_schema_package(tmp_path, monkeypatch, *, cartridges, graphs):
+    pkg = tmp_path / "fakeschema"
+    (pkg / "core").mkdir(parents=True)
+    (pkg / "core" / "__init__.py").write_text(f"SCHEMA_VERSION = {cartridges!r}\n")
+    (pkg / "harness").mkdir(parents=True)
+    (pkg / "harness" / "__init__.py").write_text(f"CORE_SCHEMA = {graphs!r}\n")
+    monkeypatch.syspath_prepend(str(pkg))
+    monkeypatch.delitem(sys.modules, "core", raising=False)
+    monkeypatch.delitem(sys.modules, "harness", raising=False)
+
+
+def test_schema_versions_are_gathered_and_agree_ok(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="1.0")
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    rows = _rows(capsys)
+    assert rows["schema"] == {"check": "schema", "ok": True, "detail": "cartridges 1.0, graphs 1.0, tools 1.0"}
+    assert rc == 0
+
+
+def test_a_differing_major_gathered_through_import_warns_the_schema_row(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="2.0")
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    rows = _rows(capsys)
+    assert rows["schema"] == {"check": "schema", "ok": False, "detail": "graphs 2.0"}
+    assert rc == 1

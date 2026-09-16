@@ -12,6 +12,7 @@ _CHECK_ORDER = (
     "skills",
     "provider",
     "workspace",
+    "schema",
     "cast",
 )
 
@@ -30,6 +31,7 @@ def _good_facts():
         "provider_on_path": True,
         "provider_version": "claude 1.2.3",
         "workspace_dirs": {"/w/work": True, "/w/runs": True, "/w/intake": True},
+        "schema_versions": {"cartridges": "1.0", "graphs": "1.0", "tools": "1.0"},
         "cast_seats": {},
     }
 
@@ -244,7 +246,7 @@ def test_render_lists_every_row_in_order_with_its_own_check_label():
     data_lines = lines[1 : 1 + len(rows)]
     labels = [re.split(r"\s{2,}", line.strip())[0] for line in data_lines]
     assert labels == list(_CHECK_ORDER)
-    assert lines[-1] == "doctor: 10 ok, 0 failing"
+    assert lines[-1] == "doctor: 11 ok, 0 failing"
 
 
 def test_render_marks_a_failing_row_as_fail_and_counts_it():
@@ -253,14 +255,28 @@ def test_render_marks_a_failing_row_as_fail_and_counts_it():
     rows = doctor.checks(facts)
     text = doctor.render(rows)
     assert "FAIL" in text
-    assert "doctor: 9 ok, 1 failing" in text
+    assert "doctor: 10 ok, 1 failing" in text
 
 
 def test_empty_facts_dict_yields_all_rows_not_checked_and_exit_one():
     rows = _rows_by_check(doctor.checks({}))
-    assert all(r["ok"] is False and r["detail"] == "not checked" for check, r in rows.items() if check != "cast")
+    assert all(r["ok"] is False and r["detail"] == "not checked"
+               for check, r in rows.items() if check not in ("cast", "schema"))
     assert rows["cast"] == {"check": "cast", "ok": True, "detail": "not gathered"}
+    assert rows["schema"] == {"check": "schema", "ok": True, "detail": ""}
     assert doctor.exit_code(rows.values()) == 1
+
+
+def test_all_agreeing_known_schema_majors_give_an_ok_schema_row():
+    rows = _rows_by_check(doctor.checks(_good_facts()))
+    assert rows["schema"] == {"check": "schema", "ok": True, "detail": "cartridges 1.0, graphs 1.0, tools 1.0"}
+
+
+def test_a_differing_schema_major_fails_the_schema_row_naming_only_the_outlier():
+    facts = _good_facts()
+    facts["schema_versions"] = {"cartridges": "1.0", "graphs": "2.0", "tools": "1.0"}
+    rows = _rows_by_check(doctor.checks(facts))
+    assert rows["schema"] == {"check": "schema", "ok": False, "detail": "graphs 2.0"}
 
 
 def test_all_enabled_seats_installed_and_all_disabled_seats_absent_gives_an_ok_cast_row():
