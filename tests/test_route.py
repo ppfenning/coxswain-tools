@@ -655,6 +655,28 @@ def test_parse_frontmatter_splits_a_non_empty_list_on_commas():
     assert fields["needs"] == ["a", "b"]
 
 
+def test_parse_frontmatter_block_list_matches_flow_list():
+    flow_text = "---\nneeds: [a, b]\nsurfaces: [c]\n---\n\nx\n"
+    block_text = "---\nneeds:\n  - a\n  - b\nsurfaces:\n  - c\n---\n\nx\n"
+    flow_fields, _ = route.parse_frontmatter(flow_text)
+    block_fields, _ = route.parse_frontmatter(block_text)
+    assert flow_fields == block_fields
+
+
+def test_parse_frontmatter_block_list_does_not_swallow_the_next_key():
+    text = "---\nneeds:\n  - a\ntitle: x\n---\n\nbody\n"
+    fields, _ = route.parse_frontmatter(text)
+    assert fields["needs"] == ["a"]
+    assert fields["title"] == "x"
+
+
+def test_parse_frontmatter_empty_block_yields_empty_list():
+    text = "---\nneeds:\ntitle: x\n---\n\nbody\n"
+    fields, _ = route.parse_frontmatter(text)
+    assert fields["needs"] == []
+    assert fields["title"] == "x"
+
+
 def test_parse_frontmatter_round_trips_an_empty_string_field():
     # `title`'s own empty string is unreachable through these builders —
     # `_slug_or_raise` refuses it before any frontmatter is written — but
