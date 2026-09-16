@@ -46,12 +46,17 @@ URLs printed; the exit code is 2 — the release tool's refusal code throughout 
 verify-release.sh` stays as the independent after-the-fact check; this step is the release refusing to
 call itself done.
 
-Once a component's or the umbrella's `wait_workflows` succeeds, a `github_release` step publishes it:
-`gh release view v<version>` decides whether `gh release create` or `gh release edit` runs, so a re-run
-never fails on a release that already exists. A component's notes are its own `## coxswain-<name>`
-section of the umbrella's `docs/releases/<version>.md`, linked back to the umbrella's full notes, or the
-line `unchanged since v<tag>` when no such section was written for it; a `pinned` component gets no
-`github_release` step at all, since a later cut must never rewrite its old release.
+Once a component's or the umbrella's `wait_workflows` succeeds, a `github_release` step publishes it —
+run right after that component's `tag` or `rejoin`, or after the umbrella's own `tag_self`. `gh release
+view <tag>` is run first; a zero exit means the release already exists and `gh release edit <tag>
+--notes-file <path>` runs, anything else means it doesn't and `gh release create <tag> --verify-tag
+--title "<title>" --notes-file <path>` runs instead, so a re-run never fails on a release already made.
+The title is `coxswain-<name> <version>` for a component or `coxswain <version>` for the umbrella. The
+umbrella's notes file is the whole of `docs/releases/<version>.md`; a component's is a temporary file
+holding its own `## coxswain-<name>` section of that same page plus a line linking back to the umbrella's
+release, or the line `unchanged since <tag>` (the component's previous tag) when no such section was
+written for it. A `pinned` component gets no `github_release` step at all, since a later cut must never
+rewrite its old release.
 
 ## 3. Version drift is a release-check drift  (tools)
 
