@@ -1,7 +1,14 @@
 import pytest
 
 from agent_tools.events import Event
-from agent_tools.stats_derive import attempt_numbers, bounds_for_costs, extract_failure_class, resolve_outcome
+from agent_tools.stats_derive import (
+    LIST_RATES_USD_PER_MTOK,
+    attempt_numbers,
+    bounds_for_costs,
+    extract_failure_class,
+    resolve_outcome,
+    spend_mix_for_model,
+)
 
 
 def test_bounds_for_costs_reports_strict_moderate_liberal_from_p50_and_p95():
@@ -170,3 +177,56 @@ def test_extract_failure_class_never_reads_empty_patch_for_a_non_patching_role(r
         {"type": "result", "is_error": False, "subtype": "success"},
     ]
     assert extract_failure_class(trace, "", role) == "ok"
+
+
+# cost-bounds.md §6 rules 1-7 govern gather/pacing (rule 1-2), bounds/censoring
+# (rules 3-5) and the harness/policy level (rules 6-7); none of those name
+# spend-mix. Rule 8, "spend-mix cost shares sum to 1.0 per model and use the
+# pinned rates", is the only §6 rule this section owns, and
+# test_spend_mix_for_model_cost_shares_sum_to_one_at_the_pinned_rates below is
+# its one literal test.
+
+
+def test_list_rates_pin_the_2026_09_published_list_prices():
+    assert LIST_RATES_USD_PER_MTOK["sonnet"] == {"input": 3.0, "output": 15.0, "cache_creation": 3.75, "cache_read": 0.30}
+    assert LIST_RATES_USD_PER_MTOK["opus"] == {"input": 15.0, "output": 75.0, "cache_creation": 18.75, "cache_read": 1.50}
+    assert LIST_RATES_USD_PER_MTOK["haiku"] == {"input": 0.80, "output": 4.0, "cache_creation": 1.0, "cache_read": 0.08}
+
+
+def test_spend_mix_for_model_sums_token_counts_by_class_across_rows():
+    rows = [
+        {"role": "build", "input_tokens": 100, "output_tokens": 50, "cache_creation_tokens": 0, "cache_read_tokens": 0},
+        {"role": "plan", "input_tokens": 200, "output_tokens": 10, "cache_creation_tokens": 5, "cache_read_tokens": 5},
+    ]
+    result = spend_mix_for_model(rows, "sonnet")
+    assert result["token_counts"] == {"input": 300, "output": 60, "cache_creation": 5, "cache_read": 5}
+
+
+def test_spend_mix_for_model_cost_shares_sum_to_one_at_the_pinned_rates():
+    """cost-bounds.md §6 rule 8."""
+    rows = [
+        {"role": "build", "input_tokens": 100, "output_tokens": 50, "cache_creation_tokens": 0, "cache_read_tokens": 0},
+        {"role": "plan", "input_tokens": 200, "output_tokens": 10, "cache_creation_tokens": 5, "cache_read_tokens": 5},
+    ]
+    result = spend_mix_for_model(rows, "sonnet")
+    assert result["cost_share"] == pytest.approx({
+        "input": 0.494438, "output": 0.494438, "cache_creation": 0.010301, "cache_read": 0.000824,
+    }, abs=1e-5)
+    assert sum(result["cost_share"].values()) == pytest.approx(1.0)
+
+
+def test_spend_mix_for_model_build_split_excludes_non_build_rows():
+    rows = [
+        {"role": "build", "input_tokens": 100, "output_tokens": 50, "cache_creation_tokens": 0, "cache_read_tokens": 0},
+        {"role": "plan", "input_tokens": 200, "output_tokens": 10, "cache_creation_tokens": 5, "cache_read_tokens": 5},
+    ]
+    result = spend_mix_for_model(rows, "sonnet")
+    assert result["build"]["token_counts"] == {"input": 100, "output": 50, "cache_creation": 0, "cache_read": 0}
+    assert result["build"]["cost_share"] == pytest.approx({"input": 0.285714, "output": 0.714286, "cache_creation": 0.0, "cache_read": 0.0}, abs=1e-5)
+
+
+def test_spend_mix_for_model_with_no_tokens_reports_zero_shares_not_a_raise():
+    result = spend_mix_for_model([], "sonnet")
+    assert result["token_counts"] == {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
+    assert result["cost_share"] == {"input": 0.0, "output": 0.0, "cache_creation": 0.0, "cache_read": 0.0}
+    assert result["build"]["cost_share"] == {"input": 0.0, "output": 0.0, "cache_creation": 0.0, "cache_read": 0.0}

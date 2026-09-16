@@ -176,6 +176,16 @@ def _stats_series(a: argparse.Namespace) -> int:
     return 0
 
 
+def _stats_spend_mix(a: argparse.Namespace) -> int:
+    conn = stats_schema.connect(a.db)
+    try:
+        report = stats_query.spend_mix_report(_stats_fetch(conn, "calls"))
+    finally:
+        conn.close()
+    print(json.dumps(report, indent=2) if a.json else stats_query.render_capped(report))
+    return 0
+
+
 def _bounds_ceiling_for(a: argparse.Namespace):
     """role -> declared ceiling from the resolved provider profile's
     `role_budget_usd` (per-role) falling back to its `budget_usd` (default);
@@ -2203,7 +2213,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Load the run corpus into the stats store.",
         epilog="examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db"
                "\n  cox stats roles --json\n  cox stats explain build --json\n  cox stats series --json"
-               "\n  cox stats coverage --json\n  cox stats bounds --json",
+               "\n  cox stats coverage --json\n  cox stats bounds --json\n  cox stats spend-mix --json",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     stats_p.set_defaults(fn=_bare_group(stats_p))
@@ -2241,6 +2251,10 @@ def build_parser() -> argparse.ArgumentParser:
     bo.add_argument("--profile", help="the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)")
     bo.add_argument("--write", default=None, help="also write the JSON table to PATH inside the repo checkout")
     bo.set_defaults(fn=_stats_bounds)
+    sm = st.add_parser("spend-mix", help="per-model token counts and cost share by class, plus the build-only split")
+    sm.add_argument("--db", default="workspace/stats/stats.db")
+    sm.add_argument("--json", action="store_true")
+    sm.set_defaults(fn=_stats_spend_mix)
 
     usage_p = sub.add_parser(
         "usage", help="spend pacing against the ceiling for the current window",
