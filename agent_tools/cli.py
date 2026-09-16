@@ -200,6 +200,14 @@ def _bounds_ceiling_for(a: argparse.Namespace):
     provider_profile = provider_profile if isinstance(provider_profile, dict) else {}
     role_budget_usd = provider_profile.get("role_budget_usd") or {}
     default_budget = provider_profile.get("budget_usd")
+    if isinstance(default_budget, dict):
+        # A real provider profile declares `budget_usd` per TIER (cheap /
+        # standard / deep); a role with no entry of its own runs on the
+        # standard tier's ceiling. The first live invocation multiplied 0.95
+        # by this mapping — the tests had only ever seeded `role_budget_usd`.
+        default_budget = default_budget.get("standard")
+    if not isinstance(default_budget, (int, float)) or isinstance(default_budget, bool):
+        default_budget = None
     return lambda role, _model: role_budget_usd.get(role, default_budget)
 
 
