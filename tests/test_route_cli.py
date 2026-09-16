@@ -590,7 +590,7 @@ def test_launch_decompose_writes_initiative_md_from_the_idea_before_launching(tm
         "--initiative-id", "fix-thing",
     ])
     assert rc == 0
-    initiative_md = ws / "fix-thing" / "initiative.md"
+    initiative_md = ws / "work" / "fix-thing" / "initiative.md"
     fields, body = route.parse_frontmatter(initiative_md.read_text())
     assert fields == {
         "id": "fix-thing",
@@ -608,7 +608,7 @@ def test_launch_decompose_leaves_an_existing_initiative_md_untouched(tmp_path, c
     (ws / "intake").mkdir(parents=True)
     idea = ws / "intake" / "idea.md"
     idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
-    initiative_md = ws / "fix-thing" / "initiative.md"
+    initiative_md = ws / "work" / "fix-thing" / "initiative.md"
     initiative_md.parent.mkdir(parents=True)
     initiative_md.write_text("hand-written\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
@@ -709,7 +709,7 @@ def test_launch_decompose_dry_run_prints_the_initiative_path_and_writes_nothing(
         "--initiative-id", "fix-thing",
     ])
     out = capsys.readouterr().out
-    initiative_md = ws / "fix-thing" / "initiative.md"
+    initiative_md = ws / "work" / "fix-thing" / "initiative.md"
     assert rc == 0
     assert str(initiative_md) in out
     assert not initiative_md.exists()
