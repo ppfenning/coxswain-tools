@@ -35,7 +35,8 @@ def check_manifest(facts: Mapping) -> list[Drift]:
         target_version = str(spec.get("tag") or "").lstrip("v") or version
         if page is None:
             return Drift("manifest", manifest_file, None, page_file, None, f"add {page_file} for {name}")
-        if target_version and f"v{target_version}" not in versions_in(page):
+        found = versions_in(page)
+        if found and target_version and f"v{target_version}" not in found:
             stale_line = next((i + 1 for i, line in enumerate(page.splitlines()) if versions_in(line)), None)
             return Drift("manifest", manifest_file, None, page_file, stale_line, f"update {page_file} to v{target_version}")
         return None
