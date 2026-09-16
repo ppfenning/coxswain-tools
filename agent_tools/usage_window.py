@@ -32,6 +32,7 @@ DEFAULT_POLICY = Policy(
     tier_ladder=("deep", "standard", "cheap"),
     effort_ladder=("high", "low"),
     min_headroom_usd=0.0,
+    hard_stop_fraction=0.99,
 )
 
 
