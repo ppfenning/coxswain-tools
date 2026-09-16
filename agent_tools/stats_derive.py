@@ -13,11 +13,38 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from functools import reduce
+from math import ceil
 from typing import Any
 
 from agent_tools.stats_schema import FAILURE_CLASSES, OUTCOMES
 
-__all__ = ["attempt_numbers", "extract_failure_class", "resolve_outcome"]
+__all__ = ["attempt_numbers", "bounds_for_costs", "extract_failure_class", "resolve_outcome"]
+
+
+def bounds_for_costs(costs: Sequence[float]) -> dict[str, Any]:
+    """n, p50, p95, max and the strict/moderate/liberal candidates
+    (docs/design/cost-bounds.md §2): strict=p50, moderate=p95, liberal=3*p95,
+    nearest-rank percentiles on the sorted costs. `n < 20` returns
+    `{"n": n, "insufficient": True}` with no candidates (§6 rule 4)."""
+    n = len(costs)
+    if n < 20:
+        return {"n": n, "insufficient": True}
+    ordered = sorted(costs)
+
+    def _percentile(pct: float) -> float:
+        return ordered[max(0, min(n - 1, ceil(pct * n) - 1))]
+
+    p50 = _percentile(0.50)
+    p95 = _percentile(0.95)
+    return {
+        "n": n,
+        "p50": p50,
+        "p95": p95,
+        "max": ordered[-1],
+        "strict": p50,
+        "moderate": p95,
+        "liberal": 3 * p95,
+    }
 
 
 def attempt_numbers(calls: Sequence[Mapping[str, Any]]) -> list[int]:

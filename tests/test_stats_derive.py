@@ -1,7 +1,19 @@
 import pytest
 
 from agent_tools.events import Event
-from agent_tools.stats_derive import attempt_numbers, extract_failure_class, resolve_outcome
+from agent_tools.stats_derive import attempt_numbers, bounds_for_costs, extract_failure_class, resolve_outcome
+
+
+def test_bounds_for_costs_reports_strict_moderate_liberal_from_p50_and_p95():
+    costs = [float(i) for i in range(1, 21)]
+    assert bounds_for_costs(costs) == {
+        "n": 20, "p50": 10.0, "p95": 19.0, "max": 20.0,
+        "strict": 10.0, "moderate": 19.0, "liberal": 57.0,
+    }
+
+
+def test_bounds_for_costs_is_insufficient_under_twenty_with_no_candidates():
+    assert bounds_for_costs([1.0] * 19) == {"n": 19, "insufficient": True}
 
 
 def test_attempt_numbers_counts_a_role_repeated_across_a_run():

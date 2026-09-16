@@ -176,6 +176,54 @@ def _stats_series(a: argparse.Namespace) -> int:
     return 0
 
 
+def _bounds_ceiling_for(a: argparse.Namespace):
+    """role -> declared ceiling from the resolved provider profile's
+    `role_budget_usd` (per-role) falling back to its `budget_usd` (default);
+    `None` for both when the routing profile at `_profile_path(a)` (spec §1:
+    `--profile`, `$AGENT_TOOLS_PROFILE` or `DEFAULT_PROFILE`, same as `route
+    context`/`setup doctor`) or its named `provider_profile` is missing or
+    unreadable — reported, never refused, matching `_gather_doctor_facts`'s
+    style rather than `_resolve_profile_or_refuse`'s (docs/design/
+    cost-bounds.md §2: 'the declared ceiling from the resolved provider
+    profile')."""
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        routing_profile = route.parse_profile(text) if text is not None else {}
+    except route.ProfileError:
+        routing_profile = {}
+    provider_path = routing_profile.get("provider_profile")
+    provider_text = _read_text_or_none(Path(provider_path).expanduser()) if provider_path else None
+    try:
+        provider_profile = yaml.safe_load(provider_text) if provider_text is not None else None
+    except yaml.YAMLError:
+        provider_profile = None
+    provider_profile = provider_profile if isinstance(provider_profile, dict) else {}
+    role_budget_usd = provider_profile.get("role_budget_usd") or {}
+    default_budget = provider_profile.get("budget_usd")
+    return lambda role, _model: role_budget_usd.get(role, default_budget)
+
+
+def _stats_bounds(a: argparse.Namespace) -> int:
+    conn = stats_schema.connect(a.db)
+    try:
+        report = stats_query.bounds_report(_stats_fetch(conn, "calls"), _bounds_ceiling_for(a))
+    finally:
+        conn.close()
+    if a.level:
+        drop = {"strict", "moderate", "liberal"} - {a.level}
+        report = [{k: v for k, v in row.items() if k not in drop} for row in report]
+    if a.write:
+        write_path = Path(a.write).resolve()
+        repo_root = Path.cwd().resolve()
+        if write_path != repo_root and repo_root not in write_path.parents:
+            print(f"stats bounds: --write path {write_path} is outside the repo checkout {repo_root}")
+            return 2
+        generated = datetime.datetime.now(datetime.UTC).isoformat()
+        write_path.write_text(json.dumps({"generated": generated, "db": a.db, "rows": report}, indent=2))
+    print(json.dumps(report, indent=2) if a.json else stats_query.render_capped(report))
+    return 0
+
+
 def _runs_top(a: argparse.Namespace) -> int:
     heartbeat_minutes = _leader_heartbeat_minutes()
     if a.once:
@@ -2147,7 +2195,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Load the run corpus into the stats store.",
         epilog="examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db"
                "\n  cox stats roles --json\n  cox stats explain build --json\n  cox stats series --json"
-               "\n  cox stats coverage --json",
+               "\n  cox stats coverage --json\n  cox stats bounds --json",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     stats_p.set_defaults(fn=_bare_group(stats_p))
@@ -2178,6 +2226,13 @@ def build_parser() -> argparse.ArgumentParser:
     co.add_argument("--db", default="workspace/stats/stats.db")
     co.add_argument("--json", action="store_true")
     co.set_defaults(fn=_stats_coverage)
+    bo = st.add_parser("bounds", help="n/p50/p95/max and strict/moderate/liberal candidate ceilings per role and model")
+    bo.add_argument("--db", default="workspace/stats/stats.db")
+    bo.add_argument("--json", action="store_true")
+    bo.add_argument("--level", choices=("strict", "moderate", "liberal"), default=None)
+    bo.add_argument("--profile", help="the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)")
+    bo.add_argument("--write", default=None, help="also write the JSON table to PATH inside the repo checkout")
+    bo.set_defaults(fn=_stats_bounds)
 
     usage_p = sub.add_parser(
         "usage", help="spend pacing against the ceiling for the current window",
