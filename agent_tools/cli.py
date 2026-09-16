@@ -56,10 +56,27 @@ from agent_tools import runs as runs_module
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
-    path = Path(a.runs_dir) / f"{a.run_id}.usage.json"
-    s = records.usage_summary(records.load_usage(path))
+    runs_dir = Path(a.runs_dir)
+    path = runs_dir / f"{a.run_id}.usage.json"
+    header = None
+    if path.exists():
+        s = records.usage_summary(records.load_usage(path))
+    else:
+        pid_text = _read_text_or_none(runs_dir / f"{a.run_id}.pid")
+        pid = route.parse_pid(pid_text) if pid_text is not None else None
+        live = pid is not None and epic.alive(pid)
+        trace_dir = runs_dir / f"{a.run_id}-trace"
+        traces = stats_ingest._read_traces(trace_dir, [])
+        if not live and not traces:
+            print(f"no usage record and no trace for {a.run_id} in {runs_dir}")
+            return 2
+        rows = stats_ingest.recovered_call_rows(a.run_id, traces)
+        s = records.usage_summary({"run_id": a.run_id, "calls": rows})
+        header = f"live (pid {pid}) — from the trace so far" if live else "not live — from the trace so far"
     if a.json:
-        print(json.dumps(s, indent=2)); return 0
+        print(json.dumps({**s, "note": header} if header else s, indent=2)); return 0
+    if header:
+        print(header)
     print(f"{s['run_id']}: {s['calls']} calls, {s['turns']} turns, ${s['cost_usd']:.2f}, cache-read share {s['cache_read_share']}")
     print(records.format_table([{"role": k, **v} for k, v in s["by_role"].items()], ["role", "calls", "cost_usd", "turns"]))
     print(); print(records.format_table([{"model": k, **v} for k, v in s["by_model"].items()], ["model", "calls", "cost_usd", "turns"]))
