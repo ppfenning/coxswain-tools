@@ -1365,6 +1365,7 @@ def _route_lint(a: argparse.Namespace) -> int:
             "phase": fields.get("phase", path.parent.name),
             "surfaces": fields.get("surfaces", []),
             "body": body,
+            "needs": fields.get("needs", []),
         })
     repo = a.repo
     if not repo:

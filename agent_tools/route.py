@@ -398,14 +398,34 @@ def _item_problems(item: dict, repo: str | None, grants) -> list:
     return reach + grant + size
 
 
+def _needs_closure(items) -> dict:
+    """Task id to the set of every task id reachable transitively through
+    `needs`. A cycle just stops the walk from revisiting a seen node."""
+    edges = {item["task"]: list(item.get("needs", [])) for item in items}
+
+    def reach(start: str) -> set:
+        seen: set = set()
+        stack = list(edges.get(start, ()))
+        while stack:
+            node = stack.pop()
+            if node not in seen:
+                seen.add(node)
+                stack.extend(edges.get(node, ()))
+        return seen
+
+    return {task: reach(task) for task in edges}
+
+
 def _coupling_problems(items) -> list:
-    """Two tickets in one phase sharing a test-file surface.
+    """Two tickets in one phase sharing a test-file surface, unless one
+    reaches the other through `needs` (transitive, either direction).
 
     §3's coupling rule has a second clause — "or whose named modules
     import one another" — not checked here. Wrong belief to avoid: that
     this function covers coupling in full; `items` carries surface paths,
     not import graphs, so the import clause is undetected.
     """
+    closure = _needs_closure(items)
     by_phase: dict = {}
     for item in items:
         by_phase.setdefault(item.get("phase"), []).append(item)
@@ -413,6 +433,9 @@ def _coupling_problems(items) -> list:
     for group in by_phase.values():
         for i, first in enumerate(group):
             for second in group[i + 1:]:
+                if (second["task"] in closure.get(first["task"], set())
+                        or first["task"] in closure.get(second["task"], set())):
+                    continue
                 shared = sorted(
                     s for s in first.get("surfaces", [])
                     if ("test_" in s or s.startswith("tests/")) and s in second.get("surfaces", [])

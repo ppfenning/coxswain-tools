@@ -1236,6 +1236,36 @@ def test_lint_items_flags_a_coupling_violation():
     ]
 
 
+def test_lint_items_does_not_flag_coupling_when_a_needs_edge_orders_the_pair():
+    # tools-loop-fixes-lint-needs: a needs-ordered pair is clean under coupling.
+    items = [
+        {"task": "t1", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "first ticket"},
+        {"task": "t2", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "second ticket",
+         "needs": ["t1"]},
+    ]
+    assert route.lint_items(items, "acme/widgets", ()) == []
+
+
+def test_lint_items_does_not_flag_coupling_across_a_needs_chain():
+    # A needs B, B needs C: A and C reach each other transitively.
+    items = [
+        {"task": "a", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "a", "needs": ["b"]},
+        {"task": "b", "phase": "build", "surfaces": [], "body": "b", "needs": ["c"]},
+        {"task": "c", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "c"},
+    ]
+    assert route.lint_items(items, "acme/widgets", ()) == []
+
+
+def test_lint_items_pins_coupling_as_a_phase_scoped_rule_when_no_needs_edge_exists():
+    # Cross-phase sharing is governed by phase order today, not by needs
+    # reachability; this pins that the closure check changes nothing here.
+    items = [
+        {"task": "t1", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "first ticket"},
+        {"task": "t2", "phase": "ship", "surfaces": ["tests/test_route.py"], "body": "second ticket"},
+    ]
+    assert route.lint_items(items, "acme/widgets", ()) == []
+
+
 def test_lint_items_flags_a_size_violation():
     # work-shape.md §8: "a 750-word body" is the fixture this rule's test carries.
     items = [{"task": "t1", "phase": "build", "surfaces": [], "body": " ".join(["word"] * 750)}]
@@ -1293,3 +1323,28 @@ def test_route_lint_cli_stands_reach_down_and_says_so_once_with_no_repo_anywhere
     out = capsys.readouterr().out
     assert code == 0
     assert out == f"routing: no repo found for {initiative}; reach check skipped\n"
+
+
+def test_route_lint_cli_does_not_flag_coupling_when_a_needs_edge_orders_the_pair(tmp_path, capsys):
+    # tools-loop-fixes-lint-needs: `_route_lint` must carry `needs` onto
+    # each item it builds, or the closure check never sees the edge.
+    initiative = tmp_path / "widget-fix"
+    initiative.mkdir()
+    (initiative / "initiative.md").write_text(
+        '---\nid: "widget-fix"\ntitle: "Widget fix"\nrepo: "acme/widgets"\n---\nfix the widget\n',
+        encoding="utf-8",
+    )
+    build = initiative / "build"
+    build.mkdir()
+    (build / "t1.md").write_text(
+        "---\nid: t1\nphase: build\nsurfaces: [tests/test_widget.py]\n---\nfirst ticket\n",
+        encoding="utf-8",
+    )
+    (build / "t2.md").write_text(
+        "---\nid: t2\nphase: build\nsurfaces: [tests/test_widget.py]\nneeds: [t1]\n---\nsecond ticket\n",
+        encoding="utf-8",
+    )
+    code = cli._route_lint(_lint_ns(initiative))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out == ""
