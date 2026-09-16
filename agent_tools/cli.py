@@ -2177,8 +2177,9 @@ def _release(a: argparse.Namespace) -> int:
         return 2
     root = a.root or "."
     overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
+    component_dirs = {name: release.component_dir(root, name, overrides) for name in manifest.get("components", {})}
     plan = release_check.facts_plan(root, manifest)
-    facts = {**plan, **release_check.gather_version_facts(manifest, str(manifest_path), plan["component_dirs"], plan["umbrella"])}
+    facts = {**plan, **release_check.gather_version_facts(manifest, str(manifest_path), component_dirs, plan["umbrella"])}
     drifts = release_check.run_checks(facts)
     existing_tags = {name: _remote_tags(spec["repo"]) for name, spec in manifest.get("components", {}).items()
                       if spec.get("repo")}
@@ -2188,7 +2189,16 @@ def _release(a: argparse.Namespace) -> int:
             directory = release.component_dir(root, name, overrides)
             rc, out = _real_run(["git", "-C", directory, "rev-list", f"{spec['tag']}..HEAD", "--count"], None)
             pinned_commits[name] = int(out.strip()) if rc == 0 and out.strip().isdigit() else 0
-    steps = release.gate(drifts, a.allow_doc_drift) + release.release_plan(manifest, a.version, existing_tags, pinned_commits=pinned_commits)
+    component_versions = {}
+    for name, directory in component_dirs.items():
+        pyproject_path = Path(directory) / "pyproject.toml"
+        if not pyproject_path.exists():
+            continue
+        found = release.component_version(pyproject_path.read_text())
+        if found is not None:
+            component_versions[name] = found
+    steps = release.gate(drifts, a.allow_doc_drift) + release.release_plan(
+        manifest, a.version, existing_tags, component_versions=component_versions, pinned_commits=pinned_commits)
     if a.dry_run:
         for step in steps:
             print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
@@ -2203,17 +2213,23 @@ def _release_check(a: argparse.Namespace) -> int:
     if manifest is None:
         print(f"refusing: no manifest at {manifest_path}")
         return 2
-    plan = release_check.facts_plan(a.root or ".", manifest)
+    root = a.root or "."
+    overrides = dict(pair.split("=", 1) for pair in (a.checkout or []))
+    component_dirs = {name: release.component_dir(root, name, overrides) for name in manifest.get("components", {})}
+    readmes = {name: str(Path(d) / "README.md") for name, d in component_dirs.items()}
+    pyprojects = {name: str(Path(d) / "pyproject.toml") for name, d in component_dirs.items()}
+    plan = release_check.facts_plan(root, manifest)
     facts = {
         **plan,
-        **release_check_cli.gather_cli_facts(a.root or ".", _real_run),
+        **release_check_cli.gather_cli_facts(root, _real_run),
         **release_check_manifest.gather_manifest_facts(manifest, str(manifest_path), plan["component_docs"], plan["release_notes"]),
-        **release_check_notes.gather_notes_facts(a.root or ".", manifest, subprocess.run),
-        **release_check_pages.gather_page_facts(a.root or ".", manifest, subprocess.run),
+        **release_check_notes.gather_notes_facts(root, manifest, subprocess.run),
+        **release_check_pages.gather_page_facts(root, manifest, subprocess.run),
         **release_check_readmes.gather_readmes_facts(
-            plan["readmes"], manifest, release_check_readmes.resolve_docs_base(str(Path(plan["umbrella"]) / "mkdocs.yml"))
+            readmes, manifest, release_check_readmes.resolve_docs_base(str(Path(plan["umbrella"]) / "mkdocs.yml"))
         ),
-        **release_check.gather_version_facts(manifest, str(manifest_path), plan["component_dirs"], plan["umbrella"]),
+        **release_check.gather_version_facts(manifest, str(manifest_path), component_dirs, plan["umbrella"]),
+        "pyprojects": pyprojects,
     }
     drifts = release_check.run_checks(facts)
     rendered = release_check.render(drifts, len(release_check.CHECKS))
@@ -2514,6 +2530,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     relc = dev.add_parser("release-check", help="gather facts and print drifts between the CLI, the manifest, the docs and the release notes")
     relc.add_argument("--manifest"); relc.add_argument("--root", default="."); relc.add_argument("--json", action="store_true")
+    relc.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
     relc.set_defaults(fn=_release_check)
 
     old_rel = sub.add_parser("release", help=argparse.SUPPRESS)

@@ -334,6 +334,16 @@ def test_component_dir_tag_argv_and_push_argv_shape():
     assert release.push_argv("/dev/harness", "0.2.0") == ["git", "-C", "/dev/harness", "push", "origin", "v0.2.0"]
 
 
+def test_component_version_reads_the_project_table_version():
+    text = '[project]\nname = "harness"\nversion = "0.1.0"\n'
+    assert release.component_version(text) == "0.1.0"
+
+
+def test_component_version_is_none_with_no_version_field():
+    text = '[project]\nname = "harness"\n'
+    assert release.component_version(text) is None
+
+
 def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success"):
     """`fail`, when given, is `(directory, kind)` for the one call that
     should return non-zero — everything else in a clean, on-branch tree.

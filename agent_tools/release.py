@@ -7,6 +7,7 @@ runs the git commands at the edge."""
 from __future__ import annotations
 
 import re
+import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
@@ -224,6 +225,15 @@ def component_dir(root: str, name: str, overrides: Mapping[str, str] | None = No
         # is not a reason to change the answer this function always gave.
         pass
     return str(plain)
+
+
+def component_version(pyproject_toml_text: str) -> str | None:
+    """The version a checkout's own pyproject.toml declares: `[project]
+    version`, or `[tool.poetry] version` when the former is absent; `None`
+    when neither table carries one."""
+    parsed = tomllib.loads(pyproject_toml_text)
+    found = parsed.get("project", {}).get("version")
+    return found if found is not None else parsed.get("tool", {}).get("poetry", {}).get("version")
 
 
 def tag_argv(directory: str, version: str) -> list[str]:
