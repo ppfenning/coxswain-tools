@@ -367,7 +367,9 @@ def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success"):
     def run(argv, cwd):
         calls.append(argv)
         if argv[0] == "gh" and argv[1] == "run":
-            return (0, json.dumps([{"status": "completed", "conclusion": gh_conclusion, "name": "ci", "url": "https://x/1"}]))
+            tag = argv[argv.index("--branch") + 1]
+            return (0, json.dumps([{"status": "completed", "conclusion": gh_conclusion, "name": "ci",
+                                     "url": "https://x/1", "event": "push", "headBranch": tag}]))
         if argv[0] == "gh" and argv[1] == "release" and argv[2] == "view":
             return (1, "release not found")
         if argv[0] == "gh":
@@ -386,53 +388,92 @@ def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success"):
     return calls, run
 
 
-def test_wait_workflows_proceeds_when_every_run_for_the_tag_sha_succeeds():
+def test_wait_workflows_proceeds_when_every_push_run_on_the_tag_succeeds(monkeypatch):
+    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
     cwds = []
+    argvs = []
 
     def run(argv, cwd):
-        if argv[3] == "rev-list":
-            return (0, "abc1234\n")
+        argvs.append(argv)
         cwds.append(cwd)
         return (0, json.dumps([
-            {"status": "completed", "conclusion": "success", "name": "CI", "url": "https://x/1"},
-            {"status": "completed", "conclusion": "success", "name": "Publish", "url": "https://x/2"}]))
+            {"status": "completed", "conclusion": "success", "name": "CI", "url": "https://x/1",
+             "event": "push", "headBranch": "v0.2.0"},
+            {"status": "completed", "conclusion": "success", "name": "Publish", "url": "https://x/2",
+             "event": "push", "headBranch": "v0.2.0"},
+            {"status": "completed", "conclusion": "failure", "name": "main-ci", "url": "https://x/3",
+             "event": "push", "headBranch": "main"}]))
     ok, detail = cli._wait_workflows("/root/harness", "v0.2.0", "harness", run)
     assert ok and "2 run" in detail
     # gh infers the repository from its working directory; the first real cut ran it from the release root
     assert cwds == ["/root/harness"]
+    assert argvs[0][:5] == ["gh", "run", "list", "--branch", "v0.2.0"]
 
 
-def test_wait_workflows_fails_naming_the_component_workflow_and_url_when_one_run_is_not_success():
+def test_wait_workflows_fails_naming_the_component_workflow_and_url_when_one_run_is_not_success(monkeypatch):
+    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
+
     def run(argv, cwd):
-        if argv[3] == "rev-list":
-            return (0, "abc1234\n")
         return (0, json.dumps([
-            {"status": "completed", "conclusion": "success", "name": "CI", "url": "https://x/1"},
-            {"status": "completed", "conclusion": "failure", "name": "Publish", "url": "https://x/2"}]))
+            {"status": "completed", "conclusion": "success", "name": "CI", "url": "https://x/1",
+             "event": "push", "headBranch": "v0.2.0"},
+            {"status": "completed", "conclusion": "failure", "name": "Publish", "url": "https://x/2",
+             "event": "push", "headBranch": "v0.2.0"}]))
     ok, detail = cli._wait_workflows("/root/harness", "v0.2.0", "harness", run)
     assert not ok
     assert "harness" in detail and "Publish" in detail and "https://x/2" in detail
 
 
-def test_wait_workflows_retries_a_pending_run_then_succeeds_once_it_concludes():
+def test_wait_workflows_retries_a_pending_run_then_succeeds_once_it_concludes(monkeypatch):
+    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
     gh_replies = [
-        json.dumps([{"status": "in_progress", "conclusion": None, "name": "CI", "url": "https://x/1"}]),
-        json.dumps([{"status": "completed", "conclusion": "success", "name": "CI", "url": "https://x/1"}]),
+        json.dumps([{"status": "in_progress", "conclusion": None, "name": "CI", "url": "https://x/1",
+                     "event": "push", "headBranch": "v0.2.0"}]),
+        json.dumps([{"status": "completed", "conclusion": "success", "name": "CI", "url": "https://x/1",
+                     "event": "push", "headBranch": "v0.2.0"}]),
     ]
     sleeps = []
 
     def run(argv, cwd):
-        if argv[3] == "rev-list":
-            return (0, "abc1234\n")
         return (0, gh_replies.pop(0))
     ok, detail = cli._wait_workflows("/root/harness", "v0.2.0", "harness", run,
                                       timeout_s=900, sleep=sleeps.append, now=iter([0.0, 0.0, 10.0]).__next__)
     assert ok and "1 run" in detail and sleeps == [10]
 
 
+def test_wait_workflows_waits_through_two_empty_polls_then_succeeds_on_a_green_run(monkeypatch):
+    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
+    gh_replies = [
+        "[]",
+        "[]",
+        json.dumps([{"status": "completed", "conclusion": "success", "name": "Publish", "url": "https://x/1",
+                     "event": "push", "headBranch": "v0.2.0"}]),
+    ]
+    sleeps = []
+
+    def run(argv, cwd):
+        return (0, gh_replies.pop(0))
+    ok, detail = cli._wait_workflows("/root/harness", "v0.2.0", "harness", run, timeout_s=900,
+                                      sleep=sleeps.append, now=iter([0.0, 0.0, 10.0, 20.0]).__next__)
+    assert ok and "1 run" in detail and sleeps == [10, 10]
+
+
+def test_wait_workflows_stays_pending_while_the_only_matching_run_is_queued(monkeypatch):
+    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
+    sleeps = []
+
+    def run(argv, cwd):
+        return (0, json.dumps([{"status": "queued", "conclusion": None, "name": "Publish", "url": "https://x/1",
+                                 "event": "push", "headBranch": "v0.2.0"}]))
+    ok, detail = cli._wait_workflows("/root/harness", "v0.2.0", "harness", run, timeout_s=15,
+                                      sleep=sleeps.append, now=iter([0.0, 0.0, 10.0, 20.0]).__next__)
+    assert sleeps == [10, 10]
+    assert not ok and "Publish" in detail
+
+
 def test_wait_workflows_fails_after_timeout_on_zero_runs_only_when_a_workflow_declares_a_tag_trigger(tmp_path):
     def run(argv, cwd):
-        return (0, "abc1234\n") if argv[3] == "rev-list" else (0, "[]")
+        return (0, "[]")
     triggered = tmp_path / "with_trigger"
     (triggered / ".github" / "workflows").mkdir(parents=True)
     (triggered / ".github" / "workflows" / "publish.yml").write_text('on:\n  push:\n    tags: ["v*"]\n')
@@ -445,6 +486,20 @@ def test_wait_workflows_fails_after_timeout_on_zero_runs_only_when_a_workflow_de
     assert ok
 
 
+def test_wait_workflows_returns_immediately_with_no_polling_for_a_component_with_no_tag_trigger(tmp_path):
+    calls = []
+    sleeps = []
+
+    def run(argv, cwd):
+        calls.append(argv)
+        return (0, "[]")
+    no_trigger = tmp_path / "no_trigger"
+    no_trigger.mkdir()
+    ok, detail = cli._wait_workflows(str(no_trigger), "v0.2.0", "harness", run, sleep=sleeps.append)
+    assert ok and "no tag-triggered workflow" in detail
+    assert calls == [] and sleeps == []
+
+
 def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umbrella(tmp_path, monkeypatch):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
@@ -454,6 +509,7 @@ def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umb
     calls, fake_run = _fake_git_run()
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
+    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
     rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 0
     tag_push = [c for c in calls if c[3] in ("tag", "push")]
@@ -467,7 +523,8 @@ def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umb
     ]
     gh_calls = [c for c in calls if c[0] == "gh"]
     run_list_calls = [c for c in gh_calls if c[1] == "run"]
-    assert run_list_calls == [["gh", "run", "list", "--commit", "deadbeef", "--json", "status,conclusion,name,url"]] * 3
+    assert run_list_calls == [["gh", "run", "list", "--branch", "v0.1.0", "--json",
+                               "status,conclusion,name,url,event,headBranch"]] * 3
     release_calls = [(c[2], c[3]) for c in gh_calls if c[1] == "release"]
     assert release_calls == [("view", "v0.1.0"), ("create", "v0.1.0")] * 3
 
@@ -481,6 +538,7 @@ def test_cli_release_execute_runs_a_pinned_component_to_success_with_no_tag_or_p
     calls, fake_run = _fake_git_run()
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
+    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
     rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 0
     assert str(tmp_path / "crew") not in {c[2] for c in calls if c[0] == "git" and c[3] in ("tag", "push")}
@@ -499,6 +557,7 @@ def test_cli_release_execute_tags_and_pushes_a_rejoined_pinned_component_in_argv
         return (0, "3\n") if argv[3] == "rev-list" and "--count" in argv else fake_run(argv, cwd)
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", run)
+    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
     rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     assert rc == 0
     crew_dir = str(tmp_path / "crew")
@@ -516,6 +575,7 @@ def test_cli_release_execute_fails_the_release_when_a_wait_workflows_run_is_not_
     calls, fake_run = _fake_git_run(gh_conclusion="failure")
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
+    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
     rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 2
