@@ -428,6 +428,38 @@ def test_execute_mark_done_writes_landed_true_to_the_record(tmp_path):
     assert json.loads(path.read_text())["landed"] is True
 
 
+def _mark_done_step(tmp_path, item_text):
+    task_path = tmp_path / "task.json"
+    task_path.write_text(json.dumps(_record()), encoding="utf-8")
+    item_path = tmp_path / "seams-task.md"
+    item_path.write_text(item_text, encoding="utf-8")
+    return item_path, {"kind": "mark_done", "task": "seams-task", "path": str(task_path), "item": str(item_path)}
+
+
+def test_execute_mark_done_moves_an_approved_item_to_done(tmp_path):
+    item_path, step = _mark_done_step(tmp_path, "---\nid: seams-task\nstate: approved\n---\n\nBody text.\n")
+    ok, detail = cli._execute_land_step(tmp_path, step)
+    assert ok, detail
+    assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody text.\n"
+
+
+def test_execute_mark_done_leaves_a_done_item_untouched(tmp_path):
+    text = "---\nid: seams-task\nstate: done\n---\n\nBody text.\n"
+    item_path, step = _mark_done_step(tmp_path, text)
+    ok, detail = cli._execute_land_step(tmp_path, step)
+    assert ok, detail
+    assert item_path.read_text() == text
+
+
+def test_execute_mark_done_leaves_a_non_approved_item_untouched_and_prints_it(tmp_path, capsys):
+    text = "---\nid: seams-task\nstate: ready\n---\n\nBody text.\n"
+    item_path, step = _mark_done_step(tmp_path, text)
+    ok, detail = cli._execute_land_step(tmp_path, step)
+    assert ok, detail
+    assert item_path.read_text() == text
+    assert "ready" in capsys.readouterr().out
+
+
 # --- cli end to end: dry-run default, and the dirty-checkout refusal ---
 
 def test_cli_dry_run_is_the_default_and_prints_the_plan(repo, tmp_path, capsys, monkeypatch):
@@ -440,6 +472,67 @@ def test_cli_dry_run_is_the_default_and_prints_the_plan(repo, tmp_path, capsys, 
     assert '"kind": "pick_branch"' in out
     assert "agents/epic-x-5/seams-task" in out
     assert all(kind in out for kind in _STEP_ORDER)
+
+
+def test_cli_dry_run_plan_carries_the_item_path(repo, tmp_path, capsys, monkeypatch):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    item_path = item_dir / "seams-task.md"
+    item_path.write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    steps = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    mark_done = next(s for s in steps if s["kind"] == "mark_done")
+    assert mark_done["item"] == str(item_path)
+    assert mark_done["from"] == "approved"
+    assert mark_done["to"] == "done"
+
+
+# --- cli end to end: recover closes the work item too ---
+
+def test_cli_recover_merges_and_closes_an_approved_item(repo, tmp_path, capsys):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "main"], check=True, env=_ENV)
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    item_path = item_dir / "seams-task.md"
+    item_path.write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "epic/x/seams" in out
+    assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody.\n"
+
+
+def test_cli_recover_dry_run_leaves_an_approved_item_byte_identical(repo, tmp_path, capsys):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    item_path = item_dir / "seams-task.md"
+    original = "---\nid: seams-task\nstate: approved\n---\n\nBody.\n"
+    item_path.write_text(original, encoding="utf-8")
+    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs"), "--dry-run"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "already contains the commit" in out
+    assert item_path.read_text() == original
+
+
+def test_cli_recover_closes_an_approved_item_even_when_already_recovered(repo, tmp_path, capsys):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    item_path = item_dir / "seams-task.md"
+    item_path.write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "already contains the commit" in out
+    assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody.\n"
 
 
 def test_cli_apply_refuses_on_a_dirty_checkout(repo, tmp_path, capsys):

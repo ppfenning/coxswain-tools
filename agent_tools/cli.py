@@ -390,16 +390,19 @@ def _branch_exists(repo: Path, branch: str) -> bool:
     return r.returncode == 0
 
 
-def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None) -> list[dict]:
+def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None,
+                  item_path: str | None = None) -> list[dict]:
     """Steps enriched with what only the edge knows: each `mark_done`'s own
     record file path (`task_paths` maps task name to path in phase mode), and
-    the configured worktree root for `clean`/`clean_phase`. A `checks` step
-    that names a `branch` (phase mode) gets no filesystem write here — a dry
-    run must stay read-only, so the actual worktree is only ever created at
-    execution time, inside `_execute_land_step`, under `--apply`."""
+    the configured worktree root for `clean`/`clean_phase`. `item_path` (task
+    mode only) is the work item `mark_done` will also try to close out. A
+    `checks` step that names a `branch` (phase mode) gets no filesystem write
+    here — a dry run must stay read-only, so the actual worktree is only ever
+    created at execution time, inside `_execute_land_step`, under `--apply`."""
     def enrich(step: dict) -> dict:
         if step["kind"] == "mark_done":
-            return {**step, "path": (task_paths or {}).get(step["task"], path)}
+            marked = {**step, "path": (task_paths or {}).get(step["task"], path)}
+            return {**marked, "item": item_path, "from": "approved", "to": "done"} if item_path else marked
         if step["kind"] in ("clean", "clean_phase"):
             return {**step, "worktree_root": worktree_root}
         return step
@@ -539,8 +542,26 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
         record_path = Path(step["path"])
         record = json.loads(record_path.read_text(encoding="utf-8"))
         record_path.write_text(json.dumps({**record, "landed": True}, indent=2), encoding="utf-8")
+        _close_approved_item(step.get("item"))
         return True, f"{step['task']} marked landed at {record_path}"
     return False, f"unknown step {kind!r}"
+
+
+def _close_approved_item(item_path: str | None) -> None:
+    """Moves the work item at `item_path` from `approved` to `done`, prints
+    the reason and leaves it when it is any other state, does nothing when
+    `item_path` is `None` or names no file on disk (no work item to close)
+    or is already `done`."""
+    if item_path is None:
+        return
+    item = Path(item_path)
+    if not item.exists():
+        return
+    new_text, message = land.approve_to_done(item.read_text(encoding="utf-8"))
+    if new_text is not None:
+        item.write_text(new_text, encoding="utf-8")
+    elif message:
+        print(message)
 
 
 def _wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
@@ -597,7 +618,10 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(f"land: looked in {searched}, found {count} task records, expected 1")
             return 2
         branches = _land_branches(repo, record, default_branch)
-        steps = _land_enrich(land.land_plan(record, branches, default_branch, repo_facts), path=searched, worktree_root=a.worktree_root)
+        item_path = (str(runs_dir.parent / "work" / record["initiative"] / record["phase"] / f"{record['task']}.md")
+                     if record.get("initiative") else None)
+        steps = _land_enrich(land.land_plan(record, branches, default_branch, repo_facts), path=searched,
+                              worktree_root=a.worktree_root, item_path=item_path)
     if not a.apply:
         print(json.dumps(steps, indent=2))
         return 2 if any(s["kind"] == "refuse" for s in steps) else 0
@@ -652,10 +676,16 @@ def _runs_recover(a: argparse.Namespace) -> int:
     if not _branch_exists(repo, phase_branch):
         print(f"recover: phase branch {phase_branch} does not exist in {repo}")
         return 2
+    item_path = str(runs_dir.parent / "work" / initiative / phase / f"{a.task_id}.md")
+    mark_done_step = {"kind": "mark_done", "item": item_path, "from": "approved", "to": "done"}
     branches = _recover_branches(repo, record, phase_branch)
     step = land.recover_plan(record, branches)[0]
     if step["kind"] == "already_recovered":
         print(f"recover: {step['branch']} already contains the commit ({step['reason']}); nothing to do")
+        if a.dry_run:
+            print(json.dumps(mark_done_step))
+            return 0
+        _close_approved_item(item_path)
         return 0
     if step["kind"] == "refuse":
         print(f"refused: {step['reason']}")
@@ -664,6 +694,7 @@ def _runs_recover(a: argparse.Namespace) -> int:
     message = f"Merge branch '{source}' into {target}"
     if a.dry_run:
         print(f"recover: would merge {source} into {target} --no-ff -m {message!r} ({subject!r})")
+        print(json.dumps(mark_done_step))
         return 0
     before = subprocess.run(["git", "-C", str(repo), "rev-parse", target], capture_output=True, text=True).stdout.strip()
     wt = Path(tempfile.mkdtemp(prefix="recover-"))
@@ -683,6 +714,7 @@ def _runs_recover(a: argparse.Namespace) -> int:
     diff = subprocess.run(["git", "-C", str(repo), "diff", "--stat", before, after], capture_output=True, text=True)
     print(f"recover: {target} {before[:8]} -> {after[:8]}")
     print(diff.stdout.strip())
+    _close_approved_item(item_path)
     return 0
 
 
