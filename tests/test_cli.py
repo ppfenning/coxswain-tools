@@ -1,6 +1,8 @@
 import argparse
 import json
+import os
 import subprocess as sp
+import sys
 
 import pytest
 
@@ -85,3 +87,97 @@ def test_task_flag_forces_task_mode_even_when_the_phase_has_two_records(phase_ru
     steps = json.loads(capsys.readouterr().out)
     assert rc == 2
     assert steps == [{"kind": "refuse", "reason": "no branch is exactly one commit ahead of main", "found": {}}]
+
+
+def _launcher_ns(profile_path, **overrides):
+    base = {"launcher_profile": str(profile_path), "no_plugin": True, "print_argv": False}
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+@pytest.fixture
+def launcher_profile(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(f"workspace_dir: {workspace}\n", encoding="utf-8")
+    return profile_path, workspace
+
+
+def test__spawn_starts_a_detached_process(monkeypatch):
+    calls = []
+
+    class _Proc:
+        pid = 4242
+
+    def _fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return _Proc()
+
+    monkeypatch.setattr(cli.subprocess, "Popen", _fake_popen)
+    proc = cli._spawn(["x", "y"])
+    assert proc.pid == 4242
+    [(argv, kwargs)] = calls
+    assert argv == ["x", "y"]
+    assert kwargs["start_new_session"] is True
+    assert kwargs["stdin"] == kwargs["stdout"] == kwargs["stderr"] == sp.DEVNULL
+
+
+def test_bare_launcher_spawns_exactly_one_detached_beater_naming_its_pid(launcher_profile, monkeypatch, capsys):
+    profile_path, workspace = launcher_profile
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(cli, "_route_chair_take", lambda a: 0)
+    monkeypatch.setattr(cli.os, "chdir", lambda *a: None)
+    monkeypatch.setattr(cli.os, "execvp", lambda *a: None)
+    spawns = []
+
+    class _Proc:
+        pid = 9999
+
+    def _fake_spawn(argv):
+        spawns.append(argv)
+        return _Proc()
+
+    monkeypatch.setattr(cli, "_spawn", _fake_spawn)
+    rc = cli._launcher(_launcher_ns(profile_path), [])
+    out = capsys.readouterr().out
+    assert rc == 0
+    [argv] = spawns
+    assert argv[:4] == [sys.executable, "-m", "agent_tools.chair", "beat-loop"]
+    assert "--label" in argv and argv[argv.index("--label") + 1].startswith("chair-")
+    assert "--pid" in argv and argv[argv.index("--pid") + 1] == str(os.getpid())
+    assert "--runs-dir" in argv and argv[argv.index("--runs-dir") + 1] == str(workspace / "runs")
+    assert "chair: beating from pid 9999" in out
+
+
+def test_a_spawn_failure_is_printed_and_claude_still_execs(launcher_profile, monkeypatch, capsys):
+    profile_path, _workspace = launcher_profile
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(cli, "_route_chair_take", lambda a: 0)
+    monkeypatch.setattr(cli.os, "chdir", lambda *a: None)
+
+    def _raising_spawn(argv):
+        raise OSError("no such file or directory")
+
+    monkeypatch.setattr(cli, "_spawn", _raising_spawn)
+    execs = []
+    monkeypatch.setattr(cli.os, "execvp", lambda *a: execs.append(a))
+    rc = cli._launcher(_launcher_ns(profile_path), [])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "chair: beater failed to start: no such file or directory" in out
+    assert execs and execs[0][0] == "claude"
+
+
+def test_print_argv_takes_no_lock_and_spawns_nothing(launcher_profile, monkeypatch, capsys):
+    profile_path, _workspace = launcher_profile
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/claude")
+    take_calls = []
+    spawn_calls = []
+    monkeypatch.setattr(cli, "_route_chair_take", lambda a: take_calls.append(a) or 0)
+    monkeypatch.setattr(cli, "_spawn", lambda argv: spawn_calls.append(argv) or None)
+    rc = cli._launcher(_launcher_ns(profile_path, print_argv=True), [])
+    capsys.readouterr()
+    assert rc == 0
+    assert take_calls == []
+    assert spawn_calls == []
