@@ -100,3 +100,18 @@ def test_an_unmeasured_pr_citation_is_not_a_drift():
     facts = {"component_dirs": {"tools": "/r/tools"}, "landed": {"tools": set()}, "pr_numbers_measured": {"tools": False},
              "release_notes": "notes.md", "notes_bullets": [(3, "- tools: the gate (#59)")]}
     assert check_notes(facts) == []
+
+
+def test_bullets_from_notes_joins_a_wrapped_bullets_continuation_lines():
+    text = (
+        "## graphs\n\n"
+        "- The sweep graph exists: module, apply and verify, registered in the CLI\n"
+        "  and documented (graphs #83, #84).\n"
+        "- A second bullet (graphs #85).\n\n"
+        "  A separate indented paragraph after a blank line is not part of any bullet.\n"
+    )
+    bullets = bullets_from_notes(text)
+    assert bullets == [
+        (3, "- The sweep graph exists: module, apply and verify, registered in the CLI and documented (graphs #83, #84)."),
+        (5, "- A second bullet (graphs #85)."),
+    ]
