@@ -307,6 +307,28 @@ def test_gate_is_a_no_op_with_no_drifts():
     assert release.gate([], "any reason") == []
 
 
+def test_gate_refuses_a_versions_drift_even_when_a_reason_is_given():
+    drifts = [Drift("versions", "manifest.toml", None, "cox/pyproject.toml", None,
+                     "cox pyproject.toml is 0.1.0, manifest wants 0.2.0")]
+    assert release.gate(drifts, "docs land next sprint") == [
+        {"kind": "refuse", "component": "versions",
+         "detail": "versions: manifest.toml <-> cox/pyproject.toml — cox pyproject.toml is 0.1.0, manifest wants 0.2.0"}
+    ]
+
+
+def test_cli_release_refuses_on_a_real_versions_drift_even_with_allow_doc_drift(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    (tmp_path / "harness").mkdir()
+    (tmp_path / "harness" / "pyproject.toml").write_text('[project]\nversion = "0.0.9"\n')
+    rc = cli.main(["dev", "release", "0.2.0", "--dry-run", "--manifest", str(manifest_path),
+                   "--root", str(tmp_path), "--allow-doc-drift", "shipping anyway"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "refuse versions" in out and "harness" in out
+
+
 def test_cli_release_refuses_before_tagging_when_a_drift_stands(tmp_path, capsys, monkeypatch):
     def stub(facts):
         return [Drift("cli-surface", "docs/x.md", None, "cli.py", 10, "add x")]

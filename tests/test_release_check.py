@@ -57,6 +57,62 @@ def test_cli_release_check_with_a_component_missing_its_docs_finds_the_manifest_
     assert f"add {notes_path}" in out
 
 
+def test_check_versions_is_silent_when_manifest_component_and_umbrella_all_agree():
+    facts = {
+        "expected_version": "0.2.0",
+        "umbrella_pyproject": {"project": {"version": "0.2.0"}},
+        "component_pyprojects": {"cox": {"project": {"version": "0.2.0"}}},
+    }
+    assert release_check.check_versions(facts) == []
+
+
+def test_check_versions_drifts_on_a_component_pyproject_below_the_manifest_version():
+    facts = {
+        "expected_version": "0.2.0",
+        "manifest_path": "manifest.toml",
+        "umbrella_pyproject": {"project": {"version": "0.2.0"}},
+        "component_pyprojects": {"cox": {"project": {"version": "0.1.0"}}},
+        "pyprojects": {"cox": "/root/cox/pyproject.toml"},
+    }
+    drifts = release_check.check_versions(facts)
+    assert len(drifts) == 1
+    d = drifts[0]
+    assert d.check == "versions"
+    assert d.b_file == "/root/cox/pyproject.toml"
+    assert "cox" in d.correction and "0.1.0" in d.correction and "0.2.0" in d.correction
+    assert "cox dev release 0.2.0" in d.correction
+
+
+def test_gather_version_facts_reads_each_component_and_the_umbrella_pyproject_off_disk(tmp_path):
+    (tmp_path / "cox").mkdir()
+    (tmp_path / "cox" / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
+    (tmp_path / "coxswain").mkdir()
+    (tmp_path / "coxswain" / "pyproject.toml").write_text('[project]\nversion = "0.2.0"\n')
+    manifest = {"coxswain": {"version": "0.2.0"}}
+    facts = release_check.gather_version_facts(
+        manifest, "manifest.toml", {"cox": str(tmp_path / "cox")}, str(tmp_path / "coxswain")
+    )
+    assert facts["expected_version"] == "0.2.0"
+    assert facts["component_pyprojects"] == {"cox": {"project": {"version": "0.1.0"}}}
+    assert facts["umbrella_pyproject"] == {"project": {"version": "0.2.0"}}
+
+
+def test_cli_release_check_reports_a_real_versions_drift_from_disk(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(release_check_cli, "gather_cli_facts", lambda root, run: {})
+    monkeypatch.setattr(release_check_manifest, "gather_manifest_facts", lambda *a: {})
+    monkeypatch.setattr(release_check_notes, "gather_notes_facts", lambda *a, **k: {})
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text('[coxswain]\nversion = "0.2.0"\n[components.cox]\ntag = "v0.2.0"\n')
+    (tmp_path / "cox").mkdir()
+    (tmp_path / "cox" / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
+    rc = cli.main(["dev", "release-check", "--root", str(tmp_path), "--manifest", str(manifest_path), "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    versions_drifts = [d for d in payload["drifts"] if d["check"] == "versions"]
+    assert len(versions_drifts) == 1
+    assert "cox" in versions_drifts[0]["correction"] and "cox dev release 0.2.0" in versions_drifts[0]["correction"]
+
+
 def test_cli_release_check_with_a_valid_manifest_exits_zero_and_reports_no_drift(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(release_check_cli, "gather_cli_facts", lambda root, run: {})
     manifest_path = tmp_path / "manifest.toml"
@@ -65,7 +121,7 @@ def test_cli_release_check_with_a_valid_manifest_exits_zero_and_reports_no_drift
     monkeypatch.setattr(release_check_notes, "gather_notes_facts", lambda *a, **k: {})
     rc = cli.main(["dev", "release-check", "--root", str(tmp_path), "--manifest", str(manifest_path)])
     assert rc == 0
-    assert "no drift (5 checks)" in capsys.readouterr().out
+    assert "no drift (6 checks)" in capsys.readouterr().out
 
 
 def test_cli_release_check_renders_a_drift_from_a_registered_check(tmp_path, capsys, monkeypatch):
@@ -98,4 +154,4 @@ def test_cli_release_check_json_flag_prints_a_json_list(tmp_path, capsys, monkey
     manifest_path.write_text('[coxswain]\nversion = "0.1.0"\n')
     rc = cli.main(["dev", "release-check", "--root", str(tmp_path), "--manifest", str(manifest_path), "--json"])
     assert rc == 0
-    assert json.loads(capsys.readouterr().out) == {"checks_run": 5, "drifts": []}
+    assert json.loads(capsys.readouterr().out) == {"checks_run": 6, "drifts": []}
