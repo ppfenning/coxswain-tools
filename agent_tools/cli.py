@@ -2556,6 +2556,18 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
         print(argv)
         print(cwd)
         return 0
+    # steal=True: chair.take only lets `steal` override a stale/crashed record
+    # (agent_tools/chair.py `take`), never a live one, so a prior bare-`cox`
+    # session's own now-unbeaten lock is retaken rather than refused on every
+    # later invocation, while a LIVE foreign holder is still only printed.
+    chair_a = argparse.Namespace(
+        profile=a.launcher_profile,
+        label=f"chair-{datetime.datetime.now(datetime.UTC):%Y-%m-%d}",
+        pid=os.getpid(),
+        steal=True,
+    )
+    if _route_chair_take(chair_a) == 0:
+        print(f"chair: this session must run 'cox route chair beat --label {chair_a.label} --pid {chair_a.pid}' to stay live")
     os.chdir(cwd)
     os.execvp(argv[0], argv)
     return 0
@@ -2592,9 +2604,7 @@ def _bare_launcher_split(args: list[str]):
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
-    if not args:
-        if sys.stdout.isatty():
-            return _home(argparse.Namespace(profile=None))
+    if not args and not sys.stdout.isatty():
         return _route_status(argparse.Namespace(profile=None, json=False))
     split = _bare_launcher_split(args)
     head, tail = split if split is not None else (args, [])
