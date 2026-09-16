@@ -14,6 +14,7 @@ def _package(**overrides) -> dict:
         "pyproject": {"project": {"readme": "README.md", "description": "One sentence under 160 characters."}},
         "readme": "# cox\n\nSome body.\n",
         "pkg_info": GOOD_PKG_INFO,
+        "repo": "org/cox",
     }
     return {**base, **overrides}
 
@@ -72,6 +73,24 @@ def test_alias_in_description_with_no_deprecation_marker_is_a_drift():
 
 
 def test_description_too_long_is_a_drift():
-    pkg = _package(pyproject={"project": {"readme": "README.md", "description": "x" * 200}})
+    pkg = _package(pyproject={"project": {"readme": "README.md", "description": "x" * 161}})
     drifts = check_pages({"packages": [pkg]})
     assert any(d.correction == "make description one sentence under 160 characters" for d in drifts)
+
+
+def test_check_pages_docstring_states_the_description_limit():
+    doc = (check_pages.__doc__ or "").lower()
+    assert "160" in doc
+    assert "one sentence" in doc
+
+
+def test_readme_h1_matches_the_repository_name_even_when_it_differs_from_the_manifest_key():
+    pkg = _package(name="tools", repo="org/coxswain-tools", readme="# coxswain-tools\n\nbody\n")
+    drifts = check_pages({"packages": [pkg]})
+    assert not any(d.correction.startswith("set the README H1") for d in drifts)
+
+
+def test_readme_h1_still_drifts_when_the_title_does_not_match_the_repository_name():
+    pkg = _package(name="tools", repo="org/coxswain-tools", readme="# tools\n\nbody\n")
+    drifts = check_pages({"packages": [pkg]})
+    assert any(d.correction == "set the README H1 to coxswain-tools" for d in drifts)
