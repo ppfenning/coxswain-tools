@@ -349,8 +349,13 @@ def _runs_trace(a: argparse.Namespace) -> int:
 
 def _runs_clean(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser()
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"clean: {reason}")
+        return 2
+    landed = {f.stem for f in (runs_dir / a.run_id / "tasks").glob("*/*.json") if json.loads(f.read_text(encoding="utf-8")).get("landed")}
     p = cleanup.plan_cleanup(run_id=a.run_id, worktrees=cleanup.git_worktrees(repo), branches=cleanup.git_branches(repo), worktree_root=a.worktree_root)
-    for line in cleanup.apply_cleanup(repo, p, dry_run=not a.apply):
+    for line in cleanup.apply_cleanup(repo, p, dry_run=not a.apply, landed=landed, force=a.force, default_branch="main"):
         print(line)
     if not a.apply:
         print("(dry run — pass --apply to do it)")
@@ -2305,7 +2310,9 @@ def build_parser() -> argparse.ArgumentParser:
     runs = runs_p.add_subparsers(dest="cmd", required=False)
     u = runs.add_parser("usage", help="usage stats and cost for one run"); u.add_argument("run_id"); u.add_argument("--runs-dir", default="runs"); u.add_argument("--json", action="store_true"); u.set_defaults(fn=_runs_usage)
     t = runs.add_parser("trace", help="the tool-call trace for one run"); t.add_argument("run_id"); t.add_argument("--runs-dir", default="runs"); t.add_argument("--role"); t.add_argument("-v", "--verbose", action="store_true"); t.set_defaults(fn=_runs_trace)
-    c = runs.add_parser("clean", help="delete a run's worktree and branches locally"); c.add_argument("run_id"); c.add_argument("--repo", required=True); c.add_argument("--worktree-root", default="~/worktrees"); c.add_argument("--apply", action="store_true"); c.set_defaults(fn=_runs_clean)
+    c = runs.add_parser("clean", help="delete a run's worktree and branches locally"); c.add_argument("run_id"); c.add_argument("--repo", required=True); c.add_argument("--worktree-root", default="~/worktrees")
+    c.add_argument("--runs-dir", help="override: resolve task records here instead of the profile's workspace_dir"); c.add_argument("--profile")
+    c.add_argument("--apply", action="store_true"); c.add_argument("--force", action="store_true", help="delete every branch regardless of whether its task is on main"); c.set_defaults(fn=_runs_clean)
     la = runs.add_parser("land", help="merge a run's branch into the target repo"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task"); la.add_argument("--phase", help="land the whole phase off its own epic branch instead of one task"); la.add_argument("--label"); la.add_argument("--force", action="store_true", help="land despite a foreign live leader")
     la.add_argument("--worktree-root", default="~/worktrees"); la.add_argument("--apply", action="store_true"); la.add_argument("--no-merge", action="store_true")
     la.add_argument("--runs-dir", help="override: resolve task records here instead of the profile's workspace_dir"); la.add_argument("--profile"); la.set_defaults(fn=_runs_land)
