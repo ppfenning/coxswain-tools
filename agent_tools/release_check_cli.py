@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import re
+import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +15,7 @@ if TYPE_CHECKING:
 _POSITIONAL_SECTION = re.compile(r"positional arguments:\n(.*?)(?:\n\n|\Z)", re.DOTALL)
 _SUBPARSER_BLOCK = re.compile(r"^( *)\{([^}]+)\}\n(?:\1 +\S.*\n?)+", re.MULTILINE)
 _DOC_COMMAND = re.compile(r"`(cox(?: (?!-)[\w-]+)*)[^`]*`")
+_GENERATOR_ENTRY = "parse_subcommands"  # docs/_cli.py's pure core: parse_subcommands(help_text) -> Iterable[str]
 
 
 def _choices(help_text: str) -> set[str]:
@@ -26,12 +29,12 @@ def _choices(help_text: str) -> set[str]:
     return set(block.group(2).split(",")) if block else set()
 
 
-def walk_help(help_texts: Mapping[str, str]) -> set[str]:
+def walk_help(help_texts: Mapping[str, str], choices: Callable[[str], set[str]] = _choices) -> set[str]:
     return {
         f"{prefix} {name}"
         for prefix, text in help_texts.items()
-        for name in _choices(text)
-        if not _choices(help_texts.get(f"{prefix} {name}", ""))
+        for name in choices(text)
+        if not choices(help_texts.get(f"{prefix} {name}", ""))
     }
 
 
@@ -50,7 +53,15 @@ def _doc_target(doc_commands: Mapping[str, set[str]], command: str) -> str:
 
 
 def check_cli_surface(facts: Mapping) -> list[Drift]:
+    """Compares `cox --help` against what the umbrella's docs/_cli.py generator
+    would build from it, never against docs/reference/cli/*.md in the tree
+    (only index.md is committed there; the per-group pages are build output).
+    A `generator_error` fact short-circuits to one Drift, not one per symbol."""
     from agent_tools.release_check import Drift
+
+    generator_error = facts.get("generator_error")
+    if generator_error:
+        return [Drift("cli_surface", "docs/_cli.py", None, "cox --help", None, generator_error)]
 
     cli_commands: set[str] = facts.get("cli_commands", set())
     doc_commands: Mapping[str, set[str]] = facts.get("doc_commands", {})
@@ -83,21 +94,70 @@ def check_cli_surface(facts: Mapping) -> list[Drift]:
     return missing_docs + missing_readme + stray_docs + stray_readmes
 
 
-def _leaf_texts(prefix: list[str], root: str, run: Callable[[list[str], str], tuple[int, str]]) -> dict[str, str]:
-    _, text = run(["cox", *prefix, "--help"], root)
+def _leaf_texts(
+    prefix: list[str], root: str, run: Callable[[list[str], str], tuple[int, str]]
+) -> tuple[dict[str, str], str | None]:
+    cmd = ["cox", *prefix, "--help"]
+    code, text = run(cmd, root)
+    if code != 0:
+        return {}, f"'{' '.join(cmd)}' exited {code}; is cox on PATH?"
     texts = {" ".join(["cox", *prefix]): text}
     for name in _choices(text):
-        texts.update(_leaf_texts(prefix + [name], root, run))
-    return texts
+        child, error = _leaf_texts(prefix + [name], root, run)
+        if error:
+            return {}, error
+        texts.update(child)
+    return texts, None
+
+
+def _load_generator(root: str):
+    path = Path(root) / "coxswain" / "docs" / "_cli.py"
+    spec = importlib.util.spec_from_file_location("_umbrella_docs_cli", path)
+    if spec is None or spec.loader is None:
+        raise ModuleNotFoundError(f"no generator at {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _generated_doc_commands(root: str, help_texts: Mapping[str, str]) -> tuple[dict[str, set[str]], str | None]:
+    """Runs the umbrella's docs/_cli.py: its pure core, `parse_subcommands`,
+    walks the already-fetched `cox --help` text into one page per command
+    group; those pages are written to a scratch directory and read back with
+    `commands_in_doc`, the same as a real docs build's output, so the check
+    diffs against the build, not the tree. Doc pages keep the canonical
+    docs/reference/cli/<group>.md label so a remediation message still points
+    somewhere that exists once the scratch directory is gone."""
+    try:
+        parse_subcommands = getattr(_load_generator(root), _GENERATOR_ENTRY)
+    except (OSError, ImportError, AttributeError) as exc:
+        return {}, f"docs/_cli.py generator unavailable: {exc}"
+    try:
+        groups: dict[str, set[str]] = {}
+        for command in walk_help(help_texts, parse_subcommands):
+            groups.setdefault(_group(command), set()).add(command)
+        pages: dict[str, set[str]] = {}
+        with tempfile.TemporaryDirectory() as out_dir:
+            for group, commands in groups.items():
+                page = Path(out_dir) / f"{group}.md"
+                page.write_text("".join(f"- `{command}`\n" for command in sorted(commands)))
+                pages[f"docs/reference/cli/{group}.md"] = commands_in_doc(page.read_text())
+    except Exception as exc:
+        return {}, f"docs/_cli.py generator failed: {exc}"
+    return pages, None
 
 
 def gather_cli_facts(root: str, run: Callable[[list[str], str], tuple[int, str]]) -> dict:
-    help_texts = _leaf_texts([], root, run)
-    cli_docs_dir = Path(root) / "coxswain" / "docs" / "reference" / "cli"
-    doc_paths = sorted(cli_docs_dir.glob("*.md")) if cli_docs_dir.is_dir() else []
     readme_paths = sorted(Path(root).glob("*/README.md"))
+    readme_commands = {p.parent.name: commands_in_doc(p.read_text()) for p in readme_paths}
+    help_texts, cox_error = _leaf_texts([], root, run)
+    if cox_error:
+        return {"generator_error": cox_error, "readme_commands": readme_commands}
+    doc_commands, generator_error = _generated_doc_commands(root, help_texts)
+    if generator_error:
+        return {"generator_error": generator_error, "readme_commands": readme_commands}
     return {
         "cli_commands": walk_help(help_texts),
-        "doc_commands": {str(p): commands_in_doc(p.read_text()) for p in doc_paths},
-        "readme_commands": {p.parent.name: commands_in_doc(p.read_text()) for p in readme_paths},
+        "doc_commands": doc_commands,
+        "readme_commands": readme_commands,
     }
