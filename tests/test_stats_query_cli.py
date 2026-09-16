@@ -3,7 +3,7 @@ import json
 import pytest
 
 from agent_tools.cli import build_parser, main
-from agent_tools.stats_query import coverage_report, explain_report, roles_report, series_report
+from agent_tools.stats_query import bounds_report, coverage_report, explain_report, roles_report, series_report
 from agent_tools.stats_schema import connect
 
 
@@ -186,9 +186,129 @@ def test_cli_stats_series_cartridge_sha_filter_narrows_to_the_matching_regime(tm
     assert [r["run_id"] for r in rows] == ["r1"]
 
 
-@pytest.mark.parametrize("cmd", ["roles", "explain", "series", "coverage"])
+@pytest.mark.parametrize("cmd", ["roles", "explain", "series", "coverage", "bounds"])
 def test_stats_subcommand_help_exits_zero(cmd):
     argv = ["stats", cmd, "role", "--help"] if cmd == "explain" else ["stats", cmd, "--help"]
     with pytest.raises(SystemExit) as exc_info:
         build_parser().parse_args(argv)
     assert exc_info.value.code == 0
+
+
+def _seed_bounds(db_path):
+    conn = connect(db_path)
+    calls = [
+        {"run_id": "r1", "seq": i, "role": "build", "model": "sonnet", "cost_usd": float(i + 1), "failure_class": None}
+        for i in range(20)
+    ]
+    for row in calls:
+        _insert(conn, "calls", row)
+    conn.commit()
+    conn.close()
+    return calls
+
+
+def _seed_routing_and_provider_profiles(tmp_path, role_budget_usd):
+    provider = tmp_path / "provider.yaml"
+    provider.write_text(f"role_budget_usd:\n  build: {role_budget_usd}\n")
+    routing = tmp_path / "profile.yaml"
+    routing.write_text(f"provider_profile: {provider}\n")
+    return routing
+
+
+def _no_such_profile(tmp_path, monkeypatch):
+    """Points the default routing-profile resolution (`_profile_path`'s
+    `$AGENT_TOOLS_PROFILE` fallback) at a path that does not exist, so a test
+    asserting a null ceiling never depends on whether the machine running it
+    happens to have `~/.config/agent-tools/profile.yaml`."""
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path / "no-such-profile.yaml"))
+
+
+def test_cli_stats_bounds_json_matches_the_direct_report(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "stats.db"
+    calls = _seed_bounds(db)
+    _no_such_profile(tmp_path, monkeypatch)
+    code = main(["stats", "bounds", "--db", str(db), "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert out == bounds_report(calls, lambda role, model: None)
+    [row] = out
+    assert row["n"] == 20 and row["strict"] == 10.0 and row["moderate"] == 19.0 and row["liberal"] == 57.0
+    assert row["ceiling"] is None
+
+
+def test_cli_stats_bounds_default_text_uses_render_capped(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    _no_such_profile(tmp_path, monkeypatch)
+    code = main(["stats", "bounds", "--db", str(db)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "role=build" in out
+    assert len(out) // 4 <= 300
+
+
+def test_cli_stats_bounds_level_keeps_only_the_requested_candidate(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    _no_such_profile(tmp_path, monkeypatch)
+    code = main(["stats", "bounds", "--db", str(db), "--json", "--level", "strict"])
+    [row] = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert row["strict"] == 10.0
+    assert "moderate" not in row
+    assert "liberal" not in row
+
+
+def test_cli_stats_bounds_profile_flag_resolves_the_provider_profile_and_flags_censored(tmp_path, capsys):
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    routing = _seed_routing_and_provider_profiles(tmp_path, role_budget_usd=5.0)
+    code = main(["stats", "bounds", "--db", str(db), "--json", "--profile", str(routing)])
+    [row] = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert row["ceiling"] == 5.0
+    assert row["censored"] is True
+
+
+def test_cli_stats_bounds_default_invocation_resolves_a_real_ceiling_via_agent_tools_profile(tmp_path, capsys, monkeypatch):
+    """No `--profile` on the command line, the doc's own signature
+    (docs/design/cost-bounds.md §2: `cox stats bounds [--json] [--level ...]`)
+    — resolution falls through to `$AGENT_TOOLS_PROFILE`, the same chain
+    `route context`/`setup doctor` use."""
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    routing = _seed_routing_and_provider_profiles(tmp_path, role_budget_usd=5.0)
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(routing))
+    code = main(["stats", "bounds", "--db", str(db), "--json"])
+    [row] = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert row["ceiling"] == 5.0
+    assert row["censored"] is True
+
+
+def test_cli_stats_bounds_write_puts_generated_db_and_rows_on_disk(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    _no_such_profile(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    out_path = tmp_path / "bounds.json"
+    code = main(["stats", "bounds", "--db", str(db), "--write", str(out_path)])
+    capsys.readouterr()
+    assert code == 0
+    written = json.loads(out_path.read_text())
+    assert set(written) == {"generated", "db", "rows"}
+    assert written["db"] == str(db)
+    assert len(written["rows"]) == 1
+
+
+def test_cli_stats_bounds_write_refuses_a_path_outside_the_repo_checkout(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    _no_such_profile(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    outside = tmp_path.parent / "escaped.json"
+    code = main(["stats", "bounds", "--db", str(db), "--write", str(outside)])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "outside the repo checkout" in out
+    assert not outside.exists()

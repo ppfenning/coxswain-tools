@@ -1,4 +1,11 @@
-from agent_tools.stats_query import coverage_report, explain_report, render_capped, roles_report, series_report
+from agent_tools.stats_query import (
+    bounds_report,
+    coverage_report,
+    explain_report,
+    render_capped,
+    roles_report,
+    series_report,
+)
 
 
 def _call(task_id, role="build", model="sonnet", join_confidence="heuristic", failure_class=None):
@@ -17,6 +24,35 @@ def _task(task_id, outcome="landed", attempt=None, cost_usd=0.0, outcome_kind=No
 
 def _call_with_run(run_id, task_id, role="build", model="sonnet"):
     return {**_call(task_id, role=role, model=model), "run_id": run_id}
+
+
+def _bounds_call(role, model, cost_usd, failure_class=None):
+    return {"role": role, "model": model, "cost_usd": cost_usd, "failure_class": failure_class}
+
+
+def test_bounds_report_groups_by_role_and_model():
+    calls = [_bounds_call("build", "sonnet", 1.0), _bounds_call("build", "haiku", 1.0), _bounds_call("plan", "sonnet", 1.0)]
+    rows = bounds_report(calls, lambda role, model: None)
+    assert {(r["role"], r["model"]) for r in rows} == {("build", "sonnet"), ("build", "haiku"), ("plan", "sonnet")}
+
+
+def test_bounds_report_censors_a_group_whose_max_sits_within_five_percent_of_the_ceiling():
+    calls = [_bounds_call("build", "sonnet", 0.96)] * 20
+    [row] = bounds_report(calls, lambda role, model: 1.0)
+    assert row["ceiling"] == 1.0
+    assert row["censored"] is True
+
+
+def test_bounds_report_censors_a_group_with_a_budget_stopped_call_even_far_under_the_ceiling():
+    calls = [_bounds_call("build", "sonnet", 0.1)] * 19 + [_bounds_call("build", "sonnet", 0.1, failure_class="budget_stop")]
+    [row] = bounds_report(calls, lambda role, model: 100.0)
+    assert row["censored"] is True
+
+
+def test_bounds_report_is_not_censored_when_max_is_low_and_no_call_budget_stopped():
+    calls = [_bounds_call("build", "sonnet", 0.1)] * 20
+    [row] = bounds_report(calls, lambda role, model: 100.0)
+    assert row["censored"] is False
 
 
 def test_roles_report_excludes_a_null_attempt_task_from_attempts_to_land_but_counts_it():
