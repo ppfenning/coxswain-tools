@@ -37,6 +37,7 @@ def description_ok(text: str) -> bool:
 
 
 def check_pages(facts: Mapping) -> list[Drift]:
+    """Each README's H1 must equal the repo's own name; a description must be one sentence under 160 characters."""
     from agent_tools.release_check import Drift
 
     def package_drifts(pkg: Mapping) -> list[Drift]:
@@ -44,6 +45,7 @@ def check_pages(facts: Mapping) -> list[Drift]:
         pyproject = pkg.get("pyproject") or {}
         readme = pkg.get("readme") or ""
         pkg_info = pkg.get("pkg_info")
+        repo_name = pkg.get("repo", "").rsplit("/", 1)[-1] or name
         pyproject_file = f"{name}/pyproject.toml"
         readme_file = f"{name}/README.md"
         project = pyproject.get("project", {})
@@ -55,8 +57,8 @@ def check_pages(facts: Mapping) -> list[Drift]:
         if pkg_info is None or "Description-Content-Type: text/markdown" not in pkg_info or not body:
             drifts.append(Drift("package_pages", pyproject_file, None, f"{name}/PKG-INFO", None, f"build {name} and confirm PKG-INFO carries a text/markdown description"))
         h1 = readme_h1(readme)
-        if h1 != name:
-            drifts.append(Drift("package_pages", readme_file, 1, readme_file, 1, f"set the README H1 to {name}"))
+        if h1 != repo_name:
+            drifts.append(Drift("package_pages", readme_file, 1, readme_file, 1, f"set the README H1 to {repo_name}"))
         for line, sentence in alias_sentences(readme, ALIASES):
             if not any(marker in sentence.lower() for marker in DEPRECATION_MARKERS):
                 drifts.append(Drift("package_pages", readme_file, line, readme_file, line, "state the alias is deprecated or drop it"))
@@ -73,7 +75,7 @@ def check_pages(facts: Mapping) -> list[Drift]:
 def gather_page_facts(root: str, manifest: Mapping, run: Callable) -> dict:
     components = manifest.get("components", {})
 
-    def package_facts(name: str) -> dict | None:
+    def package_facts(name: str, spec: Mapping) -> dict | None:
         component_dir = Path(release.component_dir(root, name))
         if not (component_dir / ".github" / "workflows" / "publish.yml").exists():
             return None
@@ -89,6 +91,6 @@ def gather_page_facts(root: str, manifest: Mapping, run: Callable) -> dict:
                     pkg_info = tf.extractfile(member).read().decode() if member else None
         pyproject = tomllib.loads(pyproject_path.read_text()) if pyproject_path.exists() else {}
         readme = readme_path.read_text() if readme_path.exists() else ""
-        return {"name": name, "pyproject": pyproject, "readme": readme, "pkg_info": pkg_info}
+        return {"name": name, "pyproject": pyproject, "readme": readme, "pkg_info": pkg_info, "repo": spec.get("repo", "")}
 
-    return {"packages": [pkg for name in components for pkg in [package_facts(name)] if pkg is not None]}
+    return {"packages": [pkg for name, spec in components.items() for pkg in [package_facts(name, spec)] if pkg is not None]}
