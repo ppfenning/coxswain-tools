@@ -39,12 +39,54 @@ def _maintainer_checkout(monkeypatch):
 
 def test_step_order_for_a_two_component_manifest():
     steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()))
-    assert [s["kind"] for s in steps] == ["tag", "tag", "bump_manifest", "notes", "tag_self"]
+    assert [s["kind"] for s in steps] == [
+        "tag", "tag", "notes", "bump_manifest", "push", "pr_create", "wait_checks", "merge", "tag_self"]
     assert steps[0] == {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}
     assert steps[1] == {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"}
-    assert steps[2] == {"kind": "bump_manifest", "component": "manifest", "from": "0.1.0", "to": "0.2.0"}
-    assert steps[3] == {"kind": "notes", "component": "notes", "path": "docs/releases/0.2.0.md"}
-    assert steps[4] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
+    assert steps[2] == {"kind": "notes", "component": "notes", "path": "docs/releases/0.2.0.md"}
+    assert steps[3] == {"kind": "bump_manifest", "component": "manifest", "from": "0.1.0", "to": "0.2.0",
+                         "branch": "release/0.2.0", "commit_subject": "manifest: bump to 0.2.0 to match the tag"}
+    assert steps[8] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
+
+
+def test_manifest_below_target_gets_its_own_bump_and_land_and_tag_sequence():
+    steps = release.release_plan(_manifest(), "0.2.0", _no_tags(_manifest()))
+    manifest_steps = [s for s in steps if s["component"] in ("manifest", "coxswain")]
+    assert [s["kind"] for s in manifest_steps] == ["bump_manifest", "push", "pr_create", "wait_checks", "merge", "tag_self"]
+    assert manifest_steps[1] == {"kind": "push", "component": "manifest", "branch": "release/0.2.0"}
+    assert manifest_steps[2] == {"kind": "pr_create", "component": "manifest",
+                                  "title": "manifest: bump to 0.2.0 to match the tag",
+                                  "body": "Bumps manifest.toml version to 0.2.0 to match tag v0.2.0."}
+    assert manifest_steps[3] == {"kind": "wait_checks", "component": "manifest"}
+    assert manifest_steps[4] == {"kind": "merge", "component": "manifest"}
+    assert manifest_steps[5] == {"kind": "tag_self", "component": "coxswain", "tag": "v0.2.0"}
+
+
+def test_a_component_below_the_target_version_yields_bump_pyproject_then_the_land_sequence_then_tag():
+    manifest = _manifest("0.2.0")
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.1.0"})
+    harness_steps = [s for s in steps if s["component"] == "harness"]
+    assert [s["kind"] for s in harness_steps] == ["bump_pyproject", "push", "pr_create", "wait_checks", "merge", "tag"]
+    assert harness_steps[0] == {"kind": "bump_pyproject", "component": "harness", "repo": "org/harness",
+                                 "branch": "release/0.2.0", "commit_subject": "pyproject: bump to 0.2.0 to match the tag",
+                                 "from": "0.1.0", "to": "0.2.0"}
+    assert harness_steps[1] == {"kind": "push", "component": "harness", "branch": "release/0.2.0"}
+    assert harness_steps[2] == {"kind": "pr_create", "component": "harness",
+                                 "title": "pyproject: bump to 0.2.0 to match the tag",
+                                 "body": "Bumps harness's pyproject.toml version to 0.2.0 to match tag v0.2.0."}
+    assert harness_steps[3] == {"kind": "wait_checks", "component": "harness"}
+    assert harness_steps[4] == {"kind": "merge", "component": "harness"}
+    assert harness_steps[5] == {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}
+    # cartridges carries no component_versions fact, so it gets no bump.
+    assert [s for s in steps if s["component"] == "cartridges"] == [
+        {"kind": "tag", "component": "cartridges", "repo": "org/cartridges", "tag": "v0.2.0"}]
+
+
+def test_a_component_already_at_the_target_version_yields_no_bump_steps_for_it():
+    manifest = _manifest("0.2.0")
+    steps = release.release_plan(manifest, "0.2.0", _no_tags(manifest), {"harness": "0.2.0"})
+    assert [s for s in steps if s["component"] == "harness"] == [
+        {"kind": "tag", "component": "harness", "repo": "org/harness", "tag": "v0.2.0"}]
 
 
 def test_refuse_on_bad_semver():
