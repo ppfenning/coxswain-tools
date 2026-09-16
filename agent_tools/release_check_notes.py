@@ -33,7 +33,24 @@ def _resolves(citation: str, known: set[str]) -> bool:
 
 
 def bullets_from_notes(text: str) -> list[tuple[int, str]]:
-    return [(i, line.strip()) for i, line in enumerate(text.splitlines(), start=1) if _BULLET.match(line.strip())]
+    """Each bullet with its continuation lines joined. The notes wrap at 100
+    columns, so a bullet's citation usually sits on its second or third line;
+    a continuation is an indented, non-blank, non-heading line that directly
+    follows the bullet or another continuation. A blank line or a heading ends
+    the bullet, so a later indented paragraph is never glued onto it."""
+    bullets: list[tuple[int, str]] = []
+    open_bullet = False
+    for i, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if _BULLET.match(line):
+            bullets.append((i, line))
+            open_bullet = True
+        elif open_bullet and line and raw[:1].isspace() and not line.startswith("#"):
+            n, so_far = bullets[-1]
+            bullets[-1] = (n, f"{so_far} {line}")
+        else:
+            open_bullet = False
+    return bullets
 
 
 def landed_from_git(text: str) -> set[str]:
