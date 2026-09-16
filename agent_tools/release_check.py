@@ -99,7 +99,7 @@ def to_json(drifts: list[Drift]) -> list[dict]:
 def facts_plan(root: str, manifest: Mapping) -> dict:
     components = manifest.get("components", {})
     version = manifest.get("coxswain", {}).get("version")
-    umbrella = str(Path(root) / "coxswain")
+    umbrella = str(Path(root)) if Path(root).name == "coxswain" else str(Path(root) / "coxswain")
     return {
         "root": root,
         "umbrella": umbrella,

@@ -132,3 +132,50 @@ def test_gather_manifest_facts_reads_the_pages_and_notes_named_by_facts_plan(tmp
 
 def test_versions_in_is_empty_without_a_version_token():
     assert versions_in("no versions here") == set()
+
+
+def test_check_manifest_does_not_drift_on_a_page_with_no_version_string():
+    facts = {
+        "manifest": {"coxswain": {"version": "0.2.0"}, "components": {"cox": {"tag": "v0.2.0"}}},
+        "manifest_path": "/repo/manifest.toml",
+        "component_docs": {"cox": "/repo/coxswain/docs/components/cox.md"},
+        "release_notes": "/repo/coxswain/docs/releases/0.2.0.md",
+        "component_pages": {"cox": "cox is a rowing coxswain agent, no version mentioned here"},
+        "notes_page": "cox landed in this release",
+    }
+    assert check_manifest(facts) == []
+
+
+def test_check_manifest_flags_a_page_whose_stated_version_disagrees_with_its_own_component_tag():
+    facts = {
+        "manifest": {"coxswain": {"version": "0.6.0"}, "components": {"cox": {"tag": "v0.4.0"}}},
+        "manifest_path": "/repo/manifest.toml",
+        "component_docs": {"cox": "/repo/coxswain/docs/components/cox.md"},
+        "release_notes": "/repo/coxswain/docs/releases/0.6.0.md",
+        "component_pages": {"cox": "cox is at v0.6.0"},
+        "notes_page": "cox landed in this release",
+    }
+    assert check_manifest(facts) == [
+        Drift(
+            "manifest", "/repo/manifest.toml", None,
+            "/repo/coxswain/docs/components/cox.md", 1,
+            "update /repo/coxswain/docs/components/cox.md to v0.4.0",
+        ),
+    ]
+
+
+def test_check_manifest_mirroring_the_umbrella_layout_has_zero_drift(tmp_path):
+    manifest = {"coxswain": {"version": "0.2.0"}, "components": {"cox": {"tag": "v0.2.0"}}}
+    manifest_path = tmp_path / "manifest.toml"
+    plan = facts_plan(str(tmp_path), manifest)
+    cox_page = Path(plan["component_docs"]["cox"])
+    cox_page.parent.mkdir(parents=True)
+    cox_page.write_text("cox is a rowing coxswain agent")
+    notes = Path(plan["release_notes"])
+    notes.parent.mkdir(parents=True)
+    notes.write_text("cox landed in this release")
+    facts = {
+        **plan,
+        **gather_manifest_facts(manifest, str(manifest_path), plan["component_docs"], plan["release_notes"]),
+    }
+    assert check_manifest(facts) == []

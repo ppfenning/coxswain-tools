@@ -55,10 +55,12 @@ drift is never allowable by reason, so it is excluded from `gate`'s allowance.
   `parse_subcommands`) over the live `cox --help` into a temporary directory and compare the CLI surface
   against THAT output, not against `docs/reference/cli/*.md` in the tree (only `index.md` is committed).
   Its docstring states this. A missing generator or `cox` not on PATH is one drift saying so, not 44.
-- `release_check_manifest.check_manifest`: component pages under `docs/components/` receive their version
-  at build; the check substitutes the manifest version into the page's placeholder before comparing, and
-  the join of root and component name is fixed with a literal test whose root basename equals the
-  component set's name (the doubled-path case from 2026-09-06).
+- `release_check_manifest.check_manifest`: a component page under `docs/components/<name>.md` must exist;
+  a version string in the page, if any, must equal the component's own manifest tag (not the umbrella
+  version); a page with no version string is not drift, since the site version comes from mkdocs' own
+  `version:` provider at build, not from anything committed to the page. The join of root and umbrella name
+  is fixed with a literal test whose root basename equals the component set's name (the doubled-path case
+  from 2026-09-06).
 - Postcondition, asserted by a test over a fixture tree mirroring the umbrella: a clean tree yields zero
   drifts from these two checks.
 
