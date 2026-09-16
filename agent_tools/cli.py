@@ -1920,7 +1920,10 @@ def _wait_workflows(directory: str, tag: str, component: str, run,
     sha = sha_out.strip()
     started = now()
     while True:
-        gh_rc, gh_out = run(["gh", "run", "list", "--commit", sha, "--json", "status,conclusion,name,url"], None)
+        # `gh` infers the repository from its working directory; from the
+        # release root (not a git repository) it fails before asking GitHub —
+        # the first real 0.7.0 cut stopped on exactly that after tagging one component.
+        gh_rc, gh_out = run(["gh", "run", "list", "--commit", sha, "--json", "status,conclusion,name,url"], directory)
         if gh_rc != 0:
             return False, gh_out.strip() or "gh run list failed"
         runs = json.loads(gh_out) if gh_out.strip() else []
