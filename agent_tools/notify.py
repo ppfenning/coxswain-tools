@@ -15,7 +15,8 @@ from pathlib import Path
 from agent_tools import chair
 from agent_tools.events import Event, poll
 
-__all__ = ["DEFAULT_POLICY", "Notification", "chair_notifications", "fold", "notifications", "notify_argv", "run_loop"]
+__all__ = ["DEFAULT_POLICY", "Notification", "chair_notifications", "fold", "notifications", "notify_argv", "run_loop",
+           "seed_state"]
 
 _CHAIR_LOST_HEARTBEAT = "loop chair lost its heartbeat"
 
@@ -91,6 +92,13 @@ def fold(states: Mapping[str, dict], batches: Mapping[str, tuple], policy: Mappi
     return out, new_states
 
 
+def seed_state(entries: Mapping[str, tuple], policy: Mapping | None = None) -> dict[str, dict]:
+    """Pure: the per-run state a cold start reaches by treating every event
+    already on disk as seen, discarding the notifications `fold` would emit."""
+    _, states = fold({}, entries, policy)
+    return states
+
+
 def _read_complete_lines(path: Path) -> list[str]:
     if not path.exists():
         return []
@@ -113,12 +121,17 @@ def _usage(root: Path, run: str, already_emitted: bool):
         return None
 
 
-def _load_states(path: Path) -> dict[str, dict]:
+def _load_states(path: Path) -> tuple[dict[str, dict], bool]:
+    """The second element is False when the file is missing or its JSON
+    failed to parse; a torn write reads the same as no file at all."""
+    if not path.exists():
+        return {}, False
     try:
-        raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        raw = {}
-    return {run: {**s, "trace_names_seen": frozenset(s.get("trace_names_seen", []))} for run, s in raw.items()}
+        return {}, False
+    states = {run: {**s, "trace_names_seen": frozenset(s.get("trace_names_seen", []))} for run, s in raw.items()}
+    return states, True
 
 
 def _save_states(path: Path, states: Mapping[str, dict]) -> None:
@@ -150,8 +163,9 @@ def _chair_state(root: Path, pid_alive, heartbeat_minutes: int) -> str:
 
 def run_loop(runs_dir, *, once: bool = False, interval: float = 10, send=None, sleep=time.sleep,
              policy: Mapping | None = None, pid_alive=chair.pid_alive,
-             heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES) -> int:
-    """Edge: polls `runs_dir`, sending a notification per event `notifications`     names, plus one on a live-to-stale/none chair transition while a run is alive."""
+             heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES, replay: bool = False) -> int:
+    """Edge: polls `runs_dir`, sending a notification per event `notifications`     names, plus one on a live-to-stale/none chair transition while a run is alive.
+    A pass with no readable state file seeds every run as seen and sends nothing, unless `replay` is set."""
     root = Path(runs_dir)
     state_path = root / ".notify-state.json"
     runner = send if send is not None else subprocess.run
@@ -159,8 +173,15 @@ def run_loop(runs_dir, *, once: bool = False, interval: float = 10, send=None, s
     printed_fallback = False
     previous_chair_state = None
     while True:
-        states = _load_states(state_path)
-        notes, new_states = fold(states, _batches(root, states), policy)
+        states, loaded = _load_states(state_path)
+        cold_start = not replay and not loaded
+        batches = _batches(root, states)
+        if cold_start:
+            new_states = seed_state(batches, policy)
+            notes = []
+            print(f"runs notify: no readable state; seeding {len(new_states)} run(s) from history without notifying")
+        else:
+            notes, new_states = fold(states, batches, policy)
         current_chair_state = _chair_state(root, pid_alive, heartbeat_minutes)
         notes = [*notes, *chair_notifications(previous_chair_state, current_chair_state, _any_run_alive(new_states))]
         previous_chair_state = current_chair_state
