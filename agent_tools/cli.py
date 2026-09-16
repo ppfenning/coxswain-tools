@@ -2571,6 +2571,14 @@ def _launcher_argv(plugin_root, skills_roots, no_plugin: bool, extra_args: list[
     return ["claude", *plugin_flag, *extra_args], warning
 
 
+def _spawn(argv: list[str]) -> subprocess.Popen:
+    """Detached: own session via `start_new_session`, stdio to devnull, so `argv` outlives the caller's later `execvp`."""
+    return subprocess.Popen(
+        argv, start_new_session=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
 def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     """Bare `cox` (spec §7): a real Claude Code session with the coxswain
     plugin loaded and the profile's workspace as cwd. Resolves the profile
@@ -2617,7 +2625,17 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
         steal=True,
     )
     if _route_chair_take(chair_a) == 0:
-        print(f"chair: this session must run 'cox route chair beat --label {chair_a.label} --pid {chair_a.pid}' to stay live")
+        runs_dir = Path(workspace).expanduser() / "runs"
+        beater_argv = [
+            sys.executable, "-m", "agent_tools.chair", "beat-loop",
+            "--label", chair_a.label, "--pid", str(chair_a.pid), "--runs-dir", str(runs_dir),
+        ]
+        try:
+            beater = _spawn(beater_argv)
+        except OSError as exc:
+            print(f"chair: beater failed to start: {exc}")
+        else:
+            print(f"chair: beating from pid {beater.pid}")
     os.chdir(cwd)
     os.execvp(argv[0], argv)
     return 0
