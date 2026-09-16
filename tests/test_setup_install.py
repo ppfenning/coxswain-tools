@@ -118,6 +118,26 @@ def test_profile_text_round_trips_through_parse_profile():
     }
 
 
+def test_profile_text_writes_the_spend_block_that_parse_profile_reads_back():
+    text = profile_text(
+        team="acme",
+        cartridges_dir="/root/agent-cartridges",
+        skills_root="/root/skills",
+        provider_profile="claude",
+        harness_dir="/root/agent-graphs",
+        workspace="/root/workspace",
+        window_ceiling_usd=50,
+    )
+    parsed = route.parse_profile(text)
+    assert parsed["window_ceiling_usd"] == 50.0
+
+
+def test_install_plan_threads_window_ceiling_usd_into_the_written_profile():
+    steps = _plan(window_ceiling_usd=50)
+    writes = [s for s in steps if s["op"] == "write" and s["path"].endswith("profile.yaml")]
+    assert route.parse_profile(writes[0]["text"])["window_ceiling_usd"] == 50.0
+
+
 def test_profile_text_rejects_a_value_that_would_not_round_trip():
     with pytest.raises(ValueError):
         profile_text(

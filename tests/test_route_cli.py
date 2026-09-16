@@ -1087,7 +1087,7 @@ def test_launch_refuses_before_starting_when_usage_verdict_is_stop(tmp_path, cap
     out = capsys.readouterr().out
     assert rc == 2
     assert "usage stop" in out
-    assert "both ladders exhausted" in out
+    assert "hard stop at 99%" in out
     assert not (ws / "runs" / "cos-1.pid").exists()
 
 

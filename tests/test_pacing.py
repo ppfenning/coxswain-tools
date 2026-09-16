@@ -129,6 +129,25 @@ def test_a_non_positive_ceiling_is_unmeasured_not_a_false_zero_spend():
     assert "unmeasured" in result.reason
 
 
+def test_hard_stop_fires_on_raw_spend_even_when_pace_and_headroom_would_not_stop():
+    # elapsed_fraction 0.95, ratio 0.99/0.95 = 1.04: under the first pace
+    # threshold (1.2), so rung stays 0 and the ladder never exhausts; without
+    # the hard-stop check headroom_usd = 100 - 99 = 1 < min_headroom_usd (10)
+    # would return "hold", not "stop". Only the new raw-spend rule can stop here.
+    now = _START.replace(hour=9, minute=30)
+    result = assess(_window(spent_usd=99, ceiling_usd=100), _policy(), now)
+    assert result.spent_fraction == 0.99
+    assert result.verdict == "stop"
+    assert "hard stop at 99%" in result.reason
+
+
+def test_98_percent_spent_is_not_stopped_by_the_hard_stop_rule():
+    now = _START.replace(hour=9)  # elapsed 0.9, ratio 1.089: under every pace threshold too
+    result = assess(_window(spent_usd=98, ceiling_usd=100), _policy(), now)
+    assert result.spent_fraction == 0.98
+    assert result.verdict != "stop"
+
+
 def test_unmeasured_window_reports_go_without_guessing_a_ceiling():
     now = _START.replace(hour=5)
     result = assess(_window(spent_usd=50, ceiling_usd=None), _policy(), now)

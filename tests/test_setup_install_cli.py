@@ -48,7 +48,8 @@ def test_setup_install_help_lists_every_flag(capsys):
     assert exc.value.code == 0
     out = capsys.readouterr().out
     for flag in ("--root", "--team", "--workspace", "--provider-profile", "--skills-root",
-                 "--assume", "--plugins", "--hook", "--force-profile", "--dry-run"):
+                 "--assume", "--plugins", "--hook", "--force-profile", "--window-ceiling-usd",
+                 "--dry-run"):
         assert flag in out
 
 
@@ -77,6 +78,14 @@ def test_full_install_calls_uv_in_order_and_writes_profile(install_env):
     assert profile["assume"] == "r"
     assert profile["cartridges_dir"] == f"{install_env['workspace']}/cartridges"
     assert profile["harness_dir"] == f"{install_env['root']}/agent-graphs"
+
+
+def test_window_ceiling_usd_flag_writes_the_spend_block_into_the_written_profile(install_env):
+    rc = _run(_base_argv(install_env, "--window-ceiling-usd", "50"))
+    assert rc == 0
+    profile_path = install_env["home"] / ".config" / "agent-tools" / "profile.yaml"
+    profile = route.parse_profile(profile_path.read_text(encoding="utf-8"))
+    assert profile["window_ceiling_usd"] == 50.0
 
 
 def test_second_run_without_force_profile_skips_the_write(install_env, capsys):
