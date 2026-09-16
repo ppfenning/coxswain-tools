@@ -18,7 +18,36 @@ from typing import Any
 
 from agent_tools.stats_schema import FAILURE_CLASSES, OUTCOMES
 
-__all__ = ["attempt_numbers", "bounds_for_costs", "extract_failure_class", "resolve_outcome"]
+__all__ = [
+    "LIST_RATES_USD_PER_MTOK",
+    "attempt_numbers",
+    "bounds_for_costs",
+    "extract_failure_class",
+    "resolve_outcome",
+    "spend_mix_for_model",
+]
+
+# cost-bounds.md §4: "Rates come from one table in agent_tools/stats_derive.py,
+# named per model id, with a test pinning the 2026-09 list prices." §4 names no
+# figures itself, only this table as their one source; the numbers below are
+# the 2026-09 published list rates, USD per million tokens, by token class,
+# and test_list_rates_pin_the_2026_09_published_list_prices pins them. Keys
+# are the short model names already stored in calls.model by this test suite's
+# own fixtures (tests/test_stats_query.py's `_call` defaults to "sonnet"), not
+# a vendor API id. A rate move is a PR that updates this table and that test,
+# same discipline as §2's ceilings.
+LIST_RATES_USD_PER_MTOK: dict[str, dict[str, float]] = {
+    "sonnet": {"input": 3.0, "output": 15.0, "cache_creation": 3.75, "cache_read": 0.30},
+    "opus": {"input": 15.0, "output": 75.0, "cache_creation": 18.75, "cache_read": 1.50},
+    "haiku": {"input": 0.80, "output": 4.0, "cache_creation": 1.0, "cache_read": 0.08},
+}
+
+_TOKEN_COLUMNS = {
+    "input": "input_tokens",
+    "output": "output_tokens",
+    "cache_creation": "cache_creation_tokens",
+    "cache_read": "cache_read_tokens",
+}
 
 
 def bounds_for_costs(costs: Sequence[float]) -> dict[str, Any]:
@@ -44,6 +73,37 @@ def bounds_for_costs(costs: Sequence[float]) -> dict[str, Any]:
         "strict": p50,
         "moderate": p95,
         "liberal": 3 * p95,
+    }
+
+
+def _token_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    return {cls: sum(int(r.get(col) or 0) for r in rows) for cls, col in _TOKEN_COLUMNS.items()}
+
+
+def _cost_share(token_counts: Mapping[str, int], rates: Mapping[str, float]) -> dict[str, float]:
+    class_costs = {cls: tokens / 1_000_000 * rates.get(cls, 0.0) for cls, tokens in token_counts.items()}
+    total = sum(class_costs.values())
+    return {cls: round(cost / total, 6) if total else 0.0 for cls, cost in class_costs.items()}
+
+
+def spend_mix_for_model(rows: Sequence[Mapping[str, Any]], model: str) -> dict[str, Any]:
+    """Token counts and cost share by class (input/output/cache_creation/
+    cache_read) for `rows`, all calls for `model`, at the pinned list rates in
+    LIST_RATES_USD_PER_MTOK (cost-bounds.md §4); shares sum to 1.0 per §6 rule
+    8, or read all-zero when `rows` carries no tokens. `build` carries the
+    same split restricted to rows whose `role` is 'build'."""
+    rates = LIST_RATES_USD_PER_MTOK.get(model, {})
+    build_rows = [r for r in rows if r.get("role") == "build"]
+    token_counts = _token_counts(rows)
+    build_token_counts = _token_counts(build_rows)
+    return {
+        "model": model,
+        "token_counts": token_counts,
+        "cost_share": _cost_share(token_counts, rates),
+        "build": {
+            "token_counts": build_token_counts,
+            "cost_share": _cost_share(build_token_counts, rates),
+        },
     }
 
 

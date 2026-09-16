@@ -16,7 +16,15 @@ from typing import Any
 from agent_tools import stats_derive
 from agent_tools.stats_schema import FAILURE_CLASSES
 
-__all__ = ["bounds_report", "coverage_report", "explain_report", "render_capped", "roles_report", "series_report"]
+__all__ = [
+    "bounds_report",
+    "coverage_report",
+    "explain_report",
+    "render_capped",
+    "roles_report",
+    "series_report",
+    "spend_mix_report",
+]
 
 
 def _joined(calls: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -240,6 +248,19 @@ def bounds_report(
             **stats_derive.bounds_for_costs(costs),
         })
     return report
+
+
+def spend_mix_report(calls: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Per-model token counts and cost share by class, plus the build-only
+    split, from `stats_derive.spend_mix_for_model` (cost-bounds.md §4). Groups
+    `calls` by `model` the same way `bounds_report` groups by `(role, model)`."""
+    groups: dict[Any, list[Mapping[str, Any]]] = defaultdict(list)
+    for call in calls:
+        groups[call.get("model")].append(call)
+    return [
+        stats_derive.spend_mix_for_model(rows, model)
+        for model, rows in sorted(groups.items(), key=lambda kv: kv[0] or "")
+    ]
 
 
 def render_capped(rows: Sequence[Mapping[str, Any]], cap_tokens: int = 300) -> str:
