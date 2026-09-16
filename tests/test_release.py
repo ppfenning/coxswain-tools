@@ -511,3 +511,11 @@ def test_cli_release_with_allow_doc_drift_notes_the_reason_and_proceeds(tmp_path
     assert rc == 0
     assert "note release-check: docs land next sprint (1 drift allowed)" in out
     assert "tag harness: org/harness -> v0.2.0" in out
+
+
+def test_component_dir_falls_back_to_the_coxswain_prefixed_checkout(tmp_path):
+    (tmp_path / "coxswain-graphs").mkdir()
+    assert release.component_dir(str(tmp_path), "graphs") == str(tmp_path / "coxswain-graphs")
+    (tmp_path / "tools").mkdir()
+    assert release.component_dir(str(tmp_path), "tools") == str(tmp_path / "tools")
+    assert release.component_dir(str(tmp_path), "crew") == str(tmp_path / "crew")
