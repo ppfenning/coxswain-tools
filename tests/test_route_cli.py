@@ -161,6 +161,24 @@ def test_context_json_with_full_profile_carries_the_same_usage_reason(tmp_path, 
     assert doc["usage"] == "window is unmeasured: no usable ceiling_usd; reporting pace only"
 
 
+def test_context_threads_the_profiles_spend_window_ceiling_into_gather(tmp_path, monkeypatch, capsys):
+    """`_stub_usage_gather` above is replaced here, per its own docstring, so
+    this test can see what `ceiling_usd` the profile's `spend:` block
+    actually reaches `gather` with, rather than the block being read at all."""
+    profile = _write_workspace(tmp_path)
+    profile.write_text(profile.read_text() + "spend:\n  window_ceiling_usd: 42\n")
+    captured = {}
+
+    def fake_gather(runs_dir, now, ceiling_usd=None):
+        captured["ceiling_usd"] = ceiling_usd
+        return _unmeasured_window(runs_dir, now)
+
+    monkeypatch.setattr(usage_window, "gather", fake_gather)
+    rc = main(["route", "context", "--profile", str(profile)])
+    assert rc == 0
+    assert captured["ceiling_usd"] == 42.0
+
+
 def test_context_with_work_item_missing_frontmatter_still_exits_zero_and_not_ready(tmp_path, capsys):
     profile = _write_workspace(tmp_path)
     ws = tmp_path / "workspace"
@@ -470,6 +488,60 @@ def test_launch_epic_starts_the_harness_detached_with_the_recorded_argv(tmp_path
     )
     assert argv == expected[1:]
     assert "--fix-attempts" in argv and "3" in argv
+
+
+def test_launch_threads_the_profiles_spend_window_ceiling_into_the_usage_gate(tmp_path, monkeypatch, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    initiative_dir = ws / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    profile.write_text(profile.read_text() + "spend:\n  window_ceiling_usd: 42\n")
+    captured = {}
+
+    def fake_gather(runs_dir, now, ceiling_usd=None):
+        captured["ceiling_usd"] = ceiling_usd
+        return _unmeasured_window(runs_dir, now)
+
+    monkeypatch.setattr(usage_window, "gather", fake_gather)
+
+    rc = main([
+        "route", "launch", "epic",
+        "--profile", str(profile),
+        "--initiative", str(initiative_dir),
+        "--repo", str(repo),
+    ])
+    assert rc == 0
+    assert captured["ceiling_usd"] == 42.0
+
+
+def test_launch_epic_passes_node_cap_usd_from_the_profile_into_the_recorded_argv(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    initiative_dir = ws / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    profile.write_text(profile.read_text() + "spend:\n  node_cap_usd: 2.00\n")
+
+    rc = main([
+        "route", "launch", "epic",
+        "--profile", str(profile),
+        "--initiative", str(initiative_dir),
+        "--repo", str(repo),
+    ])
+    assert rc == 0
+    recorded = harness_dir / "recorded_argv.json"
+    assert _wait_for(recorded)
+    argv = json.loads(recorded.read_text())
+    assert argv[-2:] == ["--node-cap-usd", "2.0"]
 
 
 def test_launch_decompose_starts_the_harness_detached_with_the_recorded_argv(tmp_path, capsys):

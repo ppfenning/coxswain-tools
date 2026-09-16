@@ -128,3 +128,14 @@ def test_home_and_bare_tty_both_open_the_screen_on_the_profile_workspace(tmp_pat
     assert [c["runs_dir"] for c in calls] == [ws / "runs", ws / "runs"]
     assert [c["work_dir"] for c in calls] == [ws / "work", ws / "work"]
     assert [c["intake_dir"] for c in calls] == [ws / "intake", ws / "intake"]
+
+
+def test_home_threads_the_profiles_spend_window_ceiling_into_home_screen_main(tmp_path, monkeypatch):
+    signature = inspect.signature(home_screen.main)
+    calls = []
+    monkeypatch.setattr("agent_tools.home_screen.main", lambda *a, **k: calls.append(signature.bind(*a, **k).arguments) or 0)
+    profile = _profile(tmp_path, tmp_path / "skills")
+    profile.write_text(profile.read_text() + "spend:\n  window_ceiling_usd: 42\n")
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
+    main(["home"])
+    assert calls[0]["window_ceiling_usd"] == 42.0

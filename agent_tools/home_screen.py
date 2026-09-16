@@ -50,8 +50,8 @@ def _read_leader(runs_dir) -> dict:
     return record if record is not None else {}
 
 
-def _read_window(runs_dir, now_dt: datetime) -> dict:
-    window = usage_window.gather(runs_dir, now_dt)
+def _read_window(runs_dir, now_dt: datetime, window_ceiling_usd: float | None = None) -> dict:
+    window = usage_window.gather(runs_dir, now_dt, ceiling_usd=window_ceiling_usd)
     result = assess(window, usage_window.DEFAULT_POLICY, now_dt)
     return {
         "tier": result.tier_ceiling,
@@ -84,7 +84,8 @@ def _backlog(work_dir, intake_dir) -> dict:
 
 
 def facts(runs_dir, work_dir, intake_dir, now: float, cache: dict | None = None,
-          timeout_seconds: float = _TIMEOUT_SECONDS) -> tuple[home_model.Facts, dict]:
+          timeout_seconds: float = _TIMEOUT_SECONDS,
+          window_ceiling_usd: float | None = None) -> tuple[home_model.Facts, dict]:
     """One `home_model.Facts` and the cache the next call should pass back in."""
     cache = dict(cache or {})
     now_dt = datetime.fromtimestamp(now, tz=UTC)
@@ -95,7 +96,7 @@ def facts(runs_dir, work_dir, intake_dir, now: float, cache: dict | None = None,
     backlog_value, backlog_status, cache = _panel(
         cache, "backlog", lambda: _backlog(work_dir, intake_dir), timeout_seconds, now)
     window_value, window_status, cache = _panel(
-        cache, "window", lambda: _read_window(runs_dir, now_dt), timeout_seconds, now)
+        cache, "window", lambda: _read_window(runs_dir, now_dt, window_ceiling_usd), timeout_seconds, now)
 
     leader_record = leader_value or None
     alive = leader.pid_alive(leader_record["pid"]) if leader_record and isinstance(leader_record.get("pid"), int) else False
@@ -162,7 +163,8 @@ def run_effect(effect, runner=subprocess.run) -> bool:
     return False
 
 
-def main(runs_dir, work_dir, intake_dir, plugin_dir: str, refresh_seconds: float = _REFRESH_SECONDS) -> int:
+def main(runs_dir, work_dir, intake_dir, plugin_dir: str, refresh_seconds: float = _REFRESH_SECONDS,
+         window_ceiling_usd: float | None = None) -> int:
     import curses
 
     def _loop(stdscr):
@@ -172,7 +174,8 @@ def main(runs_dir, work_dir, intake_dir, plugin_dir: str, refresh_seconds: float
         cache: dict = {}
         state = home_model.State(plugin_dir=plugin_dir, leader_liveness="none", other_holder=None)
         while True:
-            facts_obj, cache = facts(runs_dir, work_dir, intake_dir, time.time(), cache)
+            facts_obj, cache = facts(runs_dir, work_dir, intake_dir, time.time(), cache,
+                                      window_ceiling_usd=window_ceiling_usd)
             other_holder = facts_obj.chair.get("session") if facts_obj.chair and facts_obj.chair_liveness == "live" else None
             state = home_model.State(plugin_dir=plugin_dir, leader_liveness=facts_obj.chair_liveness, other_holder=other_holder)
             draw(stdscr, facts_obj, state, cache.get("_status", {}))
