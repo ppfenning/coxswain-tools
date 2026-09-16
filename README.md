@@ -60,11 +60,11 @@ cox route launch epic --initiative DIR [--repo PATH] [--fix-attempts N] [--dry-r
 cox route launch decompose --idea FILE --initiative-id ID [--dry-run]   start the harness detached; exit 2 on a missing profile, harness venv, or idea file
 cox route launch cos [--dry-run]   start the chief of staff detached: it reads intake and runs, dispatches within the bound, and consumes what it dispatched
 cox setup   a small terminal UI over setup doctor, setup install and cartridge init (needs a terminal)
-cox setup doctor [--profile PATH] [--json]      read-only: profile, paths, harness venv, cartridge, skills, provider, workspace — a table and an exit code
+cox setup doctor [--profile PATH] [--json]      read-only: profile, paths, harness venv, cartridge, skills, provider, workspace, schema (WARN on a MAJOR mismatch across cartridges/graphs/tools) — a table and an exit code
 cox setup install --root DIR --team T --workspace DIR [--plugins] [--hook] [--force-profile] [--window-ceiling-usd N] [--dry-run]   venvs, coxswain-tools on PATH, the profile (with a spend: window_ceiling_usd block when --window-ceiling-usd is given, hard-stopping pacing at 99% of it), optionally the provider plugin and a session-start hook; dry-run prints the plan
 cox install --root DIR [--manifest PATH] [--provider NAME] [--with FLAG] [--team T] [--workspace DIR] [--dry-run]   the plan over coxswain's manifest.toml: clone, fetch, skip or refuse per component, then setup_install, doctor, desktop; --dry-run only prints it, otherwise it runs each step and exits 0 only if every step ran clean
 cox upgrade --root DIR [--manifest PATH] [--provider NAME] [--with FLAG] [--team T] [--workspace DIR] [--to VERSION] [--dry-run]   same plan as install, but refuses (exit 2, naming the directory) if any present checkout is dirty; --to overrides every component's pinned tag for this run
-cox versions [--root DIR] [--manifest PATH]     pinned vs. installed tag per component, and status: ok, drift, missing, extra
+cox versions [--root DIR] [--manifest PATH]     pinned vs. installed tag per component, status: ok, drift, missing, extra, and a schema column (the cartridges/graphs/tools schema version, or "?")
 ```
 
 ## Maintainers

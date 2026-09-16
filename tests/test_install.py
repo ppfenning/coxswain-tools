@@ -1,6 +1,18 @@
 import subprocess
+import sys
 
 from agent_tools import cli, install
+
+
+def _fake_schema_package(tmp_path, monkeypatch, *, cartridges, graphs):
+    pkg = tmp_path / "fakeschema"
+    (pkg / "core").mkdir(parents=True)
+    (pkg / "core" / "__init__.py").write_text(f"SCHEMA_VERSION = {cartridges!r}\n")
+    (pkg / "harness").mkdir(parents=True)
+    (pkg / "harness" / "__init__.py").write_text(f"CORE_SCHEMA = {graphs!r}\n")
+    monkeypatch.syspath_prepend(str(pkg))
+    monkeypatch.delitem(sys.modules, "core", raising=False)
+    monkeypatch.delitem(sys.modules, "harness", raising=False)
 
 
 def _manifest():
@@ -246,6 +258,58 @@ def test_cli_versions_reports_ok_missing_and_extra_from_real_checkouts(tmp_path,
     assert "harness" in out and "ok" in out
     assert "cartridges" in out and "missing" in out
     assert "extra-thing" in out and "extra" in out
+
+
+def test_cli_versions_schema_column_reads_question_mark_when_core_is_not_importable(tmp_path, capsys):
+    manifest_dir = tmp_path / "coxswain"
+    manifest_dir.mkdir()
+    manifest_path = manifest_dir / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    _git_repo(tmp_path / "harness", tag="v1.0.0")
+    rc = cli.main(["versions", "--manifest", str(manifest_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "schema" in out
+    cartridges_line = next(line for line in out.splitlines() if line.split()[0] == "cartridges").rstrip()
+    assert cartridges_line.endswith("?")
+
+
+def test_cli_versions_schema_column_reports_the_gathered_version(tmp_path, monkeypatch, capsys):
+    manifest_dir = tmp_path / "coxswain"
+    manifest_dir.mkdir()
+    manifest_path = manifest_dir / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    _git_repo(tmp_path / "harness", tag="v1.0.0")
+    _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="1.0")
+    rc = cli.main(["versions", "--manifest", str(manifest_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    cartridges_line = next(line for line in out.splitlines() if line.split()[0] == "cartridges").rstrip()
+    assert cartridges_line.endswith("1.0")
+
+
+def test_cli_install_prints_no_schema_warn_line_when_all_three_agree(tmp_path, monkeypatch, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="1.0")
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
+                   "--provider", "claude-code", "--team", "pat", "--workspace", str(tmp_path / "ws")])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "schema" not in out
+
+
+def test_cli_install_warns_naming_only_the_disagreeing_pair_before_the_plan(tmp_path, monkeypatch, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="2.0")
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
+                   "--provider", "claude-code", "--team", "pat", "--workspace", str(tmp_path / "ws")])
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert lines[0] == "schema  WARN  graphs 2.0"
+    assert "cartridges 1.0" not in lines[0] and "tools 1.0" not in lines[0]
+    assert rc == 0
 
 
 def test_cli_versions_root_flag_overrides_the_manifests_own_directory(tmp_path, capsys):
