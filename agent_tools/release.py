@@ -71,12 +71,32 @@ def parse_ls_remote(text: str) -> list[str]:
     return [ref[len("refs/tags/"):] for ref in refs if ref.startswith("refs/tags/") and not ref.endswith("^{}")]
 
 
-def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, list[str] | None]) -> list[dict]:
-    """Steps in order: `tag` for each `repo` component, one `bump_manifest`,
-    one `notes`, one `tag_self`. A single `refuse` step, naming the reason,
-    when `version` is not valid semver-with-optional-beta, when the tag
-    already exists on any component (or on the umbrella, when `existing_tags`
-    carries a `"coxswain"` key), or when `version` is strictly less than the
+def _bump_and_land(bump_step: dict, branch: str, body: str) -> list[dict]:
+    """`bump_step` landed the way `cox runs land` lands: `push` the branch it
+    was committed to, `pr_create`, `wait_checks`, `merge` — the kinds
+    `_execute_land_step` (`agent_tools/cli.py`) already knows how to run."""
+    component = bump_step["component"]
+    title = bump_step["commit_subject"]
+    return [bump_step,
+            {"kind": "push", "component": component, "branch": branch},
+            {"kind": "pr_create", "component": component, "title": title, "body": body},
+            {"kind": "wait_checks", "component": component},
+            {"kind": "merge", "component": component}]
+
+
+def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, list[str] | None],
+                  component_versions: Mapping[str, str | None] | None = None) -> list[dict]:
+    """Steps in order: per `repo` component, either a plain `tag` (its
+    `component_versions` entry is missing or already at `version`) or a
+    `bump_pyproject`-and-land sequence ending in `tag`; one `notes`; then
+    either a plain `tag_self` or the manifest's own `bump_manifest`-and-land
+    sequence ending in `tag_self`. `component_versions` is the version each
+    component's own checkout pyproject.toml currently declares — a fact this
+    pure function cannot read itself, gathered by the edge the way
+    `existing_tags` is. A single `refuse` step, naming the reason, when
+    `version` is not valid semver-with-optional-beta, when the tag already
+    exists on any component (or on the umbrella, when `existing_tags` carries
+    a `"coxswain"` key), or when `version` is strictly less than the
     manifest's current version by semver-with-beta rules.
 
     `version` equal to the current version is the first cut of the version
@@ -86,6 +106,7 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     if parsed is None:
         return _refuse(version, f"{version!r} is not a valid version (expected X.Y.Z or X.Y.Z-beta.N)")
 
+    component_versions = component_versions or {}
     new_tag = "v" + version
     components = manifest.get("components", {})
     repo_components = [(name, spec) for name, spec in components.items() if spec.get("repo")]
@@ -104,8 +125,21 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
 
     current = manifest.get("coxswain", {}).get("version")
     current_parsed = _parse_semver(current) if current is not None else None
-    tag_steps = [{"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
-                 for name, spec in repo_components]
+    tag_steps = []
+    for name, spec in repo_components:
+        tag_step = {"kind": "tag", "component": name, "repo": spec["repo"], "tag": new_tag}
+        found = component_versions.get(name)
+        found_parsed = _parse_semver(found) if found is not None else None
+        if found_parsed is None or _sort_key(found_parsed) >= _sort_key(parsed):
+            tag_steps.append(tag_step)
+            continue
+        branch = f"release/{version}"
+        subject = f"pyproject: bump to {version} to match the tag"
+        bump_step = {"kind": "bump_pyproject", "component": name, "repo": spec["repo"],
+                     "branch": branch, "commit_subject": subject, "from": found, "to": version}
+        body = f"Bumps {name}'s pyproject.toml version to {version} to match tag {new_tag}."
+        tag_steps.extend(_bump_and_land(bump_step, branch, body) + [tag_step])
+
     # The release notes are a page of the docs site, so they live under `docs/`
     # with every other page. A copy at the repository root would be a second
     # source of truth for the same text and would drift on the first edit.
@@ -118,8 +152,12 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
         if _sort_key(parsed) == _sort_key(current_parsed):
             return tag_steps + [notes_step, tag_self_step]
 
-    bump_step = {"kind": "bump_manifest", "component": "manifest", "from": current, "to": version}
-    return tag_steps + [bump_step, notes_step, tag_self_step]
+    branch = f"release/{version}"
+    subject = f"manifest: bump to {version} to match the tag"
+    bump_step = {"kind": "bump_manifest", "component": "manifest", "from": current, "to": version,
+                 "branch": branch, "commit_subject": subject}
+    body = f"Bumps manifest.toml version to {version} to match tag {new_tag}."
+    return tag_steps + [notes_step] + _bump_and_land(bump_step, branch, body) + [tag_self_step]
 
 
 def component_dir(root: str, name: str, overrides: Mapping[str, str] | None = None) -> str:
