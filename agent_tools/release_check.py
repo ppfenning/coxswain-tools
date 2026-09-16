@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from agent_tools import release, release_check_cli, release_check_notes
+from agent_tools.release_check_index import check_release_index
 from agent_tools.release_check_manifest import check_manifest
 from agent_tools.release_check_pages import check_pages
 from agent_tools.release_check_readmes import check_readmes
@@ -81,7 +82,7 @@ def gather_version_facts(manifest: Mapping, manifest_path: str, component_dirs: 
     }
 
 
-CHECKS: tuple[Callable[[Mapping], list[Drift]], ...] = (release_check_cli.check_cli_surface, check_manifest, release_check_notes.check_notes, check_pages, check_readmes, check_versions)
+CHECKS: tuple[Callable[[Mapping], list[Drift]], ...] = (release_check_cli.check_cli_surface, check_manifest, release_check_notes.check_notes, check_pages, check_readmes, check_versions, check_release_index)
 
 
 def run_checks(facts: Mapping, checks: tuple[Callable[[Mapping], list[Drift]], ...] | None = None) -> list[Drift]:

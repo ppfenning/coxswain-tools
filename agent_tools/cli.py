@@ -36,6 +36,7 @@ from agent_tools import (
     release,
     release_check,
     release_check_cli,
+    release_check_index,
     release_check_manifest,
     release_check_notes,
     release_check_pages,
@@ -2229,6 +2230,7 @@ def _release_check(a: argparse.Namespace) -> int:
             readmes, manifest, release_check_readmes.resolve_docs_base(str(Path(plan["umbrella"]) / "mkdocs.yml"))
         ),
         **release_check.gather_version_facts(manifest, str(manifest_path), component_dirs, plan["umbrella"]),
+        **release_check_index.gather_release_index_facts(plan["umbrella"]),
         "pyprojects": pyprojects,
     }
     drifts = release_check.run_checks(facts)
