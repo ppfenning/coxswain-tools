@@ -45,7 +45,7 @@ anyway. `agent-tools` still works this release as an alias for `cox`.
 ```
 cox runs usage RUN [--runs-dir runs] [--json]   cost, turns, cache share — by role and by model
 cox runs trace RUN [--role build] [-v]          per node: turns, cost, tools, reads, whole-file reads, commands
-cox runs clean RUN --repo PATH [--apply]        the run's worktrees and scratch branches; phase branches kept; dry-run by default
+cox runs clean RUN --repo PATH [--apply] [--force]   the run's worktrees and scratch branches; phase branches kept; a task branch not landed and not on main is kept and printed, not deleted, unless --force; dry-run by default
 cox runs land RUN --repo PATH [--task T] [--apply] [--no-merge]   plan and land an approved run: pick branch, cherry-pick, PR, merge on green, clean; dry-run by default
 cox runs events [--runs-dir runs] [--follow] [--json]   tail a run's log, trace and usage files as a live event stream
 cox runs top   — live table of runs in flight (next task wires the screen)
