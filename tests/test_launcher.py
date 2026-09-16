@@ -19,6 +19,14 @@ def test_bare_launcher_split_leaves_an_ordinary_subcommands_own_dashdash_untouch
     assert _bare_launcher_split(["route", "file", "--", "-hi"]) is None
 
 
+class _FakeBeater:
+    pid = 424242
+
+
+def _fake_spawn(argv):
+    return _FakeBeater()
+
+
 def _profile(tmp_path: Path, skills_root: Path) -> Path:
     ws = tmp_path / "workspace"
     ws.mkdir()
@@ -134,6 +142,7 @@ def test_bare_cox_on_a_tty_with_no_args_takes_the_chair_and_runs_the_launcher(tm
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     monkeypatch.setattr("os.chdir", lambda path: None)
+    monkeypatch.setattr("agent_tools.cli._spawn", _fake_spawn)
     calls = []
     monkeypatch.setattr("os.execvp", lambda *a: calls.append(a))
     skills_root = _with_plugin(tmp_path)
@@ -145,7 +154,7 @@ def test_bare_cox_on_a_tty_with_no_args_takes_the_chair_and_runs_the_launcher(tm
     assert calls and calls[0][0] == "claude"
     today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     assert f"chair taken: chair-{today}" in out
-    assert "must run 'cox route chair beat" in out
+    assert "chair: beating from pid 424242" in out
 
 
 def test_a_live_foreign_chair_is_printed_not_stolen_and_the_launcher_still_runs(tmp_path, monkeypatch, capsys):
@@ -181,6 +190,7 @@ def test_a_stale_chair_from_an_earlier_bare_cox_today_is_retaken_not_refused(tmp
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     monkeypatch.setattr("os.chdir", lambda path: None)
+    monkeypatch.setattr("agent_tools.cli._spawn", _fake_spawn)
     calls = []
     monkeypatch.setattr("os.execvp", lambda *a: calls.append(a))
     skills_root = _with_plugin(tmp_path)
