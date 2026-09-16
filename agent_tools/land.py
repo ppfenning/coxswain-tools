@@ -20,6 +20,7 @@ the record and the branches with `git log`, then walks the plan through
 
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
 __all__ = [
@@ -55,17 +56,22 @@ def _approved(record: dict[str, Any]) -> str | None:
     return f"no arbitration, and the reviewers were {reviews or 'silent'}"
 
 
-def checks_argv(repo_facts: dict[str, Any]) -> list[str]:
-    """The checks launch argv, cheapest and most specific first. The executor
-    runs it with `cwd` already at the repo root, so a venv path is relative,
-    not absolute. `uv run` next when the repo pins its dependencies with a
-    lockfile; a bare `pytest -q` only when neither fact holds, and only PATH
-    can say whether that one exists."""
+def checks_argv(repo_facts: dict[str, Any]) -> list[tuple[str, list[str]]]:
+    """One `(name, argv)` pair per `repo_facts["checks"]` entry (`{name, cmd}`,
+    already resolved by the cartridge, §4), in the given order. A caller that
+    supplies no `checks` fact keeps getting today's single launch, named
+    `"tests"`: its own venv first, `uv run` next when the repo pins its
+    dependencies with a lockfile, a bare `pytest -q` only when neither holds."""
+    checks = repo_facts.get("checks")
+    if checks:
+        return [(c["name"], shlex.split(c["cmd"])) for c in checks]
     if repo_facts.get("venv_python"):
-        return [".venv/bin/python", "-m", "pytest", "-q"]
-    if repo_facts.get("uv_lock"):
-        return ["uv", "run", "pytest", "-q"]
-    return ["pytest", "-q"]
+        argv = [".venv/bin/python", "-m", "pytest", "-q"]
+    elif repo_facts.get("uv_lock"):
+        argv = ["uv", "run", "pytest", "-q"]
+    else:
+        argv = ["pytest", "-q"]
+    return [("tests", argv)]
 
 
 def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any]]) -> str | None:
@@ -124,7 +130,7 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     landed_tasks = [r.get("task") for r in task_records if r.get("status") != "dropped"]
     return [
         {"kind": "pick_branch", "branch": phase_branch, "commit_subject": f"phase {phase}"},
-        {"kind": "checks", "argv": checks_argv(repo_facts or {}), "branch": phase_branch},
+        {"kind": "checks", "checks": checks_argv(repo_facts or {}), "branch": phase_branch},
         {"kind": "push", "branch": phase_branch},
         {"kind": "pr_create", "title": f"epic {initiative}: {phase}", "body": phase_pr_body(phase_record, task_records)},
         {"kind": "wait_checks"},
@@ -168,7 +174,7 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
     return [
         {"kind": "pick_branch", "branch": chosen, "commit_subject": subject},
         {"kind": "cherry_pick", "branch": chosen, "commit_subject": subject, "onto": pr_branch, "from": default_branch},
-        {"kind": "checks", "argv": checks_argv(repo_facts or {})},
+        {"kind": "checks", "checks": checks_argv(repo_facts or {})},
         {"kind": "push", "branch": pr_branch},
         {"kind": "pr_create", "title": draft.get("title", subject), "body": pr_body(record)},
         {"kind": "wait_checks"},

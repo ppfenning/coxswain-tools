@@ -354,6 +354,22 @@ def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
+_LAUNCH_ERROR = "refuse checks: "  # a missing executable, marked so the edge refuses (exit 2) not just stops (exit 1)
+
+
+def _run_checks(checks: list[tuple[str, list[str]]], cwd: Path) -> tuple[bool, str]:
+    """Each `(name, argv)` pair in order, stopping at the first launch error
+    or failure and naming it by `name`, never by its argv or shell command."""
+    for name, argv in checks:
+        try:
+            r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+        except OSError as exc:
+            return False, f"{_LAUNCH_ERROR}{name}: {exc}"
+        if r.returncode != 0:
+            return False, f"{name}: {(r.stderr or r.stdout).strip()}"
+    return True, f"{len(checks)} checks passed"
+
+
 def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
     kind = step["kind"]
     if kind == "pick_branch":
@@ -386,12 +402,10 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
             if add.returncode != 0:
                 return False, add.stderr.strip() or add.stdout.strip()
             try:
-                r = subprocess.run(step["argv"], cwd=wt, capture_output=True, text=True)
-                return r.returncode == 0, " ".join(step["argv"])
+                return _run_checks(step["checks"], wt)
             finally:
                 subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
-        r = subprocess.run(step["argv"], cwd=repo, capture_output=True, text=True)
-        return r.returncode == 0, " ".join(step["argv"])
+        return _run_checks(step["checks"], repo)
     if kind == "push":
         r = subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", step["branch"]], capture_output=True, text=True)
         return r.returncode == 0, (step["branch"] if r.returncode == 0 else r.stderr.strip() or r.stdout.strip())
@@ -496,17 +510,13 @@ def _runs_land(a: argparse.Namespace) -> int:
         if step["kind"] == "refuse":
             print(f"refused: {step['reason']}")
             return 2
-        if step["kind"] == "checks":
-            try:
-                ok, detail = _execute_land_step(repo, step)
-            except OSError as exc:
-                # A repo whose pytest lives somewhere `subprocess` can't find
-                # is a refusal, not a traceback, and it fires before `push`
-                # so a failed check never leaves a pushed branch behind.
-                print(f"refuse checks: {step['argv'][0]}: {exc}")
-                return 2
-        else:
-            ok, detail = _execute_land_step(repo, step)
+        ok, detail = _execute_land_step(repo, step)
+        if step["kind"] == "checks" and not ok and detail.startswith(_LAUNCH_ERROR):
+            # A check whose executable `subprocess` can't find is a refusal,
+            # not an ordinary failure, and it fires before `push` so a check
+            # that never ran leaves no pushed branch behind.
+            print(detail)
+            return 2
         print(f"{step['kind']}: {detail}")
         if not ok:
             remaining = [s["kind"] for s in steps[i + 1:]]
