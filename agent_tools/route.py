@@ -32,6 +32,7 @@ __all__ = [
     "render_status",
     "run_entries",
     "slugify",
+    "state_problems",
     "status_entries",
     "status_rows",
     "work_item",
@@ -495,12 +496,20 @@ def _alive_runs(runs: list) -> list:
     return [r for r in runs if r["alive"]]
 
 
-def render_context(profile_or_none, intake: dict, runs, initiatives) -> str:
+def _describe_initiative(i: dict) -> str:
+    bits = [f'{i["ready"]} tasks ready in phase {i["phase"]}'] if i["ready"] else []
+    if i.get("awaiting_merge"):
+        bits.append(f'{i["awaiting_merge"]} awaiting merge')
+    return f'{i["id"]} ({", ".join(bits) or "unlaunchable"})'
+
+
+def render_context(profile_or_none, intake: dict, runs, initiatives, problems: list | None = None) -> str:
     """The human-readable layout `agent-tools route context` prints, spec
     §2. `profile_or_none` is a parsed profile dict or None; `intake` is an
     `intake_groups` result; `runs` and `initiatives` are already-gathered
     lists — this function lists a directory or reads a pidfile for none of
-    it, that is the CLI's job.
+    it, that is the CLI's job. `problems`, `state_problems`' output, prints
+    one line per entry after the ready line.
     """
     if profile_or_none is None:
         return (
@@ -523,17 +532,15 @@ def render_context(profile_or_none, intake: dict, runs, initiatives) -> str:
     else:
         lines.append("runs: 0 in flight")
     if initiatives:
-        described = ", ".join(
-            f'{i["id"]} ({i["ready"]} tasks ready in phase {i["phase"]})'
-            for i in initiatives
-        )
+        described = ", ".join(_describe_initiative(i) for i in initiatives)
         lines.append(f"ready: {described}")
     else:
         lines.append("ready: none")
+    lines += [f"problem: {p}" for p in problems or []]
     return "\n".join(lines)
 
 
-def context_document(profile_or_none, intake, runs, initiatives) -> dict:
+def context_document(profile_or_none, intake, runs, initiatives, problems: list | None = None) -> dict:
     """The `--json` shape for `agent-tools route context`, spec §2: the
     same facts as `render_context`, keyed on exactly the profile fields
     `parse_profile` produces so the no-profile case (every profile field
@@ -548,6 +555,7 @@ def context_document(profile_or_none, intake, runs, initiatives) -> dict:
     doc["runs"] = runs
     doc["live"] = len(_alive_runs(runs))
     doc["initiatives"] = initiatives
+    doc["problems"] = problems or []
     return doc
 
 
@@ -603,7 +611,7 @@ def _intake_group_line(name: str, entries: list) -> str:
     return f"intake {name}: {len(entries)}" + (f" — {names}" if entries else "")
 
 
-def render_status(rows: list, groups: dict | None = None) -> str:
+def render_status(rows: list, groups: dict | None = None, problems: list | None = None) -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
@@ -611,11 +619,13 @@ def render_status(rows: list, groups: dict | None = None) -> str:
     twice for no reason. `quarantined`, `reused`, `summary` and `usage`
     are appended only when the row carries them, so a quiet run stays
     one line. `groups`, an `intake_groups` result, appends one line per
-    group when given, and nothing when `None`.
+    group when given, and nothing when `None`. `problems`, `state_problems`'
+    output, appends one line per entry last.
     """
     lines = [_status_line(row) for row in rows]
     if groups is not None:
         lines += [_intake_group_line(name, groups[name]) for name in ("queued", "decomposed", "landed")]
+    lines += [f"problem: {p}" for p in problems or []]
     return "\n".join(lines)
 
 
@@ -785,6 +795,7 @@ def intake_entries(files: dict) -> list:
     ]
 
 
+STATES = frozenset({"todo", "ready", "in_progress", "blocked", "done", "dropped", "approved"})
 TERMINAL = frozenset({"done", "dropped"})
 
 
@@ -840,20 +851,45 @@ def _ready_unblocked(item: dict, done_ids: set) -> bool:
     return item["state"] == "ready" and all(need in done_ids for need in item["needs"])
 
 
+def state_problems(items: list) -> list[str]:
+    """One `"<initiative>: <file>: unknown state '<value>'"` line per item
+    whose `state` is not in `STATES` — a typo, or a value some other tool
+    wrote — sorted by initiative then file so the printed order is stable.
+    """
+    bad = sorted(
+        (item for item in items if item["state"] not in STATES),
+        key=lambda item: (item["initiative"], item["file"]),
+    )
+    return [f"{item['initiative']}: {item['file']}: unknown state {item['state']!r}" for item in bad]
+
+
 def _initiative_summary(initiative_id: str, own_items: list):
+    """`None` when nothing to report. An item outside `STATES` makes the
+    whole initiative unlaunchable (`ready` 0) until fixed, regardless of
+    what its siblings are. Otherwise `approved` items count as neither
+    ready nor done and are surfaced as `awaiting_merge`.
+    """
+    if any(item["state"] not in STATES for item in own_items):
+        return {"id": initiative_id, "phase": None, "ready": 0}
+    awaiting_merge = sum(1 for item in own_items if item["state"] == "approved")
     done_ids = {item["id"] for item in own_items if item["state"] in TERMINAL}
     ready_phases = sorted(
         {item["phase"] for item in own_items if _ready_unblocked(item, done_ids)}
     )
     if not ready_phases:
-        return None
+        if not awaiting_merge:
+            return None
+        return {"id": initiative_id, "phase": None, "ready": 0, "awaiting_merge": awaiting_merge}
     phase = ready_phases[0]
     ready_count = sum(
         1
         for item in own_items
         if item["phase"] == phase and _ready_unblocked(item, done_ids)
     )
-    return {"id": initiative_id, "phase": phase, "ready": ready_count}
+    summary = {"id": initiative_id, "phase": phase, "ready": ready_count}
+    if awaiting_merge:
+        summary["awaiting_merge"] = awaiting_merge
+    return summary
 
 
 def initiative_summaries(items: list) -> list:
@@ -900,7 +936,8 @@ def work_item(fields: dict, *, initiative: str, phase_dir: str, stem: str) -> di
     the caller read it from wherever frontmatter left a gap: `id` falls
     back to `stem`, `phase` to `phase_dir`, `state` to `"todo"`, `needs` to
     `[]`. `initiative` always comes from the argument — the directory name
-    is the initiative, never a frontmatter claim to the contrary.
+    is the initiative, never a frontmatter claim to the contrary. `file` is
+    `<phase_dir>/<stem>.md`, cited by `state_problems` when `state` is bad.
     """
     return {
         **fields,
@@ -909,4 +946,5 @@ def work_item(fields: dict, *, initiative: str, phase_dir: str, stem: str) -> di
         "phase": fields.get("phase", phase_dir),
         "state": fields.get("state", "todo"),
         "needs": fields.get("needs", []),
+        "file": f"{phase_dir}/{stem}.md",
     }
