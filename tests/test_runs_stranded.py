@@ -1,0 +1,111 @@
+import argparse
+import json
+
+from agent_tools import cli, runs_stranded
+
+
+def _record(**over):
+    base = {
+        "run": "r1", "task": "t1", "phase": "p1", "branch": "b1",
+        "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+        "landed": False,
+    }
+    return {**base, **over}
+
+
+def _item(state, **over):
+    base = {"id": "t1", "state": state, "initiative": "acme", "phase": "p1", "repo": "/repo/acme"}
+    return {**base, **over}
+
+
+def test_an_approved_unlanded_record_with_a_ready_item_is_listed_with_its_remedy():
+    rows = runs_stranded.stranded([_record()], [_item("ready")])
+    assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "b1",
+                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme"}]
+
+
+def test_a_done_item_is_not_stranded():
+    assert runs_stranded.stranded([_record()], [_item("done")]) == []
+
+
+def test_a_revise_verdict_is_not_stranded():
+    record = _record(review={"verdict": "revise"})
+    assert runs_stranded.stranded([record], [_item("ready")]) == []
+
+
+def test_a_landed_record_is_not_stranded():
+    record = _record(landed=True)
+    assert runs_stranded.stranded([record], [_item("ready")]) == []
+
+
+def test_the_records_own_repo_wins_over_the_items_repo():
+    rows = runs_stranded.stranded([_record(repo="/repo/x")], [_item("ready")])
+    assert rows[0]["remedy"] == "cox runs land r1 --task t1 --repo /repo/x"
+
+
+def test_an_item_with_no_resolvable_repo_is_reported_with_remedy_none():
+    rows = runs_stranded.stranded([_record()], [_item("ready", repo=None)])
+    assert rows[0]["remedy"] is None
+
+
+def test_an_id_shared_across_initiatives_scopes_to_the_records_own_initiative():
+    record = _record(initiative="other")
+    items = [_item("done", initiative="acme", repo="/repo/acme"),
+             _item("ready", initiative="other", repo="/repo/other")]
+    rows = runs_stranded.stranded([record], items)
+    assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "b1",
+                      "remedy": "cox runs land r1 --task t1 --repo /repo/other"}]
+
+
+def test_an_id_shared_across_initiatives_with_no_initiative_on_the_record_is_reported_not_dropped():
+    items = [_item("done", initiative="acme"), _item("ready", initiative="other")]
+    rows = runs_stranded.stranded([_record()], items)
+    assert len(rows) == 1
+    assert rows[0]["remedy"] is None
+
+
+def test_an_id_shared_across_phases_of_the_same_initiative_scopes_to_the_records_own_phase():
+    record = _record(phase="p2")
+    items = [_item("done", phase="p1", repo="/repo/wrong"),
+             _item("ready", phase="p2", repo="/repo/right")]
+    rows = runs_stranded.stranded([record], items)
+    assert rows[0]["remedy"] == "cox runs land r1 --task t1 --repo /repo/right"
+
+
+def _workspace(tmp_path, with_stranded):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\n", encoding="utf-8")
+    ws = tmp_path / "ws"
+    if with_stranded:
+        tasks = ws / "runs" / "r1" / "tasks" / "p1"
+        tasks.mkdir(parents=True)
+        (tasks / "t1.json").write_text(json.dumps(_record()), encoding="utf-8")
+        work = ws / "work" / "acme" / "p1"
+        work.mkdir(parents=True)
+        (work / "t1.md").write_text("---\nid: t1\nstate: ready\n---\nbody\n", encoding="utf-8")
+        (ws / "work" / "acme" / "initiative.md").write_text("---\nrepo: /repo/acme\n---\nbody\n", encoding="utf-8")
+    else:
+        (ws / "runs").mkdir(parents=True)
+        (ws / "work").mkdir(parents=True)
+    return profile
+
+
+def test_cli_json_lists_the_stranded_row(tmp_path, capsys):
+    profile = _workspace(tmp_path, with_stranded=True)
+    rc = cli._runs_stranded(argparse.Namespace(profile=str(profile), runs_dir=None, json=True))
+    assert rc == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "b1",
+                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme"}]
+
+
+def test_cli_prints_no_stranded_work_and_exits_zero_on_an_empty_workspace(tmp_path, capsys):
+    profile = _workspace(tmp_path, with_stranded=False)
+    rc = cli._runs_stranded(argparse.Namespace(profile=str(profile), runs_dir=None, json=False))
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == "no stranded work"
+
+
+def test_cli_exits_two_when_the_profile_is_unreadable(tmp_path):
+    rc = cli._runs_stranded(argparse.Namespace(profile=str(tmp_path / "absent.yaml"), runs_dir=None, json=False))
+    assert rc == 2
