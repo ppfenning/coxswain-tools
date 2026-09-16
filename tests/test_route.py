@@ -786,6 +786,18 @@ def test_initiative_summaries_ready_is_a_count_not_a_flag():
     assert summaries == [{"id": "gamma", "phase": "build", "ready": 2}]
 
 
+def test_initiative_summaries_a_dropped_item_satisfies_a_dependents_needs_and_is_never_itself_ready():
+    # d0 is dropped, terminal but never "ready"; d2 needs both d0 and d1
+    # (done) and must come back ready — the dropped item unblocks it without
+    # ever counting as a ready task itself.
+    items = [
+        {"id": "d0", "initiative": "delta", "phase": "build", "state": "dropped", "needs": []},
+        {"id": "d1", "initiative": "delta", "phase": "build", "state": "done", "needs": []},
+        {"id": "d2", "initiative": "delta", "phase": "build", "state": "ready", "needs": ["d0", "d1"]},
+    ]
+    assert route.initiative_summaries(items) == [{"id": "delta", "phase": "build", "ready": 1}]
+
+
 def test_initiative_summaries_sorts_rows_by_initiative_id():
     # Six initiatives, each with one ready, unblocked task, supplied in
     # reverse order. Grouping them with a bare set (no `sorted`) would come
@@ -892,6 +904,40 @@ def test_initiative_states_is_true_for_an_id_with_no_items_and_false_for_one_not
     assert route.initiative_states(["alpha", "beta", "gamma"], items) == {
         "alpha": True, "beta": False, "gamma": True,
     }
+
+
+def test_initiative_states_reads_done_plus_dropped_as_complete():
+    items = [
+        {"initiative": "alpha", "state": "done"},
+        {"initiative": "alpha", "state": "dropped"},
+    ]
+    assert route.initiative_states(["alpha"], items) == {"alpha": True}
+
+
+def test_initiative_states_done_plus_ready_reads_incomplete_with_the_ready_item_listed():
+    # Guards against TERMINAL wrongly swallowing "ready": the initiative
+    # must stay incomplete, and its one ready task must still show up.
+    items = [
+        {"id": "a1", "initiative": "alpha", "phase": "build", "state": "done", "needs": []},
+        {"id": "a2", "initiative": "alpha", "phase": "build", "state": "ready", "needs": []},
+    ]
+    assert route.initiative_states(["alpha"], items) == {"alpha": False}
+    assert route.initiative_summaries(items) == [{"id": "alpha", "phase": "build", "ready": 1}]
+
+
+def test_intake_groups_classifies_a_done_plus_dropped_initiative_as_landed():
+    # The "done" boolean here comes from initiative_states on raw item
+    # states, not a hand-picked literal, so this proves the classification
+    # path agrees with initiative_states about a done+dropped initiative.
+    items = [
+        {"initiative": "gamma", "state": "done"},
+        {"initiative": "gamma", "state": "dropped"},
+    ]
+    done = route.initiative_states(["gamma"], items)["gamma"]
+    initiatives = [{"id": "gamma", "done": done, "text": ""}]
+    entry = {"id": "g1", "title": "G", "initiative": "gamma", "done": False, "path": "intake/g1.md"}
+    groups = route.intake_groups([entry], initiatives)
+    assert groups["landed"] == [entry]
 
 
 def test_intake_groups_splits_queued_decomposed_landed_and_the_legacy_case():
