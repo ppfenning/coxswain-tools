@@ -644,17 +644,17 @@ def _mtime_iso(p: Path):
 
 
 def _gather_context(profile_path: Path):
-    """Read the profile and the workspace; return (profile_or_none, reason, intake, runs, initiatives)."""
+    """Read the profile and the workspace; return (profile_or_none, reason, intake, runs, initiatives, problems)."""
     text = _read_text_or_none(profile_path)
     if text is None:
-        return None, f"no profile at {profile_path}", [], [], []
+        return None, f"no profile at {profile_path}", [], [], [], []
     try:
         profile = route.parse_profile(text)
     except route.ProfileError as exc:
-        return None, f"profile unreadable: {exc}", [], [], []
+        return None, f"profile unreadable: {exc}", [], [], [], []
     workspace = profile.get("workspace_dir", "")
     if not workspace:
-        return profile, "workspace_dir not set in profile", [], [], []
+        return profile, "workspace_dir not set in profile", [], [], [], []
     ws = Path(workspace).expanduser()
     pid_paths = sorted((ws / "runs").glob("*.pid"))
     pids = {p.stem: t for p in pid_paths if (t := _read_text_or_none(p)) is not None}
@@ -666,7 +666,8 @@ def _gather_context(profile_path: Path):
     return (profile, "",
             _intake_groups(ws, items),
             route.run_entries(pids, alive, started),
-            route.initiative_summaries(items))
+            route.initiative_summaries(items),
+            route.state_problems(items))
 
 
 def _route_context(a: argparse.Namespace) -> int:
@@ -676,7 +677,7 @@ def _route_context(a: argparse.Namespace) -> int:
     # gatherer, per charter A6, so a bug in the usage assessment surfaces
     # instead of erasing an otherwise-good docket (run tools-pacing-7).
     try:
-        profile, reason, intake, runs, initiatives = _gather_context(_profile_path(a))
+        profile, reason, intake, runs, initiatives, problems = _gather_context(_profile_path(a))
     except Exception as exc:
         print(f"routing: context unavailable ({type(exc).__name__}: {exc})")
         return 0
@@ -687,7 +688,7 @@ def _route_context(a: argparse.Namespace) -> int:
         if not reason and profile is not None else None
     )
     if a.json:
-        doc = route.context_document(profile, intake, runs, initiatives)
+        doc = route.context_document(profile, intake, runs, initiatives, problems)
         if reason:
             doc["reason"] = reason
         if usage_reason is not None:
@@ -700,7 +701,7 @@ def _route_context(a: argparse.Namespace) -> int:
         first_line = route.render_context(profile, empty_groups, [], []).partition("\n")[0]
         print(f"{first_line} ({reason})")
     else:
-        print(f"{route.render_context(profile, intake, runs, initiatives)}\nusage: {usage_reason}")
+        print(f"{route.render_context(profile, intake, runs, initiatives, problems)}\nusage: {usage_reason}")
     return 0
 
 
@@ -797,11 +798,12 @@ def _route_status(a: argparse.Namespace) -> int:
         ws = Path(workspace).expanduser()
         rows = _status_rows_for(ws / "runs")
         groups = _intake_groups_for(ws)
+        problems = route.state_problems(_work_items(ws))
         if a.json:
-            doc = rows if groups is None else {"runs": rows, "intake": groups}
+            doc = rows if groups is None else {"runs": rows, "intake": groups, "problems": problems}
             print(json.dumps(doc, indent=2))
         else:
-            print(route.render_status(rows, groups))
+            print(route.render_status(rows, groups, problems))
     except Exception as exc:
         print(f"routing: status unavailable ({type(exc).__name__}: {exc})")
     return 0

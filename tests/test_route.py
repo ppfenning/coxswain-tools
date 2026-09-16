@@ -790,7 +790,7 @@ def test_initiative_summaries_excludes_a_task_whose_needs_are_not_all_done():
     # so it must not be counted, and the initiative must not appear at all.
     items = [
         {"id": "b1", "initiative": "beta", "phase": "build", "state": "ready", "needs": ["b0"]},
-        {"id": "b0", "initiative": "beta", "phase": "build", "state": "in-progress", "needs": []},
+        {"id": "b0", "initiative": "beta", "phase": "build", "state": "in_progress", "needs": []},
     ]
     assert route.initiative_summaries(items) == []
 
@@ -834,6 +834,40 @@ def test_initiative_summaries_sorts_rows_by_initiative_id():
     assert [row["id"] for row in summaries] == [
         "alpha", "victor", "whiskey", "xray", "yankee", "zulu",
     ]
+
+
+def test_state_problems_names_the_initiative_file_and_bad_value():
+    items = [
+        {"initiative": "alpha", "file": "1-build/t1.md", "state": "superseded"},
+        {"initiative": "alpha", "file": "1-build/t2.md", "state": "ready"},
+    ]
+    assert route.state_problems(items) == [
+        "alpha: 1-build/t1.md: unknown state 'superseded'",
+    ]
+
+
+def test_initiative_summaries_an_unknown_state_makes_the_initiative_unlaunchable():
+    # e1 is otherwise ready and unblocked, but e0's bad state must zero out
+    # the whole initiative, not just skip e0.
+    items = [
+        {"id": "e0", "initiative": "epsilon", "phase": "build", "state": "superseded",
+         "needs": [], "file": "build/e0.md"},
+        {"id": "e1", "initiative": "epsilon", "phase": "build", "state": "ready", "needs": []},
+    ]
+    assert route.initiative_summaries(items) == [{"id": "epsilon", "phase": None, "ready": 0}]
+
+
+def test_initiative_summaries_an_approved_item_is_awaiting_merge_not_ready():
+    items = [
+        {"id": "f0", "initiative": "foxtrot", "phase": "build", "state": "approved", "needs": []},
+    ]
+    summaries = route.initiative_summaries(items)
+    assert summaries == [{"id": "foxtrot", "phase": None, "ready": 0, "awaiting_merge": 1}]
+
+
+def test_initiative_states_an_approved_item_is_not_complete():
+    items = [{"initiative": "foxtrot", "state": "approved"}]
+    assert route.initiative_states(["foxtrot"], items) == {"foxtrot": False}
 
 
 def test_intake_entries_falls_back_to_id_when_frontmatter_has_no_title_and_body_is_empty():
@@ -1030,12 +1064,18 @@ def test_status_entries_sorts_the_union_of_run_and_log_ids():
 def test_work_item_passes_full_frontmatter_through():
     fields = {"id": "t1", "phase": "1-build", "state": "ready", "needs": ["t0"]}
     item = route.work_item(fields, initiative="demo", phase_dir="9-ignored", stem="ignored")
-    assert item == {"id": "t1", "initiative": "demo", "phase": "1-build", "state": "ready", "needs": ["t0"]}
+    assert item == {
+        "id": "t1", "initiative": "demo", "phase": "1-build", "state": "ready", "needs": ["t0"],
+        "file": "9-ignored/ignored.md",
+    }
 
 
 def test_work_item_defaults_every_field_from_the_path_when_frontmatter_is_empty():
     item = route.work_item({}, initiative="demo", phase_dir="1-build", stem="task")
-    assert item == {"id": "task", "initiative": "demo", "phase": "1-build", "state": "todo", "needs": []}
+    assert item == {
+        "id": "task", "initiative": "demo", "phase": "1-build", "state": "todo", "needs": [],
+        "file": "1-build/task.md",
+    }
 
 
 def test_work_item_initiative_argument_wins_over_a_frontmatter_key():
