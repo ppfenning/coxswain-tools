@@ -7,7 +7,16 @@ import datetime
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from agent_tools import runs_top
+
+@dataclass(frozen=True)
+class Span:
+    text: str
+    role: str = "plain"
+
+
+Line = tuple[Span, ...]
+
+from agent_tools import panel, runs_top  # noqa: E402  (after Span/Line so panel.py can import them back)
 
 __all__ = [
     "Drill",
@@ -15,10 +24,12 @@ __all__ = [
     "Facts",
     "Intake",
     "Land",
+    "Line",
     "Quit",
     "Refuse",
     "Send",
     "Setup",
+    "Span",
     "State",
     "Talk",
     "attention_pane",
@@ -196,23 +207,28 @@ def panel_status(last_value, age_seconds: float | None, timeout_seconds: float) 
     return "fresh"
 
 
-def chair_pane(facts: Facts, width: int) -> tuple[str, ...]:
+def _cut_span(text: str, width: int, role: str = "plain") -> Line:
+    return (Span(_cut(text, width), role),)
+
+
+def chair_pane(facts: Facts, width: int) -> tuple[Line, ...]:
     holder = (facts.chair or {}).get("session", "none")
     live_runs = any(r.alive for r in facts.runs_rows)
     attention = facts.chair_liveness in ("none", "stale", "crashed") and live_runs
     mark = _ATTENTION_MARK if attention else ""
     age = _heartbeat_age(facts.chair, facts.now)
     heartbeat = f"{age:.0f}s ago" if age is not None else "n/a"
-    lines = (f"{mark}LEADER", f"holder: {holder}  status: {facts.chair_liveness}  heartbeat: {heartbeat}")
-    return tuple(_cut(line, width) for line in lines)
+    role = "alert" if attention else "ok" if facts.chair_liveness == "live" else "plain"
+    text = f"{mark}holder: {holder}  status: {facts.chair_liveness}  heartbeat: {heartbeat}"
+    return (_cut_span(text, width, role),)
 
 
 # Back-compat alias: home_screen.py still calls `leader_pane` until its own rename ticket lands.
 leader_pane = chair_pane
 
 
-def runs_pane(facts: Facts, width: int) -> tuple[str, ...]:
-    return tuple(runs_top.render(list(facts.runs_rows), width))
+def runs_pane(facts: Facts, width: int) -> tuple[Line, ...]:
+    return tuple((Span(line),) for line in runs_top.render(list(facts.runs_rows), width))
 
 
 def attention_pane(facts: Facts, width: int) -> tuple[str, ...]:
@@ -224,26 +240,25 @@ def attention_pane(facts: Facts, width: int) -> tuple[str, ...]:
     return tuple(_cut(line, width) for line in lines)
 
 
-def backlog_pane(facts: Facts, width: int) -> tuple[str, ...]:
+def backlog_pane(facts: Facts, width: int) -> tuple[Line, ...]:
     b = facts.backlog
     counts = f"queued {b.get('queued', 0)}  decomposed {b.get('decomposed', 0)}  landed {b.get('landed', 0)}"
     ready = b.get("ready", {})
     ready_line = "ready: " + (", ".join(f"{k}={v}" for k, v in ready.items()) or "none")
-    lines = ("BACKLOG", counts, ready_line)
-    return tuple(_cut(line, width) for line in lines)
+    return tuple(_cut_span(line, width) for line in (counts, ready_line))
 
 
 def time_to_reset(end: datetime.datetime, now: datetime.datetime) -> str:
     return f"{max(int((end - now).total_seconds() // 60), 0)}m"
 
 
-def window_pane(facts: Facts, width: int) -> tuple[str, ...]:
+def window_pane(facts: Facts, width: int) -> tuple[Line, ...]:
     w = facts.window
     verdict = f"tier {w.get('tier', '')} effort {w.get('effort_ceiling', '')}"
     spend = f"spent ${w.get('spent_usd', 0):.2f}  reset in {w.get('time_to_reset', '')}"
     reason = w.get("reason", "")
-    lines = ("WINDOW", verdict, spend, reason) if reason else ("WINDOW", verdict, spend)
-    return tuple(_cut(line, width) for line in lines)
+    lines = (verdict, spend, reason) if reason else (verdict, spend)
+    return tuple(_cut_span(line, width) for line in lines)
 
 
 def health_pane(rows: list[dict], width: int) -> tuple[str, ...]:
@@ -263,23 +278,23 @@ def _columns(width: int, n: int) -> tuple[int, ...]:
     return tuple(base + (1 if i < extra else 0) for i in range(n))
 
 
-def _side_by_side(columns: tuple[tuple[str, ...], ...], col_widths: tuple[int, ...]) -> tuple[str, ...]:
-    height = max(len(c) for c in columns)
-    padded = [c + ("",) * (height - len(c)) for c in columns]
-    return tuple(" ".join(line.ljust(w) for line, w in zip(row, col_widths)) for row in zip(*padded))
+def _join_boxes(boxes: tuple[tuple[Line, ...], ...]) -> tuple[Line, ...]:
+    sep = (Span(" "),)
+    return tuple(sum(((sep + part if i else part) for i, part in enumerate(row)), ()) for row in zip(*boxes))
 
 
-def frame(facts: Facts, state: State, width: int) -> tuple[str, ...]:
-    """Layout: runs pane always full width; the other three stack above it under `_SIDE_BY_SIDE_WIDTH`, else sit side by side summing to `width` exactly."""
-    runs = runs_pane(facts, width)
-    if width >= _SIDE_BY_SIDE_WIDTH:
-        widths = _columns(width, _COLUMN_COUNT)
-        top = _side_by_side(
-            (chair_pane(facts, widths[0]), backlog_pane(facts, widths[1]), window_pane(facts, widths[2])),
-            widths,
-        )
-    else:
-        top = (*chair_pane(facts, width), *backlog_pane(facts, width), *window_pane(facts, width))
+def frame(facts: Facts, state: State, width: int, height: int) -> tuple[Line, ...]:
+    """Layout: Leader/Backlog/Window boxed equal width and height, side by side at or above `_SIDE_BY_SIDE_WIDTH`
+    else stacked; `runs_pane` boxed full width into whatever of `height` remains."""
+    side_by_side = width >= _SIDE_BY_SIDE_WIDTH
+    widths = _columns(width, _COLUMN_COUNT) if side_by_side else (width, width, width)
+    titles = ("Leader", "Backlog", "Window")
+    panes = tuple(pane(facts, w - 2) for pane, w in zip((chair_pane, backlog_pane, window_pane), widths))
+    box_height = min(max(len(p) for p in panes) + 2, height)
+    boxes = tuple(panel.box(title, body, w, box_height) for title, body, w in zip(titles, panes, widths))
+    top = _join_boxes(boxes) if side_by_side else tuple(line for b in boxes for line in b)
+    top_height = box_height if side_by_side else box_height * len(boxes)
+    runs = panel.box("Runs", runs_pane(facts, width - 2), width, max(height - top_height, 0))
     return (*top, *runs)
 
 

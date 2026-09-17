@@ -143,27 +143,28 @@ def facts(runs_dir, work_dir, intake_dir, now: float, cache: dict | None = None,
     return result, cache
 
 
+_PANEL_STATUS_KEYS = (("Leader", "leader"), ("Backlog", "backlog"), ("Window", "window"), ("Runs", "runs"))
+
+
+def _marked(line: home_model.Line, stale_titles: set[str]) -> str:
+    """`line` with `_MARK` prefixed to every span whose role is `"title"` and text names a stale panel."""
+    spans = (
+        dataclasses.replace(span, text=f"{_MARK}{span.text}") if span.role == "title" and span.text in stale_titles
+        else span
+        for span in line
+    )
+    return "".join(span.text for span in spans)
+
+
 def draw(stdscr, facts_obj: home_model.Facts, state: home_model.State, statuses: dict) -> None:
     import curses
 
     stdscr.clear()
     height, width = stdscr.getmaxyx()
-    chair_lines = home_model.chair_pane(facts_obj, width)
-    backlog_lines = home_model.backlog_pane(facts_obj, width)
-    window_lines = home_model.window_pane(facts_obj, width)
-    runs_lines = home_model.runs_pane(facts_obj, width)
     chat_lines = home_model.chat_pane(facts_obj.chat, width, state.chat_draft)
-    lines = list(home_model.frame(facts_obj, state, width)) + list(chat_lines)
-    if len(lines) == len(chair_lines) + len(backlog_lines) + len(window_lines) + len(runs_lines) + len(chat_lines):
-        offsets = (
-            (0, statuses.get("leader", "fresh")),
-            (len(chair_lines), statuses.get("backlog", "fresh")),
-            (len(chair_lines) + len(backlog_lines), statuses.get("window", "fresh")),
-            (len(chair_lines) + len(backlog_lines) + len(window_lines), statuses.get("runs", "fresh")),
-        )
-        for index, status in offsets:
-            if status != "fresh" and index < len(lines):
-                lines[index] = f"{_MARK}{lines[index]}"
+    frame_lines = home_model.frame(facts_obj, state, width, max(height - len(chat_lines), 0))
+    stale_titles = {title for title, key in _PANEL_STATUS_KEYS if statuses.get(key, "fresh") != "fresh"}
+    lines = [_marked(line, stale_titles) for line in frame_lines] + list(chat_lines)
     for i, line in enumerate(lines[:height]):
         with contextlib.suppress(curses.error):
             stdscr.addnstr(i, 0, line, width)

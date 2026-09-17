@@ -9,6 +9,7 @@ from agent_tools.home_model import (
     Refuse,
     Send,
     Setup,
+    Span,
     State,
     Talk,
     attention_pane,
@@ -29,7 +30,7 @@ _ROW = Row(run="r1", alive=True, phase="build", node="build-in-worktree", attemp
 
 _WINDOW = {"tier": "sonnet", "effort_ceiling": "high", "spent_usd": 12.5, "time_to_reset": "2h15m"}
 _BACKLOG = {"queued": 4, "decomposed": 2, "landed": 9, "ready": {"tools-home": 3}}
-_RUNS_PANE = tuple(render([_ROW], 80))
+_RUNS_PANE = tuple((Span(line),) for line in render([_ROW], 80))
 
 
 def _facts(**over) -> Facts:
@@ -42,24 +43,24 @@ def _live_leader_facts(**over) -> Facts:
     return _facts(**{**base, **over})
 
 
-def test_leader_pane_marks_attention_when_leader_is_stale_and_a_run_is_alive():
+def test_leader_pane_marks_attention_with_the_alert_role_when_stale_and_a_run_is_alive():
     lines = chair_pane(_facts(leader={"session": "s1"}, leader_liveness="stale"), 80)
-    assert lines[0].startswith("!")
+    assert lines[0][0].role == "alert"
 
 
 def test_leader_pane_marks_attention_when_leader_is_crashed_and_a_run_is_alive():
     lines = chair_pane(_facts(leader={"session": "s1"}, leader_liveness="crashed"), 80)
-    assert lines[0].startswith("!")
+    assert lines[0][0].role == "alert"
 
 
 def test_leader_pane_is_plain_with_no_heartbeat_when_the_leader_carries_none():
     lines = chair_pane(_facts(leader={"session": "s1"}, leader_liveness="live"), 80)
-    assert lines == ("LEADER", "holder: s1  status: live  heartbeat: n/a")
+    assert lines == ((Span("holder: s1  status: live  heartbeat: n/a", "ok"),),)
 
 
 def test_leader_pane_shows_heartbeat_age_from_facts_now():
     lines = chair_pane(_live_leader_facts(), 80)
-    assert lines == ("LEADER", "holder: s1  status: live  heartbeat: 60s ago")
+    assert lines == ((Span("holder: s1  status: live  heartbeat: 60s ago", "ok"),),)
 
 
 def test_facts_chair_and_chair_liveness_mirror_the_stored_leader_fields():
@@ -97,27 +98,24 @@ def test_attention_pane_shows_one_line_per_stop_reason_and_skips_running():
 
 def test_backlog_pane_shows_counts_and_ready_per_initiative():
     assert backlog_pane(_facts(), 80) == (
-        "BACKLOG",
-        "queued 4  decomposed 2  landed 9",
-        "ready: tools-home=3",
+        (Span("queued 4  decomposed 2  landed 9"),),
+        (Span("ready: tools-home=3"),),
     )
 
 
 def test_window_pane_shows_the_pacing_verdict():
     assert window_pane(_facts(), 80) == (
-        "WINDOW",
-        "tier sonnet effort high",
-        "spent $12.50  reset in 2h15m",
+        (Span("tier sonnet effort high"),),
+        (Span("spent $12.50  reset in 2h15m"),),
     )
 
 
 def test_window_pane_cuts_a_too_long_reason_with_an_ellipsis():
     lines = window_pane(_facts(window={**_WINDOW, "reason": "y" * 100}), 80)
     assert lines == (
-        "WINDOW",
-        "tier sonnet effort high",
-        "spent $12.50  reset in 2h15m",
-        "y" * 79 + "…",
+        (Span("tier sonnet effort high"),),
+        (Span("spent $12.50  reset in 2h15m"),),
+        (Span("y" * 79 + "…"),),
     )
 
 
@@ -245,53 +243,26 @@ def test_chat_pane_cuts_a_too_long_message_with_an_ellipsis():
     assert lines[1] == "operator: " + "y" * 69 + "…"
 
 
-def test_frame_at_80_stacks_the_four_panes_with_the_runs_header_intact():
+def test_frame_at_a_wide_width_puts_leader_backlog_and_window_boxes_on_one_row():
     facts = _live_leader_facts()
     state = State(plugin_dir="/p", leader_liveness="none", other_holder=None)
-    assert frame(facts, state, 80) == (
-        "LEADER",
-        "holder: s1  status: live  heartbeat: 60s ago",
-        "BACKLOG",
-        "queued 4  decomposed 2  landed 9",
-        "ready: tools-home=3",
-        "WINDOW",
-        "tier sonnet effort high",
-        "spent $12.50  reset in 2h15m",
-        *_RUNS_PANE,
-    )
+    top = frame(facts, state, 200, 10)[0]
+    assert [s.text for s in top if s.role == "title"] == ["Leader", "Backlog", "Window"]
 
 
-def test_frame_at_200_puts_the_three_top_panes_on_one_row():
+def test_frame_under_the_side_by_side_width_stacks_the_four_boxes():
     facts = _live_leader_facts()
     state = State(plugin_dir="/p", leader_liveness="none", other_holder=None)
-    assert frame(facts, state, 200) == (
-        "LEADER                                                             BACKLOG                                                            WINDOW                                                            ",
-        "holder: s1  status: live  heartbeat: 60s ago                       queued 4  decomposed 2  landed 9                                   tier sonnet effort high                                           ",
-        "                                                                   ready: tools-home=3                                                spent $12.50  reset in 2h15m                                      ",
-        *_RUNS_PANE,
-    )
+    lines = frame(facts, state, 80, 20)
+    titles = [s.text for line in lines for s in line if s.role == "title"]
+    assert titles == ["Leader", "Backlog", "Window", "Runs"]
 
 
-def test_frame_at_160_fits_the_side_by_side_row_exactly():
+def test_frame_returns_every_line_exactly_width_columns():
     facts = _live_leader_facts()
     state = State(plugin_dir="/p", leader_liveness="none", other_holder=None)
-    assert frame(facts, state, 160) == (
-        "LEADER                                                BACKLOG                                               WINDOW                                              ",
-        "holder: s1  status: live  heartbeat: 60s ago          queued 4  decomposed 2  landed 9                      tier sonnet effort high                             ",
-        "                                                      ready: tools-home=3                                   spent $12.50  reset in 2h15m                        ",
-        *_RUNS_PANE,
-    )
-
-
-def test_frame_at_161_fits_the_side_by_side_row_exactly():
-    facts = _live_leader_facts()
-    state = State(plugin_dir="/p", leader_liveness="none", other_holder=None)
-    assert frame(facts, state, 161) == (
-        "LEADER                                                BACKLOG                                               WINDOW                                               ",
-        "holder: s1  status: live  heartbeat: 60s ago          queued 4  decomposed 2  landed 9                      tier sonnet effort high                              ",
-        "                                                      ready: tools-home=3                                   spent $12.50  reset in 2h15m                         ",
-        *_RUNS_PANE,
-    )
+    lines = frame(facts, state, 161, 10)
+    assert all(sum(len(s.text) for s in line) == 161 for line in lines)
 
 
 def test_health_pane_lists_only_the_failing_check_with_its_detail():
