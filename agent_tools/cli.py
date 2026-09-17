@@ -3227,23 +3227,9 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("plan")
     commands.build_parser(rows, [group], sub)
 
-    route_p = sub.add_parser(
-        "route", help="file work for the harness, and see what is queued or running",
-        description="File work for the harness, and see what is queued or running.",
-        epilog="examples:\n  cox route launch epic --initiative work/<id> --repo PATH\n  cox route status --profile PATH",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    route_p.set_defaults(fn=_bare_group(route_p))
-    r = route_p.add_subparsers(dest="cmd", required=False)
-    ctx = r.add_parser("context", help="the routing profile's resolved context"); ctx.add_argument("--profile"); ctx.add_argument("--json", action="store_true"); ctx.set_defaults(fn=_route_context)
-    st = r.add_parser("status", help="what is queued or running for this profile"); st.add_argument("--profile"); st.add_argument("--json", action="store_true"); st.set_defaults(fn=_route_status)
-    f = r.add_parser("file", help="file a new ticket for the harness"); f.add_argument("--profile"); f.add_argument("--repo"); f.add_argument("--title")
-    f.add_argument("--body"); f.add_argument("--phase", default="build"); f.add_argument("--intake", action="store_true")
-    f.add_argument("--from-intake", help="link and file an existing intake file's initiative, then retire it"); f.set_defaults(fn=_route_file)
-    li = r.add_parser("lint", help="static ticket lint over a filed initiative, work-shape.md §3")
-    li.add_argument("initiative_dir"); li.add_argument("--repo", default=None); li.set_defaults(fn=_route_lint)
-    gr = r.add_parser("groups", help="print the newest plans/intake-groups/<date>.md file, work-shape.md §5")
-    gr.add_argument("--profile"); gr.set_defaults(fn=_route_groups)
+    group, rows = _table_entry("route")
+    route_p = commands.build_parser(rows, [group], sub)["route"]
+    r = _leaf_subparsers(route_p)
     ld = r.add_parser("chair", help="the chair lock for the landing loop (runs/chair.json)")
     ld.set_defaults(fn=_bare_group(ld))
     lds = ld.add_subparsers(dest="chair_cmd", required=False)
@@ -3469,6 +3455,43 @@ EPIC_COMMANDS = [
     ),
 ]
 
+ROUTE_GROUP = commands.Group(
+    name="route", help="file work for the harness, and see what is queued or running",
+    description="File work for the harness, and see what is queued or running.",
+    epilog="examples:\n  cox route launch epic --initiative work/<id> --repo PATH\n  cox route status --profile PATH",
+)
+ROUTE_COMMANDS = [
+    commands.Command(
+        "context", "route", "the routing profile's resolved context",
+        (commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"})),
+        _route_context, False, (),
+    ),
+    commands.Command(
+        "status", "route", "what is queued or running for this profile",
+        (commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"})),
+        _route_status, False, (),
+    ),
+    commands.Command(
+        "file", "route", "file a new ticket for the harness",
+        (
+            commands.Arg(("--profile",)), commands.Arg(("--repo",)), commands.Arg(("--title",)), commands.Arg(("--body",)),
+            commands.Arg(("--phase",), {"default": "build"}), commands.Arg(("--intake",), {"action": "store_true"}),
+            commands.Arg(("--from-intake",), {"help": "link and file an existing intake file's initiative, then retire it"}),
+        ),
+        _route_file, False, (),
+    ),
+    commands.Command(
+        "lint", "route", "static ticket lint over a filed initiative, work-shape.md §3",
+        (commands.Arg(("initiative_dir",)), commands.Arg(("--repo",), {"default": None})),
+        _route_lint, False, (),
+    ),
+    commands.Command(
+        "groups", "route", "print the newest plans/intake-groups/<date>.md file, work-shape.md §5",
+        (commands.Arg(("--profile",)),),
+        _route_groups, False, (),
+    ),
+]
+
 def _setup_doctor_row(a: argparse.Namespace) -> int:
     """Indirect through the module global, not a frozen reference: SETUP_COMMANDS
     is built once at import, but test_setup_screen.py monkeypatches
@@ -3515,8 +3538,17 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (USAGE_GROUP, USAGE_COMMANDS),
     (PLAN_GROUP, PLAN_COMMANDS),
     (EPIC_GROUP, EPIC_COMMANDS),
+    (ROUTE_GROUP, ROUTE_COMMANDS),
     (SETUP_GROUP, SETUP_COMMANDS),
 ]
+
+
+def _leaf_subparsers(parser: argparse.ArgumentParser) -> argparse._SubParsersAction:
+    """The `dest="cmd"` subparsers action `commands.build_parser` already
+    attached to `parser`, so a group's own further-nested subcommands
+    (route's `chair`, `launch`) attach to that one action instead of a
+    second `add_subparsers` call argparse would refuse."""
+    return next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
 
 
 def _table_entry(name: str) -> tuple[commands.Group, list[commands.Command]]:
