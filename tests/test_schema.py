@@ -24,3 +24,43 @@ def test_a_none_entry_never_triggers_a_warn_and_never_appears_in_either_message(
     assert state == "ok"
     assert "graphs" not in detail
     assert detail == "cartridges 1.0, tools 1.0"
+
+
+def test_cartridges_schema_resolves_from_the_nearest_ancestor_of_provider_profile(tmp_path):
+    core_dir = tmp_path / "checkout" / "core"
+    core_dir.mkdir(parents=True)
+    (core_dir / "__init__.py").write_text('SCHEMA_VERSION = "1.2"\n')
+    provider_profile = tmp_path / "checkout" / "providers" / "x.yaml"
+    provider_profile.parent.mkdir(parents=True)
+    provider_profile.write_text("command: fakeprovider\n")
+    (tmp_path / "workspace" / "cartridges").mkdir(parents=True)
+    assert schema.cartridges_schema(str(provider_profile)) == "1.2"
+
+
+def test_cartridges_schema_resolves_from_a_skills_root_when_provider_profile_misses(tmp_path):
+    core_dir = tmp_path / "checkout" / "core"
+    core_dir.mkdir(parents=True)
+    (core_dir / "__init__.py").write_text('SCHEMA_VERSION = "1.2"\n')
+    skills_root = tmp_path / "checkout" / "skills-plugins" / "team"
+    skills_root.mkdir(parents=True)
+    assert schema.cartridges_schema(tmp_path / "provider.yaml", [skills_root]) == "1.2"
+
+
+def test_cartridges_schema_returns_none_with_no_core_init_under_any_ancestor(tmp_path):
+    provider_profile = tmp_path / "checkout" / "providers" / "x.yaml"
+    provider_profile.parent.mkdir(parents=True)
+    skills_root = tmp_path / "checkout" / "skills-plugins" / "team"
+    skills_root.mkdir(parents=True)
+    assert schema.cartridges_schema(str(provider_profile), [skills_root]) is None
+    assert schema.cell(schema.cartridges_schema(str(provider_profile), [skills_root])) == "?"
+
+
+def test_graphs_schema_reads_the_constant_from_the_harness_checkout(tmp_path):
+    harness_dir = tmp_path / "harness"
+    (harness_dir / "harness").mkdir(parents=True)
+    (harness_dir / "harness" / "__init__.py").write_text('CORE_SCHEMA = "1.0"\n')
+    assert schema.graphs_schema(harness_dir) == "1.0"
+
+
+def test_graphs_schema_returns_none_when_the_checkout_is_absent(tmp_path):
+    assert schema.graphs_schema(tmp_path / "harness") is None

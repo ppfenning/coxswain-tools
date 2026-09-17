@@ -1977,12 +1977,14 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
         facts.update(_provider_facts(expand(profile["provider_profile"])))
     if profile.get("workspace_dir"):
         facts.update(_workspace_facts(expand(profile["workspace_dir"])))
+    facts["schema_versions"] = _schema_versions(harness_dir, expand(profile.get("provider_profile", "")),
+                                                 [expand(r) for r in roots])
     return facts
 
 
 def _setup_doctor(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser() if a.repo else Path.cwd()
-    facts = {**_gather_doctor_facts(_profile_path(a), repo), "schema_versions": _schema_versions()}
+    facts = _gather_doctor_facts(_profile_path(a), repo)
     rows = doctor.checks(facts)
     rc = doctor.exit_code(rows)
     print(json.dumps({"rows": rows, "ok": rc == 0}, indent=2) if a.json else doctor.render(rows))
@@ -2205,7 +2207,7 @@ def _install(a: argparse.Namespace) -> int:
         "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, a.provider)) is not None,
     }
     options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team, "workspace": a.workspace}
-    schema_state, schema_detail = schema.status(_schema_versions())
+    schema_state, schema_detail = schema.status(_schema_versions(str(root / "harness"), str(root / "cartridges")))
     if schema_state != "ok":
         print(f"schema  WARN  {schema_detail}")
     steps = install.plan(manifest, facts, options)
@@ -2242,21 +2244,16 @@ def _upgrade(a: argparse.Namespace) -> int:
     return _install_execute(steps, manifest, options, root)
 
 
-def _schema_versions() -> dict[str, str | None]:
-    """The schema each of the three tools was built against, `None` where the
-    package is not importable here (a graphs or cartridges checkout absent
-    from this environment) rather than a raise."""
-    try:
-        import core
-        cartridges = core.SCHEMA_VERSION
-    except (ImportError, AttributeError):
-        cartridges = None
-    try:
-        import harness
-        graphs = harness.CORE_SCHEMA
-    except (ImportError, AttributeError):
-        graphs = None
-    return {"cartridges": cartridges, "graphs": graphs, "tools": schema.TOOLS_SCHEMA}
+def _schema_versions(harness_dir: str = "", provider_profile: str = "", skills_roots: list[str] | None = None
+                      ) -> dict[str, str | None]:
+    """The schema each of the three tools was built against, read from the
+    profile's (or `--root`'s) checkouts rather than imported, since graphs
+    and cartridges are not installed in this venv."""
+    return {
+        "cartridges": schema.cartridges_schema(provider_profile, skills_roots or []),
+        "graphs": schema.graphs_schema(harness_dir),
+        "tools": schema.TOOLS_SCHEMA,
+    }
 
 
 def _versions(a: argparse.Namespace) -> int:
@@ -2268,7 +2265,7 @@ def _versions(a: argparse.Namespace) -> int:
     root = Path(a.root) if a.root else manifest_path.resolve().parent.parent
     facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
               "provider_cli_on_path": False}
-    schema_versions = _schema_versions()
+    schema_versions = _schema_versions(str(root / "harness"), str(root / "cartridges"))
     display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s,
                 "schema": schema.cell(schema_versions.get(c)) if c in schema_versions else "?"}
                for c, p, i, s in install.rows(manifest, facts)]
