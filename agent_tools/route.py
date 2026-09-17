@@ -56,6 +56,7 @@ _KNOWN_KEYS = {
     "harness_dir",
     "workspace_dir",
     "assume",
+    "router",
 }
 
 _SPEND_KEYS = {"window_ceiling_usd", "node_cap_usd"}
