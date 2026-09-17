@@ -21,7 +21,8 @@ if TYPE_CHECKING:
     from agent_tools.release_check import Drift
 
 def parse_bullet(text: str, components: set[str]) -> tuple[str | None, set[str]]:
-    component = next((name for name in sorted(components) if re.search(rf"\b{re.escape(name)}\b", text)), None)
+    component = next((name for name in sorted(components)
+                       if re.search(rf"\b{re.escape(name)}\b(?!://)", text)), None)
     citations = set(_PR.findall(text)) | set(_SHA.findall(text))
     return component, citations
 
