@@ -1427,12 +1427,27 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(f"routing: no idea file at {idea_path}")
             return 2
         workspace_dir = Path(profile["workspace_dir"]).expanduser()
-        initiative_md = workspace_dir / "work" / a.initiative_id / "initiative.md"
-        if initiative_md.exists():
-            print(f"routing: {initiative_md} already exists, left untouched")
+        initiative_dir = workspace_dir / "work" / a.initiative_id
+        initiative_md = initiative_dir / "initiative.md"
+        idea_fields, idea_body = route.parse_frontmatter(idea_path.read_text(encoding="utf-8"))
+        intake = os.path.relpath(idea_path, workspace_dir)
+        if initiative_md.exists() and any(initiative_dir.glob("*/*.md")):
+            print("routing: initiative.md kept: tickets exist")
+        elif initiative_md.exists():
+            fields, body = route.parse_frontmatter(initiative_md.read_text(encoding="utf-8"))
+            fresh = idea_path.stat().st_mtime <= initiative_md.stat().st_mtime and idea_body == body
+            if fresh:
+                print(f"routing: {initiative_md} already exists, left untouched")
+            elif a.dry_run:
+                print(f"dry-run: would write {initiative_md}")
+            else:
+                content = route.initiative_text(
+                    fields.get("id", a.initiative_id), fields.get("title", ""),
+                    fields.get("repo", ""), fields.get("intake", intake), idea_body,
+                )
+                initiative_md.write_text(content, encoding="utf-8")
+                print(f"routing: initiative.md refreshed from {idea_path}")
         else:
-            idea_fields, idea_body = route.parse_frontmatter(idea_path.read_text(encoding="utf-8"))
-            intake = os.path.relpath(idea_path, workspace_dir)
             initiative_content = route.initiative_text(
                 a.initiative_id, idea_fields.get("title", ""), idea_fields.get("repo", ""), intake, idea_body,
             )
