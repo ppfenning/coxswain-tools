@@ -16,7 +16,8 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_tools import home_model, leader, leader_chat, route, runs_top_screen, usage_window
+from agent_tools import home_model, leader, leader_chat, route, runs_top_screen, theme, usage_window
+from agent_tools.home_model import Span
 from agent_tools.pacing import assess
 
 __all__ = ["draw", "facts", "main", "run_effect"]
@@ -146,28 +147,38 @@ def facts(runs_dir, work_dir, intake_dir, now: float, cache: dict | None = None,
 _PANEL_STATUS_KEYS = (("Leader", "leader"), ("Backlog", "backlog"), ("Window", "window"), ("Runs", "runs"))
 
 
-def _marked(line: home_model.Line, stale_titles: set[str]) -> str:
+def _marked(line: home_model.Line, stale_titles: set[str]) -> home_model.Line:
     """`line` with `_MARK` prefixed to every span whose role is `"title"` and text names a stale panel."""
-    spans = (
+    return tuple(
         dataclasses.replace(span, text=f"{_MARK}{span.text}") if span.role == "title" and span.text in stale_titles
         else span
         for span in line
     )
-    return "".join(span.text for span in spans)
 
 
-def draw(stdscr, facts_obj: home_model.Facts, state: home_model.State, statuses: dict) -> None:
+def _paint(stdscr, y: int, line: home_model.Line, width: int, attrs: dict[str, int]) -> None:
+    """`attrs` maps a role to a curses attribute, already resolved via `curses.color_pair`."""
     import curses
 
+    col = 0
+    for span in line:
+        if col >= width:
+            break
+        with contextlib.suppress(curses.error):
+            stdscr.addnstr(y, col, span.text, width - col, attrs.get(span.role, attrs.get("plain", 0)))
+        col += len(span.text)
+
+
+def draw(stdscr, facts_obj: home_model.Facts, state: home_model.State, statuses: dict,
+         attrs: dict[str, int]) -> None:
     stdscr.clear()
     height, width = stdscr.getmaxyx()
     chat_lines = home_model.chat_pane(facts_obj.chat, width, state.chat_draft)
     frame_lines = home_model.frame(facts_obj, state, width, max(height - len(chat_lines), 0))
     stale_titles = {title for title, key in _PANEL_STATUS_KEYS if statuses.get(key, "fresh") != "fresh"}
-    lines = [_marked(line, stale_titles) for line in frame_lines] + list(chat_lines)
+    lines = [_marked(line, stale_titles) for line in frame_lines] + [(Span(text),) for text in chat_lines]
     for i, line in enumerate(lines[:height]):
-        with contextlib.suppress(curses.error):
-            stdscr.addnstr(i, 0, line, width)
+        _paint(stdscr, i, line, width, attrs)
     stdscr.refresh()
 
 
@@ -204,6 +215,8 @@ def main(runs_dir, work_dir, intake_dir, plugin_dir: str, refresh_seconds: float
         with contextlib.suppress(curses.error):
             curses.curs_set(0)
         stdscr.timeout(int(refresh_seconds * 1000))
+        numbers = theme.install(theme.resolve("default"))
+        attrs = {role: curses.color_pair(n) for role, n in numbers.items()}
         cache: dict = {}
         state = home_model.State(plugin_dir=plugin_dir, leader_liveness="none", other_holder=None)
         while True:
@@ -211,7 +224,7 @@ def main(runs_dir, work_dir, intake_dir, plugin_dir: str, refresh_seconds: float
                                       window_ceiling_usd=window_ceiling_usd)
             other_holder = facts_obj.chair.get("session") if facts_obj.chair and facts_obj.chair_liveness == "live" else None
             state = dataclasses.replace(state, leader_liveness=facts_obj.chair_liveness, other_holder=other_holder)
-            draw(stdscr, facts_obj, state, cache.get("_status", {}))
+            draw(stdscr, facts_obj, state, cache.get("_status", {}), attrs)
             ch = stdscr.getch()
             if ch == -1:
                 continue
