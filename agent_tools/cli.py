@@ -133,14 +133,18 @@ def _runs_events(a: argparse.Namespace) -> int:
 
 def _stats_ingest(a: argparse.Namespace) -> int:
     try:
-        report = stats_ingest.ingest(a.runs_dir, a.db, work_store_root=a.work_store_root)
+        report = stats_ingest.ingest(
+            a.runs_dir, a.db, work_store_root=a.work_store_root, cartridges_repo=a.cartridges_repo,
+        )
     except FileNotFoundError as exc:
         print(exc)
         return 1
     profile_summary = (
         f"provider_profile: {report.provider_profile_from_ledger} from ledger, "
         f"{report.provider_profile_from_node} from node record, "
-        f"{report.provider_profile_unresolved} unresolved"
+        f"{report.provider_profile_unresolved} unresolved; "
+        f"provider_profile_sha: {report.provider_profile_sha_resolved} resolved, "
+        f"{report.provider_profile_sha_unresolved} unresolved"
     )
     if report.unparsed_count:
         print(f"{report.runs_ingested} run(s) ingested; {report.unparsed_count} file(s) failed to parse:")
@@ -3095,6 +3099,7 @@ STATS_COMMANDS = [
             commands.Arg(("runs_dir",), {"nargs": "?", "default": "runs"}),
             commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
             commands.Arg(("--work-store-root",), {"default": "work"}),
+            commands.Arg(("--cartridges-repo",), {"default": None}),
         ),
         _stats_ingest, False, (),
     ),

@@ -1,4 +1,6 @@
-usage: cox stats ingest [-h] [--db DB] [--work-store-root WORK_STORE_ROOT] [runs_dir]
+usage: cox stats ingest [-h] [--db DB] [--work-store-root WORK_STORE_ROOT]
+                        [--cartridges-repo CARTRIDGES_REPO]
+                        [runs_dir]
 
 positional arguments:
   runs_dir
@@ -7,3 +9,4 @@ options:
   -h, --help            show this help message and exit
   --db DB
   --work-store-root WORK_STORE_ROOT
+  --cartridges-repo CARTRIDGES_REPO
