@@ -86,9 +86,6 @@ def _read_window(runs_dir, now_dt: datetime, window_ceiling_usd: float | None = 
         "spent_usd": window.spent_usd,
         "time_to_reset": home_model.time_to_reset(window.end, now_dt),
         "reason": result.reason,
-        "block_left": usage_window.block_remaining(window, now_dt)[1],
-        "ceiling_left": usage_window.ceiling_remaining(window),
-        "ceiling_usd": window.ceiling_usd,
     }
 
 

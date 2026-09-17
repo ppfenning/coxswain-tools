@@ -39,62 +39,28 @@ def _refuse(component: str | None, detail: str) -> list[dict]:
     return [{"kind": "refuse", "component": component, "detail": detail}]
 
 
-_VERSIONS_LABEL_RE = re.compile(r"^(\S+) pyproject\.toml is (\S+), manifest wants (\S+)")
-_PERFORMS_BUMP_SUFFIX_RE = re.compile(r"\s*\(cox dev release [^)]*\)$")
-
-
-def _drift_line(d, will_bump: bool = False) -> str:
+def _drift_line(d) -> str:
     a = f"{d.a_file}:{d.a_line}" if d.a_line is not None else d.a_file
     b = f"{d.b_file}:{d.b_line}" if d.b_line is not None else d.b_file
-    correction = d.correction
-    if d.check == "versions":
-        correction = _PERFORMS_BUMP_SUFFIX_RE.sub("", correction)
-        correction += " — the release bumps it" if will_bump else " — bump it by hand"
-    return f"{d.check}: {a} <-> {b} — {correction}"
+    return f"{d.check}: {a} <-> {b} — {d.correction}"
 
 
-def _versions_drift_is_planned(d, plan_steps: Sequence[dict]) -> bool:
-    """True when `plan_steps` already carries the bump that resolves `d`: a
-    `bump_pyproject` step for the same component landing at the version the
-    drift wants, or — when `d` names the umbrella's own pyproject.toml — a
-    `bump_manifest` step landing there. `d.correction`'s own wording
-    (`"<label> pyproject.toml is <found>, manifest wants <wants>"`, written by
-    `release_check.check_versions`) is the only place that names both the
-    component and the target version, so it is parsed rather than re-derived."""
-    m = _VERSIONS_LABEL_RE.match(d.correction)
-    if not m:
-        return False
-    label, _found, wants = m.groups()
-    if label == "umbrella":
-        return any(s["kind"] == "bump_manifest" and s.get("to") == wants for s in plan_steps)
-    return any(s["kind"] == "bump_pyproject" and s.get("component") == label and s.get("to") == wants
-               for s in plan_steps)
-
-
-def gate(drifts: Sequence, allow_reason: str | None, plan_steps: Sequence[dict] = ()) -> list[dict]:
+def gate(drifts: Sequence, allow_reason: str | None) -> list[dict]:
     """Refuse steps naming each drift, or one note step when `allow_reason`
-    says why they stand; empty when `drifts` is empty. A `versions` drift
-    still refuses unless `plan_steps` (the same invocation's `release_plan`
-    output) already carries the bump that resolves it, in which case it
-    becomes a note instead — the plan is about to do exactly what the drift
-    asks for. A `versions` drift the plan does not touch, or a pyproject
-    ahead of the manifest (no bump step is ever planned for that), still
-    refuses."""
+    says why they stand; empty when `drifts` is empty. A `versions` drift is
+    never folded into the allowed-reason note — it always refuses."""
     if not drifts:
         return []
-    versions = [d for d in drifts if d.check == "versions"]
-    other = [d for d in drifts if d.check != "versions"]
-    bumped = [d for d in versions if _versions_drift_is_planned(d, plan_steps)]
-    blocking = [d for d in versions if d not in bumped]
+    blocking = [d for d in drifts if d.check == "versions"]
+    allowable = [d for d in drifts if d.check != "versions"]
     blocking_steps = [{"kind": "refuse", "component": d.check, "detail": _drift_line(d)} for d in blocking]
-    bumped_steps = [{"kind": "note", "component": d.check, "detail": _drift_line(d, will_bump=True)} for d in bumped]
-    if not other:
-        return blocking_steps + bumped_steps
+    if not allowable:
+        return blocking_steps
     if allow_reason is None:
-        return blocking_steps + bumped_steps + [{"kind": "refuse", "component": d.check, "detail": _drift_line(d)} for d in other]
-    plural = "" if len(other) == 1 else "s"
-    return blocking_steps + bumped_steps + [{"kind": "note", "component": "release-check",
-             "detail": f"{allow_reason} ({len(other)} drift{plural} allowed)"}]
+        return blocking_steps + [{"kind": "refuse", "component": d.check, "detail": _drift_line(d)} for d in allowable]
+    plural = "" if len(allowable) == 1 else "s"
+    return blocking_steps + [{"kind": "note", "component": "release-check",
+             "detail": f"{allow_reason} ({len(allowable)} drift{plural} allowed)"}]
 
 
 def is_maintainer_remote(url: str) -> bool:
@@ -348,77 +314,6 @@ def tag_argv(directory: str, version: str) -> list[str]:
 def push_argv(directory: str, version: str) -> list[str]:
     """`git -C <directory> push origin v<version>`."""
     return ["git", "-C", directory, "push", "origin", "v" + version]
-
-
-def bumped_version_line(text: str, to: str) -> str:
-    """`text` (a pyproject.toml or manifest.toml) with its first top-level
-    `version = "..."` line rewritten to `to`; unchanged if none is found."""
-    return re.sub(r'(?m)^version = "[^"]*"', f'version = "{to}"', text, count=1)
-
-
-def bumped_uv_lock_text(text: str, package: str, to: str) -> str:
-    """`text` (uv.lock) with `package`'s own `[[package]]` stanza's `version`
-    line rewritten to `to`; every other package's stanza, and the lockfile's
-    own top-of-file `version = 1` schema line, are left untouched."""
-    blocks = re.split(r"(?=\n\[\[package\]\])", text)
-    return "".join(
-        re.sub(r'(?m)^version = "[^"]*"', f'version = "{to}"', b, count=1)
-        if re.search(rf'(?m)^name = "{re.escape(package)}"$', b) else b
-        for b in blocks)
-
-
-def checkout_branch_argv(directory: str, branch: str) -> list[str]:
-    """`git -C <directory> checkout -b <branch>` — cut from whatever commit
-    `directory` is on, which `_checkout_ready` has already required to be
-    the clean default branch."""
-    return ["git", "-C", directory, "checkout", "-b", branch]
-
-
-def add_argv(directory: str, *paths: str) -> list[str]:
-    """`git -C <directory> add -- <paths...>`."""
-    return ["git", "-C", directory, "add", "--", *paths]
-
-
-def commit_argv(directory: str, subject: str, *paths: str) -> list[str]:
-    """`git -C <directory> commit -m "<subject>" -- <paths...>`."""
-    return ["git", "-C", directory, "commit", "-m", subject, "--", *paths]
-
-
-def push_branch_argv(directory: str, branch: str) -> list[str]:
-    """`git -C <directory> push -u origin <branch>` — a branch push, unlike
-    `push_argv`'s tag push."""
-    return ["git", "-C", directory, "push", "-u", "origin", branch]
-
-
-def pr_create_argv(title: str, body: str) -> list[str]:
-    """`gh pr create --title "<title>" --body "<body>"`, run with `cwd` set
-    to the checkout the branch was pushed from."""
-    return ["gh", "pr", "create", "--title", title, "--body", body]
-
-
-def pr_checks_argv() -> list[str]:
-    """`gh pr checks --watch --fail-fast`, run against the checkout's current
-    branch's own pull request."""
-    return ["gh", "pr", "checks", "--watch", "--fail-fast"]
-
-
-def pr_merge_argv() -> list[str]:
-    """`gh pr merge --squash --delete-branch`."""
-    return ["gh", "pr", "merge", "--squash", "--delete-branch"]
-
-
-def checkout_ref_argv(directory: str, ref: str) -> list[str]:
-    """`git -C <directory> checkout <ref>` — switches back to an existing
-    branch, unlike `checkout_branch_argv`'s `-b`; run after a merge lands the
-    bump upstream, so the very next `tag`/`tag_self` step tags what actually
-    merged instead of the pre-squash commit the bump branch is still on."""
-    return ["git", "-C", directory, "checkout", ref]
-
-
-def pull_argv(directory: str, branch: str) -> list[str]:
-    """`git -C <directory> pull origin <branch>` — brings the squash-merge
-    commit `checkout_ref_argv` just switched onto down from `origin`."""
-    return ["git", "-C", directory, "pull", "origin", branch]
 
 
 def github_release_view_argv(tag: str) -> list[str]:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from agent_tools.pacing import Policy, Window
 
 __all__ = [
     "DEFAULT_POLICY", "block_remaining", "ceiling_remaining", "gather", "gather_weekly",
-    "weekly_window_from", "window_from",
+    "usage_cost_usd", "weekly_window_from", "window_from",
 ]
 
 # Used wherever the resolved cartridge dict carries no `policy.pacing` key
@@ -76,7 +77,7 @@ def window_from(
 
     start = now - timedelta(hours=window_hours)
     in_window = [usage for ts, usage in usage_files if start <= ts <= now]
-    spent_usd = sum(float(u.get("cost_usd") or 0.0) for u in in_window)
+    spent_usd = sum(usage_cost_usd(u) for u in in_window)
     elapsed_hours = max((now - start).total_seconds() / 3600, 1e-9)
     return Window(
         start=start, end=now,
@@ -99,6 +100,22 @@ def ceiling_remaining(window: Window) -> float | None:
     return max(0.0, min(1.0, (window.ceiling_usd - window.spent_usd) / window.ceiling_usd))
 
 
+def usage_cost_usd(usage: Mapping[str, Any]) -> float:
+    """A run's cost: `summary.cost_usd` in the current file shape, else a
+    top-level `cost_usd` for older files, else `0.0`."""
+    summary = usage.get("summary") or {}
+    return float(summary.get("cost_usd") or usage.get("cost_usd") or 0.0)
+
+
+def _usage_started(usage: Mapping[str, Any], mtime: datetime) -> datetime:
+    """A run's start time: `summary.started_at` when the file carries one, else `mtime`."""
+    started_at = (usage.get("summary") or {}).get("started_at")
+    try:
+        return datetime.fromisoformat(str(started_at)) if started_at else mtime
+    except ValueError:
+        return mtime
+
+
 def _read_usage_files(runs_dir: Path | str, now: datetime) -> list[tuple[datetime, dict[str, Any]]]:
     """Every `*.usage.json` under `runs_dir` as `(started, parsed)` pairs; a
     file that fails to parse is skipped, not raised."""
@@ -108,12 +125,8 @@ def _read_usage_files(runs_dir: Path | str, now: datetime) -> list[tuple[datetim
             usage = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        ts = usage.get("ts") or usage.get("started")
-        try:
-            started = datetime.fromisoformat(str(ts)) if ts else datetime.fromtimestamp(path.stat().st_mtime, tz=now.tzinfo)
-        except ValueError:
-            started = datetime.fromtimestamp(path.stat().st_mtime, tz=now.tzinfo)
-        usage_files.append((started, usage))
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=now.tzinfo)
+        usage_files.append((_usage_started(usage, mtime), usage))
     return usage_files
 
 
@@ -149,7 +162,7 @@ def weekly_window_from(
     cutoff instead of the block start."""
     start = now - timedelta(days=7)
     in_window = [usage for ts, usage in usage_files if start <= ts <= now]
-    spent_usd = sum(float(u.get("cost_usd") or 0.0) for u in in_window)
+    spent_usd = sum(usage_cost_usd(u) for u in in_window)
     elapsed_hours = max((now - start).total_seconds() / 3600, 1e-9)
     return Window(
         start=start, end=now,
