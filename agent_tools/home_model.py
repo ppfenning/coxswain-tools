@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from agent_tools import runs_top
@@ -16,12 +17,14 @@ __all__ = [
     "Land",
     "Quit",
     "Refuse",
+    "Send",
     "Setup",
     "State",
     "Talk",
     "attention_pane",
     "backlog_pane",
     "chair_pane",
+    "chat_pane",
     "frame",
     "leader_pane",
     "panel_status",
@@ -48,6 +51,7 @@ class Facts:
     backlog: dict
     window: dict
     now: float
+    chat: tuple[dict, ...] = ()
 
     @property
     def chair(self) -> dict | None:
@@ -66,6 +70,8 @@ class State:
     selected_run: str | None = None
     selected_status: str | None = None
     land_armed: str | None = None
+    chat_focused: bool = False
+    chat_draft: str = ""
 
     @property
     def chair_liveness(self) -> str:
@@ -109,7 +115,12 @@ class Intake:
     pass
 
 
-Effect = Talk | Setup | Quit | Refuse | Drill | Land | Intake
+@dataclass(frozen=True)
+class Send:
+    text: str
+
+
+Effect = Talk | Setup | Quit | Refuse | Drill | Land | Intake | Send
 
 
 def _refused(state: State) -> bool:
@@ -117,9 +128,21 @@ def _refused(state: State) -> bool:
 
 
 def step(state: State, key: str) -> tuple[State, Effect | None]:
-    """Only 'l' refuses under a foreign live leader, being the one key that writes; it arms an exited run on its first press, applies on a consecutive press on that same run, and disarms the moment the selection differs from what is armed."""
+    """Only 'l' refuses under a foreign live leader, being the one key that writes; it arms an exited run on its first press, applies on a consecutive press on that same run, and disarms the moment the selection differs from what is armed. While chat holds focus every other key, including the action letters, extends the draft instead of firing."""
     if state.land_armed is not None and state.land_armed != state.selected_run:
         state = dataclasses.replace(state, land_armed=None)
+    if state.chat_focused:
+        if key == "ESC":
+            return dataclasses.replace(state, chat_focused=False), None
+        if key == "ENTER":
+            if not state.chat_draft:
+                return state, None
+            return dataclasses.replace(state, chat_draft=""), Send(state.chat_draft)
+        if len(key) == 1 and key.isprintable():
+            return dataclasses.replace(state, chat_draft=state.chat_draft + key), None
+        return state, None
+    if key == "c":
+        return dataclasses.replace(state, chat_focused=True), None
     if key == "t":
         return state, Talk(state.plugin_dir)
     if key == "s":
@@ -218,6 +241,11 @@ def window_pane(facts: Facts, width: int) -> tuple[str, ...]:
     spend = f"spent ${w.get('spent_usd', 0):.2f}  reset in {w.get('time_to_reset', '')}"
     reason = w.get("reason", "")
     lines = ("WINDOW", verdict, spend, reason) if reason else ("WINDOW", verdict, spend)
+    return tuple(_cut(line, width) for line in lines)
+
+
+def chat_pane(thread: Sequence[Mapping], width: int, draft: str) -> tuple[str, ...]:
+    lines = ("CHAT", *(f"{e.get('from', '?')}: {e.get('text', '')}" for e in list(thread)[-3:]), f"> {draft}")
     return tuple(_cut(line, width) for line in lines)
 
 

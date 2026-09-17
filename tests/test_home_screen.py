@@ -1,7 +1,7 @@
 import time
 
-from agent_tools import home_model
-from agent_tools.home_screen import _panel, _read_with_timeout, draw, facts, run_effect
+from agent_tools import home_model, leader_chat
+from agent_tools.home_screen import _key_for, _panel, _read_with_timeout, _send_chat, draw, facts, run_effect
 
 
 def test_panel_status_is_fresh_within_timeout_stale_past_it_and_absent_with_no_value():
@@ -144,3 +144,62 @@ def test_q_key_stops_the_loop_with_no_subprocess_call():
 
     assert calls == []
     assert stopped is True
+
+
+# -- chat: key translation, sending, and the panel it feeds ------------------------
+
+
+def test_key_for_names_enter_and_esc_and_passes_any_other_byte_through():
+    assert _key_for(10) == "ENTER"
+    assert _key_for(27) == "ESC"
+    assert _key_for(ord("l")) == "l"
+
+
+def test_send_chat_appends_an_operator_line_readable_back(tmp_path):
+    runs_dir = tmp_path / "runs"
+
+    _send_chat(runs_dir, "hello")
+
+    thread = leader_chat.read_thread(leader_chat.chat_path(runs_dir).read_text(encoding="utf-8"), limit=10)
+    assert thread == [{"at": thread[0]["at"], "from": "operator", "text": "hello"}]
+
+
+def test_facts_reads_the_chat_thread_from_the_runs_dir(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    intake_dir = tmp_path / "intake"
+    intake_dir.mkdir()
+    _send_chat(runs_dir, "hello")
+
+    result, cache = facts(runs_dir, work_dir, intake_dir, now=1_700_000_000.0)
+
+    assert result.chat == ({"at": result.chat[0]["at"], "from": "operator", "text": "hello"},)
+    assert cache["_status"]["chat"] == "fresh"
+
+
+def test_draw_renders_the_chat_header_and_the_in_progress_draft():
+    stdscr = _FakeStdscr()
+    state = home_model.State(plugin_dir="/p", leader_liveness="live", other_holder=None, chat_draft="typing")
+
+    draw(stdscr, _facts_fixture(), state, {})
+
+    text = [call[2] for call in stdscr.addnstr_calls]
+    assert any("CHAT" in line for line in text)
+    assert any(line == "> typing" for line in text)
+
+
+def test_typing_l_into_a_focused_chat_extends_the_draft_and_does_not_land():
+    """The action keys must not fire while chat holds focus: routing raw curses byte
+    codes for 'c' then 'l' through `_key_for` and `home_model.step` must extend the
+    draft, never arm a land."""
+    state = home_model.State(
+        plugin_dir="/p", leader_liveness="none", other_holder=None,
+        selected_run="r1", selected_status="exited",
+    )
+    state, _ = home_model.step(state, _key_for(ord("c")))
+    state, effect = home_model.step(state, _key_for(ord("l")))
+    assert state.chat_draft == "l"
+    assert state.land_armed is None
+    assert effect is None
