@@ -53,6 +53,39 @@ def test_call_rows_numbers_attempts_per_role_in_call_order():
     assert all(r["recovered_from_trace"] == 0 for r in rows)
 
 
+def test_call_rows_reads_challenger_off_the_calls_own_reason_marker():
+    usage = {"calls": [{"role": "review", "reason": "challenger"}, {"role": "review", "reason": "default"}]}
+    rows = stats_ingest.call_rows("r1", usage)
+    assert [r["challenger"] for r in rows] == [1, 0]
+
+
+def test_call_rows_challenger_is_zero_never_null_when_no_reason_is_present():
+    usage = {"calls": [{"role": "review"}]}
+    [row] = stats_ingest.call_rows("r1", usage)
+    assert row["challenger"] == 0
+
+
+def test_ingest_writes_challenger_per_call_and_tallies_it_in_the_report(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(
+        runs_dir, "run1",
+        usage={"calls": [
+            {"role": "review", "reason": "challenger"},
+            {"role": "review", "reason": "default"},
+        ]},
+    )
+    db_path = tmp_path / "stats.db"
+
+    report = stats_ingest.ingest(runs_dir, db_path)
+
+    conn = connect(db_path)
+    rows = conn.execute("SELECT challenger FROM calls WHERE run_id = 'run1' ORDER BY seq").fetchall()
+    conn.close()
+    assert [r[0] for r in rows] == [1, 0]
+    assert report.challenger_calls == 1
+
+
 def test_recovered_call_rows_reads_cost_turns_and_failure_class_off_each_traces_final_result_line():
     traces = [
         ("runs/r1-trace/decompose-1.jsonl", [

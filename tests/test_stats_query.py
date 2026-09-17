@@ -72,6 +72,21 @@ def test_roles_report_excludes_a_null_attempt_task_from_attempts_to_land_but_cou
     assert row["landed_rate"] == 1.0
 
 
+def test_roles_report_splits_a_challenger_call_from_a_standard_call_in_the_same_role_and_model():
+    calls = [
+        {**_call("t1"), "challenger": 1},
+        _call("t2"),
+    ]
+    tasks = [_task("t1", outcome="quarantined"), _task("t2", outcome="landed")]
+    rows = roles_report(calls, tasks)
+    by_challenger = {row["challenger"]: row for row in rows}
+    assert set(by_challenger) == {True, False}
+    assert by_challenger[True]["n_calls"] == 1
+    assert by_challenger[True]["landed_rate"] == 0.0
+    assert by_challenger[False]["n_calls"] == 1
+    assert by_challenger[False]["landed_rate"] == 1.0
+
+
 def test_roles_report_counts_unverified_and_infra_apart_from_refused():
     calls = [_call("t1"), _call("t2"), _call("t3")]
     tasks = [
