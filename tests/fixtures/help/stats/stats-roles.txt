@@ -1,0 +1,11 @@
+usage: cox stats roles [-h] [--db DB] [--json] [--cartridge-sha CARTRIDGE_SHA]
+                       [--provider-profile PROVIDER_PROFILE]
+
+options:
+  -h, --help            show this help message and exit
+  --db DB
+  --json
+  --cartridge-sha CARTRIDGE_SHA
+                        keep only runs on this cartridge_sha
+  --provider-profile PROVIDER_PROFILE
+                        keep only runs on this provider_profile

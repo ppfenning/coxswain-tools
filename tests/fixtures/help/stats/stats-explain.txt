@@ -1,0 +1,9 @@
+usage: cox stats explain [-h] [--db DB] [--json] role
+
+positional arguments:
+  role
+
+options:
+  -h, --help  show this help message and exit
+  --db DB
+  --json
