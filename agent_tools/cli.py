@@ -47,6 +47,7 @@ from agent_tools import (
     release_check_pages,
     release_check_readmes,
     route,
+    router,
     runs_detail,
     runs_detail_screen,
     runs_stranded,
@@ -240,11 +241,18 @@ def _bounds_ceiling_for(a: argparse.Namespace):
     defaults = provider_profile.get("defaults") or {}
 
     def _ceiling(role, _model):
-        tier = tier_overrides.get(role, defaults.get(role, "standard"))
+        tier = _resolved_tier(tier_overrides, defaults, role)
         value = role_budget_usd[role] if role in role_budget_usd else budget_usd.get(tier)
         return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
     return _ceiling
+
+
+def _resolved_tier(tier_overrides: dict, defaults: dict, role: str) -> str:
+    """A role's tier: its own `tier_overrides` entry, else the profile's
+    `defaults` entry, else `"standard"` — the chain `_bounds_ceiling_for`
+    and `_router_policy_for` both resolve a role's tier through."""
+    return tier_overrides.get(role, defaults.get(role, "standard"))
 
 
 def _stats_bounds(a: argparse.Namespace) -> int:
@@ -265,6 +273,103 @@ def _stats_bounds(a: argparse.Namespace) -> int:
         generated = datetime.datetime.now(datetime.UTC).isoformat()
         write_path.write_text(json.dumps({"generated": generated, "db": a.db, "rows": report}, indent=2))
     print(json.dumps(report, indent=2) if a.json else stats_query.render_capped(report))
+    return 0
+
+
+def _router_policy_for(a: argparse.Namespace, role: str) -> dict | None:
+    """Routing inputs for `role`: `policy["mode"]` is the routing profile's
+    own `router` key (off|shadow|on), defaulting to `"off"` when absent
+    since router-steward.md §1 names the three values but not a default.
+    `policy["default_tier"]` resolves the same chain `_bounds_ceiling_for`
+    resolves a role's tier through: `tier_overrides`, then `defaults`, then
+    `"standard"`. `None` when the routing profile at `_profile_path(a)` or
+    its `provider_profile` is missing or unparseable, so the caller can
+    refuse rather than invent a policy."""
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        routing_profile = route.parse_profile(text) if text is not None else None
+    except route.ProfileError:
+        routing_profile = None
+    if routing_profile is None:
+        return None
+    provider_path = routing_profile.get("provider_profile")
+    provider_text = _read_text_or_none(Path(provider_path).expanduser()) if provider_path else None
+    try:
+        provider_profile = yaml.safe_load(provider_text) if provider_text is not None else None
+    except yaml.YAMLError:
+        provider_profile = None
+    if not isinstance(provider_profile, dict):
+        return None
+    tier_overrides = provider_profile.get("tier_overrides") or {}
+    defaults = provider_profile.get("defaults") or {}
+    return {
+        "mode": routing_profile.get("router", "off"),
+        "default_tier": _resolved_tier(tier_overrides, defaults, role),
+        "min_n": 20,
+        "deviation_floor": 0.70,
+        "challenger_n": 10,
+    }
+
+
+def _stats_window_from_report(report: list[dict], role: str) -> dict:
+    """`stats_window` for `role`, sliced from `stats_query.roles_report`'s
+    existing output rather than a new aggregation: `n` sums `n_calls`
+    across every row for the role, challenger rows included
+    (router-steward.md §1: "n counts every call of that role in the
+    window, challenger calls included, so the section 2 schedule lands on
+    every Nth call"). `landed_rate` is the role's non-challenger rows'
+    `landed_rate` weighted by `n_calls`, 0.0 when none carry one
+    (router-steward.md §3 excludes challenger rows from that aggregate).
+    `start`/`end` are `None`: no `roles_report` row carries a window
+    timestamp, and `select_tier` never reads either field."""
+    rows = [row for row in report if row["role"] == role]
+    n = sum(row["n_calls"] for row in rows)
+    floor_rows = [row for row in rows if not row["challenger"]]
+    rated = [row for row in floor_rows if row["landed_rate"] is not None]
+    weight = sum(row["n_calls"] for row in rated)
+    landed_rate = sum(row["landed_rate"] * row["n_calls"] for row in rated) / weight if weight else 0.0
+    return {"landed_rate": landed_rate, "n": n, "start": None, "end": None}
+
+
+def _router_stats_window_for(a: argparse.Namespace, role: str) -> dict:
+    """The edge for `_stats_window_from_report`: opens `a.db` and fetches
+    the same `roles_report` inputs `cox stats roles` reads, no new
+    aggregation added to `stats_query.py`."""
+    conn = stats_schema.connect(a.db)
+    try:
+        report = stats_query.roles_report(_stats_fetch(conn, "calls"), _stats_fetch(conn, "tasks"), _stats_fetch(conn, "runs"))
+    finally:
+        conn.close()
+    return _stats_window_from_report(report, role)
+
+
+def _router_select(a: argparse.Namespace) -> int:
+    """`cox router select` — the CLI edge of docs/design/router-steward.md:
+    `router.select_tier` stays pure; every read happens here. `off` returns
+    the floor without calling `select_tier`. `shadow` calls it, prints the
+    would-be decision marked as not authoritative, and still returns the
+    floor as the effective answer. `on` calls it and returns its tier as
+    the effective, authoritative answer."""
+    policy = _router_policy_for(a, a.role)
+    if policy is None:
+        print(f"router select: no usable profile at {_profile_path(a)}")
+        return 2
+    mode = policy["mode"]
+    floor = policy["default_tier"]
+    if mode == "off":
+        effective, reason = floor, "off"
+    else:
+        stats_window = _router_stats_window_for(a, a.role)
+        tier, tier_reason = router.select_tier(a.role, stats_window, policy)
+        if mode == "shadow":
+            print(f"router select: shadow tier={tier} reason={tier_reason} (not authoritative; effective stays {floor})")
+            effective, reason = floor, "shadow"
+        else:
+            effective, reason = tier, tier_reason
+    if a.json:
+        print(json.dumps({"role": a.role, "mode": mode, "effective_tier": effective, "reason": reason}))
+    else:
+        print(f"router select: role={a.role} mode={mode} effective_tier={effective} reason={reason}")
     return 0
 
 
@@ -2672,6 +2777,21 @@ def build_parser() -> argparse.ArgumentParser:
     usage_p.set_defaults(fn=_bare_group(usage_p))
     us = usage_p.add_subparsers(dest="cmd", required=False)
     ua = us.add_parser("assess", help="the pacing verdict for the current spend window"); ua.add_argument("--json", action="store_true"); ua.add_argument("--runs-dir", default="runs"); ua.add_argument("--profile", help="the routing profile naming the window ceiling (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"); ua.set_defaults(fn=_usage_assess)
+
+    router_p = sub.add_parser(
+        "router", help="the routing-profile flag and the tier decision it gates",
+        description="The routing-profile flag and the tier decision it gates.",
+        epilog="examples:\n  cox router select --role build\n  cox router select --role build --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    router_p.set_defaults(fn=_bare_group(router_p))
+    rt = router_p.add_subparsers(dest="cmd", required=False)
+    rs = rt.add_parser("select", help="the effective tier for a role under the profile's router: off|shadow|on flag")
+    rs.add_argument("--role", required=True)
+    rs.add_argument("--db", default="workspace/stats/stats.db")
+    rs.add_argument("--profile", help="the routing profile naming the provider profile and the router flag (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)")
+    rs.add_argument("--json", action="store_true")
+    rs.set_defaults(fn=_router_select)
 
     epic_p = sub.add_parser(
         "epic", help="watch a detached run",
