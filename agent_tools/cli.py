@@ -597,9 +597,12 @@ def _runs_clean(a: argparse.Namespace) -> int:
     if runs_dir is None:
         print(f"clean: {reason}")
         return 2
-    landed = {f.stem for f in (runs_dir / a.run_id / "tasks").glob("*/*.json") if json.loads(f.read_text(encoding="utf-8")).get("landed")}
+    records = {f.stem: json.loads(f.read_text(encoding="utf-8")) for f in (runs_dir / a.run_id / "tasks").glob("*/*.json")}
+    landed = {task for task, r in records.items() if r.get("landed")}
+    dropped = {task for task, r in records.items() if r.get("status") == "dropped"}
+    reasons = {task: r.get("reason", "unlanded") for task, r in records.items()}
     p = cleanup.plan_cleanup(run_id=a.run_id, worktrees=cleanup.git_worktrees(repo), branches=cleanup.git_branches(repo), worktree_root=a.worktree_root)
-    for line in cleanup.apply_cleanup(repo, p, dry_run=not a.apply, landed=landed, force=a.force, default_branch="main"):
+    for line in cleanup.apply_cleanup(repo, p, dry_run=not a.apply, landed=landed, dropped=dropped, reasons=reasons, force=a.force):
         print(line)
     if not a.apply:
         print("(dry run — pass --apply to do it)")
