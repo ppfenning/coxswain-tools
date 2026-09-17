@@ -87,6 +87,34 @@ def test_resolve_task(tmp_path):
     }
 
 
+def test_resolve_task_by_bare_id_in_a_two_level_work_tree(tmp_path):
+    _work_item_fixture(tmp_path, "work/init/p1/T1.md")
+    assert resolve(Reference("task", "T1"), tmp_path) == {
+        "id": "T1", "status": "open", "body": "Body text.", "path": "work/init/p1/T1.md",
+    }
+
+
+def test_resolve_initiative_by_slug(tmp_path):
+    path = tmp_path / "work" / "myinit" / "initiative.md"
+    path.parent.mkdir(parents=True)
+    path.write_text('---\nid: "myinit"\ntitle: "My Initiative"\n---\nBody text.\n', encoding="utf-8")
+    assert resolve(Reference("initiative", "myinit"), tmp_path) == {
+        "id": "myinit", "title": "My Initiative", "body": "Body text.", "path": "work/myinit/initiative.md",
+    }
+
+
+def test_resolve_unknown_task_id_is_none(tmp_path):
+    _work_item_fixture(tmp_path, "work/init/p1/t1.md")
+    assert resolve(Reference("task", "nope"), tmp_path) is None
+
+
+def test_resolve_unknown_initiative_id_is_none(tmp_path):
+    path = tmp_path / "work" / "myinit" / "initiative.md"
+    path.parent.mkdir(parents=True)
+    path.write_text('---\nid: "myinit"\n---\nBody text.\n', encoding="utf-8")
+    assert resolve(Reference("initiative", "nope"), tmp_path) is None
+
+
 def test_resolve_intake(tmp_path):
     """The ticket id comes from frontmatter, not the filename stem, so this fixture's filename
     deliberately differs from the `id` it resolves by."""
