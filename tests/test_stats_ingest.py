@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 
 import pytest
 
@@ -834,3 +836,79 @@ def test_ingest_report_provider_profile_counts_sum_to_runs_ingested(tmp_path):
         + report.provider_profile_unresolved
         == report.runs_ingested
     )
+
+
+def _make_cartridges_repo(tmp_path, profile, content, commit_date):
+    """A throwaway git checkout with one commit, at `commit_date`, adding
+    `providers/<profile>.yaml` with `content`. Returns the repo path and that
+    file's git blob sha, computed independently via `git hash-object` so the
+    expected value in a test never comes from the same `log`/`rev-parse` pair
+    `resolve_provider_profile_sha` itself runs."""
+    repo = tmp_path / "coxswain-cartridges"
+    (repo / "providers").mkdir(parents=True)
+    path = repo / "providers" / f"{profile}.yaml"
+    path.write_text(content)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    sha = subprocess.run(
+        ["git", "hash-object", str(path)], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    env = {**os.environ, "GIT_AUTHOR_DATE": commit_date, "GIT_COMMITTER_DATE": commit_date}
+    subprocess.run(
+        [
+            "git", "-C", str(repo), "-c", "user.email=t@example.com", "-c", "user.name=t",
+            "commit", "-q", "-m", "profile",
+        ],
+        check=True, env=env,
+    )
+    return repo, sha
+
+
+def test_resolve_provider_profile_sha_reads_the_blob_at_the_last_commit_before_started_at(tmp_path):
+    repo, sha = _make_cartridges_repo(tmp_path, "claude-code", "budget_usd: 5\n", "2026-01-01T00:00:00")
+    resolved = stats_ingest.resolve_provider_profile_sha(repo, "claude-code", "2026-01-02T00:00:00")
+    assert resolved == sha
+
+
+def test_resolve_provider_profile_sha_is_none_when_started_at_predates_every_commit(tmp_path):
+    repo, _ = _make_cartridges_repo(tmp_path, "claude-code", "budget_usd: 5\n", "2026-01-05T00:00:00")
+    assert stats_ingest.resolve_provider_profile_sha(repo, "claude-code", "2026-01-01T00:00:00") is None
+
+
+def test_resolve_provider_profile_sha_is_none_for_a_profile_the_repo_never_carried(tmp_path):
+    repo, _ = _make_cartridges_repo(tmp_path, "claude-code", "budget_usd: 5\n", "2026-01-01T00:00:00")
+    assert stats_ingest.resolve_provider_profile_sha(repo, "vendor-x", "2026-01-02T00:00:00") is None
+
+
+def test_resolve_provider_profile_sha_is_none_with_no_cartridges_repo():
+    assert stats_ingest.resolve_provider_profile_sha(None, "claude-code", "2026-01-02T00:00:00") is None
+
+
+def test_ingest_report_provider_profile_sha_counts_sum_to_runs_ingested(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    repo, sha = _make_cartridges_repo(tmp_path, "claude-code", "budget_usd: 5\n", "2026-01-01T00:00:00")
+    _write_run(
+        runs_dir, "run1", tasks=[("p1", "t1", {"landed": True})],
+        node={"provider_profile": "claude-code"},
+        usage={"summary": {"started_at": "2026-01-02T00:00:00"}},
+    )
+    _write_run(
+        runs_dir, "run2", tasks=[("p1", "t2", {"landed": True})],
+        node={"provider_profile": "claude-code"},
+        usage={"summary": {"started_at": "2025-12-01T00:00:00"}},
+    )
+    db_path = tmp_path / "stats.db"
+
+    report = stats_ingest.ingest(runs_dir, db_path, cartridges_repo=repo)
+
+    assert report.provider_profile_sha_resolved == 1
+    assert report.provider_profile_sha_unresolved == 1
+    assert (
+        report.provider_profile_sha_resolved + report.provider_profile_sha_unresolved == report.runs_ingested
+    )
+    conn = connect(db_path)
+    rows = dict(conn.execute("SELECT run_id, provider_profile_sha FROM runs ORDER BY run_id").fetchall())
+    conn.close()
+    assert rows["run1"] == sha
+    assert rows["run2"] is None
