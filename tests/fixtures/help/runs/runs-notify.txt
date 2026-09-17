@@ -1,0 +1,9 @@
+usage: cox runs notify [-h] [--runs-dir RUNS_DIR] [--once] [--interval INTERVAL] [--replay]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
+  --once
+  --interval INTERVAL
+  --replay             emit history on first start; default is silent for existing runs when no
+                       state file is present

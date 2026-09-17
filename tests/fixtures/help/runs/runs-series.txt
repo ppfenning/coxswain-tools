@@ -1,0 +1,7 @@
+usage: cox runs series [-h] [--runs-dir RUNS_DIR] [--json] [--append APPEND]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
+  --json
+  --append APPEND
