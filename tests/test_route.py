@@ -1402,3 +1402,10 @@ def test_route_lint_cli_does_not_flag_coupling_when_a_needs_edge_orders_the_pair
     out = capsys.readouterr().out
     assert code == 0
     assert out == ""
+
+
+def test_parse_profile_reads_the_weekly_ceiling_beside_the_window_ceiling():
+    text = "team: t\nworkspace_dir: /w\nspend:\n  window_ceiling_usd: 50\n  weekly_ceiling_usd: 1043\n"
+    profile = route.parse_profile(text)
+    assert profile["spend"]["window_ceiling_usd"] == 50
+    assert profile["spend"]["weekly_ceiling_usd"] == 1043
