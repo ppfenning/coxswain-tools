@@ -48,6 +48,7 @@ from agent_tools import (
     release_check_readmes,
     route,
     router,
+    runs_bar,
     runs_detail,
     runs_detail_screen,
     runs_stranded,
@@ -514,6 +515,15 @@ def _runs_top(a: argparse.Namespace) -> int:
         print("runs top: needs a terminal; use --once")
         return 2
     return runs_top_screen.main(a.runs_dir, a.interval, heartbeat_minutes)
+
+
+def _runs_bar(a: argparse.Namespace) -> int:
+    rows = [
+        dataclasses.asdict(runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"]))
+        for f in runs_top_screen.facts(a.runs_dir)
+    ]
+    print(json.dumps(runs_bar.bar(rows, runs_bar.attention(rows))))
+    return 0
 
 
 def _resolved_notify_policy(runs_dir: Path) -> dict:
@@ -2848,6 +2858,11 @@ RUNS_COMMANDS = [
         "top", "runs", "live table of runs in flight; --once prints it and exits",
         (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--interval",), {"type": float, "default": 3}), commands.Arg(("--once",), {"action": "store_true"})),
         _runs_top, False, (),
+    ),
+    commands.Command(
+        "bar", "runs", "one Waybar JSON line: runs in flight, cost, class idle|running|attention",
+        (commands.Arg(("--runs-dir",), {"default": "runs"}),),
+        _runs_bar, False, (),
     ),
     commands.Command(
         "notify", "runs", "desktop notifications for exits, quarantines, budget stops and cost",
