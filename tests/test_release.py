@@ -954,3 +954,238 @@ def test_cli_release_execute_falls_back_to_unchanged_since_when_crews_section_is
     create_calls = [c for c in calls if c[0] == "gh" and c[1] == "release" and c[2] == "create"]
     crew_create = next(c for c in create_calls if c[6] == "coxswain-crew 0.1.0")
     assert Path(crew_create[-1]).read_text().startswith("unchanged since v0.6.0")
+
+
+_BACKFILL_MANIFEST = """
+[coxswain]
+version = "0.1.0"
+repo = "org/coxswain"
+
+[components.harness]
+repo = "org/harness"
+tag = "v0.1.0"
+"""
+
+_BACKFILL_HARNESS_BODY = ("## coxswain-harness\nharness notes\n"
+                           "\nSee the full release notes: https://github.com/org/coxswain/releases/tag/v0.1.0\n")
+
+
+def _backfill_umbrella(tmp_path, manifest_toml=_BACKFILL_MANIFEST, notes="## coxswain-harness\nharness notes\n"):
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text(notes)
+    return umbrella_dir, {"0.1.0": manifest_toml}
+
+
+def _fake_backfill_run(manifest_by_version, view_bodies=None):
+    calls: list = []
+    view_bodies = view_bodies or {}
+
+    def run(argv, cwd):
+        calls.append(argv)
+        if argv[0] == "git" and argv[3] == "show":
+            version = argv[4].split(":")[0][1:]
+            return (0, manifest_by_version[version])
+        if argv[:3] == ["gh", "release", "view"]:
+            key = (cwd, argv[3])
+            return (0, view_bodies[key]) if key in view_bodies else (1, "release not found")
+        return (0, "")
+    return calls, run
+
+
+def test_backfill_prints_created_when_no_release_exists_for_a_tag(tmp_path, monkeypatch):
+    _backfill_umbrella(tmp_path)
+    calls, run = _fake_backfill_run({"0.1.0": _BACKFILL_MANIFEST})
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path)])
+    assert rc == 0
+    create_calls = [c for c in calls if c[:3] == ["gh", "release", "create"]]
+    assert {c[3] for c in create_calls} == {"v0.1.0"}
+
+
+def test_backfill_prints_created_edited_and_already_current(tmp_path, monkeypatch, capsys):
+    umbrella_dir, _ = _backfill_umbrella(tmp_path)
+    harness_dir = str(tmp_path / "harness")
+    calls, run = _fake_backfill_run(
+        {"0.1.0": _BACKFILL_MANIFEST},
+        view_bodies={(harness_dir, "v0.1.0"): _BACKFILL_HARNESS_BODY,
+                      (str(umbrella_dir), "v0.1.0"): "## coxswain-harness\nharness notes\n"})
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "already-current org/harness v0.1.0" in out
+    assert "already-current org/coxswain v0.1.0" in out
+
+
+def test_backfill_prints_edited_when_the_release_body_has_drifted(tmp_path, monkeypatch, capsys):
+    _backfill_umbrella(tmp_path)
+    harness_dir = str(tmp_path / "harness")
+    calls, run = _fake_backfill_run(
+        {"0.1.0": _BACKFILL_MANIFEST},
+        view_bodies={(harness_dir, "v0.1.0"): "a stale body\n"})
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "edited org/harness v0.1.0" in out
+    edit_calls = [c for c in calls if c[:3] == ["gh", "release", "edit"]]
+    assert {c[3] for c in edit_calls} == {"v0.1.0"}
+
+
+def test_backfill_created_body_ends_with_the_link_sentence(tmp_path, monkeypatch):
+    _backfill_umbrella(tmp_path)
+    calls, run = _fake_backfill_run({"0.1.0": _BACKFILL_MANIFEST})
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path)])
+    assert rc == 0
+    harness_create = next(c for c in calls if c[:3] == ["gh", "release", "create"] and c[6] == "coxswain-harness 0.1.0")
+    assert Path(harness_create[-1]).read_text().endswith(
+        "See the full release notes: https://github.com/org/coxswain/releases/tag/v0.1.0\n")
+
+
+def test_backfill_already_current_reads_the_body_through_json_body_not_plain_view(tmp_path, monkeypatch):
+    _backfill_umbrella(tmp_path)
+    harness_dir = str(tmp_path / "harness")
+    calls, run = _fake_backfill_run(
+        {"0.1.0": _BACKFILL_MANIFEST},
+        view_bodies={(harness_dir, "v0.1.0"): _BACKFILL_HARNESS_BODY})
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path)])
+    assert rc == 0
+    view_calls = [c for c in calls if c[:3] == ["gh", "release", "view"]]
+    assert view_calls and all(c[-4:] == ["--json", "body", "-q", ".body"] for c in view_calls)
+
+
+_BACKFILL_MANIFEST_PINNED_AT_0_4_0 = """
+[coxswain]
+version = "0.4.0"
+repo = "org/coxswain"
+
+[components.harness]
+repo = "org/harness"
+tag = "v0.4.0"
+
+[components.crew]
+repo = "org/crew"
+tag = "v0.4.0"
+lockstep = false
+"""
+
+_BACKFILL_MANIFEST_PINNED_STILL_AT_0_6_0 = """
+[coxswain]
+version = "0.6.0"
+repo = "org/coxswain"
+
+[components.harness]
+repo = "org/harness"
+tag = "v0.6.0"
+
+[components.crew]
+repo = "org/crew"
+tag = "v0.4.0"
+lockstep = false
+"""
+
+
+def test_backfill_a_pinned_component_is_only_processed_at_the_version_it_was_tagged(tmp_path, monkeypatch):
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.4.0.md").write_text(
+        "## coxswain-harness\nharness notes\n\n## coxswain-crew\ncrew notes\n")
+    (umbrella_dir / "docs" / "releases" / "0.6.0.md").write_text("## coxswain-harness\nharness notes v6\n")
+    calls, run = _fake_backfill_run({"0.4.0": _BACKFILL_MANIFEST_PINNED_AT_0_4_0,
+                                      "0.6.0": _BACKFILL_MANIFEST_PINNED_STILL_AT_0_6_0})
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path)])
+    assert rc == 0
+    create_calls = [c for c in calls if c[:3] == ["gh", "release", "create"]]
+    crew_creates = [c for c in create_calls if c[6].startswith("coxswain-crew")]
+    assert [c[6] for c in crew_creates] == ["coxswain-crew 0.4.0"]
+    crew_body = Path(crew_creates[0][-1]).read_text()
+    assert crew_body.startswith("## coxswain-crew\ncrew notes\n")
+    assert crew_body.endswith("https://github.com/org/coxswain/releases/tag/v0.4.0\n")
+    harness_titles = {c[6] for c in create_calls if c[6].startswith("coxswain-harness")}
+    assert harness_titles == {"coxswain-harness 0.4.0", "coxswain-harness 0.6.0"}
+
+
+def test_backfill_unchanged_since_fallback_names_the_prior_tag_not_the_one_being_created(tmp_path, monkeypatch):
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("## coxswain-harness\nharness notes\n")
+    (umbrella_dir / "docs" / "releases" / "0.2.0.md").write_text("no component sections this cut\n")
+    manifest_v2 = _BACKFILL_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"').replace(
+        'tag = "v0.1.0"', 'tag = "v0.2.0"')
+    calls, run = _fake_backfill_run({"0.1.0": _BACKFILL_MANIFEST, "0.2.0": manifest_v2})
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path)])
+    assert rc == 0
+    create_calls = [c for c in calls if c[:3] == ["gh", "release", "create"]]
+    harness_v2 = next(c for c in create_calls if c[6] == "coxswain-harness 0.2.0")
+    assert Path(harness_v2[-1]).read_text().startswith("unchanged since v0.1.0")
+
+
+def test_backfill_a_failed_create_call_prints_failed_and_stops(tmp_path, monkeypatch, capsys):
+    _backfill_umbrella(tmp_path)
+    _, base_run = _fake_backfill_run({"0.1.0": _BACKFILL_MANIFEST})
+
+    def run(argv, cwd):
+        if argv[:3] == ["gh", "release", "create"]:
+            return (1, "boom")
+        return base_run(argv, cwd)
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "FAILED org/coxswain v0.1.0: boom" in out
+    assert "org/harness" not in out
+
+
+def test_backfill_dry_run_prints_would_and_makes_no_create_or_edit_calls(tmp_path, monkeypatch, capsys):
+    _backfill_umbrella(tmp_path)
+    calls, run = _fake_backfill_run({"0.1.0": _BACKFILL_MANIFEST})
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path), "--dry-run"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "would created org/harness v0.1.0" in out
+    assert "would created org/coxswain v0.1.0" in out
+    write_calls = [c for c in calls if c[:3] in (["gh", "release", "create"], ["gh", "release", "edit"])]
+    assert write_calls == []
+
+
+def test_backfill_processes_multiple_versions_oldest_first(tmp_path, monkeypatch, capsys):
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.2.0.md").write_text("## coxswain-harness\nharness notes v2\n")
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("## coxswain-harness\nharness notes v1\n")
+    calls, run = _fake_backfill_run({"0.1.0": _BACKFILL_MANIFEST, "0.2.0": _BACKFILL_MANIFEST})
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    lines = [line for line in out.splitlines() if line.startswith("created")]
+    assert lines.index("created org/coxswain v0.1.0") < lines.index("created org/coxswain v0.2.0")
+    assert lines.index("created org/harness v0.1.0") < lines.index("created org/harness v0.2.0")
+
+
+_BACKFILL_MANIFEST_NO_UMBRELLA_REPO = """
+[coxswain]
+version = "0.1.0"
+
+[components.harness]
+repo = "org/harness"
+tag = "v0.1.0"
+"""
+
+
+def test_backfill_umbrella_repo_matches_umbrella_release_slugs_own_fallback(tmp_path, monkeypatch, capsys):
+    _backfill_umbrella(tmp_path, manifest_toml=_BACKFILL_MANIFEST_NO_UMBRELLA_REPO)
+    calls, run = _fake_backfill_run({"0.1.0": _BACKFILL_MANIFEST_NO_UMBRELLA_REPO})
+    monkeypatch.setattr(cli, "_real_run", run)
+    monkeypatch.setattr(cli, "_tools_repository_url", lambda: _TOOLS_REPO_URL)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    expected_slug = release.umbrella_release_slug(tomllib.loads(_BACKFILL_MANIFEST_NO_UMBRELLA_REPO), _TOOLS_REPO_URL)
+    assert f"created {expected_slug} v0.1.0" in out

@@ -2119,6 +2119,19 @@ def _wait_workflows(directory: str, tag: str, component: str, run,
         return True, f"{len(runs)} run(s) green for {tag}"
 
 
+def _github_release_notes_text(umbrella: str, notes_path: str, heading: str, from_tag: str | None,
+                                link: str | None) -> str:
+    """The `github_release` step's own body for a component or crew section:
+    `notes_path`'s text under `heading`, or `unchanged since <from_tag>` when
+    that section is absent, followed by the link line back to the umbrella
+    release. The backfill command builds every body it creates or edits
+    through this same function, so a rerun's comparison is apples to apples."""
+    section = release.extract_release_notes(str(Path(umbrella) / notes_path), heading)
+    body = section if section is not None else f"unchanged since {from_tag}\n"
+    link_line = f"\nSee the full release notes: {link}\n" if link else "\n"
+    return body + link_line
+
+
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run,
                       manifest: dict) -> int:
     """Runs `steps` for real, through `run`. Refuses outright, before `run`
@@ -2205,11 +2218,9 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             if step["heading"] is None:
                 notes_path = str(Path(umbrella) / step["notes_path"])
             else:
-                section = release.extract_release_notes(str(Path(umbrella) / step["notes_path"]), step["heading"])
-                body = section if section is not None else f"unchanged since {step['from']}\n"
-                link_line = f"\nSee the full release notes: {step['link']}\n" if "link" in step else "\n"
+                text = _github_release_notes_text(umbrella, step["notes_path"], step["heading"], step.get("from"), step.get("link"))
                 with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
-                    tmp.write(body + link_line)
+                    tmp.write(text)
                 notes_path = tmp.name
             view_rc, _ = run(release.github_release_view_argv(step["tag"]), directory)
             argv = (release.github_release_edit_argv(step["tag"], notes_path) if view_rc == 0 else
@@ -2296,6 +2307,62 @@ def _release(a: argparse.Namespace) -> int:
         return 2 if any(step["kind"] == "refuse" for step in steps) else 0
     umbrella = a.umbrella or str(Path(root) / "coxswain")
     return _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest)
+
+
+def _backfill_github_releases(a: argparse.Namespace) -> int:
+    """Walks the umbrella's docs/releases/<version>.md files oldest-first,
+    creating or editing the GitHub Release for every tagged repo at that
+    version whose body doesn't already match the one this command would
+    write, so a rerun touches nothing already current. Each version's own
+    manifest.toml — `git show v<version>:manifest.toml`, falling back to the
+    manifest at HEAD when that tag predates the file — decides every
+    component's tag; a pinned component not tagged or rejoined this version
+    is skipped, since its release was already backfilled at the version it
+    was actually cut and a later cut must never rewrite it. `from_tag`
+    carries forward the last tag this walk saw for a component, mirroring
+    the live step's own pre-bump `spec["tag"]` read rather than the already-
+    bumped value that version's own manifest now shows. The first failed
+    `gh` write stops the walk, the same as the live `github_release` step."""
+    root = a.root
+    umbrella = str(Path(root) / "coxswain")
+    head_manifest = _load_manifest(Path(umbrella) / "manifest.toml") or {}
+    tools_repository_url = _tools_repository_url()
+    releases_dir = Path(umbrella) / "docs" / "releases"
+    versions = release.versions_oldest_first(p.stem for p in releases_dir.glob("*.md") if p.stem != "index")
+    previous_tag: dict[str, str] = {}
+    for version in versions:
+        show_rc, show_out = _real_run(["git", "-C", umbrella, "show", f"v{version}:manifest.toml"], None)
+        manifest = tomllib.loads(show_out) if show_rc == 0 else head_manifest
+        slug = release.umbrella_release_slug(manifest, tools_repository_url)
+        notes_path = f"docs/releases/{version}.md"
+        link = f"https://github.com/{slug}/releases/tag/v{version}" if slug else None
+        items = [("coxswain", slug, f"v{version}", umbrella, None, None, f"coxswain {version}")]
+        for name, spec in manifest.get("components", {}).items():
+            if not spec.get("repo"):
+                continue
+            tag = f"v{version}" if spec.get("lockstep", True) else spec["tag"]
+            from_tag = previous_tag.get(name, spec.get("tag"))
+            previous_tag[name] = spec.get("tag")
+            if tag == f"v{version}":
+                items.append((name, spec["repo"], tag, release.component_dir(root, name),
+                              f"## coxswain-{name}", from_tag, f"coxswain-{name} {version}"))
+        for _name, repo, tag, directory, heading, from_tag, title in items:
+            text = (Path(umbrella, notes_path).read_text(encoding="utf-8") if heading is None else
+                    _github_release_notes_text(umbrella, notes_path, heading, from_tag, link))
+            view_rc, view_out = _real_run(release.github_release_body_argv(tag), directory)
+            prefix = "would " if a.dry_run else ""
+            state = "created" if view_rc != 0 else ("already-current" if view_out.strip() == text.strip() else "edited")
+            if state != "already-current" and not a.dry_run:
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
+                    tmp.write(text)
+                argv = (release.github_release_create_argv(tag, title, tmp.name) if state == "created" else
+                        release.github_release_edit_argv(tag, tmp.name))
+                write_rc, write_out = _real_run(argv, directory)
+                if write_rc != 0:
+                    print(f"FAILED {repo} {tag}: {write_out.strip()}")
+                    return 2
+            print(f"{prefix}{state} {repo} {tag}")
+    return 0
 
 
 def _release_check(a: argparse.Namespace) -> int:
@@ -2629,6 +2696,12 @@ def build_parser() -> argparse.ArgumentParser:
     relc.add_argument("--manifest"); relc.add_argument("--root", default="."); relc.add_argument("--json", action="store_true")
     relc.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
     relc.set_defaults(fn=_release_check)
+
+    bg = dev.add_parser("backfill-github-releases",
+                         help="walk the umbrella's past docs/releases/<version>.md files oldest-first, creating or editing the GitHub Release for every tagged repo missing or drifted from one")
+    bg.add_argument("--root", required=True, help="the checkouts root containing the umbrella and every component")
+    bg.add_argument("--dry-run", action="store_true")
+    bg.set_defaults(fn=_backfill_github_releases)
 
     old_rel = sub.add_parser("release", help=argparse.SUPPRESS)
     # swallow every flag the old form took, so the hint prints instead of argparse erroring
