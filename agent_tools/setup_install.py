@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-REPOS = ("agent-cartridges", "agent-graphs", "agent-tools")
+REPOS = ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools")
 _HOOK_COMMAND = "agent-tools route context 2>/dev/null || true"
 
 
@@ -87,7 +87,7 @@ def _repo_steps(repo: str, root: str, python_exists: dict, cartridges_dir: str) 
         steps.append({"op": "run", "argv": ["uv", "venv", "-q"], "cwd": cwd,
                       "why": f"{repo} has no virtualenv yet"})
     install_argv = ["uv", "pip", "install", "-q", "-e", ".[dev]"]
-    if repo == "agent-graphs":
+    if repo == "coxswain-graphs":
         install_argv = install_argv + ["-e", cartridges_dir]
     steps.append({"op": "run", "argv": install_argv, "cwd": cwd,
                   "why": f"install {repo} and its dev extras"})
@@ -130,15 +130,15 @@ def install_plan(
     weekly_ceiling_usd: float | None = None,
 ) -> list:
     """Ordered setup steps for a checkout at `root` holding
-    agent-cartridges, agent-graphs and agent-tools side by side.
+    coxswain-cartridges, coxswain-graphs and coxswain-tools side by side.
     `config_dir` and `claude_settings_path` are pre-resolved by the
     caller; this core never expands `~` or touches the filesystem.
     `cartridges_dir` here is the checkout `-e` installs and the plugin
     marketplace registers; the profile's own `cartridges_dir` field is a
     workspace path (`profile_cartridges_dir`), a different thing that
     happens to share a name in the field the routing layer reads."""
-    cartridges_dir = f"{root}/agent-cartridges"
-    harness_dir = f"{root}/agent-graphs"
+    cartridges_dir = f"{root}/coxswain-cartridges"
+    harness_dir = f"{root}/coxswain-graphs"
     profile_cartridges_dir = f"{workspace}/cartridges"
     steps: list = []
 
@@ -149,11 +149,11 @@ def install_plan(
         for repo in REPOS:
             steps.extend(_repo_steps(repo, root, python_exists, cartridges_dir))
         steps.append({"op": "run",
-                      "argv": ["uv", "tool", "install", "-q", "-e", f"{root}/agent-tools"],
-                      "why": "put agent-tools on PATH", "warn_only": True})
+                      "argv": ["uv", "tool", "install", "-q", "-e", f"{root}/coxswain-tools"],
+                      "why": "put cox on PATH", "warn_only": True})
         steps.append({"op": "run",
                       "argv": ["uv", "tool", "install", "-q", "-e", cartridges_dir],
-                      "why": "puts the `cartridge` command on PATH beside agent-tools",
+                      "why": "puts the `cartridge` command on PATH beside cox",
                       "warn_only": True})
 
     if not profile_exists or force_profile:
@@ -173,9 +173,9 @@ def install_plan(
         if claude_on_path:
             steps.append({"op": "run",
                           "argv": ["claude", "plugin", "marketplace", "add", cartridges_dir],
-                          "why": "register agent-cartridges as a plugin marketplace"})
+                          "why": "register coxswain-cartridges as a plugin marketplace"})
             steps.append({"op": "run",
-                          "argv": ["claude", "plugin", "install", "local-skills@agent-cartridges"],
+                          "argv": ["claude", "plugin", "install", "local-skills@coxswain-cartridges"],
                           "why": "install the local-skills plugin"})
         else:
             steps.append({"op": "skip", "what": "plugins",

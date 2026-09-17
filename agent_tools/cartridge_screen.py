@@ -61,7 +61,7 @@ def _run_probe(ctx: dict, run) -> dict:
 
 def _init_cartridge(effect: Effect, ctx: dict, run) -> dict:
     name = effect.payload["name"]
-    venv_cartridge = f"{ctx.get('root', '')}/agent-cartridges/.venv/bin/cartridge"
+    venv_cartridge = f"{ctx.get('root', '')}/coxswain-cartridges/.venv/bin/cartridge"
     argv = resolved_argv(["cartridge", "init", name, "--cartridges-dir", str(ctx["cartridges_dir"]),
                           "--extends", effect.payload["extends"]],
                          cartridge_on_path=shutil.which("cartridge") is not None,
@@ -155,11 +155,11 @@ def main(fields: dict, *, probe=None) -> int:
         probe = _run_core_probe
     root, team, workspace = fields.get("root", ""), fields.get("team", ""), fields.get("workspace", "")
     cartridges_dir = f"{workspace}/cartridges"
-    python_path = f"{root}/agent-graphs/.venv/bin/python"
+    python_path = f"{root}/coxswain-graphs/.venv/bin/python"
     facts = probe(python_path, cartridges_dir, team, [])
     state = State(rows=tuple(rows(facts, team)), roster=roster_from_probe(facts), cursor=0, pending={},
                   message="", team=team)
-    venv_cartridge = f"{root}/agent-cartridges/.venv/bin/cartridge"
+    venv_cartridge = f"{root}/coxswain-cartridges/.venv/bin/cartridge"
     ctx = {"cartridges_dir": cartridges_dir, "team": team, "root": root,
            "profile_path": fields.get("profile_path", ""),
            # same on-path/venv-fallback convention `_init_cartridge` uses for `cartridge`.

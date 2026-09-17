@@ -221,4 +221,4 @@ def test_a_venv_path_the_process_may_not_read_is_simply_absent(monkeypatch):
         raise PermissionError(13, "Permission denied", str(self))
 
     monkeypatch.setattr(cartridge_screen.Path, "exists", denied)
-    assert cartridge_screen._present("/root/agent-cartridges/.venv/bin/cartridge") is False
+    assert cartridge_screen._present("/root/coxswain-cartridges/.venv/bin/cartridge") is False

@@ -21,7 +21,7 @@ def _run(argv):
 @pytest.fixture
 def install_env(tmp_path, monkeypatch):
     root = tmp_path / "root"
-    for repo in ("agent-cartridges", "agent-graphs", "agent-tools"):
+    for repo in ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools"):
         (root / repo).mkdir(parents=True)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -71,13 +71,13 @@ def test_full_install_calls_uv_in_order_and_writes_profile(install_env):
     lines = install_env["log"].read_text(encoding="utf-8").splitlines()
     assert lines[0] == "venv -q"
     assert lines[1] == "pip install -q -e .[dev]"
-    assert lines[6] == f"tool install -q -e {install_env['root']}/agent-tools"
+    assert lines[6] == f"tool install -q -e {install_env['root']}/coxswain-tools"
     profile_path = install_env["home"] / ".config" / "agent-tools" / "profile.yaml"
     profile = route.parse_profile(profile_path.read_text(encoding="utf-8"))
     assert profile["team"] == "acme"
     assert profile["assume"] == "r"
     assert profile["cartridges_dir"] == f"{install_env['workspace']}/cartridges"
-    assert profile["harness_dir"] == f"{install_env['root']}/agent-graphs"
+    assert profile["harness_dir"] == f"{install_env['root']}/coxswain-graphs"
 
 
 def test_window_ceiling_usd_flag_writes_the_spend_block_into_the_written_profile(install_env):
@@ -148,8 +148,8 @@ exit 0
     out = capsys.readouterr().out
     warn_lines = [line for line in out.splitlines() if line.startswith("warn:")]
     assert len(warn_lines) == 2
-    assert any("agent-tools" in line for line in warn_lines)
-    assert any("agent-cartridges" in line for line in warn_lines)
+    assert any("coxswain-tools" in line for line in warn_lines)
+    assert any("coxswain-cartridges" in line for line in warn_lines)
     profile_path = install_env["home"] / ".config" / "agent-tools" / "profile.yaml"
     assert profile_path.exists()
 
@@ -167,8 +167,8 @@ def test_an_unsafe_team_value_is_refused_not_a_traceback(install_env, capsys):
 def test_a_missing_repo_directory_fails_gracefully_not_a_traceback(tmp_path, monkeypatch):
     root = tmp_path / "root"
     root.mkdir()
-    # agent-cartridges is deliberately never checked out here.
-    for repo in ("agent-graphs", "agent-tools"):
+    # coxswain-cartridges is deliberately never checked out here.
+    for repo in ("coxswain-graphs", "coxswain-tools"):
         (root / repo).mkdir(parents=True)
     workspace = tmp_path / "workspace"
     workspace.mkdir()

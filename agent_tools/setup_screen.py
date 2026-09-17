@@ -48,11 +48,11 @@ def resolved_argv(argv: list[str], *, cartridge_on_path: bool, venv_cartridge_ex
 
 def run_action(action: dict, *, root: str = "") -> tuple[list[str], int]:
     """Runs one action `handle` returned and reports its output back.
-    `cartridge` is a console script that lives only in agent-cartridges'
+    `cartridge` is a console script that lives only in coxswain-cartridges'
     own venv; if PATH does not have it, fall back to the venv binary
     under `root` rather than let a missing-PATH entry read as a missing
     folder."""
-    venv_cartridge = f"{root}/agent-cartridges/.venv/bin/cartridge"
+    venv_cartridge = f"{root}/coxswain-cartridges/.venv/bin/cartridge"
     argv = resolved_argv(action["argv"], cartridge_on_path=shutil.which("cartridge") is not None,
                           venv_cartridge_exists=Path(venv_cartridge).exists(),
                           venv_cartridge=venv_cartridge)

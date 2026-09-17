@@ -10,7 +10,7 @@ team: acme
 cartridges_dir: /opt/cartridges
 skills_roots: [/opt/skills-a, /opt/skills-b]
 provider_profile: /opt/providers/acme.yaml
-harness_dir: /opt/agent-graphs
+harness_dir: /opt/coxswain-graphs
 workspace_dir: /home/acme/workspace
 assume: y
 """
@@ -22,7 +22,7 @@ def test_parse_profile_reads_scalars_and_lists():
     assert profile["cartridges_dir"] == "/opt/cartridges"
     assert profile["skills_roots"] == ["/opt/skills-a", "/opt/skills-b"]
     assert profile["provider_profile"] == "/opt/providers/acme.yaml"
-    assert profile["harness_dir"] == "/opt/agent-graphs"
+    assert profile["harness_dir"] == "/opt/coxswain-graphs"
     assert profile["workspace_dir"] == "/home/acme/workspace"
     assert profile["assume"] == "y"
 
@@ -310,8 +310,8 @@ def test_harness_argv_builds_the_epic_command_line():
         profile, "epic", "myinit-1", initiative="/work/myinit", repo="/repos/widget"
     )
     assert argv == [
-        "/opt/agent-graphs/.venv/bin/python",
-        "/opt/agent-graphs/shell.py",
+        "/opt/coxswain-graphs/.venv/bin/python",
+        "/opt/coxswain-graphs/shell.py",
         "epic",
         "--team",
         "acme",
@@ -348,8 +348,8 @@ def test_harness_argv_builds_the_decompose_command_line():
         initiative_id="myidea",
     )
     assert argv == [
-        "/opt/agent-graphs/.venv/bin/python",
-        "/opt/agent-graphs/shell.py",
+        "/opt/coxswain-graphs/.venv/bin/python",
+        "/opt/coxswain-graphs/shell.py",
         "decompose",
         "--team",
         "acme",
@@ -478,8 +478,8 @@ def test_overlay_never_raises_on_off_ladder_values():
 
 def test_child_env_prepends_both_venv_bins_and_leaves_other_keys_untouched():
     environ = {"PATH": "/usr/bin:/bin", "HOME": "/home/acme", "LANG": "C.UTF-8"}
-    env = route.child_env(environ, harness_dir="/opt/agent-graphs", repo="/repos/widget")
-    assert env["PATH"] == "/repos/widget/.venv/bin:/opt/agent-graphs/.venv/bin:/usr/bin:/bin"
+    env = route.child_env(environ, harness_dir="/opt/coxswain-graphs", repo="/repos/widget")
+    assert env["PATH"] == "/repos/widget/.venv/bin:/opt/coxswain-graphs/.venv/bin:/usr/bin:/bin"
     assert env["HOME"] == "/home/acme"
     assert env["LANG"] == "C.UTF-8"
     assert environ["PATH"] == "/usr/bin:/bin"  # input untouched
@@ -487,15 +487,15 @@ def test_child_env_prepends_both_venv_bins_and_leaves_other_keys_untouched():
 
 def test_child_env_omits_a_prefix_that_is_not_given():
     environ = {"PATH": "/usr/bin"}
-    env = route.child_env(environ, harness_dir="/opt/agent-graphs", repo="")
-    assert env["PATH"] == "/opt/agent-graphs/.venv/bin:/usr/bin"
+    env = route.child_env(environ, harness_dir="/opt/coxswain-graphs", repo="")
+    assert env["PATH"] == "/opt/coxswain-graphs/.venv/bin:/usr/bin"
 
 
 def test_child_env_sets_trace_dir_and_still_prepends_path():
     environ = {"PATH": "/usr/bin"}
-    env = route.child_env(environ, harness_dir="/opt/agent-graphs", trace_dir="/runs/x-1-trace")
+    env = route.child_env(environ, harness_dir="/opt/coxswain-graphs", trace_dir="/runs/x-1-trace")
     assert env["AGENT_GRAPHS_TRACE_DIR"] == "/runs/x-1-trace"
-    assert env["PATH"] == "/opt/agent-graphs/.venv/bin:/usr/bin"
+    assert env["PATH"] == "/opt/coxswain-graphs/.venv/bin:/usr/bin"
 
 
 def test_child_env_without_trace_dir_leaves_the_key_untouched():
@@ -516,7 +516,7 @@ FIXTURE_PROFILE = {
     "cartridges_dir": "/opt/cartridges",
     "skills_roots": ["/opt/skills-a", "/opt/skills-b"],
     "provider_profile": "/opt/providers/acme.yaml",
-    "harness_dir": "/opt/agent-graphs",
+    "harness_dir": "/opt/coxswain-graphs",
     "workspace_dir": "/home/acme/workspace",
     "assume": "a",
 }
@@ -578,7 +578,7 @@ def test_context_document_keys_on_exactly_the_profile_fields():
     assert doc["cartridges_dir"] == "/opt/cartridges"
     assert doc["skills_roots"] == ["/opt/skills-a", "/opt/skills-b"]
     assert doc["provider_profile"] == "/opt/providers/acme.yaml"
-    assert doc["harness_dir"] == "/opt/agent-graphs"
+    assert doc["harness_dir"] == "/opt/coxswain-graphs"
     assert doc["workspace_dir"] == "/home/acme/workspace"
     assert doc["assume"] == "a"
     assert doc["intake"] == FIXTURE_INTAKE
