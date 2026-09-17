@@ -610,7 +610,7 @@ def test_launch_decompose_leaves_an_existing_initiative_md_untouched(tmp_path, c
     idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
     initiative_md = ws / "work" / "fix-thing" / "initiative.md"
     initiative_md.parent.mkdir(parents=True)
-    initiative_md.write_text("hand-written\n")
+    initiative_md.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
 
     rc = main([
@@ -621,8 +621,70 @@ def test_launch_decompose_leaves_an_existing_initiative_md_untouched(tmp_path, c
     ])
     out = capsys.readouterr().out
     assert rc == 0
-    assert initiative_md.read_text() == "hand-written\n"
+    assert initiative_md.read_text() == "---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n"
     assert sum(1 for line in out.splitlines() if "already exists" in line) == 1
+
+
+def test_launch_decompose_refreshes_initiative_md_when_the_intake_changes(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\nrepo: git@example.com:acme/widget.git\n---\n\nDo the new thing.\n")
+    initiative_md = ws / "work" / "fix-thing" / "initiative.md"
+    initiative_md.parent.mkdir(parents=True)
+    initiative_md.write_text(
+        "---\nid: fix-thing\ntitle: Fix thing\nrepo: git@example.com:acme/widget.git\nintake: intake/idea.md\n---\n\nOld body.\n"
+    )
+    old = time.time() - 10
+    os.utime(initiative_md, (old, old))
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    fields, body = route.parse_frontmatter(initiative_md.read_text())
+    assert fields == {
+        "id": "fix-thing",
+        "title": "Fix thing",
+        "repo": "git@example.com:acme/widget.git",
+        "intake": "intake/idea.md",
+    }
+    assert body == "Do the new thing."
+    assert f"routing: initiative.md refreshed from {idea}" in out
+
+
+def test_launch_decompose_keeps_initiative_md_when_tickets_exist(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nDo the new thing.\n")
+    initiative_md = ws / "work" / "fix-thing" / "initiative.md"
+    initiative_md.parent.mkdir(parents=True)
+    initiative_md.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nOld body.\n")
+    ticket = ws / "work" / "fix-thing" / "build" / "fix-thing.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text("---\nid: fix-thing\n---\n\nDo it.\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert initiative_md.read_text() == "---\nid: fix-thing\ntitle: Fix thing\n---\n\nOld body.\n"
+    assert "routing: initiative.md kept: tickets exist" in out
 
 
 def test_launch_writes_launched_json_naming_the_lock_holder(tmp_path, capsys):
