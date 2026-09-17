@@ -1,0 +1,27 @@
+usage: cox runs [-h] {usage,trace,clean,land,recover,series,events,top,notify,detail,stranded} ...
+
+What a harness run recorded, and cleaning up after it.
+
+positional arguments:
+  {usage,trace,clean,land,recover,series,events,top,notify,detail,stranded}
+    usage               usage stats and cost for one run
+    trace               the tool-call trace for one run
+    clean               delete a run's worktree and branches locally
+    land                merge a run's branch into the target repo
+    recover             merge an approved task's commit into its phase branch after an escalated
+                        merge
+    series              per-run summary rows across a runs directory
+    events              poll a run's log for structured events
+    top                 live table of runs in flight; --once prints it and exits
+    notify              desktop notifications for exits, quarantines, budget stops and cost
+    detail              one run's timeline, objection and last tool calls
+    stranded            every approved task record whose work item is not done, with its remedy
+
+options:
+  -h, --help            show this help message and exit
+
+examples:
+  cox runs land <run> --repo PATH --apply
+  cox runs recover <run> <task> --repo PATH
+  cox runs usage <run> --json
+  cox runs detail <run> --json

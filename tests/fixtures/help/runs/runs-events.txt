@@ -1,0 +1,7 @@
+usage: cox runs events [-h] [--runs-dir RUNS_DIR] [--follow] [--json]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
+  --follow
+  --json

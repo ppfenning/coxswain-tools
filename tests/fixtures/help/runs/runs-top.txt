@@ -1,0 +1,7 @@
+usage: cox runs top [-h] [--runs-dir RUNS_DIR] [--interval INTERVAL] [--once]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
+  --interval INTERVAL
+  --once

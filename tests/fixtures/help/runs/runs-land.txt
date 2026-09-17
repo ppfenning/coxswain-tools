@@ -1,0 +1,20 @@
+usage: cox runs land [-h] --repo REPO [--task TASK] [--phase PHASE] [--label LABEL] [--force]
+                     [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge] [--runs-dir RUNS_DIR]
+                     [--profile PROFILE]
+                     run_id
+
+positional arguments:
+  run_id
+
+options:
+  -h, --help            show this help message and exit
+  --repo REPO
+  --task TASK
+  --phase PHASE         land the whole phase off its own epic branch instead of one task
+  --label LABEL
+  --force               land despite a foreign live leader
+  --worktree-root WORKTREE_ROOT
+  --apply
+  --no-merge
+  --runs-dir RUNS_DIR   override: resolve task records here instead of the profile's workspace_dir
+  --profile PROFILE

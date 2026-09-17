@@ -1,0 +1,15 @@
+usage: cox runs clean [-h] --repo REPO [--worktree-root WORKTREE_ROOT] [--runs-dir RUNS_DIR]
+                      [--profile PROFILE] [--apply] [--force]
+                      run_id
+
+positional arguments:
+  run_id
+
+options:
+  -h, --help            show this help message and exit
+  --repo REPO
+  --worktree-root WORKTREE_ROOT
+  --runs-dir RUNS_DIR   override: resolve task records here instead of the profile's workspace_dir
+  --profile PROFILE
+  --apply
+  --force               delete every branch regardless of whether its task is on main

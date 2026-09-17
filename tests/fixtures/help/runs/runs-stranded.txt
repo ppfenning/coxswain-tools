@@ -1,0 +1,7 @@
+usage: cox runs stranded [-h] [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR  override: resolve task records here instead of the profile's workspace_dir
+  --profile PROFILE
+  --json
