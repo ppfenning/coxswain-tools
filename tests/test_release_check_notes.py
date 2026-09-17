@@ -81,6 +81,18 @@ def test_parse_bullet_names_no_component_when_none_is_known():
     assert parse_bullet("- something happened (#1)", {"cox"}) == (None, {"1"})
 
 
+def test_parse_bullet_does_not_treat_a_coxswain_uri_scheme_in_a_code_span_as_a_mention():
+    assert parse_bullet("- courier posts a `coxswain://task/x` reference", {"coxswain"}) == (None, set())
+
+
+def test_parse_bullet_still_finds_a_bare_coxswain_mention_in_prose():
+    assert parse_bullet("- the coxswain manifest gains a row", {"coxswain"}) == ("coxswain", set())
+
+
+def test_parse_bullet_still_finds_a_backtick_quoted_component_name_with_a_citation():
+    assert parse_bullet("- fixed `coxswain-tools` publish workflow (#187)", {"coxswain-tools"}) == ("coxswain-tools", {"187"})
+
+
 def test_bullets_from_notes_finds_bullets_and_skips_separators_and_flags():
     text = "# Title\n---\n- cox: added retry (#42)\n* route: fixed bug (abc1234)\n--verbose\n"
     assert bullets_from_notes(text) == [(3, "- cox: added retry (#42)"), (4, "* route: fixed bug (abc1234)")]
@@ -107,6 +119,21 @@ def test_check_notes_drifts_on_a_citation_absent_from_that_components_history():
               "notes_bullets": [(5, "- cox: added retry (#99)")]}
     assert check_notes(facts) == [
         Drift("notes_citation", "notes.md", 5, "/repo/cox", None, "cite a PR or commit landed in cox, or remove")
+    ]
+
+
+def test_check_notes_has_no_drift_for_a_coxswain_uri_scheme_in_a_code_span():
+    facts = {"component_dirs": {"tools": "/repo/tools", "coxswain": "/repo/coxswain"},
+              "landed": {"tools": {"42"}, "coxswain": {"7"}}, "release_notes": "notes.md",
+              "notes_bullets": [(3, "- tools: relays to the chair's courier inbox as a `coxswain://task/<id>` reference (#42)")]}
+    assert check_notes(facts) == []
+
+
+def test_check_notes_still_drifts_on_a_bare_coxswain_mention_with_no_citation():
+    facts = {"component_dirs": {"coxswain": "/repo/coxswain"}, "landed": {"coxswain": {"42"}}, "release_notes": "notes.md",
+              "notes_bullets": [(3, "- the coxswain manifest gains a row")]}
+    assert check_notes(facts) == [
+        Drift("notes_citation", "notes.md", 3, "/repo/coxswain", None, "cite the PR or commit landed in coxswain")
     ]
 
 
