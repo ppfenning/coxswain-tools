@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import socket
 import sqlite3
+import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,7 @@ __all__ = [
     "provider_profile_from_nodes",
     "provider_profile_source",
     "recovered_call_rows",
+    "resolve_provider_profile_sha",
     "rollup_task_costs",
     "run_join_holds",
     "run_row",
@@ -59,12 +61,16 @@ def run_row(
     launched: Mapping[str, Any] | None,
     host: str | None = None,
     provider_profile: str | None = None,
+    provider_profile_sha: str | None = None,
 ) -> dict[str, Any]:
     """One `runs` row from a run's usage summary, its node records and its launch
     marker. `host` names the ingesting machine, not necessarily the one the run
     executed on — a backfilled, inferred value, not an observed one — and
     `provider_profile` comes from the autonomy ledger or, failing that, the run's own
-    node records; both are the edge's job to resolve and pass in, never read here."""
+    node records; both are the edge's job to resolve and pass in, never read here.
+    `provider_profile_sha` is likewise resolved by the edge, either from a direct
+    record or, for a run predating one, from `coxswain-cartridges` git history
+    (`resolve_provider_profile_sha`); None here means unresolved, not "not needed"."""
     summary = (usage or {}).get("summary") or {}
     first_node = node_records[0] if node_records else {}
     minutes = sum(float(n.get("human_minutes") or 0.0) for n in node_records)
@@ -75,6 +81,7 @@ def run_row(
         "cartridge_sha": first_node.get("cartridge_sha"),
         "cartridge_team": first_node.get("cartridge_team"),
         "provider_profile": provider_profile,
+        "provider_profile_sha": provider_profile_sha,
         "vendor": "claude-code",
         "host": host,
         "launched_by": (launched or {}).get("launched_by"),
@@ -328,6 +335,8 @@ class IngestReport:
     provider_profile_from_ledger: int = 0
     provider_profile_from_node: int = 0
     provider_profile_unresolved: int = 0
+    provider_profile_sha_resolved: int = 0
+    provider_profile_sha_unresolved: int = 0
     challenger_calls: int = 0
 
 
@@ -542,6 +551,40 @@ def provider_profile_source(
     return None, "none"
 
 
+def resolve_provider_profile_sha(
+    cartridges_repo: Path | None, profile: str | None, started_at: str | None
+) -> str | None:
+    """The git blob sha of `providers/<profile>.yaml` in `cartridges_repo` as it
+    stood at `started_at`: the file's content at the last commit at or before that
+    timestamp to touch it, read via `git log --before` then `git rev-parse
+    <commit>:<path>`. None when `cartridges_repo`, `profile` or `started_at` is
+    missing, `cartridges_repo` is not a git checkout, no commit at or before
+    `started_at` touched the file, or the file did not exist at that commit — never
+    guessed, only ever resolved or left absent (charter B4: absence is reported,
+    not hidden behind a default)."""
+    if cartridges_repo is None or not profile or not started_at:
+        return None
+    rel_path = f"providers/{profile}.yaml"
+    try:
+        log = subprocess.run(
+            ["git", "-C", str(cartridges_repo), "log", f"--before={started_at}", "-1", "--format=%H", "--", rel_path],
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    commit = log.stdout.strip()
+    if not commit:
+        return None
+    try:
+        blob = subprocess.run(
+            ["git", "-C", str(cartridges_repo), "rev-parse", f"{commit}:{rel_path}"],
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    return blob.stdout.strip() or None
+
+
 def load_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
     """Every file this ingester reads for one run — usage, launch marker, node
     records, task records and log lines — plus the paths that failed to parse.
@@ -618,6 +661,7 @@ def ingest(
     db_path: Path | str,
     ledger_path: Path | str | None = None,
     work_store_root: Path | str | None = None,
+    cartridges_repo: Path | str | None = None,
 ) -> IngestReport:
     """Upserts every run under `runs_dir` into the stats store at `db_path`, keyed
     by run_id so re-running over the same directory changes nothing. Errors before
@@ -629,10 +673,16 @@ def ingest(
     default) means no task in this ingest can resolve `outcome_source='work_store'`.
     Every run's `provider_profile` is tallied by which source resolved it (ledger,
     node record, or neither); the three counts in the returned report always sum to
-    `runs_ingested`. `challenger_calls` in the returned report is the total count of
-    calls, across every run ingested, tagged `challenger=1`."""
+    `runs_ingested`. `cartridges_repo`, when given, is a local `coxswain-cartridges`
+    checkout `resolve_provider_profile_sha` reads to backfill each run's
+    `provider_profile_sha` from git history; `None` (the default) means every run's
+    sha is unresolved, reported as such rather than silently omitted. The two sha
+    counts in the returned report always sum to `runs_ingested`. `challenger_calls`
+    in the returned report is the total count of calls, across every run ingested,
+    tagged `challenger=1`."""
     runs_dir = Path(runs_dir)
     work_store_root = Path(work_store_root) if work_store_root is not None else None
+    cartridges_repo = Path(cartridges_repo) if cartridges_repo is not None else None
     if not runs_dir.is_dir():
         raise FileNotFoundError(f"no such runs directory: {runs_dir.resolve()}")
     run_ids = discover_runs(runs_dir)
@@ -647,6 +697,7 @@ def ingest(
     # edge, already imperative and already writing the database per run (A7), so one
     # more per-run list append here costs nothing a pure core would have avoided.
     profile_sources: list[str] = []
+    sha_resolutions: list[bool] = []
     challenger_calls = 0
     for run_id in run_ids:
         loaded = load_run(runs_dir, run_id)
@@ -655,9 +706,12 @@ def ingest(
         log_events = from_log(run_id, loaded["log_lines"])
         profile, profile_source = provider_profile_source(run_id, ledger_rows, loaded["node_records"])
         profile_sources.append(profile_source)
+        started_at = ((loaded["usage"] or {}).get("summary") or {}).get("started_at")
+        profile_sha = resolve_provider_profile_sha(cartridges_repo, profile, started_at)
+        sha_resolutions.append(profile_sha is not None)
         run = run_row(
             run_id, loaded["usage"], loaded["node_records"], loaded["launched"],
-            host=host, provider_profile=profile,
+            host=host, provider_profile=profile, provider_profile_sha=profile_sha,
         )
         calls = (
             recovered_call_rows(run_id, loaded["traces"])
@@ -680,10 +734,13 @@ def ingest(
     conn.commit()
     conn.close()
     assert len(profile_sources) == len(run_ids)
+    assert len(sha_resolutions) == len(run_ids)
     return IngestReport(
         runs_ingested=len(run_ids), unparsed_count=len(unparsed), unparsed_sample=tuple(unparsed[:5]),
         provider_profile_from_ledger=profile_sources.count("ledger"),
         provider_profile_from_node=profile_sources.count("node"),
         provider_profile_unresolved=profile_sources.count("none"),
+        provider_profile_sha_resolved=sum(sha_resolutions),
+        provider_profile_sha_unresolved=len(sha_resolutions) - sum(sha_resolutions),
         challenger_calls=challenger_calls,
     )

@@ -47,6 +47,7 @@ RUNS_COLUMNS = (
     Column("cartridge_sha", "TEXT"),
     Column("cartridge_team", "TEXT"),
     Column("provider_profile", "TEXT"),
+    Column("provider_profile_sha", "TEXT"),
     Column("vendor", "TEXT", default="claude-code"),
     Column("host", "TEXT"),
     Column("launched_by", "TEXT"),

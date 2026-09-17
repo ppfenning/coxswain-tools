@@ -32,6 +32,7 @@ def test_runs_columns_match_spec_names_verbatim():
         "cartridge_sha",
         "cartridge_team",
         "provider_profile",
+        "provider_profile_sha",
         "vendor",
         "host",
         "launched_by",
