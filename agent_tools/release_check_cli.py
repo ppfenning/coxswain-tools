@@ -14,19 +14,21 @@ if TYPE_CHECKING:
 
 _POSITIONAL_SECTION = re.compile(r"positional arguments:\n(.*?)(?:\n\n|\Z)", re.DOTALL)
 _SUBPARSER_BLOCK = re.compile(r"^( *)\{([^}]+)\}\n(?:\1 +\S.*\n?)+", re.MULTILINE)
-_DOC_COMMAND = re.compile(r"`(cox(?: (?!-)[\w-]+)*)[^`]*`")
+_SUPPRESSED_CHOICE = re.compile(r"^ *(\S+) +==SUPPRESS==", re.MULTILINE)
+_DOC_COMMAND = re.compile(r"`(cox(?: (?!-)[\w-]+)+)[^`]*`")
 _GENERATOR_ENTRY = "parse_subcommands"  # docs/_cli.py's pure core: parse_subcommands(help_text) -> Iterable[str]
 
 
 def _choices(help_text: str) -> set[str]:
     """A `{a,b,c}` line only names subcommands when it is followed by an
     indented per-choice list; a flag's or plain positional's choice list
-    never gets one, so it is left for the leaf's own value, not a group."""
+    never gets one, so it is left for the leaf's own value, not a group.
+    A choice marked `==SUPPRESS==` is dropped: never explored, never demanded."""
     section = _POSITIONAL_SECTION.search(help_text)
     if section is None:
         return set()
     block = _SUBPARSER_BLOCK.search(section.group(1))
-    return set(block.group(2).split(",")) if block else set()
+    return (set(block.group(2).split(",")) - set(_SUPPRESSED_CHOICE.findall(block.group(0)))) if block else set()
 
 
 def walk_help(help_texts: Mapping[str, str], choices: Callable[[str], set[str]] = _choices) -> set[str]:
@@ -44,6 +46,11 @@ def commands_in_doc(text: str) -> set[str]:
 
 def _group(command: str) -> str:
     return command.split()[1]
+
+
+def _namespaces(cli_commands: set[str]) -> set[str]:
+    """A prefix shorter than a full command names a namespace, never a drift on its own."""
+    return {" ".join(tokens[:i]) for cmd in cli_commands for tokens in (cmd.split(),) for i in range(2, len(tokens))}
 
 
 def _doc_target(doc_commands: Mapping[str, set[str]], command: str) -> str:
@@ -66,30 +73,34 @@ def check_cli_surface(facts: Mapping) -> list[Drift]:
     cli_commands: set[str] = facts.get("cli_commands", set())
     doc_commands: Mapping[str, set[str]] = facts.get("doc_commands", {})
     readme_commands: Mapping[str, set[str]] = facts.get("readme_commands", {})
+    namespaces = _namespaces(cli_commands)
+    suppressed = {_group(cmd) for cmd in facts.get("suppressed", set())}
     documented = {cmd for cmds in doc_commands.values() for cmd in cmds}
     missing_docs = [
         Drift("cli_surface", "cox --help", None, _doc_target(doc_commands, cmd), None,
               f"add {cmd} to {_doc_target(doc_commands, cmd)}")
         for cmd in sorted(cli_commands - documented)
+        if _group(cmd) not in suppressed
     ]
     missing_readme = [
         Drift("cli_surface", "cox --help", None, f"{_group(cmd)}/README.md", None,
               f"add {cmd} to {_group(cmd)}/README.md")
         for cmd in sorted(cli_commands)
         if _group(cmd) in readme_commands and cmd not in readme_commands[_group(cmd)]
+        and _group(cmd) not in suppressed
     ]
     stray_docs = [
         Drift("cli_surface", path, None, "cox --help", None, f"remove {cmd} from {path}")
         for path, cmds in sorted(doc_commands.items())
         for cmd in sorted(cmds)
-        if cmd not in cli_commands
+        if cmd not in cli_commands and cmd not in namespaces and _group(cmd) not in suppressed
     ]
     stray_readmes = [
         Drift("cli_surface", f"{name}/README.md", None, "cox --help", None,
               f"remove {cmd} from {name}/README.md")
         for name, cmds in sorted(readme_commands.items())
         for cmd in sorted(cmds)
-        if cmd not in cli_commands
+        if cmd not in cli_commands and cmd not in namespaces and _group(cmd) not in suppressed
     ]
     return missing_docs + missing_readme + stray_docs + stray_readmes
 
@@ -160,4 +171,5 @@ def gather_cli_facts(root: str, run: Callable[[list[str], str], tuple[int, str]]
         "cli_commands": walk_help(help_texts),
         "doc_commands": doc_commands,
         "readme_commands": readme_commands,
+        "suppressed": {f"{p} {n}" for p, t in help_texts.items() for n in _SUPPRESSED_CHOICE.findall(t)},
     }

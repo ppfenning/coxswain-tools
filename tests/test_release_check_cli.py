@@ -41,6 +41,10 @@ def test_commands_in_doc_matches_a_backticked_cox_mention_and_drops_a_trailing_f
     assert commands_in_doc("Run `cox dev release-check --json` first.") == {"cox dev release-check"}
 
 
+def test_commands_in_doc_does_not_read_the_bare_program_name_as_a_command():
+    assert commands_in_doc("Run `cox` to see what's available.") == set()
+
+
 def test_check_cli_surface_flags_a_command_missing_from_the_umbrella_docs():
     facts = {
         "cli_commands": {"cox dev release-check"},
@@ -122,6 +126,33 @@ def test_check_cli_surface_reports_exactly_one_drift_when_the_generator_is_unava
     ]
 
 
+def test_check_cli_surface_treats_a_bare_group_mention_as_a_namespace_not_a_stray_command():
+    facts = {
+        "cli_commands": {"cox setup profile", "cox dev release-check"},
+        "doc_commands": {
+            "docs/reference/cli/setup.md": {"cox setup profile"},
+            "docs/reference/cli/dev.md": {"cox dev release-check"},
+        },
+        "readme_commands": {
+            "setup": {"cox setup", "cox setup profile"},
+            "dev": {"cox dev", "cox dev release-check"},
+        },
+    }
+    assert check_cli_surface(facts) == []
+
+
+def test_check_cli_surface_neither_requires_nor_flags_a_suppressed_groups_commands():
+    facts = {
+        "cli_commands": {"cox dev release-check", "cox release publish"},
+        "doc_commands": {"docs/reference/cli/dev.md": {"cox dev release-check"}},
+        "readme_commands": {"dev": {"cox dev release-check"}, "release": set()},
+        "suppressed": {"cox release"},
+    }
+    assert check_cli_surface(facts) == []  # not required: release/README.md and its doc page stay silent
+    facts["readme_commands"]["release"] = {"cox release archive"}
+    assert check_cli_surface(facts) == []  # not flagged: release/README.md mentions it anyway
+
+
 def test_check_cli_surface_names_the_differing_command_on_a_genuine_mismatch():
     facts = {
         "cli_commands": {"cox dev release-check", "cox dev doctor"},
@@ -188,3 +219,26 @@ def test_gather_cli_facts_reports_one_generator_error_when_parse_subcommands_rai
     facts = gather_cli_facts(str(tmp_path), _run_from(_HELP))
     assert facts.get("generator_error")
     assert "cli_commands" not in facts and "doc_commands" not in facts
+
+
+def _real_cox_help_texts():
+    """Walks the umbrella's own live argparse tree (not a fixture) so the
+    three shapes above are checked against the actual `cox --help` this
+    repo ships, the same text `cox dev release-check` would gather."""
+    from agent_tools.cli import build_parser
+
+    def texts_from(parser, prefix):
+        found = {prefix: parser.format_help()}
+        for group_action in parser._subparsers._group_actions if parser._subparsers else []:
+            for name, sub in group_action.choices.items():
+                found.update(texts_from(sub, f"{prefix} {name}"))
+        return found
+
+    return texts_from(build_parser(), "cox")
+
+
+def test_walk_help_on_the_real_cox_parser_reaches_setup_and_dev_but_drops_release():
+    commands = walk_help(_real_cox_help_texts())
+    assert any(cmd.startswith("cox setup ") for cmd in commands)
+    assert any(cmd.startswith("cox dev ") for cmd in commands)
+    assert not any(cmd.split()[1] == "release" for cmd in commands)
