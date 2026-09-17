@@ -1509,7 +1509,7 @@ def _write_mapping(mapping: dict, ws: Path):
     return None
 
 
-def _route_file_from_intake(a: argparse.Namespace, ws: Path) -> int:
+def _route_file_from_intake(a: argparse.Namespace, ws: Path, profile: dict) -> int:
     intake_path = Path(a.from_intake)
     if intake_path.parent.resolve() != (ws / "intake").resolve():
         print(f"routing: --from-intake must name a file directly under {ws / 'intake'}")
@@ -1520,12 +1520,20 @@ def _route_file_from_intake(a: argparse.Namespace, ws: Path) -> int:
         return 2
     fields, intake_body = route.parse_frontmatter(intake_text)
     [entry] = route.intake_entries({intake_path.name: intake_text})
+    repo = fields.get("repo", "")
+    candidates = route.surface_candidates(intake_body, repo)
+    surfaces = [c for c in candidates if (Path(repo) / c).is_file()]
+    print(f"surfaces: {', '.join(surfaces)}" if surfaces else "surfaces: none resolved from the intake body")
+    budget_usd = profile.get("one_task_budget_usd", 2.0)
     try:
-        mapping = route.initiative_files(entry["title"], intake_body, fields.get("repo", ""), phase=a.phase)
+        mapping = route.initiative_files(
+            entry["title"], intake_body, repo, phase=a.phase,
+            surfaces=surfaces, budget_usd=budget_usd, slug=fields.get("slug"),
+        )
     except ValueError as exc:
         print(f"routing: {exc}")
         return 2
-    slug = route.slugify(entry["title"])
+    slug = route.slugify(fields.get("slug") or entry["title"])
     initiative_rel = f"work/{slug}/initiative.md"
     new_initiative_text, new_intake_text = route.link_intake(
         mapping[initiative_rel], intake_text, f"intake/{intake_path.name}", slug
@@ -1547,7 +1555,7 @@ def _route_file(a: argparse.Namespace) -> int:
         return rc
     ws = Path(profile["workspace_dir"]).expanduser()
     if a.from_intake:
-        return _route_file_from_intake(a, ws)
+        return _route_file_from_intake(a, ws, profile)
     if not a.title or not a.repo:
         print("routing: --title and --repo are required unless --from-intake is given")
         return 2
