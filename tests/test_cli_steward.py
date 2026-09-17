@@ -55,7 +55,7 @@ def _write_profile(tmp_path, provider_profile):
     profile.write_text(
         "team: acme\n"
         f"workspace_dir: {ws}\n"
-        "harness_dir: /opt/agent-graphs\n"
+        "harness_dir: /opt/coxswain-graphs\n"
         "cartridges_dir: /opt/cartridges\n"
         f"provider_profile: {provider_profile}\n"
     )

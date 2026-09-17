@@ -298,7 +298,7 @@ def _write_file_profile(tmp_path):
     profile.write_text(
         "team: acme\n"
         f"workspace_dir: {ws}\n"
-        "harness_dir: /opt/agent-graphs\n"
+        "harness_dir: /opt/coxswain-graphs\n"
         "cartridges_dir: /opt/cartridges\n"
         "provider_profile: /opt/providers/acme.yaml\n"
     )

@@ -20,7 +20,7 @@ def _plan(**overrides):
         "provider_profile": "claude",
         "skills_root": "/root/skills",
         "uv_on_path": True,
-        "python_exists": {"agent-cartridges": False, "agent-graphs": False, "agent-tools": False},
+        "python_exists": {"coxswain-cartridges": False, "coxswain-graphs": False, "coxswain-tools": False},
         "claude_on_path": True,
         "profile_exists": False,
         "force_profile": False,
@@ -37,27 +37,27 @@ def test_install_plan_orders_venv_steps_with_graphs_carrying_the_cartridges_dep(
     steps = _plan()
     runs = [s for s in steps if s["op"] == "run"]
     argvs = [r["argv"] for r in runs]
-    assert argvs[0] == ["uv", "venv", "-q"] and runs[0]["cwd"] == "/root/agent-cartridges"
+    assert argvs[0] == ["uv", "venv", "-q"] and runs[0]["cwd"] == "/root/coxswain-cartridges"
     assert argvs[1] == ["uv", "pip", "install", "-q", "-e", ".[dev]"]
-    assert runs[1]["cwd"] == "/root/agent-cartridges"
-    assert argvs[2] == ["uv", "venv", "-q"] and runs[2]["cwd"] == "/root/agent-graphs"
+    assert runs[1]["cwd"] == "/root/coxswain-cartridges"
+    assert argvs[2] == ["uv", "venv", "-q"] and runs[2]["cwd"] == "/root/coxswain-graphs"
     assert argvs[3] == [
-        "uv", "pip", "install", "-q", "-e", ".[dev]", "-e", "/root/agent-cartridges",
+        "uv", "pip", "install", "-q", "-e", ".[dev]", "-e", "/root/coxswain-cartridges",
     ]
-    assert runs[3]["cwd"] == "/root/agent-graphs"
-    assert argvs[4] == ["uv", "venv", "-q"] and runs[4]["cwd"] == "/root/agent-tools"
+    assert runs[3]["cwd"] == "/root/coxswain-graphs"
+    assert argvs[4] == ["uv", "venv", "-q"] and runs[4]["cwd"] == "/root/coxswain-tools"
     assert argvs[5] == ["uv", "pip", "install", "-q", "-e", ".[dev]"]
-    assert runs[5]["cwd"] == "/root/agent-tools"
-    assert argvs[6] == ["uv", "tool", "install", "-q", "-e", "/root/agent-tools"]
-    assert argvs[7] == ["uv", "tool", "install", "-q", "-e", "/root/agent-cartridges"]
-    cartridge_tool_installs = [a for a in argvs if a[-1] == "/root/agent-cartridges"
+    assert runs[5]["cwd"] == "/root/coxswain-tools"
+    assert argvs[6] == ["uv", "tool", "install", "-q", "-e", "/root/coxswain-tools"]
+    assert argvs[7] == ["uv", "tool", "install", "-q", "-e", "/root/coxswain-cartridges"]
+    cartridge_tool_installs = [a for a in argvs if a[-1] == "/root/coxswain-cartridges"
                                 and a[:3] == ["uv", "tool", "install"]]
     assert len(cartridge_tool_installs) == 1
 
 
 def test_existing_venvs_skip_uv_venv_but_still_run_pip_install():
     steps = _plan(
-        python_exists={"agent-cartridges": True, "agent-graphs": True, "agent-tools": True}
+        python_exists={"coxswain-cartridges": True, "coxswain-graphs": True, "coxswain-tools": True}
     )
     runs = [s for s in steps if s["op"] == "run"]
     argvs = [r["argv"][:2] for r in runs]
@@ -99,20 +99,20 @@ def test_profile_written_with_force_even_when_present():
 def test_profile_text_round_trips_through_parse_profile():
     text = profile_text(
         team="acme",
-        cartridges_dir="/root/agent-cartridges",
+        cartridges_dir="/root/coxswain-cartridges",
         skills_root="/root/skills",
         provider_profile="claude",
-        harness_dir="/root/agent-graphs",
+        harness_dir="/root/coxswain-graphs",
         workspace="/root/workspace",
         assume="b",
     )
     parsed = route.parse_profile(text)
     assert parsed == {
         "team": "acme",
-        "cartridges_dir": "/root/agent-cartridges",
+        "cartridges_dir": "/root/coxswain-cartridges",
         "skills_roots": ["/root/skills"],
         "provider_profile": "claude",
-        "harness_dir": "/root/agent-graphs",
+        "harness_dir": "/root/coxswain-graphs",
         "workspace_dir": "/root/workspace",
         "assume": "b",
     }
@@ -121,10 +121,10 @@ def test_profile_text_round_trips_through_parse_profile():
 def test_profile_text_writes_the_spend_block_that_parse_profile_reads_back():
     text = profile_text(
         team="acme",
-        cartridges_dir="/root/agent-cartridges",
+        cartridges_dir="/root/coxswain-cartridges",
         skills_root="/root/skills",
         provider_profile="claude",
-        harness_dir="/root/agent-graphs",
+        harness_dir="/root/coxswain-graphs",
         workspace="/root/workspace",
         window_ceiling_usd=50,
     )
@@ -210,26 +210,26 @@ def test_steps_are_json_serialisable():
 
 
 def test_profile_write_step_carries_derived_paths_not_the_bare_root():
-    steps = _plan(root="/r", workspace="/w", skills_root="/r/agent-cartridges/skills-plugins")
+    steps = _plan(root="/r", workspace="/w", skills_root="/r/coxswain-cartridges/skills-plugins")
     writes = [s for s in steps if s["op"] == "write"]
     text = writes[0]["text"]
     assert "cartridges_dir: /w/cartridges" in text
-    assert "harness_dir: /r/agent-graphs" in text
-    assert "skills_roots: [/r/agent-cartridges/skills-plugins]" in text
+    assert "harness_dir: /r/coxswain-graphs" in text
+    assert "skills_roots: [/r/coxswain-cartridges/skills-plugins]" in text
     assert "harness_dir: /r\n" not in text
     assert not any(line == "harness_dir: /r" for line in text.splitlines())
 
 
 def test_profile_cartridges_dir_is_workspace_based_not_the_repo_checkout():
-    # The repo checkout at root/agent-cartridges is what pip installs edit
+    # The repo checkout at root/coxswain-cartridges is what pip installs edit
     # and the plugin marketplace registers; the profile field the routing
     # layer reads is a workspace path, and the two must not be conflated.
     steps = _plan(root="/root", workspace="/root/workspace")
     writes = [s for s in steps if s["op"] == "write"]
     assert "cartridges_dir: /root/workspace/cartridges" in writes[0]["text"]
     runs = [s for s in steps if s["op"] == "run"]
-    graphs_install = [r for r in runs if r.get("cwd") == "/root/agent-graphs" and "pip" in r["argv"]]
-    assert graphs_install[0]["argv"][-1] == "/root/agent-cartridges"
+    graphs_install = [r for r in runs if r.get("cwd") == "/root/coxswain-graphs" and "pip" in r["argv"]]
+    assert graphs_install[0]["argv"][-1] == "/root/coxswain-cartridges"
 
 
 def test_tool_install_step_is_warn_only():
