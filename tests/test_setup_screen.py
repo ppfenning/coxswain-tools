@@ -9,7 +9,7 @@ from agent_tools.setup_screen import key_name, loop, main, resolved_argv, run_ac
 
 def test_resolved_argv_falls_back_to_the_venv_binary_only_when_off_path_and_present():
     argv = ["cartridge", "init", "acme"]
-    venv = "/root/agent-cartridges/.venv/bin/cartridge"
+    venv = "/root/coxswain-cartridges/.venv/bin/cartridge"
     assert resolved_argv(argv, cartridge_on_path=False, venv_cartridge_exists=True,
                           venv_cartridge=venv) == [venv, "init", "acme"]
     assert resolved_argv(argv, cartridge_on_path=True, venv_cartridge_exists=True,
@@ -43,7 +43,7 @@ def test_run_action_runs_the_argv_through_a_real_subprocess():
 def test_run_action_falls_back_to_the_venv_binary_when_cartridge_is_not_on_path(tmp_path, monkeypatch):
     monkeypatch.setattr("agent_tools.setup_screen.shutil.which", lambda name: None)
     marker = tmp_path / "marker"
-    venv_bin = tmp_path / "agent-cartridges" / ".venv" / "bin"
+    venv_bin = tmp_path / "coxswain-cartridges" / ".venv" / "bin"
     venv_bin.mkdir(parents=True)
     script = venv_bin / "cartridge"
     script.write_text(f'#!/bin/sh\ntouch {marker}\n', encoding="utf-8")
@@ -58,7 +58,7 @@ def test_run_action_falls_back_to_the_venv_binary_when_cartridge_is_not_on_path(
 def test_run_action_uses_cartridge_as_is_when_it_is_on_path(tmp_path, monkeypatch):
     # A venv binary also exists here, so this only passes if PATH wins over it.
     monkeypatch.setattr("agent_tools.setup_screen.shutil.which", lambda name: "/usr/bin/cartridge")
-    venv_bin = tmp_path / "agent-cartridges" / ".venv" / "bin"
+    venv_bin = tmp_path / "coxswain-cartridges" / ".venv" / "bin"
     venv_bin.mkdir(parents=True)
     script = venv_bin / "cartridge"
     script.write_text('#!/bin/sh\ntouch marker\n', encoding="utf-8")
@@ -173,7 +173,7 @@ def test_setup_with_no_subcommand_on_a_non_tty_stdin_exits_2_before_reading_the_
 
 def test_setup_fields_prefills_from_a_resolved_profile_and_is_empty_otherwise(tmp_path):
     profile = tmp_path / "profile.yaml"
-    profile.write_text("team: acme\nharness_dir: /repo/agent-graphs\nworkspace_dir: /work/space\n", encoding="utf-8")
+    profile.write_text("team: acme\nharness_dir: /repo/coxswain-graphs\nworkspace_dir: /work/space\n", encoding="utf-8")
     assert cli._setup_fields(argparse.Namespace(profile=str(profile))) == ("/repo", "acme", "/work/space")
     assert cli._setup_fields(argparse.Namespace(profile=str(tmp_path / "absent.yaml"))) == ("", "", "")
 
