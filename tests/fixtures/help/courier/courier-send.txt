@@ -1,0 +1,10 @@
+usage: cox courier send [-h] --to TO --note NOTE [--profile PROFILE] ref
+
+positional arguments:
+  ref
+
+options:
+  -h, --help         show this help message and exit
+  --to TO
+  --note NOTE
+  --profile PROFILE
