@@ -956,6 +956,51 @@ def test_cli_release_execute_falls_back_to_unchanged_since_when_crews_section_is
     assert Path(crew_create[-1]).read_text().startswith("unchanged since v0.6.0")
 
 
+def test_cli_release_execute_names_the_previous_release_tag_not_the_one_being_cut(tmp_path, monkeypatch):
+    manifest_v1 = _MANIFEST_TOML
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML.replace('version = "0.1.0"', 'version = "0.2.0"').replace(
+        'tag = "v0.1.0"', 'tag = "v0.2.0"'))
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("## coxswain-harness\nharness notes\n")
+    (umbrella_dir / "docs" / "releases" / "0.2.0.md").write_text("## coxswain-harness\nharness notes v2\n")
+    calls, fake_run = _fake_git_run()
+
+    def run(argv, cwd):
+        if argv[0] == "git" and argv[3] == "show":
+            return (0, manifest_v1)
+        return (0, "3\n") if argv[3] == "rev-list" and "--count" in argv else fake_run(argv, cwd)
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "release", "0.2.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 0
+    create_calls = [c for c in calls if c[0] == "gh" and c[1] == "release" and c[2] == "create"]
+    cartridges_create = next(c for c in create_calls if c[6] == "coxswain-cartridges 0.2.0")
+    assert Path(cartridges_create[-1]).read_text().startswith("unchanged since v0.1.0")
+
+
+def test_cli_release_execute_names_first_release_when_no_earlier_release_notes_exist(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML_WITH_PINNED)
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("## coxswain-harness\nharness notes\n")
+    calls, fake_run = _fake_git_run()
+
+    def run(argv, cwd):
+        return (0, "3\n") if argv[3] == "rev-list" and "--count" in argv else fake_run(argv, cwd)
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 0
+    create_calls = [c for c in calls if c[0] == "gh" and c[1] == "release" and c[2] == "create"]
+    cartridges_create = next(c for c in create_calls if c[6] == "coxswain-cartridges 0.1.0")
+    body = Path(cartridges_create[-1]).read_text()
+    assert body.startswith("first release")
+    assert "unchanged since" not in body
+
+
 _BACKFILL_MANIFEST = """
 [coxswain]
 version = "0.1.0"
