@@ -2885,6 +2885,81 @@ USAGE_COMMANDS = [
     ),
 ]
 
+STATS_GROUP = commands.Group(
+    name="stats", help="load the run corpus into the stats store",
+    description="Load the run corpus into the stats store.",
+    epilog="examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db"
+           "\n  cox stats roles --json\n  cox stats explain build --json\n  cox stats series --json"
+           "\n  cox stats coverage --json\n  cox stats bounds --json\n  cox stats spend-mix --json",
+)
+STATS_COMMANDS = [
+    commands.Command(
+        "ingest", "stats", "load usage, task, node and launch records into stats.db",
+        (
+            commands.Arg(("runs_dir",), {"nargs": "?", "default": "runs"}),
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--work-store-root",), {"default": "work"}),
+        ),
+        _stats_ingest, False, (),
+    ),
+    commands.Command(
+        "roles", "stats", "landed rate, attempts-to-land and $/landed per role and model",
+        (
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+            commands.Arg(("--cartridge-sha",), {"default": None, "help": "keep only runs on this cartridge_sha"}),
+            commands.Arg(("--provider-profile",), {"default": None, "help": "keep only runs on this provider_profile"}),
+        ),
+        _stats_roles, False, (),
+    ),
+    commands.Command(
+        "explain", "stats", "the failure-class breakdown behind one role",
+        (
+            commands.Arg(("role",)),
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _stats_explain, False, (),
+    ),
+    commands.Command(
+        "series", "stats", "per-run summary rows read from the stats store",
+        (
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+            commands.Arg(("--cartridge-sha",), {"default": None, "help": "keep only runs on this cartridge_sha"}),
+            commands.Arg(("--provider-profile",), {"default": None, "help": "keep only runs on this provider_profile"}),
+        ),
+        _stats_series, False, (),
+    ),
+    commands.Command(
+        "coverage", "stats", "known/total provenance rows for runs, calls and tasks",
+        (
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _stats_coverage, False, (),
+    ),
+    commands.Command(
+        "bounds", "stats", "n/p50/p95/max and strict/moderate/liberal candidate ceilings per role and model",
+        (
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+            commands.Arg(("--level",), {"choices": ("strict", "moderate", "liberal"), "default": None}),
+            commands.Arg(("--profile",), {"help": "the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--write",), {"default": None, "help": "also write the JSON table to PATH inside the repo checkout"}),
+        ),
+        _stats_bounds, False, (),
+    ),
+    commands.Command(
+        "spend-mix", "stats", "per-model token counts and cost share by class, plus the build-only split",
+        (
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _stats_spend_mix, False, (),
+    ),
+]
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -2910,53 +2985,8 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("runs")
     commands.build_parser(rows, [group], sub)
 
-    stats_p = sub.add_parser(
-        "stats", help="load the run corpus into the stats store",
-        description="Load the run corpus into the stats store.",
-        epilog="examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db"
-               "\n  cox stats roles --json\n  cox stats explain build --json\n  cox stats series --json"
-               "\n  cox stats coverage --json\n  cox stats bounds --json\n  cox stats spend-mix --json",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    stats_p.set_defaults(fn=_bare_group(stats_p))
-    st = stats_p.add_subparsers(dest="cmd", required=False)
-    si = st.add_parser("ingest", help="load usage, task, node and launch records into stats.db")
-    si.add_argument("runs_dir", nargs="?", default="runs")
-    si.add_argument("--db", default="workspace/stats/stats.db")
-    si.add_argument("--work-store-root", default="work")
-    si.set_defaults(fn=_stats_ingest)
-    ro = st.add_parser("roles", help="landed rate, attempts-to-land and $/landed per role and model")
-    ro.add_argument("--db", default="workspace/stats/stats.db")
-    ro.add_argument("--json", action="store_true")
-    ro.add_argument("--cartridge-sha", default=None, help="keep only runs on this cartridge_sha")
-    ro.add_argument("--provider-profile", default=None, help="keep only runs on this provider_profile")
-    ro.set_defaults(fn=_stats_roles)
-    ex = st.add_parser("explain", help="the failure-class breakdown behind one role")
-    ex.add_argument("role")
-    ex.add_argument("--db", default="workspace/stats/stats.db")
-    ex.add_argument("--json", action="store_true")
-    ex.set_defaults(fn=_stats_explain)
-    sr = st.add_parser("series", help="per-run summary rows read from the stats store")
-    sr.add_argument("--db", default="workspace/stats/stats.db")
-    sr.add_argument("--json", action="store_true")
-    sr.add_argument("--cartridge-sha", default=None, help="keep only runs on this cartridge_sha")
-    sr.add_argument("--provider-profile", default=None, help="keep only runs on this provider_profile")
-    sr.set_defaults(fn=_stats_series)
-    co = st.add_parser("coverage", help="known/total provenance rows for runs, calls and tasks")
-    co.add_argument("--db", default="workspace/stats/stats.db")
-    co.add_argument("--json", action="store_true")
-    co.set_defaults(fn=_stats_coverage)
-    bo = st.add_parser("bounds", help="n/p50/p95/max and strict/moderate/liberal candidate ceilings per role and model")
-    bo.add_argument("--db", default="workspace/stats/stats.db")
-    bo.add_argument("--json", action="store_true")
-    bo.add_argument("--level", choices=("strict", "moderate", "liberal"), default=None)
-    bo.add_argument("--profile", help="the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)")
-    bo.add_argument("--write", default=None, help="also write the JSON table to PATH inside the repo checkout")
-    bo.set_defaults(fn=_stats_bounds)
-    sm = st.add_parser("spend-mix", help="per-model token counts and cost share by class, plus the build-only split")
-    sm.add_argument("--db", default="workspace/stats/stats.db")
-    sm.add_argument("--json", action="store_true")
-    sm.set_defaults(fn=_stats_spend_mix)
+    group, rows = _table_entry("stats")
+    commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("usage")
     commands.build_parser(rows, [group], sub)
@@ -3255,6 +3285,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (COURIER_GROUP, COURIER_COMMANDS),
     (VERSIONS_GROUP, []),
     (HOME_GROUP, []),
+    (STATS_GROUP, STATS_COMMANDS),
     (USAGE_GROUP, USAGE_COMMANDS),
     (PLAN_GROUP, PLAN_COMMANDS),
     (EPIC_GROUP, EPIC_COMMANDS),

@@ -1,0 +1,6 @@
+usage: cox stats spend-mix [-h] [--db DB] [--json]
+
+options:
+  -h, --help  show this help message and exit
+  --db DB
+  --json

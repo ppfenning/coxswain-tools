@@ -1,0 +1,27 @@
+usage: cox stats [-h] {ingest,roles,explain,series,coverage,bounds,spend-mix} ...
+
+Load the run corpus into the stats store.
+
+positional arguments:
+  {ingest,roles,explain,series,coverage,bounds,spend-mix}
+    ingest              load usage, task, node and launch records into stats.db
+    roles               landed rate, attempts-to-land and $/landed per role and model
+    explain             the failure-class breakdown behind one role
+    series              per-run summary rows read from the stats store
+    coverage            known/total provenance rows for runs, calls and tasks
+    bounds              n/p50/p95/max and strict/moderate/liberal candidate ceilings per role and
+                        model
+    spend-mix           per-model token counts and cost share by class, plus the build-only split
+
+options:
+  -h, --help            show this help message and exit
+
+examples:
+  cox stats ingest
+  cox stats ingest runs --db workspace/stats/stats.db
+  cox stats roles --json
+  cox stats explain build --json
+  cox stats series --json
+  cox stats coverage --json
+  cox stats bounds --json
+  cox stats spend-mix --json

@@ -1,0 +1,6 @@
+usage: cox stats coverage [-h] [--db DB] [--json]
+
+options:
+  -h, --help  show this help message and exit
+  --db DB
+  --json
