@@ -1,9 +1,10 @@
-usage: cox runs [-h] {usage,trace,clean,land,recover,series,events,top,notify,detail,stranded} ...
+usage: cox runs [-h]
+                {usage,trace,clean,land,recover,series,events,top,bar,notify,detail,stranded} ...
 
 What a harness run recorded, and cleaning up after it.
 
 positional arguments:
-  {usage,trace,clean,land,recover,series,events,top,notify,detail,stranded}
+  {usage,trace,clean,land,recover,series,events,top,bar,notify,detail,stranded}
     usage               usage stats and cost for one run
     trace               the tool-call trace for one run
     clean               delete a run's worktree and branches locally
@@ -13,6 +14,7 @@ positional arguments:
     series              per-run summary rows across a runs directory
     events              poll a run's log for structured events
     top                 live table of runs in flight; --once prints it and exits
+    bar                 one Waybar JSON line: runs in flight, cost, class idle|running|attention
     notify              desktop notifications for exits, quarantines, budget stops and cost
     detail              one run's timeline, objection and last tool calls
     stranded            every approved task record whose work item is not done, with its remedy

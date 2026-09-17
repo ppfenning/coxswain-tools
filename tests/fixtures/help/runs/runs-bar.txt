@@ -1,0 +1,5 @@
+usage: cox runs bar [-h] [--runs-dir RUNS_DIR]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
