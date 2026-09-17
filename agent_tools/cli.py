@@ -2373,15 +2373,33 @@ def _wait_workflows(directory: str, tag: str, component: str, run,
         return True, f"{len(runs)} run(s) green for {tag}"
 
 
+def _previous_release_tag(umbrella: str, name: str, version: str, run) -> str | None:
+    """`name`'s tag in the manifest of the release before `version` — the
+    latest `docs/releases/*.md` stem below `version`, read via `git show
+    v<previous>:manifest.toml` through the injected `run` — or None when
+    `version` is the first release this umbrella has notes for."""
+    releases_dir = Path(umbrella) / "docs" / "releases"
+    versions = release.versions_oldest_first(p.stem for p in releases_dir.glob("*.md") if p.stem != "index")
+    earlier = [v for v in versions if v != version]
+    if not earlier:
+        return None
+    show_rc, show_out = run(["git", "-C", umbrella, "show", f"v{earlier[-1]}:manifest.toml"], None)
+    if show_rc != 0:
+        return None
+    return tomllib.loads(show_out).get("components", {}).get(name, {}).get("tag")
+
+
 def _github_release_notes_text(umbrella: str, notes_path: str, heading: str, from_tag: str | None,
                                 link: str | None) -> str:
     """The `github_release` step's own body for a component or crew section:
-    `notes_path`'s text under `heading`, or `unchanged since <from_tag>` when
-    that section is absent, followed by the link line back to the umbrella
+    `notes_path`'s text under `heading`, `unchanged since <from_tag>` when
+    that section is absent and a previous release named a tag, or `first
+    release` when none did — followed by the link line back to the umbrella
     release. The backfill command builds every body it creates or edits
     through this same function, so a rerun's comparison is apples to apples."""
     section = release.extract_release_notes(str(Path(umbrella) / notes_path), heading)
-    body = section if section is not None else f"unchanged since {from_tag}\n"
+    fallback = f"unchanged since {from_tag}\n" if from_tag else "first release\n"
+    body = section if section is not None else fallback
     link_line = f"\nSee the full release notes: {link}\n" if link else "\n"
     return body + link_line
 
@@ -2472,7 +2490,10 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             if step["heading"] is None:
                 notes_path = str(Path(umbrella) / step["notes_path"])
             else:
-                text = _github_release_notes_text(umbrella, step["notes_path"], step["heading"], step.get("from"), step.get("link"))
+                bumped = any(s["kind"] == "tag" and s["component"] == step["component"] for s in steps)
+                from_tag = (_previous_release_tag(umbrella, step["component"], version, run)
+                            if bumped else step.get("from"))
+                text = _github_release_notes_text(umbrella, step["notes_path"], step["heading"], from_tag, step.get("link"))
                 with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
                     tmp.write(text)
                 notes_path = tmp.name
