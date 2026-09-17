@@ -18,7 +18,7 @@ one. The last combined rung (cheapest tier, lowest effort) is still
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 __all__ = ["Assessment", "Policy", "Window", "assess"]
@@ -48,6 +48,7 @@ class Policy:
     effort_ladder: tuple[str, ...]
     min_headroom_usd: float
     hard_stop_fraction: float = 0.99
+    weekly_hard_stop_fraction: float = 0.93
 
 
 @dataclass(frozen=True)
@@ -111,10 +112,43 @@ def _unmeasured(window: Window, policy: Policy, elapsed_fraction: float, now: da
     )
 
 
-def assess(window: Window, policy: Policy, now: datetime) -> Assessment:
+def _weekly_fraction(weekly: Window | None) -> float | None:
+    if weekly is None or weekly.ceiling_usd is None or weekly.ceiling_usd <= 0:
+        return None
+    return weekly.spent_usd / weekly.ceiling_usd
+
+
+def _weekly_stop(window: Window, policy: Policy, now: datetime, elapsed_fraction: float,
+                  weekly_fraction: float) -> Assessment:
+    projected_total = _projected_total(window, now)
+    spent_fraction = window.spent_usd / window.ceiling_usd if window.ceiling_usd else None
+    headroom_usd = window.ceiling_usd - projected_total if window.ceiling_usd else None
+    return Assessment(
+        spent_fraction=spent_fraction, elapsed_fraction=elapsed_fraction,
+        projected_total=projected_total, headroom_usd=headroom_usd,
+        verdict="stop", tier_ceiling=policy.tier_ladder[-1], effort_ceiling=policy.effort_ladder[-1],
+        hold_until=None,
+        reason=f"weekly spend {weekly_fraction:.0%} of weekly ceiling (hard stop at {policy.weekly_hard_stop_fraction:.0%})",
+    )
+
+
+def assess(window: Window, policy: Policy, now: datetime, weekly: Window | None = None) -> Assessment:
     """Pure: the one verdict a window and a policy make at `now`. Reports an
-    unmeasured window rather than guessing a ceiling for it."""
+    unmeasured window rather than guessing a ceiling for it. `weekly`, when
+    given and measured, can force `stop` on its own hard-stop fraction ahead
+    of the window's own verdict; short of that, its fraction still rides
+    along in `reason` so every caller narrates both windows at once."""
     elapsed_fraction = _elapsed_fraction(window, now)
+    weekly_fraction = _weekly_fraction(weekly)
+    if weekly_fraction is not None and weekly_fraction >= policy.weekly_hard_stop_fraction:
+        return _weekly_stop(window, policy, now, elapsed_fraction, weekly_fraction)
+    result = _assess_window(window, policy, now, elapsed_fraction)
+    if weekly_fraction is None:
+        return result
+    return replace(result, reason=f"{result.reason}; weekly {weekly_fraction:.0%} of weekly ceiling")
+
+
+def _assess_window(window: Window, policy: Policy, now: datetime, elapsed_fraction: float) -> Assessment:
     if window.ceiling_usd is None or window.ceiling_usd <= 0:
         return _unmeasured(window, policy, elapsed_fraction, now)
 

@@ -1082,7 +1082,8 @@ def _route_context(a: argparse.Namespace) -> int:
     # only when there is a workspace to gather usage files from.
     usage_reason = (
         _usage_assessment(
-            Path(profile["workspace_dir"]).expanduser() / "runs", profile.get("window_ceiling_usd")
+            Path(profile["workspace_dir"]).expanduser() / "runs",
+            profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd"),
         ).reason
         if not reason and profile is not None else None
     )
@@ -1613,7 +1614,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     if guard_rc is not None:
         return guard_rc
     usage_code, usage_lines = route.launch_gate(
-        _usage_assessment(runs_dir, profile.get("window_ceiling_usd")), a.force
+        _usage_assessment(runs_dir, profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd")), a.force
     )
     for line in usage_lines:
         print(line)
@@ -2028,6 +2029,7 @@ def _install_facts(a: argparse.Namespace) -> dict:
         "claude_settings_path": claude_settings_path,
         "assume": a.assume,
         "window_ceiling_usd": a.window_ceiling_usd,
+        "weekly_ceiling_usd": a.weekly_ceiling_usd,
     }
 
 
@@ -2732,18 +2734,22 @@ def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
         effort_ladder=tuple(raw.get("effort_ladder", default.effort_ladder)),
         min_headroom_usd=float(raw.get("min_headroom_usd", default.min_headroom_usd)),
         hard_stop_fraction=float(raw.get("hard_stop_fraction", default.hard_stop_fraction)),
+        weekly_hard_stop_fraction=float(raw.get("weekly_hard_stop_fraction", default.weekly_hard_stop_fraction)),
     )
 
 
-def _usage_assessment(runs_dir, window_ceiling_usd: float | None = None) -> pacing.Assessment:
+def _usage_assessment(
+    runs_dir, window_ceiling_usd: float | None = None, weekly_ceiling_usd: float | None = None
+) -> pacing.Assessment:
     """Computed once via the gatherer and shared by every surface that
     narrates it: `usage assess`, `route context`'s docket line, and `route
     launch`'s gate all call this so the same window yields the same reason.
     """
     now = datetime.datetime.now(datetime.UTC)
     window = usage_window.gather(runs_dir, now, ceiling_usd=window_ceiling_usd)
+    weekly = usage_window.gather_weekly(runs_dir, now, weekly_ceiling_usd)
     policy = _resolved_pacing_policy(Path(runs_dir))
-    return pacing.assess(window, policy, now)
+    return pacing.assess(window, policy, now, weekly=weekly)
 
 
 def _usage_assess(a: argparse.Namespace) -> int:
@@ -2754,7 +2760,7 @@ def _usage_assess(a: argparse.Namespace) -> int:
         profile = route.parse_profile(text) if text is not None else {}
     except route.ProfileError:
         profile = {}
-    result = _usage_assessment(a.runs_dir, profile.get("window_ceiling_usd"))
+    result = _usage_assessment(a.runs_dir, profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd"))
     if a.json:
         d = dataclasses.asdict(result)
         d["hold_until"] = result.hold_until.isoformat() if result.hold_until else None
@@ -3142,6 +3148,8 @@ def build_parser() -> argparse.ArgumentParser:
     si.add_argument("--force-profile", action="store_true"); si.add_argument("--dry-run", action="store_true")
     si.add_argument("--window-ceiling-usd", type=float, default=None, dest="window_ceiling_usd",
                      help="write spend: window_ceiling_usd into the profile")
+    si.add_argument("--weekly-ceiling-usd", type=float, default=None, dest="weekly_ceiling_usd",
+                     help="write spend: weekly_ceiling_usd into the profile")
     si.set_defaults(fn=_setup_install)
     return p
 

@@ -20,7 +20,10 @@ from typing import Any
 
 from agent_tools.pacing import Policy, Window
 
-__all__ = ["DEFAULT_POLICY", "block_remaining", "ceiling_remaining", "gather", "window_from"]
+__all__ = [
+    "DEFAULT_POLICY", "block_remaining", "ceiling_remaining", "gather", "gather_weekly",
+    "weekly_window_from", "window_from",
+]
 
 # Used wherever the resolved cartridge dict carries no `policy.pacing` key
 # yet (the cross-repository policy has not landed). These are the real
@@ -33,6 +36,7 @@ DEFAULT_POLICY = Policy(
     effort_ladder=("high", "low"),
     min_headroom_usd=0.0,
     hard_stop_fraction=0.99,
+    weekly_hard_stop_fraction=0.93,
 )
 
 
@@ -95,6 +99,24 @@ def ceiling_remaining(window: Window) -> float | None:
     return max(0.0, min(1.0, (window.ceiling_usd - window.spent_usd) / window.ceiling_usd))
 
 
+def _read_usage_files(runs_dir: Path | str, now: datetime) -> list[tuple[datetime, dict[str, Any]]]:
+    """Every `*.usage.json` under `runs_dir` as `(started, parsed)` pairs; a
+    file that fails to parse is skipped, not raised."""
+    usage_files: list[tuple[datetime, dict[str, Any]]] = []
+    for path in Path(runs_dir).glob("*.usage.json"):
+        try:
+            usage = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        ts = usage.get("ts") or usage.get("started")
+        try:
+            started = datetime.fromisoformat(str(ts)) if ts else datetime.fromtimestamp(path.stat().st_mtime, tz=now.tzinfo)
+        except ValueError:
+            started = datetime.fromtimestamp(path.stat().st_mtime, tz=now.tzinfo)
+        usage_files.append((started, usage))
+    return usage_files
+
+
 def gather(
     runs_dir: Path | str,
     now: datetime,
@@ -115,17 +137,28 @@ def gather(
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
         blocks_json = {}
 
-    usage_files: list[tuple[datetime, dict[str, Any]]] = []
-    for path in Path(runs_dir).glob("*.usage.json"):
-        try:
-            usage = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        ts = usage.get("ts") or usage.get("started")
-        try:
-            started = datetime.fromisoformat(str(ts)) if ts else datetime.fromtimestamp(path.stat().st_mtime, tz=now.tzinfo)
-        except ValueError:
-            started = datetime.fromtimestamp(path.stat().st_mtime, tz=now.tzinfo)
-        usage_files.append((started, usage))
+    return window_from(blocks_json, _read_usage_files(runs_dir, now), now, window_hours, ceiling_usd)
 
-    return window_from(blocks_json, usage_files, now, window_hours, ceiling_usd)
+
+def weekly_window_from(
+    usage_files: list[tuple[datetime, dict[str, Any]]],
+    now: datetime,
+    ceiling_usd: float | None = None,
+) -> Window:
+    """Pure. Same reader as `window_from`'s fallback path, a rolling 7-day
+    cutoff instead of the block start."""
+    start = now - timedelta(days=7)
+    in_window = [usage for ts, usage in usage_files if start <= ts <= now]
+    spent_usd = sum(float(u.get("cost_usd") or 0.0) for u in in_window)
+    elapsed_hours = max((now - start).total_seconds() / 3600, 1e-9)
+    return Window(
+        start=start, end=now,
+        spent_usd=spent_usd, ceiling_usd=ceiling_usd,
+        burn_usd_per_hour=spent_usd / elapsed_hours, runs_in_flight=len(in_window),
+    )
+
+
+def gather_weekly(runs_dir: Path | str, now: datetime, weekly_ceiling_usd: float | None = None) -> Window:
+    """Impure edge: the same `*.usage.json` reader as `gather`, folded through
+    `weekly_window_from` instead of the five-hour `window_from`."""
+    return weekly_window_from(_read_usage_files(runs_dir, now), now, weekly_ceiling_usd)

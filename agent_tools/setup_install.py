@@ -42,12 +42,13 @@ def profile_text(
     workspace: str,
     assume: str = "a",
     window_ceiling_usd: float | None = None,
+    weekly_ceiling_usd: float | None = None,
 ) -> str:
     """profile.yaml text that round-trips through `route.parse_profile`.
     Every value is emitted bare; one that parse_profile would read back
     as something else raises ValueError instead of being written.
-    `window_ceiling_usd`, when given, is written as the `spend:` block
-    `route.parse_profile` reads back as a float."""
+    `window_ceiling_usd` and `weekly_ceiling_usd`, when given, are written
+    into the `spend:` block `route.parse_profile` reads back as floats."""
     fields = {
         "team": team,
         "cartridges_dir": cartridges_dir,
@@ -70,8 +71,12 @@ def profile_text(
         f"workspace_dir: {workspace}",
         f"assume: {assume}",
     ]
-    if window_ceiling_usd is not None:
-        lines += ["spend:", f"  window_ceiling_usd: {window_ceiling_usd}"]
+    if window_ceiling_usd is not None or weekly_ceiling_usd is not None:
+        lines.append("spend:")
+        if window_ceiling_usd is not None:
+            lines.append(f"  window_ceiling_usd: {window_ceiling_usd}")
+        if weekly_ceiling_usd is not None:
+            lines.append(f"  weekly_ceiling_usd: {weekly_ceiling_usd}")
     return "\n".join(lines) + "\n"
 
 
@@ -122,6 +127,7 @@ def install_plan(
     assume: str = "a",
     cast: dict | None = None,
     window_ceiling_usd: float | None = None,
+    weekly_ceiling_usd: float | None = None,
 ) -> list:
     """Ordered setup steps for a checkout at `root` holding
     agent-cartridges, agent-graphs and agent-tools side by side.
@@ -154,7 +160,7 @@ def install_plan(
         text = profile_text(team=team, cartridges_dir=profile_cartridges_dir,
                              skills_root=skills_root, provider_profile=provider_profile,
                              harness_dir=harness_dir, workspace=workspace, assume=assume,
-                             window_ceiling_usd=window_ceiling_usd)
+                             window_ceiling_usd=window_ceiling_usd, weekly_ceiling_usd=weekly_ceiling_usd)
         steps.append({"op": "write", "path": profile_path(config_dir), "text": text,
                       "why": "write the routing layer's profile"})
     else:
