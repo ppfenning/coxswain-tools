@@ -59,6 +59,7 @@ from agent_tools import (
     stats_ingest,
     stats_query,
     stats_schema,
+    steward,
     usage_window,
 )
 from agent_tools import runs as runs_module
@@ -370,6 +371,136 @@ def _router_select(a: argparse.Namespace) -> int:
         print(json.dumps({"role": a.role, "mode": mode, "effective_tier": effective, "reason": reason}))
     else:
         print(f"router select: role={a.role} mode={mode} effective_tier={effective} reason={reason}")
+    return 0
+
+
+def _steward_recent_run_ids(pair_calls: list[dict], run_span: dict, *, day_cap: int, run_cap: int) -> set:
+    """Run ids for `pair_calls`, newest-first by `ended_at` (falling back to
+    `started_at`), kept up to `run_cap` runs or until a run's `started_at`
+    falls more than `day_cap` days before the newest kept run's own end —
+    whichever limit is hit first (router-steward.md §5: "a window capped at
+    14 days or 20 runs, whichever completes first"). Measured from the
+    pair's own latest run, never the wall clock, so a pair that has simply
+    existed a long time is not disqualified by history it no longer needs."""
+    ordered = sorted(
+        {c["run_id"] for c in pair_calls if c.get("run_id") in run_span},
+        key=lambda rid: run_span[rid][1] or run_span[rid][0] or "",
+        reverse=True,
+    )
+    if not ordered:
+        return set()
+    newest_end = run_span[ordered[0]][1] or run_span[ordered[0]][0]
+    cutoff = datetime.datetime.fromisoformat(newest_end) - datetime.timedelta(days=day_cap) if newest_end else None
+    kept = []
+    for rid in ordered:
+        if len(kept) >= run_cap:
+            break
+        started_at = run_span[rid][0]
+        if cutoff is not None and started_at is not None and datetime.datetime.fromisoformat(started_at) < cutoff:
+            break
+        kept.append(rid)
+    return set(kept)
+
+
+def _steward_window_days_for(run_ids: set, run_span: dict) -> int:
+    """Days between the earliest `started_at` and the latest `ended_at`
+    among `run_ids`; `0` when neither parses."""
+    starts = [run_span[rid][0] for rid in run_ids if run_span.get(rid, (None, None))[0]]
+    ends = [run_span[rid][1] for rid in run_ids if run_span.get(rid, (None, None))[1]]
+    if not starts or not ends:
+        return 0
+    start = datetime.datetime.fromisoformat(min(starts))
+    end = datetime.datetime.fromisoformat(max(ends))
+    return (end - start).days
+
+
+def _steward_candidate_rows(bounds: list[dict], calls: list[dict], tasks: list[dict], runs: list[dict]) -> list[dict]:
+    """Per (role, model) in `bounds`: `stats_query.roles_report`'s
+    challenger/floor split and `n_calls`, recomputed over only that pair's
+    own most recent 20 runs or 14 days (`_steward_recent_run_ids`) rather
+    than its whole history, joined onto `bound`'s ceiling/censored/strict/
+    moderate/liberal. A pair with no runs in that window, no challenger
+    row, no floor row, or either row's `landed_rate` is dropped: the
+    evidence bar cannot score a delta it cannot compute. Pure: no file, no
+    db connection, no clock read — `calls`/`tasks`/`runs` arrive already
+    fetched."""
+    run_span = {r["run_id"]: (r.get("started_at"), r.get("ended_at")) for r in runs}
+    rows = []
+    for bound in bounds:
+        role, model = bound["role"], bound["model"]
+        pair_calls = [c for c in calls if c.get("role") == role and c.get("model") == model]
+        recent_run_ids = _steward_recent_run_ids(pair_calls, run_span, day_cap=14, run_cap=20)
+        if not recent_run_ids:
+            continue
+        recent_calls = [c for c in pair_calls if c.get("run_id") in recent_run_ids]
+        recent_tasks = [t for t in tasks if t.get("run_id") in recent_run_ids]
+        windowed = stats_query.roles_report(recent_calls, recent_tasks, runs)
+        challenger_row = next((r for r in windowed if r["role"] == role and r["model"] == model and r["challenger"]), None)
+        floor_row = next((r for r in windowed if r["role"] == role and r["model"] == model and not r["challenger"]), None)
+        if challenger_row is None or floor_row is None:
+            continue
+        if challenger_row["landed_rate"] is None or floor_row["landed_rate"] is None:
+            continue
+        rows.append({
+            **bound,
+            "n_challenger": challenger_row["n_calls"],
+            "landed_rate_challenger": challenger_row["landed_rate"],
+            "landed_rate_floor": floor_row["landed_rate"],
+            "window_days": _steward_window_days_for(recent_run_ids, run_span),
+        })
+    return rows
+
+
+def _steward_bounds_rows_for(a: argparse.Namespace) -> list[dict]:
+    """Edge for `_steward_candidate_rows`: opens `a.db` once, fetches
+    `calls`/`tasks`/`runs` and the read-only ceiling from
+    `_bounds_ceiling_for`, then hands everything to the pure join. Writes
+    nothing."""
+    conn = stats_schema.connect(a.db)
+    try:
+        calls = _stats_fetch(conn, "calls")
+        tasks = _stats_fetch(conn, "tasks")
+        runs = _stats_fetch(conn, "runs")
+    finally:
+        conn.close()
+    bounds = stats_query.bounds_report(calls, _bounds_ceiling_for(a))
+    return _steward_candidate_rows(bounds, calls, tasks, runs)
+
+
+def _steward_propose(a: argparse.Namespace) -> int:
+    """`cox steward propose` — the CLI edge of docs/design/router-steward.md
+    §4: reads `a.db` and the routing/provider profile read-only to build
+    candidate rows, then writes each candidate that clears §5's bar as a
+    new intake file via the same writer `route file --intake` uses. It
+    never opens a provider profile to write it; its only writes are new
+    files under `workspace_dir/intake`."""
+    profile, rc = _resolve_profile_or_refuse(a)
+    if rc is not None:
+        return rc
+    ws = Path(profile["workspace_dir"]).expanduser()
+    policy = {"min_n": 20, "window_days_cap": 14, "landed_rate_delta_floor": 0.05}
+    candidates = steward.ceiling_candidates(_steward_bounds_rows_for(a), policy)
+    if not candidates:
+        if a.json:
+            print(json.dumps([]))
+        else:
+            print("steward propose: [] (no candidate cleared the evidence bar)")
+        return 0
+    date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    mapping: dict[str, str] = {}
+    for candidate in candidates:
+        title = f"steward: {candidate['direction']} {candidate['role']}'s ceiling for {candidate['model']}"
+        mapping.update(route.intake_file(title, steward.render_proposal(candidate), "coxswain-tools", date))
+    targets = {rel: ws / rel for rel in mapping}
+    existing = [str(path) for path in targets.values() if path.exists()]
+    if existing:
+        print(f"routing: refusing to overwrite existing path(s): {', '.join(existing)}")
+        return 2
+    for rel, path in targets.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(mapping[rel], encoding="utf-8")
+    written = [str(targets[rel]) for rel in sorted(mapping)]
+    print(json.dumps(written) if a.json else "\n".join(written))
     return 0
 
 
@@ -2792,6 +2923,20 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--profile", help="the routing profile naming the provider profile and the router flag (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)")
     rs.add_argument("--json", action="store_true")
     rs.set_defaults(fn=_router_select)
+
+    steward_p = sub.add_parser(
+        "steward", help="ceiling-change candidates from stats.db, proposed as intake files",
+        description="Ceiling-change candidates from stats.db, proposed as intake files.",
+        epilog="examples:\n  cox steward propose\n  cox steward propose --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    steward_p.set_defaults(fn=_bare_group(steward_p))
+    sd = steward_p.add_subparsers(dest="cmd", required=False)
+    sdp = sd.add_parser("propose", help="write each candidate clearing the evidence bar as a new intake file; never edits a provider profile")
+    sdp.add_argument("--db", default="workspace/stats/stats.db")
+    sdp.add_argument("--profile", help="the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)")
+    sdp.add_argument("--json", action="store_true")
+    sdp.set_defaults(fn=_steward_propose)
 
     epic_p = sub.add_parser(
         "epic", help="watch a detached run",
