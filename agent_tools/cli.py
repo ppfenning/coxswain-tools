@@ -2989,15 +2989,8 @@ def build_parser() -> argparse.ArgumentParser:
     e = epic_p.add_subparsers(dest="cmd", required=False)
     w = e.add_parser("watch", help="poll a detached run's pidfile until it exits"); w.add_argument("pidfile"); w.add_argument("--log"); w.add_argument("--max-seconds", type=float, default=570); w.add_argument("--interval", type=float, default=20); w.add_argument("--json", action="store_true"); w.set_defaults(fn=_epic_watch)
 
-    plan_p = sub.add_parser(
-        "plan", help="visual plans through the local bridge",
-        description="Visual plans through the local bridge.",
-        epilog="examples:\n  cox plan serve work/<id> --kind plan\n  cox plan serve work/<id> --check",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    plan_p.set_defaults(fn=_bare_group(plan_p))
-    pl = plan_p.add_subparsers(dest="cmd", required=False)
-    s = pl.add_parser("serve", help="serve a visual plan through the local bridge"); s.add_argument("dir"); s.add_argument("--kind", default="plan"); s.add_argument("--check", action="store_true"); s.add_argument("--no-open", action="store_true"); s.set_defaults(fn=_plan_serve)
+    group, rows = _table_entry("plan")
+    commands.build_parser(rows, [group], sub)
 
     route_p = sub.add_parser(
         "route", help="file work for the harness, and see what is queued or running",
@@ -3223,12 +3216,26 @@ COURIER_COMMANDS = [
     ),
 ]
 
+PLAN_GROUP = commands.Group(
+    name="plan", help="visual plans through the local bridge",
+    description="Visual plans through the local bridge.",
+    epilog="examples:\n  cox plan serve work/<id> --kind plan\n  cox plan serve work/<id> --check",
+)
+PLAN_COMMANDS = [
+    commands.Command(
+        "serve", "plan", "serve a visual plan through the local bridge",
+        (commands.Arg(("dir",)), commands.Arg(("--kind",), {"default": "plan"}), commands.Arg(("--check",), {"action": "store_true"}), commands.Arg(("--no-open",), {"action": "store_true"})),
+        _plan_serve, False, (),
+    ),
+]
+
 COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
     (VERSIONS_GROUP, []),
     (HOME_GROUP, []),
     (USAGE_GROUP, USAGE_COMMANDS),
+    (PLAN_GROUP, PLAN_COMMANDS),
 ]
 
 

@@ -1,0 +1,10 @@
+usage: cox plan serve [-h] [--kind KIND] [--check] [--no-open] dir
+
+positional arguments:
+  dir
+
+options:
+  -h, --help   show this help message and exit
+  --kind KIND
+  --check
+  --no-open
