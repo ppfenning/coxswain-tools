@@ -574,6 +574,40 @@ def test_launch_threads_the_profiles_spend_window_ceiling_into_the_usage_gate(tm
     assert captured["ceiling_usd"] == 42.0
 
 
+def test_launch_refuses_on_a_weekly_breach_even_though_the_window_is_not_close(tmp_path, monkeypatch, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    initiative_dir = ws / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    profile.write_text(profile.read_text() + "spend:\n  window_ceiling_usd: 100\n  weekly_ceiling_usd: 100\n")
+
+    def fake_gather(runs_dir, now, ceiling_usd=None):
+        return Window(start=_USAGE_START, end=_USAGE_END, spent_usd=10.0, ceiling_usd=ceiling_usd,
+                      burn_usd_per_hour=0.0, runs_in_flight=0)
+
+    def fake_gather_weekly(runs_dir, now, weekly_ceiling_usd=None):
+        return Window(start=_USAGE_START, end=_USAGE_END, spent_usd=95.0, ceiling_usd=weekly_ceiling_usd,
+                      burn_usd_per_hour=0.0, runs_in_flight=0)
+
+    monkeypatch.setattr(usage_window, "gather", fake_gather)
+    monkeypatch.setattr(usage_window, "gather_weekly", fake_gather_weekly)
+
+    rc = main([
+        "route", "launch", "epic",
+        "--profile", str(profile),
+        "--initiative", str(initiative_dir),
+        "--repo", str(repo),
+    ])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "weekly" in out
+
+
 def test_launch_epic_passes_node_cap_usd_from_the_profile_into_the_recorded_argv(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
