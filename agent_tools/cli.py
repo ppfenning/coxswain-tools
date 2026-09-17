@@ -25,6 +25,7 @@ import yaml
 from agent_tools import (
     chair,
     cleanup,
+    commands,
     courier,
     doctor,
     epic,
@@ -2529,36 +2530,90 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--print-argv", action="store_true", help="bare cox: print the claude argv and cwd instead of exec'ing it")
     sub = p.add_subparsers(dest="group", required=False)
 
-    runs_p = sub.add_parser(
-        "runs", help="what a harness run recorded, and cleaning up after it",
+    runs_group = commands.Group(
+        name="runs", help="what a harness run recorded, and cleaning up after it",
         description="What a harness run recorded, and cleaning up after it.",
         epilog="examples:\n  cox runs land <run> --repo PATH --apply\n  cox runs recover <run> <task> --repo PATH\n"
                "  cox runs usage <run> --json\n  cox runs detail <run> --json",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    runs_p.set_defaults(fn=_bare_group(runs_p))
-    runs = runs_p.add_subparsers(dest="cmd", required=False)
-    u = runs.add_parser("usage", help="usage stats and cost for one run"); u.add_argument("run_id"); u.add_argument("--runs-dir", default="runs"); u.add_argument("--json", action="store_true"); u.set_defaults(fn=_runs_usage)
-    t = runs.add_parser("trace", help="the tool-call trace for one run"); t.add_argument("run_id"); t.add_argument("--runs-dir", default="runs"); t.add_argument("--role"); t.add_argument("-v", "--verbose", action="store_true"); t.set_defaults(fn=_runs_trace)
-    c = runs.add_parser("clean", help="delete a run's worktree and branches locally"); c.add_argument("run_id"); c.add_argument("--repo", required=True); c.add_argument("--worktree-root", default="~/worktrees")
-    c.add_argument("--runs-dir", help="override: resolve task records here instead of the profile's workspace_dir"); c.add_argument("--profile")
-    c.add_argument("--apply", action="store_true"); c.add_argument("--force", action="store_true", help="delete every branch regardless of whether its task is on main"); c.set_defaults(fn=_runs_clean)
-    la = runs.add_parser("land", help="merge a run's branch into the target repo"); la.add_argument("run_id"); la.add_argument("--repo", required=True); la.add_argument("--task"); la.add_argument("--phase", help="land the whole phase off its own epic branch instead of one task"); la.add_argument("--label"); la.add_argument("--force", action="store_true", help="land despite a foreign live leader")
-    la.add_argument("--worktree-root", default="~/worktrees"); la.add_argument("--apply", action="store_true"); la.add_argument("--no-merge", action="store_true")
-    la.add_argument("--runs-dir", help="override: resolve task records here instead of the profile's workspace_dir"); la.add_argument("--profile"); la.set_defaults(fn=_runs_land)
-    re_ = runs.add_parser("recover", help="merge an approved task's commit into its phase branch after an escalated merge")
-    re_.add_argument("run_id"); re_.add_argument("task_id"); re_.add_argument("--repo", required=True)
-    re_.add_argument("--runs-dir", help="override: resolve task records here instead of the profile's workspace_dir")
-    re_.add_argument("--profile"); re_.add_argument("--dry-run", action="store_true", help="print the merge that would be made and exit without touching anything")
-    re_.set_defaults(fn=_runs_recover)
-    se = runs.add_parser("series", help="per-run summary rows across a runs directory"); se.add_argument("--runs-dir", default="runs"); se.add_argument("--json", action="store_true"); se.add_argument("--append"); se.set_defaults(fn=_runs_series)
-    ev = runs.add_parser("events", help="poll a run's log for structured events"); ev.add_argument("--runs-dir", default="runs"); ev.add_argument("--follow", action="store_true"); ev.add_argument("--json", action="store_true"); ev.set_defaults(fn=_runs_events)
-    tp = runs.add_parser("top", help="live table of runs in flight; --once prints it and exits"); tp.add_argument("--runs-dir", default="runs"); tp.add_argument("--interval", type=float, default=3); tp.add_argument("--once", action="store_true"); tp.set_defaults(fn=_runs_top)
-    no = runs.add_parser("notify", help="desktop notifications for exits, quarantines, budget stops and cost"); no.add_argument("--runs-dir", default="runs"); no.add_argument("--once", action="store_true"); no.add_argument("--interval", type=float, default=10); no.add_argument("--replay", action="store_true", help="emit history on first start; default is silent for existing runs when no state file is present"); no.set_defaults(fn=_runs_notify)
-    de = runs.add_parser("detail", help="one run's timeline, objection and last tool calls"); de.add_argument("run_id"); de.add_argument("--runs-dir", default="runs"); de.add_argument("--json", action="store_true"); de.set_defaults(fn=_runs_detail)
-    st = runs.add_parser("stranded", help="every approved task record whose work item is not done, with its remedy")
-    st.add_argument("--runs-dir", help="override: resolve task records here instead of the profile's workspace_dir")
-    st.add_argument("--profile"); st.add_argument("--json", action="store_true"); st.set_defaults(fn=_runs_stranded)
+    runs_commands = [
+        commands.Command(
+            "usage", "runs", "usage stats and cost for one run",
+            (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"})),
+            _runs_usage, False, (),
+        ),
+        commands.Command(
+            "trace", "runs", "the tool-call trace for one run",
+            (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--role",)), commands.Arg(("-v", "--verbose"), {"action": "store_true"})),
+            _runs_trace, False, (),
+        ),
+        commands.Command(
+            "clean", "runs", "delete a run's worktree and branches locally",
+            (
+                commands.Arg(("run_id",)), commands.Arg(("--repo",), {"required": True}), commands.Arg(("--worktree-root",), {"default": "~/worktrees"}),
+                commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+                commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--force",), {"action": "store_true", "help": "delete every branch regardless of whether its task is on main"}),
+            ),
+            _runs_clean, False, (),
+        ),
+        commands.Command(
+            "land", "runs", "merge a run's branch into the target repo",
+            (
+                commands.Arg(("run_id",)), commands.Arg(("--repo",), {"required": True}), commands.Arg(("--task",)),
+                commands.Arg(("--phase",), {"help": "land the whole phase off its own epic branch instead of one task"}), commands.Arg(("--label",)),
+                commands.Arg(("--force",), {"action": "store_true", "help": "land despite a foreign live leader"}),
+                commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--no-merge",), {"action": "store_true"}),
+                commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+            ),
+            _runs_land, False, (),
+        ),
+        commands.Command(
+            "recover", "runs", "merge an approved task's commit into its phase branch after an escalated merge",
+            (
+                commands.Arg(("run_id",)), commands.Arg(("task_id",)), commands.Arg(("--repo",), {"required": True}),
+                commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+                commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the merge that would be made and exit without touching anything"}),
+            ),
+            _runs_recover, False, (),
+        ),
+        commands.Command(
+            "series", "runs", "per-run summary rows across a runs directory",
+            (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"}), commands.Arg(("--append",))),
+            _runs_series, False, (),
+        ),
+        commands.Command(
+            "events", "runs", "poll a run's log for structured events",
+            (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--follow",), {"action": "store_true"}), commands.Arg(("--json",), {"action": "store_true"})),
+            _runs_events, False, (),
+        ),
+        commands.Command(
+            "top", "runs", "live table of runs in flight; --once prints it and exits",
+            (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--interval",), {"type": float, "default": 3}), commands.Arg(("--once",), {"action": "store_true"})),
+            _runs_top, False, (),
+        ),
+        commands.Command(
+            "notify", "runs", "desktop notifications for exits, quarantines, budget stops and cost",
+            (
+                commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--once",), {"action": "store_true"}), commands.Arg(("--interval",), {"type": float, "default": 10}),
+                commands.Arg(("--replay",), {"action": "store_true", "help": "emit history on first start; default is silent for existing runs when no state file is present"}),
+            ),
+            _runs_notify, False, (),
+        ),
+        commands.Command(
+            "detail", "runs", "one run's timeline, objection and last tool calls",
+            (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"})),
+            _runs_detail, False, (),
+        ),
+        commands.Command(
+            "stranded", "runs", "every approved task record whose work item is not done, with its remedy",
+            (
+                commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+                commands.Arg(("--json",), {"action": "store_true"}),
+            ),
+            _runs_stranded, False, (),
+        ),
+    ]
+    commands.build_parser(runs_commands, [runs_group], sub)
 
     stats_p = sub.add_parser(
         "stats", help="load the run corpus into the stats store",
