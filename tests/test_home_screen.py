@@ -1,7 +1,10 @@
 import time
 
-from agent_tools import home_model, leader_chat
-from agent_tools.home_screen import _key_for, _panel, _read_with_timeout, _send_chat, draw, facts, run_effect
+from agent_tools import home_model, leader_chat, theme
+from agent_tools.home_model import Span
+from agent_tools.home_screen import _key_for, _paint, _panel, _read_with_timeout, _send_chat, draw, facts, run_effect
+
+_PAIRS = theme.pair_numbers(theme.default)
 
 
 def test_panel_status_is_fresh_within_timeout_stale_past_it_and_absent_with_no_value():
@@ -104,7 +107,7 @@ def test_draw_contains_each_panes_expected_lines_and_marks_a_stale_panel():
     state = home_model.State(plugin_dir="/plugins/coxswain", leader_liveness="live", other_holder=None)
     statuses = {"leader": "fresh", "runs": "fresh", "backlog": "stale", "window": "fresh"}
 
-    draw(stdscr, _facts_fixture(), state, statuses)
+    draw(stdscr, _facts_fixture(), state, statuses, _PAIRS)
 
     text = [call[2] for call in stdscr.addnstr_calls]
     assert any("Leader" in line for line in text)
@@ -118,11 +121,12 @@ def test_draw_marks_only_the_stale_panel_when_titles_share_one_row_at_a_wide_wid
     state = home_model.State(plugin_dir="/plugins/coxswain", leader_liveness="live", other_holder=None)
     statuses = {"leader": "fresh", "runs": "fresh", "backlog": "stale", "window": "fresh"}
 
-    draw(stdscr, _facts_fixture(), state, statuses)
+    draw(stdscr, _facts_fixture(), state, statuses, _PAIRS)
 
-    top_row = next(call[2] for call in stdscr.addnstr_calls if "Leader" in call[2])
-    assert "! Backlog" in top_row
-    assert "! Leader" not in top_row
+    texts = [call[2] for call in stdscr.addnstr_calls]
+    assert any(text == "Leader" for text in texts)
+    assert any(text == "! Backlog" for text in texts)
+    assert not any("! Leader" in text for text in texts)
 
 
 def test_t_key_runs_claude_with_the_plugin_dir_and_opening():
@@ -195,11 +199,39 @@ def test_draw_renders_the_chat_header_and_the_in_progress_draft():
     stdscr = _FakeStdscr()
     state = home_model.State(plugin_dir="/p", leader_liveness="live", other_holder=None, chat_draft="typing")
 
-    draw(stdscr, _facts_fixture(), state, {})
+    draw(stdscr, _facts_fixture(), state, {}, _PAIRS)
 
     text = [call[2] for call in stdscr.addnstr_calls]
     assert any("CHAT" in line for line in text)
     assert any(line == "> typing" for line in text)
+
+
+def test_paint_advances_the_column_cursor_across_two_spans_on_one_row():
+    stdscr = _FakeStdscr()
+    line = (Span("ab", "title"), Span("cde", "plain"))
+
+    _paint(stdscr, 3, line, 80, _PAIRS)
+
+    assert stdscr.addnstr_calls[0][:3] == (3, 0, "ab")
+    assert stdscr.addnstr_calls[1][:3] == (3, 2, "cde")
+
+
+def test_paint_gives_an_unknown_role_the_plain_attribute():
+    stdscr = _FakeStdscr()
+    line = (Span("x", "mystery"),)
+
+    _paint(stdscr, 0, line, 80, {"plain": 5})
+
+    assert stdscr.addnstr_calls[0][4] == 5
+
+
+def test_paint_does_not_write_past_the_terminal_edge():
+    stdscr = _FakeStdscr()
+    line = (Span("0123456789", "plain"),)
+
+    _paint(stdscr, 0, line, 5, _PAIRS)
+
+    assert all(call[1] + call[3] <= 5 for call in stdscr.addnstr_calls)
 
 
 def test_typing_l_into_a_focused_chat_extends_the_draft_and_does_not_land():
