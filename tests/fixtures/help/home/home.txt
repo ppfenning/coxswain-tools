@@ -1,0 +1,5 @@
+usage: cox home [-h] [--profile PROFILE]
+
+options:
+  -h, --help         show this help message and exit
+  --profile PROFILE

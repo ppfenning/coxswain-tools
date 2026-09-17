@@ -38,6 +38,8 @@ class Group:
     help: str
     description: str
     epilog: str
+    args: tuple[Arg, ...] = field(default_factory=tuple)
+    fn: Callable[[argparse.Namespace], int] | None = None
 
 
 def _bare_group(parser: argparse.ArgumentParser) -> Callable[[argparse.Namespace], int]:
@@ -56,7 +58,9 @@ def build_parser(
     sub: argparse._SubParsersAction,
 ) -> dict[str, argparse.ArgumentParser]:
     """Fold `commands` into one subparser per row, under one parser per
-    `groups` entry, attached to `sub`. Returns group name -> its parser."""
+    `groups` entry, attached to `sub`. A group with no rows is a leaf: it
+    takes `Group.args` directly and runs `Group.fn`, no nested subcommand.
+    Returns group name -> its parser."""
     by_group: dict[str, list[Command]] = {}
     for row in commands:
         by_group.setdefault(row.group, []).append(row)
@@ -66,12 +70,18 @@ def build_parser(
             g.name, help=g.help, description=g.description, epilog=g.epilog,
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
-        gp.set_defaults(fn=_bare_group(gp))
-        gp_sub = gp.add_subparsers(dest="cmd", required=False)
-        for row in by_group.get(g.name, []):
-            rp = gp_sub.add_parser(row.name, help=row.summary)
-            for arg in row.args:
-                rp.add_argument(*arg.flags, **arg.kwargs)
-            rp.set_defaults(fn=row.handler)
+        for arg in g.args:
+            gp.add_argument(*arg.flags, **arg.kwargs)
+        rows = by_group.get(g.name, [])
+        if rows:
+            gp.set_defaults(fn=_bare_group(gp))
+            gp_sub = gp.add_subparsers(dest="cmd", required=False)
+            for row in rows:
+                rp = gp_sub.add_parser(row.name, help=row.summary)
+                for arg in row.args:
+                    rp.add_argument(*arg.flags, **arg.kwargs)
+                rp.set_defaults(fn=row.handler)
+        else:
+            gp.set_defaults(fn=g.fn)
         parsers[g.name] = gp
     return parsers

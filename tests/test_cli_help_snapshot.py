@@ -19,7 +19,7 @@ import pytest
 from agent_tools import cli
 
 HELP_ROOT = Path(__file__).resolve().parent / "fixtures" / "help"
-GROUPS = ["runs", "courier"]
+GROUPS = ["runs", "courier", "home"]
 COLUMNS = "100"  # argparse wraps at the terminal width; pin it so the text is stable
 
 
@@ -28,8 +28,9 @@ def fixtures_for(group: str) -> Path:
 
 
 def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
-    action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
-    return dict(action.choices)
+    """Empty for a leaf group (e.g. `home`), which has no subcommands of its own."""
+    action = next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None)
+    return dict(action.choices) if action else {}
 
 
 def help_texts(group: str) -> dict[str, str]:
