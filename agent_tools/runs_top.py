@@ -95,8 +95,8 @@ def _cut(line: str, width: int) -> str:
 
 
 def tail_lines(text: str, limit: int) -> list[str]:
-    """Pure: the last `limit` non-empty lines of `text`."""
-    lines = [line for line in text.splitlines() if line.strip()]
+    """Pure: the last `limit` lines of `text`."""
+    lines = text.splitlines()
     return lines[-limit:] if limit > 0 else []
 
 

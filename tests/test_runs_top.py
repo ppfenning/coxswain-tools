@@ -149,3 +149,7 @@ def test_tail_lines_returns_everything_when_under_the_limit():
 
 def test_tail_lines_keeps_only_the_last_lines_over_the_limit():
     assert tail_lines("a\nb\nc\nd\n", 2) == ["c", "d"]
+
+
+def test_tail_lines_keeps_a_blank_line_in_the_tail():
+    assert tail_lines("a\n\nb\n", 3) == ["a", "", "b"]
