@@ -67,7 +67,13 @@ def roles_report(
     calls (and their tasks) to runs matching the given value(s) before grouping.
     Every row carries `regimes`, the distinct regimes among its calls' runs — more
     than one means the row averages across a configuration change, and the row says
-    so rather than presenting a single silent number."""
+    so rather than presenting a single silent number.
+
+    Rows are further split by `challenger`: a role/model with both standard and
+    challenger calls yields two rows, each with its own `n_calls`/`landed_rate`, so
+    a challenger row never inflates the standard row's sample size or its landed
+    rate (router-steward.md §3 — a challenger outcome is never read as a
+    regression)."""
     regime_by_run = _regime_map(runs)
     filtering = cartridge_sha is not None or provider_profile is not None
     matching_run_ids = {
@@ -76,12 +82,12 @@ def roles_report(
     matching_calls = [c for c in calls if c.get("run_id") in matching_run_ids] if filtering else calls
     matching_tasks = [t for t in tasks if t.get("run_id") in matching_run_ids] if filtering else tasks
 
-    groups: dict[tuple[Any, Any], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[Any, Any, bool], list[dict[str, Any]]] = defaultdict(list)
     for row in _joined(matching_calls, matching_tasks):
-        groups[(row.get("role"), row.get("model"))].append(row)
+        groups[(row.get("role"), row.get("model"), bool(row.get("challenger")))].append(row)
 
     report = []
-    for (role, model), rows in groups.items():
+    for (role, model, challenger), rows in groups.items():
         joined = [r for r in rows if r["task_outcome"] is not None]
         joined_task_ids = {r["task_id"] for r in joined}
         landed_task_ids = {r["task_id"] for r in joined if r["task_outcome"] == "landed"}
@@ -117,6 +123,7 @@ def roles_report(
         report.append({
             "role": role,
             "model": model,
+            "challenger": challenger,
             "n_calls": len(rows),
             "n_joined": len(joined),
             "landed_rate": round(len(landed_task_ids) / len(joined_task_ids), 4) if joined_task_ids else None,
