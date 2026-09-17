@@ -255,14 +255,9 @@ def time_to_reset(end: datetime.datetime, now: datetime.datetime) -> str:
 def window_pane(facts: Facts, width: int) -> tuple[Line, ...]:
     w = facts.window
     verdict = f"tier {w.get('tier', '')} effort {w.get('effort_ceiling', '')}"
-    block = f"block {w.get('block_left', 0):.0%} left  resets in {w.get('time_to_reset', '')}"
-    ceiling_usd = w.get("ceiling_usd")
-    spend = (
-        f"spent ${w.get('spent_usd', 0):.2f} of ${ceiling_usd:.0f} ceiling  {w.get('ceiling_left', 0):.0%} left"
-        if ceiling_usd else f"spent ${w.get('spent_usd', 0):.2f}  no ceiling set"
-    )
+    spend = f"spent ${w.get('spent_usd', 0):.2f}  reset in {w.get('time_to_reset', '')}"
     reason = w.get("reason", "")
-    lines = (verdict, block, spend, reason) if reason else (verdict, block, spend)
+    lines = (verdict, spend, reason) if reason else (verdict, spend)
     return tuple(_cut_span(line, width) for line in lines)
 
 

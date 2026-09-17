@@ -20,10 +20,6 @@ repo = "org/cartridges"
 tag = "v0.1.0"
 """
 
-def _manifest_toml_at(version: str) -> str:
-    return _MANIFEST_TOML.replace('version = "0.1.0"', f'version = "{version}"', 1)
-
-
 _MANIFEST_TOML_WITH_PINNED = _MANIFEST_TOML + """
 [components.crew]
 repo = "org/crew"
@@ -405,14 +401,8 @@ def test_release_index_text_does_not_drop_an_adjacent_section_missing_its_blank_
 def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success"):
     """`fail`, when given, is `(directory, kind)` for the one call that
     should return non-zero — everything else in a clean, on-branch tree.
-    Every `gh run list` call reports one run with `gh_conclusion`. Tracks
-    each directory's current branch (starting off-default for any directory
-    named in `off_branch`) across `checkout` calls, exposed as
-    `run.current_branch`, so a test can pin what branch a later `tag` call
-    actually ran on rather than trust a runner that reports "main" no
-    matter what was checked out."""
+    Every `gh run list` call reports one run with `gh_conclusion`."""
     calls: list = []
-    current_branch = dict.fromkeys(off_branch, "feature/x")
 
     def run(argv, cwd):
         calls.append(argv)
@@ -428,17 +418,13 @@ def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success"):
             return (1, f"{fail[1]} failed")
         if argv[3] == "status":
             return (0, "M f\n") if argv[2] in dirty else (0, "")
-        if argv[3] == "checkout":
-            current_branch[argv[2]] = argv[-1]
-            return (0, "")
         if argv[3] == "rev-parse":
-            return (0, current_branch.get(argv[2], "main") + "\n")
+            return (0, "feature/x\n") if argv[2] in off_branch else (0, "main\n")
         if argv[3] == "symbolic-ref":
             return (0, "refs/remotes/origin/main\n")
         if argv[3] == "rev-list":
             return (0, "deadbeef\n")
         return (0, "")
-    run.current_branch = current_branch
     return calls, run
 
 
@@ -675,160 +661,15 @@ def test_cli_release_execute_refuses_before_any_tag_or_push_when_a_checkout_is_d
     assert not any(c[3] in ("tag", "push") for c in calls)
 
 
-def test_cli_release_execute_runs_the_bump_manifest_land_sequence_and_leaves_the_files_bumped(tmp_path, monkeypatch):
-    umbrella_dir = tmp_path / "coxswain"
-    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
-    manifest_path = umbrella_dir / "manifest.toml"
+def test_cli_release_execute_refuses_a_plan_that_still_carries_a_bump_manifest_step(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
-    (umbrella_dir / "docs" / "releases" / "0.2.0.md").write_text("notes")
-    (umbrella_dir / "pyproject.toml").write_text('[project]\nname = "coxswain"\nversion = "0.1.0"\n')
-    (umbrella_dir / "uv.lock").write_text(
-        'version = 1\n\n[[package]]\nname = "colorama"\nversion = "0.4.6"\n\n'
-        '[[package]]\nname = "coxswain"\nversion = "0.1.0"\n')
     calls, fake_run = _fake_git_run()
     monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
     monkeypatch.setattr(cli, "_real_run", fake_run)
-    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
     rc = cli.main(["dev", "release", "0.2.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
-    assert rc == 0
-    umbrella_calls = [c for c in calls if c[0] == "git" and c[2] == str(umbrella_dir)]
-    kinds = [c[3] for c in umbrella_calls]
-    # Same ordering guarantee as the component case: after `merge`, the
-    # executor switches back to the default branch and pulls it before the
-    # pre-existing `tag_self` step tags HEAD, so it tags the squash-merged
-    # commit rather than the stale pre-merge commit on release/0.2.0.
-    assert kinds == ["status", "rev-parse", "symbolic-ref", "checkout", "add", "commit", "push",
-                      "symbolic-ref", "checkout", "pull", "tag", "push"]
-    assert umbrella_calls[8] == release.checkout_ref_argv(str(umbrella_dir), "main")
-    assert umbrella_calls[9] == release.pull_argv(str(umbrella_dir), "main")
-    assert ["gh", "pr", "create", "--title", "manifest: bump to 0.2.0 to match the tag",
-            "--body", "Bumps manifest.toml version to 0.2.0 to match tag v0.2.0."] in calls
-    assert ["gh", "pr", "merge", "--squash", "--delete-branch"] in calls
-    assert 'version = "0.2.0"' in (umbrella_dir / "manifest.toml").read_text()
-    assert 'version = "0.2.0"' in (umbrella_dir / "pyproject.toml").read_text()
-    assert 'name = "coxswain"\nversion = "0.2.0"' in (umbrella_dir / "uv.lock").read_text()
-    assert fake_run.current_branch[str(umbrella_dir)] == "main"
-    assert cli._checkout_ready(str(umbrella_dir), fake_run) == (True, "")
-
-
-def test_release_execute_bump_pyproject_no_ops_and_skips_its_land_steps_when_already_at_the_target(tmp_path):
-    # Simulates a rerun after a previous attempt already committed and merged
-    # harness's bump: the plan still carries the full land sequence, but the
-    # checkout's pyproject.toml already reads the target version.
-    harness_dir = tmp_path / "harness"
-    harness_dir.mkdir()
-    (harness_dir / "pyproject.toml").write_text('[project]\nversion = "0.2.0"\n')
-    umbrella_dir = tmp_path / "coxswain"
-    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
-    (umbrella_dir / "docs" / "releases" / "0.2.0.md").write_text("notes")
-    calls, fake_run = _fake_git_run()
-    steps = [
-        {"kind": "bump_pyproject", "component": "harness", "repo": "org/harness", "branch": "release/0.2.0",
-         "commit_subject": "pyproject: bump to 0.2.0 to match the tag", "from": "0.1.0", "to": "0.2.0"},
-        {"kind": "push", "component": "harness", "branch": "release/0.2.0"},
-        {"kind": "pr_create", "component": "harness", "title": "x", "body": "y"},
-        {"kind": "wait_checks", "component": "harness"},
-        {"kind": "merge", "component": "harness"},
-        {"kind": "notes", "component": "notes", "path": "docs/releases/0.2.0.md"},
-    ]
-    rc = cli._release_execute(steps, "0.2.0", str(tmp_path), {}, str(umbrella_dir), fake_run,
-                               {"components": {}}, str(umbrella_dir / "manifest.toml"))
-    assert rc == 0
+    assert rc == 2
     assert calls == []
-
-
-def test_cli_release_execute_runs_the_bump_pyproject_land_sequence_in_order_and_leaves_the_file_bumped(tmp_path, monkeypatch):
-    manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_manifest_toml_at("0.2.0"))
-    harness_dir = tmp_path / "harness"
-    harness_dir.mkdir()
-    (harness_dir / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
-    umbrella_dir = tmp_path / "coxswain"
-    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
-    (umbrella_dir / "docs" / "releases" / "0.2.0.md").write_text("notes")
-    calls, fake_run = _fake_git_run()
-    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
-    monkeypatch.setattr(cli, "_real_run", fake_run)
-    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
-    rc = cli.main(["dev", "release", "0.2.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
-    assert rc == 0
-    harness_calls = [c for c in calls if c[0] == "git" and c[2] == str(harness_dir)]
-    kinds = [c[3] for c in harness_calls]
-    # After `merge`, the executor switches the local checkout back to the
-    # default branch and pulls it before the pre-existing `tag` step runs —
-    # otherwise `tag` (which tags HEAD with no ref) would tag the stale
-    # pre-squash commit still checked out on release/0.2.0.
-    assert kinds == ["status", "rev-parse", "symbolic-ref", "checkout", "add", "commit", "push",
-                      "symbolic-ref", "checkout", "pull", "tag", "push"]
-    assert harness_calls[3] == release.checkout_branch_argv(str(harness_dir), "release/0.2.0")
-    assert harness_calls[5] == release.commit_argv(
-        str(harness_dir), "pyproject: bump to 0.2.0 to match the tag", "pyproject.toml")
-    assert harness_calls[8] == release.checkout_ref_argv(str(harness_dir), "main")
-    assert harness_calls[9] == release.pull_argv(str(harness_dir), "main")
-    assert ["gh", "pr", "create", "--title", "pyproject: bump to 0.2.0 to match the tag",
-            "--body", "Bumps harness's pyproject.toml version to 0.2.0 to match tag v0.2.0."] in calls
-    assert ["gh", "pr", "merge", "--squash", "--delete-branch"] in calls
-    assert (harness_dir / "pyproject.toml").read_text() == '[project]\nversion = "0.2.0"\n'
-    # The checkout is back on main by the time `tag` runs (and stays there),
-    # so a second release invocation's `_checkout_ready` on this same
-    # directory would not be refused.
-    assert fake_run.current_branch[str(harness_dir)] == "main"
-    assert cli._checkout_ready(str(harness_dir), fake_run) == (True, "")
-
-
-def test_release_execute_bump_pyproject_leaves_the_file_and_default_branch_untouched_when_checkout_fails(tmp_path):
-    # A failed `checkout -b` must never leave the default branch dirty with
-    # an uncommitted bump no branch owns — the version line is only ever
-    # rewritten once the branch cut itself has succeeded.
-    harness_dir = tmp_path / "harness"
-    harness_dir.mkdir()
-    original = '[project]\nversion = "0.1.0"\n'
-    (harness_dir / "pyproject.toml").write_text(original)
-    umbrella_dir = tmp_path / "coxswain"
-    calls, fake_run = _fake_git_run(fail=(str(harness_dir), "checkout"))
-    steps = [
-        {"kind": "bump_pyproject", "component": "harness", "repo": "org/harness", "branch": "release/0.2.0",
-         "commit_subject": "pyproject: bump to 0.2.0 to match the tag", "from": "0.1.0", "to": "0.2.0"},
-    ]
-    rc = cli._release_execute(steps, "0.2.0", str(tmp_path), {}, str(umbrella_dir), fake_run,
-                               {"components": {}}, str(umbrella_dir / "manifest.toml"))
-    assert rc == 2
-    assert (harness_dir / "pyproject.toml").read_text() == original
-    assert not any(c[0] == "git" and c[3] in ("add", "commit") for c in calls)
-
-
-def test_release_execute_bump_manifest_leaves_the_files_untouched_when_checkout_fails(tmp_path):
-    umbrella_dir = tmp_path / "coxswain"
-    umbrella_dir.mkdir()
-    manifest_path = umbrella_dir / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
-    (umbrella_dir / "pyproject.toml").write_text('[project]\nname = "coxswain"\nversion = "0.1.0"\n')
-    (umbrella_dir / "uv.lock").write_text(
-        '[[package]]\nname = "coxswain"\nversion = "0.1.0"\n')
-    calls, fake_run = _fake_git_run(fail=(str(umbrella_dir), "checkout"))
-    steps = [
-        {"kind": "bump_manifest", "component": "manifest", "from": "0.1.0", "to": "0.2.0",
-         "branch": "release/0.2.0", "commit_subject": "manifest: bump to 0.2.0 to match the tag"},
-    ]
-    rc = cli._release_execute(steps, "0.2.0", str(tmp_path), {}, str(umbrella_dir), fake_run,
-                               {"components": {}}, str(manifest_path))
-    assert rc == 2
-    assert manifest_path.read_text() == _MANIFEST_TOML
-    assert (umbrella_dir / "pyproject.toml").read_text() == '[project]\nname = "coxswain"\nversion = "0.1.0"\n'
-    assert (umbrella_dir / "uv.lock").read_text() == '[[package]]\nname = "coxswain"\nversion = "0.1.0"\n'
-    assert not any(c[0] == "git" and c[3] in ("add", "commit") for c in calls)
-
-
-def test_cli_release_dry_run_still_prints_every_step_and_touches_no_file(tmp_path, capsys, monkeypatch):
-    manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(_MANIFEST_TOML)
-    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
-    rc = cli.main(["dev", "release", "0.2.0", "--dry-run", "--manifest", str(manifest_path), "--root", str(tmp_path)])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "bump_manifest manifest: 0.1.0 -> 0.2.0" in out
-    assert "tag_self coxswain: v0.2.0" in out
-    assert not (tmp_path / "coxswain").exists()
 
 
 def test_cli_release_execute_refuses_before_any_tag_or_push_when_the_release_note_is_missing(tmp_path, monkeypatch):
@@ -942,43 +783,7 @@ def test_gate_refuses_a_versions_drift_even_when_a_reason_is_given():
                      "cox pyproject.toml is 0.1.0, manifest wants 0.2.0")]
     assert release.gate(drifts, "docs land next sprint") == [
         {"kind": "refuse", "component": "versions",
-         "detail": "versions: manifest.toml <-> cox/pyproject.toml — cox pyproject.toml is 0.1.0, "
-                   "manifest wants 0.2.0 — bump it by hand"}
-    ]
-
-
-def test_gate_a_behind_pyproject_with_a_planned_bump_pyproject_passes_the_gate():
-    drifts = [Drift("versions", "manifest.toml", None, "cartridges/pyproject.toml", None,
-                     "cartridges pyproject.toml is 0.10.0, manifest wants 0.11.0 "
-                     "(cox dev release 0.11.0 performs the bump)")]
-    plan_steps = [{"kind": "bump_pyproject", "component": "cartridges", "to": "0.11.0"}]
-    assert release.gate(drifts, None, plan_steps) == [
-        {"kind": "note", "component": "versions",
-         "detail": "versions: manifest.toml <-> cartridges/pyproject.toml — cartridges pyproject.toml is 0.10.0, "
-                   "manifest wants 0.11.0 — the release bumps it"}
-    ]
-
-
-def test_gate_a_behind_pyproject_with_no_planned_bump_refuses():
-    drifts = [Drift("versions", "manifest.toml", None, "cartridges/pyproject.toml", None,
-                     "cartridges pyproject.toml is 0.10.0, manifest wants 0.11.0 "
-                     "(cox dev release 0.11.0 performs the bump)")]
-    assert release.gate(drifts, None, []) == [
-        {"kind": "refuse", "component": "versions",
-         "detail": "versions: manifest.toml <-> cartridges/pyproject.toml — cartridges pyproject.toml is 0.10.0, "
-                   "manifest wants 0.11.0 — bump it by hand"}
-    ]
-
-
-def test_gate_a_manifest_one_version_behind_with_a_planned_bump_manifest_passes():
-    drifts = [Drift("versions", "manifest.toml", None, "coxswain/pyproject.toml", None,
-                     "umbrella pyproject.toml is 0.10.0, manifest wants 0.11.0 "
-                     "(cox dev release 0.11.0 performs the bump)")]
-    plan_steps = [{"kind": "bump_manifest", "component": "manifest", "from": "0.10.0", "to": "0.11.0"}]
-    assert release.gate(drifts, None, plan_steps) == [
-        {"kind": "note", "component": "versions",
-         "detail": "versions: manifest.toml <-> coxswain/pyproject.toml — umbrella pyproject.toml is 0.10.0, "
-                   "manifest wants 0.11.0 — the release bumps it"}
+         "detail": "versions: manifest.toml <-> cox/pyproject.toml — cox pyproject.toml is 0.1.0, manifest wants 0.2.0"}
     ]
 
 

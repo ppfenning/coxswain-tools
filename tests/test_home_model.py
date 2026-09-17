@@ -28,7 +28,7 @@ from agent_tools.runs_top import Row, render
 
 _ROW = Row(run="r1", alive=True, phase="build", node="build-in-worktree", attempt=1, turns=3, cost_usd=1.5, verdict="", status="running", ceiling="")
 
-_WINDOW = {"tier": "sonnet", "effort_ceiling": "high", "spent_usd": 12.5, "time_to_reset": "2h15m", "block_left": 0.52}
+_WINDOW = {"tier": "sonnet", "effort_ceiling": "high", "spent_usd": 12.5, "time_to_reset": "2h15m"}
 _BACKLOG = {"queued": 4, "decomposed": 2, "landed": 9, "ready": {"tools-home": 3}}
 _RUNS_PANE = tuple((Span(line),) for line in render([_ROW], 80))
 
@@ -106,8 +106,7 @@ def test_backlog_pane_shows_counts_and_ready_per_initiative():
 def test_window_pane_shows_the_pacing_verdict():
     assert window_pane(_facts(), 80) == (
         (Span("tier sonnet effort high"),),
-        (Span("block 52% left  resets in 2h15m"),),
-        (Span("spent $12.50  no ceiling set"),),
+        (Span("spent $12.50  reset in 2h15m"),),
     )
 
 
@@ -115,22 +114,9 @@ def test_window_pane_cuts_a_too_long_reason_with_an_ellipsis():
     lines = window_pane(_facts(window={**_WINDOW, "reason": "y" * 100}), 80)
     assert lines == (
         (Span("tier sonnet effort high"),),
-        (Span("block 52% left  resets in 2h15m"),),
-        (Span("spent $12.50  no ceiling set"),),
+        (Span("spent $12.50  reset in 2h15m"),),
         (Span("y" * 79 + "…"),),
     )
-
-
-def test_window_pane_shows_the_share_left_against_a_set_ceiling():
-    window = {**_WINDOW, "ceiling_usd": 60.0, "ceiling_left": 0.1}
-    lines = window_pane(_facts(window=window), 80)
-    assert lines[2] == (Span("spent $12.50 of $60 ceiling  10% left"),)
-
-
-def test_window_pane_reads_zero_percent_left_when_spend_is_over_the_ceiling():
-    window = {**_WINDOW, "spent_usd": 108.15, "ceiling_usd": 60.0, "ceiling_left": 0.0}
-    lines = window_pane(_facts(window=window), 80)
-    assert lines[2] == (Span("spent $108.15 of $60 ceiling  0% left"),)
 
 
 def test_step_t_returns_talk_and_only_talk():
