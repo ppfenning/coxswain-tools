@@ -19,7 +19,7 @@ import pytest
 from agent_tools import cli
 
 HELP_ROOT = Path(__file__).resolve().parent / "fixtures" / "help"
-GROUPS = ["runs", "courier", "home", "versions"]
+GROUPS = ["runs", "courier", "home", "versions", "usage"]
 COLUMNS = "100"  # argparse wraps at the terminal width; pin it so the text is stable
 
 
