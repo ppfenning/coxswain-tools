@@ -49,6 +49,7 @@ cox runs clean RUN --repo PATH [--apply] [--force]   the run's worktrees and scr
 cox runs land RUN --repo PATH [--task T] [--apply] [--no-merge]   plan and land an approved run: pick branch, cherry-pick, PR, merge on green, clean; dry-run by default
 cox runs events [--runs-dir runs] [--follow] [--json]   tail a run's log, trace and usage files as a live event stream
 cox runs top   — live table of runs in flight (next task wires the screen)
+cox runs bar [--runs-dir runs]                  one Waybar custom-module JSON line: text, tooltip, class idle|running|attention
 cox usage assess [--json] [--runs-dir runs]     the pacing verdict for the current spend window against the resolved `policy.pacing.json` in --runs-dir, or the unmeasured default when it is absent
                                                  prints the one-line reason (or the full Assessment as JSON); exit 0 go/go_degraded, 3 hold, 4 stop
 cox epic watch PIDFILE [--log LOG]              block until a detached run exits (or the cap), then the outcome lines
@@ -67,6 +68,22 @@ cox setup install --root DIR --team T --workspace DIR [--plugins] [--hook] [--fo
 cox install --root DIR [--manifest PATH] [--provider NAME] [--with FLAG] [--team T] [--workspace DIR] [--dry-run]   the plan over coxswain's manifest.toml: clone, fetch, skip or refuse per component, then setup_install, doctor, desktop; --dry-run only prints it, otherwise it runs each step and exits 0 only if every step ran clean
 cox upgrade --root DIR [--manifest PATH] [--provider NAME] [--with FLAG] [--team T] [--workspace DIR] [--to VERSION] [--dry-run]   same plan as install, but refuses (exit 2, naming the directory) if any present checkout is dirty; --to overrides every component's pinned tag for this run
 cox versions [--root DIR] [--manifest PATH]     pinned vs. installed tag per component, status: ok, drift, missing, extra, and a schema column (the cartridges/graphs/tools schema version, or "?")
+```
+
+`cox runs bar` is a Waybar custom module: one JSON line of `{text, tooltip,
+class}` per poll, `class` one of `idle`, `running`, `attention` (a run
+quarantined or budget-stopped since its last exit). Click launches the same
+floating window as the dotfiles' `runs top` chord; right-click opens the HUD.
+
+```jsonc
+// ~/.config/waybar/config.jsonc
+"custom/runs": {
+    "exec": "cox runs bar --runs-dir ~/runs",
+    "return-type": "json",
+    "interval": 5,
+    "on-click": "runs-top-float",
+    "on-click-right": "cox-hud"
+}
 ```
 
 ## Maintainers
