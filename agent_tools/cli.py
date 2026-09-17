@@ -2074,7 +2074,8 @@ def _wait_workflows(directory: str, tag: str, component: str, run,
         return True, f"{len(runs)} run(s) green for {tag}"
 
 
-def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run) -> int:
+def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run,
+                      manifest: dict) -> int:
     """Runs `steps` for real, through `run`. Refuses outright, before `run`
     is ever called, when the plan still carries a `bump_manifest` step: that
     step only happens by bumping and committing the manifest by hand, so a
@@ -2126,6 +2127,9 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 return 2
             print(f"{kind} {step['component']}: {step['tag']}")
         elif kind == "notes":
+            index_path = Path(umbrella) / "docs" / "releases" / "index.md"
+            existing = index_path.read_text() if index_path.exists() else ""
+            index_path.write_text(release.release_index_text(existing, version, manifest))
             print(f"notes notes: {step['path']}")
         elif kind == "note":
             print(f"note {step['component']}: {step['detail']}")
@@ -2246,7 +2250,7 @@ def _release(a: argparse.Namespace) -> int:
             print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
         return 2 if any(step["kind"] == "refuse" for step in steps) else 0
     umbrella = a.umbrella or str(Path(root) / "coxswain")
-    return _release_execute(steps, a.version, root, overrides, umbrella, _real_run)
+    return _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest)
 
 
 def _release_check(a: argparse.Namespace) -> int:
