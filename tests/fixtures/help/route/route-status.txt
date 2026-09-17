@@ -1,0 +1,6 @@
+usage: cox route status [-h] [--profile PROFILE] [--json]
+
+options:
+  -h, --help         show this help message and exit
+  --profile PROFILE
+  --json

@@ -1,0 +1,11 @@
+usage: cox route launch [-h] {epic,decompose,cos,sweep} ...
+
+positional arguments:
+  {epic,decompose,cos,sweep}
+    epic                launch the epic graph against a filed initiative
+    decompose           launch the decompose graph against an idea
+    cos                 launch the cos graph
+    sweep               launch the sweep graph against an idea
+
+options:
+  -h, --help            show this help message and exit

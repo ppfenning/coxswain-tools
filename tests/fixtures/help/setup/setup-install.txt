@@ -1,0 +1,22 @@
+usage: cox setup install [-h] --root ROOT --team TEAM --workspace WORKSPACE
+                         [--provider-profile PROVIDER_PROFILE] [--skills-root SKILLS_ROOT]
+                         [--assume {a,r}] [--plugins] [--hook] [--force-profile] [--dry-run]
+                         [--window-ceiling-usd WINDOW_CEILING_USD]
+                         [--weekly-ceiling-usd WEEKLY_CEILING_USD]
+
+options:
+  -h, --help            show this help message and exit
+  --root ROOT
+  --team TEAM
+  --workspace WORKSPACE
+  --provider-profile PROVIDER_PROFILE
+  --skills-root SKILLS_ROOT
+  --assume {a,r}
+  --plugins
+  --hook
+  --force-profile
+  --dry-run
+  --window-ceiling-usd WINDOW_CEILING_USD
+                        write spend: window_ceiling_usd into the profile
+  --weekly-ceiling-usd WEEKLY_CEILING_USD
+                        write spend: weekly_ceiling_usd into the profile
