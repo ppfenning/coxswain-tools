@@ -185,10 +185,11 @@ def _ordered(rows: list) -> list:
     return runs_top.order(rows)
 
 
-def _line_kinds(ordered: list, expanded, detail_count: int) -> list:
-    """One entry per line `runs_top.render` draws below any chair line: `None`
-    for the header or a detail line, `(row, index)` for a row's own line."""
-    kinds = [None]
+def _line_kinds(ordered: list, expanded, detail_count: int, has_leader: bool) -> list:
+    """One entry per line `runs_top.render` draws: `None` for the leader line
+    (when `has_leader`), the header, or a detail line, `(row, index)` for a
+    row's own line."""
+    kinds = [None] * (2 if has_leader else 1)
     for i, r in enumerate(ordered):
         kinds.append((r, i))
         if r.run == expanded:
@@ -196,12 +197,11 @@ def _line_kinds(ordered: list, expanded, detail_count: int) -> list:
     return kinds
 
 
-def _scroll_facts(ordered: list, expanded, detail_count: int, cursor: int, has_chair: bool) -> tuple[int, int]:
+def _scroll_facts(ordered: list, expanded, detail_count: int, cursor: int, has_leader: bool) -> tuple[int, int]:
     """The cursor's absolute line number and the total line count, for `first_visible`."""
-    kinds = _line_kinds(ordered, expanded, detail_count)
-    offset = 1 if has_chair else 0
-    cursor_line = offset + next(i for i, k in enumerate(kinds) if k is not None and k[1] == cursor)
-    return cursor_line, offset + len(kinds)
+    kinds = _line_kinds(ordered, expanded, detail_count, has_leader)
+    cursor_line = next(i for i, k in enumerate(kinds) if k is not None and k[1] == cursor)
+    return cursor_line, len(kinds)
 
 
 def first_visible(cursor_index: int, total_lines: int, window_height: int, current_first: int) -> int:
@@ -224,10 +224,9 @@ def draw(stdscr, rows: list, cursor: int | None = None, chair_state=runs_top.UNS
     stdscr.clear()
     height, width = stdscr.getmaxyx()
     lines = runs_top.render(rows, width, chair_state, expanded, detail_lines)
-    has_chair = chair_state is not runs_top.UNSET
-    offset = 1 if has_chair else 0
+    has_leader = chair_state is not runs_top.UNSET
     ordered = _ordered(rows)
-    kinds = _line_kinds(ordered, expanded, len(detail_lines))
+    kinds = _line_kinds(ordered, expanded, len(detail_lines), has_leader)
     has_color = _has_colors()
     if has_color:
         try:
@@ -236,10 +235,10 @@ def draw(stdscr, rows: list, cursor: int | None = None, chair_state=runs_top.UNS
             has_color = False
     for row_i, line in enumerate(lines[first:first + height]):
         i = first + row_i
-        if has_chair and i == 0:
+        if has_leader and i == 0:
             attr = _chair_attr(chair_state, has_color)
         else:
-            kind = kinds[i - offset] if 0 <= i - offset < len(kinds) else None
+            kind = kinds[i] if 0 <= i < len(kinds) else None
             base = _attr(kind[0], has_color) if kind is not None else curses.A_NORMAL
             attr = base | curses.A_REVERSE if kind is not None and cursor == kind[1] else base
         with contextlib.suppress(curses.error):
@@ -248,21 +247,20 @@ def draw(stdscr, rows: list, cursor: int | None = None, chair_state=runs_top.UNS
 
 
 def _session_text(root: Path, run: str) -> str:
-    """Edge: the newest trace file's message text and tool calls, one per line."""
+    """Edge: the newest trace file's assistant message text, one line per text item.
+    Tool calls are left out; `facts_for`'s `tail` already carries those into the
+    detail's own `last:` line, so repeating them here would print them twice."""
     from agent_tools import runs_detail_screen
 
     newest = runs_detail_screen._newest_trace(root, run)
     if newest is None:
         return ""
-    lines = []
-    for event in load_trace(newest):
-        for item in runs_detail_screen._content(event):
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "text":
-                lines.append(item.get("text", ""))
-            elif item.get("type") == "tool_use":
-                lines.append(f"tool: {item.get('name', '')}")
+    lines = [
+        item.get("text", "")
+        for event in load_trace(newest)
+        for item in runs_detail_screen._content(event)
+        if isinstance(item, dict) and item.get("type") == "text"
+    ]
     return "\n".join(lines)
 
 

@@ -220,6 +220,69 @@ def test_cli_runs_top_once_prints_ceil_for_a_run_with_a_ceiling_file(tmp_path, c
     assert "standard/high" in out
 
 
+def test_first_visible_keeps_the_cursor_on_screen_past_a_tall_expansion_without_a_leader_line():
+    # header + row0 (expanded, 40 detail lines) + row1 at cursor: cursor_index 42 of 43 lines.
+    assert first_visible(cursor_index=42, total_lines=43, window_height=10, current_first=0) == 33
+
+
+def test_first_visible_keeps_the_cursor_on_screen_past_a_tall_expansion_with_a_leader_line():
+    # same shape, shifted down one line by the leader line above the header.
+    assert first_visible(cursor_index=43, total_lines=44, window_height=10, current_first=0) == 34
+
+
+def test_loop_esc_clears_the_expansion(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    stdscr = _FakeStdscr([ord("\n"), 27, ord("q")])
+
+    rc = loop(stdscr, tmp_path, 1, tick=rows_now, now_alive=lambda pid: True)
+
+    bounds = [0, *stdscr.checkpoints]
+    draws = [stdscr.addnstr_calls[bounds[i]:bounds[i + 1]] for i in range(len(bounds) - 1)]
+    assert rc == 0
+    assert any(c[2].startswith("  ") for c in draws[1])
+    assert not any(c[2].startswith("  ") for c in draws[2])
+
+
+def test_loop_j_moves_the_cursor_without_disturbing_an_existing_expansion(tmp_path):
+    from agent_tools import runs_top
+
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    _write(tmp_path / "r2.pid", "124")
+    _write(tmp_path / "r2.log", "n1 verdict: land\n")
+    rows = [runs_top.row("r1", True, [], [], [], None), runs_top.row("r2", True, [], [], [], None)]
+    stdscr = _FakeStdscr([ord("\n"), ord("j"), ord("k"), ord("q")])
+
+    rc = loop(stdscr, tmp_path, 1, tick=lambda d: rows, now_alive=lambda pid: True)
+
+    bounds = [0, *stdscr.checkpoints]
+    draws = [stdscr.addnstr_calls[bounds[i]:bounds[i + 1]] for i in range(len(bounds) - 1)]
+    assert rc == 0
+    assert all(any("run r1 [" in c[2] for c in draw) for draw in draws[1:])
+    assert not any("run r2 [" in c[2] for c in draws[-1])
+
+
+def test_the_accordion_tail_carries_message_text_not_a_repeat_of_the_tool_name(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    trace = tmp_path / "r1-trace"
+    trace.mkdir()
+    events = [
+        json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}}),
+        json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "finished the migration"}]}}),
+    ]
+    _write(trace / "n1-1.jsonl", "\n".join(events) + "\n")
+    stdscr = _FakeStdscr([ord("\n"), ord("q")])
+
+    rc = loop(stdscr, tmp_path, 1, tick=rows_now, now_alive=lambda pid: True)
+
+    text = "".join(c[2] for c in stdscr.addnstr_calls)
+    assert rc == 0
+    assert "finished the migration" in text
+    assert text.count("Bash") == 1
+
+
 def test_the_row_names_the_node_written_last_not_the_last_one_alphabetically(tmp_path):
     _write(tmp_path / "r1.pid", "123")
     _write(tmp_path / "r1.log", "")
