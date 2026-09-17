@@ -1,0 +1,14 @@
+usage: cox epic [-h] {watch} ...
+
+Watch a detached run.
+
+positional arguments:
+  {watch}
+    watch     poll a detached run's pidfile until it exits
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  cox epic watch RUN.pid --log RUN.log
+  cox epic watch RUN.pid --json
