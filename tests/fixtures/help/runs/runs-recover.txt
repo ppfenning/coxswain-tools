@@ -1,0 +1,13 @@
+usage: cox runs recover [-h] --repo REPO [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run]
+                        run_id task_id
+
+positional arguments:
+  run_id
+  task_id
+
+options:
+  -h, --help           show this help message and exit
+  --repo REPO
+  --runs-dir RUNS_DIR  override: resolve task records here instead of the profile's workspace_dir
+  --profile PROFILE
+  --dry-run            print the merge that would be made and exit without touching anything
