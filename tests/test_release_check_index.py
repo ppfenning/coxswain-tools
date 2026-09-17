@@ -7,8 +7,6 @@ def test_index_section_renders_the_pages_table_shape():
     assert out.startswith("## `0.2.0`\n\n| Component | Repository or path | Tag | Required or flag |")
     assert "| cox | `o/cox` | `v0.2.0` | required, provides `cox` |" in out
     assert out.endswith("See the [0.2.0 release notes](0.2.0.md) for what landed in each component.")
-    assert True or (
-    )
 
 
 def test_check_release_index_has_no_drift_when_the_section_is_present_verbatim():
