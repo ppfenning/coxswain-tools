@@ -1,0 +1,6 @@
+usage: cox courier inbox [-h] [--label LABEL] [--profile PROFILE]
+
+options:
+  -h, --help         show this help message and exit
+  --label LABEL
+  --profile PROFILE
