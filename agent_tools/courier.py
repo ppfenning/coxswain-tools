@@ -12,7 +12,7 @@ from agent_tools.stats_ingest import LEDGER_PATH, _read_ledger
 
 __all__ = ["Reference", "ack", "append_line", "format_reference", "inbox", "parse_reference", "resolve", "send"]
 
-_KINDS = ("run", "task", "pr", "intake", "proposal", "finding")
+_KINDS = ("run", "task", "pr", "intake", "proposal", "finding", "initiative")
 _PATTERN = re.compile(r"^coxswain://([a-z]+)/(.+)$")
 
 
@@ -71,6 +71,27 @@ def _work_item(workspace_dir: Path, rel_path: str) -> dict | None:
     return {**fields, "body": body} if fields else None
 
 
+def _find_by_id(workspace_dir: Path, glob_pattern: str, ref_id: str) -> Path | None:
+    for path in sorted(workspace_dir.glob(glob_pattern)):
+        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        if fields and fields.get("id") == ref_id:
+            return path
+    return None
+
+
+def _resolve_by_search(workspace_dir: Path, ref_id: str, direct: Path | None, glob_pattern: str) -> dict | None:
+    """`task`/`initiative`: a path-shaped `ref_id` resolves as today; otherwise search by frontmatter `id`
+    and stamp the found record with `path`, the workspace-relative path, for `cox courier inbox` to print."""
+    if (workspace_dir / ref_id).exists():
+        return _work_item(workspace_dir, ref_id)
+    path = direct if direct and direct.exists() else _find_by_id(workspace_dir, glob_pattern, ref_id)
+    if path is None:
+        return None
+    rel = path.relative_to(workspace_dir).as_posix()
+    item = _work_item(workspace_dir, rel)
+    return {**item, "path": rel} if item else None
+
+
 def _intake_record(workspace_dir: Path, ticket_id: str) -> dict | None:
     """`route.intake_entries`, over every file under `intake/`, filtered to the entry whose own `id` matches —
     the ticket id courier.md fixes as `intake`'s id, distinct from a task's path."""
@@ -94,6 +115,11 @@ def resolve(ref: Reference, workspace_dir: Path | str, ledger_path: Path | str |
         return _ledger_row(ref.id, Path(ledger_path) if ledger_path is not None else LEDGER_PATH)
     if ref.kind == "intake":
         return _intake_record(workspace_dir, ref.id)
+    if ref.kind == "task":
+        return _resolve_by_search(workspace_dir, ref.id, None, f"work/*/*/{ref.id}.md")
+    if ref.kind == "initiative":
+        direct = workspace_dir / "work" / ref.id / "initiative.md"
+        return _resolve_by_search(workspace_dir, ref.id, direct, "work/*/initiative.md")
     return _work_item(workspace_dir, ref.id)
 
 
