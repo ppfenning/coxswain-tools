@@ -288,6 +288,27 @@ def test_cli_versions_schema_column_reports_the_gathered_version(tmp_path, monke
     assert cartridges_line.endswith("1.0")
 
 
+def test_cli_versions_schema_column_prefers_the_root_checkout_over_the_import_fallback(tmp_path, monkeypatch, capsys):
+    """`root` here is `tmp_path` (the manifest lives at `tmp_path/coxswain`), so
+    `<root>/cartridges/core/__init__.py` is the real path `_versions` seeds its
+    reader with; it must win over whatever `_fake_schema_package` put on
+    `sys.path`, proving the reader is wired to the checkout, not the import."""
+    manifest_dir = tmp_path / "coxswain"
+    manifest_dir.mkdir()
+    manifest_path = manifest_dir / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    _git_repo(tmp_path / "harness", tag="v1.0.0")
+    _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="1.0")
+    core_dir = tmp_path / "cartridges" / "core"
+    core_dir.mkdir(parents=True)
+    (core_dir / "__init__.py").write_text('SCHEMA_VERSION = "2.5"\n')
+    rc = cli.main(["versions", "--manifest", str(manifest_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    cartridges_line = next(line for line in out.splitlines() if line.split()[0] == "cartridges").rstrip()
+    assert cartridges_line.endswith("2.5")
+
+
 def test_cli_install_prints_no_schema_warn_line_when_all_three_agree(tmp_path, monkeypatch, capsys):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
