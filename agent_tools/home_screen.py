@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import dataclasses
 import socket
 import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_tools import home_model, leader, route, runs_top_screen, usage_window
+from agent_tools import home_model, leader, leader_chat, route, runs_top_screen, usage_window
 from agent_tools.pacing import assess
 
 __all__ = ["draw", "facts", "main", "run_effect"]
@@ -48,6 +49,31 @@ def _panel(cache: dict, name: str, reader, timeout_seconds: float, now: float):
 def _read_leader(runs_dir) -> dict:
     record = leader.read(runs_dir)
     return record if record is not None else {}
+
+
+def _read_chat(runs_dir, limit: int = 20) -> tuple[dict, ...]:
+    path = leader_chat.chat_path(runs_dir)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    return tuple(leader_chat.read_thread(text, limit))
+
+
+def _key_for(ch: int) -> str:
+    """`ENTER`/`ESC` by name for `home_model.step`; any other byte as its character, else empty."""
+    import curses
+
+    if ch in (10, 13, curses.KEY_ENTER):
+        return "ENTER"
+    if ch == 27:
+        return "ESC"
+    return chr(ch) if 0 <= ch < 256 else ""
+
+
+def _send_chat(runs_dir, text: str) -> None:
+    path = leader_chat.chat_path(runs_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    entry = {"at": datetime.now(UTC).isoformat(), "from": "operator", "text": text}
+    path.write_text(leader_chat.append_line(existing, entry), encoding="utf-8")
 
 
 def _read_window(runs_dir, now_dt: datetime, window_ceiling_usd: float | None = None) -> dict:
@@ -97,6 +123,7 @@ def facts(runs_dir, work_dir, intake_dir, now: float, cache: dict | None = None,
         cache, "backlog", lambda: _backlog(work_dir, intake_dir), timeout_seconds, now)
     window_value, window_status, cache = _panel(
         cache, "window", lambda: _read_window(runs_dir, now_dt, window_ceiling_usd), timeout_seconds, now)
+    chat_value, chat_status, cache = _panel(cache, "chat", lambda: _read_chat(runs_dir), timeout_seconds, now)
 
     leader_record = leader_value or None
     alive = leader.pid_alive(leader_record["pid"]) if leader_record and isinstance(leader_record.get("pid"), int) else False
@@ -107,8 +134,12 @@ def facts(runs_dir, work_dir, intake_dir, now: float, cache: dict | None = None,
         backlog=backlog_value or {},
         window=window_value or {},
         now=now,
+        chat=chat_value or (),
     )
-    cache["_status"] = {"leader": leader_status, "runs": runs_status, "backlog": backlog_status, "window": window_status}
+    cache["_status"] = {
+        "leader": leader_status, "runs": runs_status, "backlog": backlog_status,
+        "window": window_status, "chat": chat_status,
+    }
     return result, cache
 
 
@@ -121,8 +152,9 @@ def draw(stdscr, facts_obj: home_model.Facts, state: home_model.State, statuses:
     backlog_lines = home_model.backlog_pane(facts_obj, width)
     window_lines = home_model.window_pane(facts_obj, width)
     runs_lines = home_model.runs_pane(facts_obj, width)
-    lines = list(home_model.frame(facts_obj, state, width))
-    if len(lines) == len(chair_lines) + len(backlog_lines) + len(window_lines) + len(runs_lines):
+    chat_lines = home_model.chat_pane(facts_obj.chat, width, state.chat_draft)
+    lines = list(home_model.frame(facts_obj, state, width)) + list(chat_lines)
+    if len(lines) == len(chair_lines) + len(backlog_lines) + len(window_lines) + len(runs_lines) + len(chat_lines):
         offsets = (
             (0, statuses.get("leader", "fresh")),
             (len(chair_lines), statuses.get("backlog", "fresh")),
@@ -177,13 +209,16 @@ def main(runs_dir, work_dir, intake_dir, plugin_dir: str, refresh_seconds: float
             facts_obj, cache = facts(runs_dir, work_dir, intake_dir, time.time(), cache,
                                       window_ceiling_usd=window_ceiling_usd)
             other_holder = facts_obj.chair.get("session") if facts_obj.chair and facts_obj.chair_liveness == "live" else None
-            state = home_model.State(plugin_dir=plugin_dir, leader_liveness=facts_obj.chair_liveness, other_holder=other_holder)
+            state = dataclasses.replace(state, leader_liveness=facts_obj.chair_liveness, other_holder=other_holder)
             draw(stdscr, facts_obj, state, cache.get("_status", {}))
             ch = stdscr.getch()
             if ch == -1:
                 continue
-            key = chr(ch) if 0 <= ch < 256 else ""
+            key = _key_for(ch)
             state, effect = home_model.step(state, key)
+            if isinstance(effect, home_model.Send):
+                _send_chat(runs_dir, effect.text)
+                continue
             if effect is not None and run_effect(effect):
                 return 0
 

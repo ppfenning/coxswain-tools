@@ -29,6 +29,7 @@ from agent_tools import (
     install,
     install_exec,
     land,
+    leader_chat,
     notify,
     pacing,
     plan,
@@ -1180,6 +1181,50 @@ def _route_chair_clear(a: argparse.Namespace) -> int:
         return 0
     path, record = result
     print(f"chair cleared: {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')} [{path.name}]")
+    return 0
+
+
+def _route_chair_chat(a: argparse.Namespace) -> int:
+    """`--read` prints the thread (or, with `--since`, only what's unread); otherwise
+    appends one line, as the operator by default or, with `--as-leader`, only when this
+    process's pid and host match the live lock's holder — a reply must never be shown
+    from a session that is not the leader."""
+    _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    path = leader_chat.chat_path(runs_dir)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    if a.read:
+        thread = leader_chat.read_thread(existing, limit=50)
+        entries = leader_chat.unread(thread, a.since)
+        if a.json:
+            print(json.dumps(entries))
+        else:
+            for entry in entries:
+                print(f"{entry.get('at', '?')} {entry.get('from', '?')}: {entry.get('text', '')}")
+        return 0
+    if a.text is None:
+        print("chat: TEXT required unless --read")
+        return 2
+    sender = "operator"
+    if a.as_leader:
+        record, read_rc = _leader_read_or_refuse(runs_dir)
+        if read_rc is not None:
+            return read_rc
+        pid, host = _leader_identity()
+        now = datetime.datetime.now(datetime.UTC)
+        state = chair.liveness(record, _leader_pid_alive(record), now, host, _leader_heartbeat_minutes())
+        if state != "live":
+            print("chat: refusing --as-leader (no live lock held)")
+            return 2
+        if record.get("pid") != pid or record.get("host") != host:
+            print(f"chat: refusing --as-leader (held by {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')})")
+            return 2
+        sender = record.get("session", "leader")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"at": datetime.datetime.now(datetime.UTC).isoformat(), "from": sender, "text": a.text}
+    path.write_text(leader_chat.append_line(existing, entry), encoding="utf-8")
+    print(f"chat: {sender}: {a.text}")
     return 0
 
 
@@ -2533,6 +2578,11 @@ def build_parser() -> argparse.ArgumentParser:
     lst.add_argument("--profile"); lst.add_argument("--json", action="store_true"); lst.set_defaults(fn=_route_chair_status)
     lcl = lds.add_parser("clear", help="remove the chair lock file, refusing a live holder unless --force")
     lcl.add_argument("--profile"); lcl.add_argument("--force", action="store_true", help="clear the lock even if its recorded pid is live"); lcl.set_defaults(fn=_route_chair_clear)
+    lch = lds.add_parser("chat", help="append to or read the leader chat thread (runs/leader.chat.jsonl)")
+    lch.add_argument("text", nargs="?"); lch.add_argument("--profile"); lch.add_argument("--read", action="store_true")
+    lch.add_argument("--since"); lch.add_argument("--json", action="store_true")
+    lch.add_argument("--as-leader", action="store_true", help="send as the lock's holder; refuses unless this process is the live holder")
+    lch.set_defaults(fn=_route_chair_chat)
     lc = r.add_parser("launch", help="run one of the harness's graphs directly").add_subparsers(dest="graph", required=True)
     ep = lc.add_parser("epic", help="launch the epic graph against a filed initiative"); ep.add_argument("--profile"); ep.add_argument("--initiative", required=True); ep.add_argument("--repo")
     ep.add_argument("--fix-attempts", type=int, default=None); ep.add_argument("--dry-run", action="store_true"); ep.set_defaults(fn=_route_launch, graph="epic")

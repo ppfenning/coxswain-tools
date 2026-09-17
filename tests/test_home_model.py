@@ -7,12 +7,14 @@ from agent_tools.home_model import (
     Land,
     Quit,
     Refuse,
+    Send,
     Setup,
     State,
     Talk,
     attention_pane,
     backlog_pane,
     chair_pane,
+    chat_pane,
     frame,
     leader_pane,
     runs_pane,
@@ -195,6 +197,50 @@ def test_only_the_landing_key_refuses_under_a_foreign_live_leader():
     state = State(plugin_dir="/p", leader_liveness="live", other_holder="s2", selected_run="r1", selected_status="exited")
     assert step(state, "l")[1] == Refuse("s2")
     assert step(state, "ENTER")[1] == Drill("r1")
+
+
+def test_step_c_focuses_the_chat_panel_with_no_effect():
+    state = State(plugin_dir="/p", leader_liveness="none", other_holder=None)
+    state, effect = step(state, "c")
+    assert state.chat_focused is True
+    assert effect is None
+
+
+def test_step_l_while_chat_is_focused_extends_the_draft_and_does_not_land():
+    state = State(
+        plugin_dir="/p", leader_liveness="none", other_holder=None,
+        selected_run="r1", selected_status="exited", chat_focused=True,
+    )
+    state, effect = step(state, "l")
+    assert state.chat_draft == "l"
+    assert effect is None
+    assert state.land_armed is None
+
+
+def test_step_enter_while_chat_is_focused_sends_and_clears_the_draft():
+    state = State(plugin_dir="/p", leader_liveness="none", other_holder=None, chat_focused=True, chat_draft="hello")
+    state, effect = step(state, "ENTER")
+    assert effect == Send("hello")
+    assert state.chat_draft == ""
+
+
+def test_step_esc_while_chat_is_focused_drops_focus_without_sending():
+    state = State(plugin_dir="/p", leader_liveness="none", other_holder=None, chat_focused=True, chat_draft="hello")
+    state, effect = step(state, "ESC")
+    assert state.chat_focused is False
+    assert effect is None
+    assert state.chat_draft == "hello"
+
+
+def test_chat_pane_renders_sender_lines_and_the_draft():
+    thread = ({"from": "operator", "text": "hi"}, {"from": "cos1", "text": "hey"})
+    assert chat_pane(thread, 80, "draf") == ("CHAT", "operator: hi", "cos1: hey", "> draf")
+
+
+def test_chat_pane_cuts_a_too_long_message_with_an_ellipsis():
+    thread = ({"from": "operator", "text": "y" * 100},)
+    lines = chat_pane(thread, 80, "")
+    assert lines[1] == "operator: " + "y" * 69 + "…"
 
 
 def test_frame_at_80_stacks_the_four_panes_with_the_runs_header_intact():

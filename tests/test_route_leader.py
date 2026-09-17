@@ -1,9 +1,10 @@
 import contextlib
 import datetime
+import json
 import os
 import socket
 
-from agent_tools import chair
+from agent_tools import chair, leader_chat
 from agent_tools.cli import _leader_heartbeat_minutes, _leader_identity, _leader_launched_by, main
 
 _NOW = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
@@ -291,3 +292,41 @@ def test_cli_clear_holds_the_chair_lock_across_the_read_decide_unlink_sequence(t
     rc = main(["route", "chair", "clear", "--profile", str(profile)])
     assert rc == 0
     assert held == [True, False]
+
+
+# -- chat: operator send/read, and --as-leader identity ---------------------------
+
+
+def test_cli_chat_operator_send_then_read_shows_the_thread_as_json(tmp_path, capsys):
+    profile = _profile(tmp_path)
+    assert main(["route", "chair", "chat", "hello", "--profile", str(profile)]) == 0
+    capsys.readouterr()
+    rc = main(["route", "chair", "chat", "--read", "--json", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    entries = json.loads(out)
+    assert entries == [{"at": entries[0]["at"], "from": "operator", "text": "hello"}]
+
+
+def test_cli_chat_as_leader_is_refused_when_the_lock_is_held_by_someone_else(tmp_path, capsys):
+    """A different, live pid on this host names a real other holder, not a crashed one."""
+    profile = _profile(tmp_path)
+    runs_dir = tmp_path / "runs"
+    fresh = _fresh_iso()
+    chair.write(runs_dir, {**_LIVE_RECORD, "host": socket.gethostname(), "pid": os.getpid(), "taken_at": fresh, "heartbeat_at": fresh})
+    rc = main(["route", "chair", "chat", "reply", "--as-leader", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "alice" in out
+    assert leader_chat.chat_path(runs_dir).exists() is False
+
+
+def test_cli_chat_as_leader_succeeds_when_the_caller_is_the_live_holder(tmp_path, capsys):
+    profile = _profile(tmp_path)
+    runs_dir = tmp_path / "runs"
+    fresh = _fresh_iso()
+    chair.write(runs_dir, {**_LIVE_RECORD, "host": socket.gethostname(), "pid": os.getppid(), "taken_at": fresh, "heartbeat_at": fresh})
+    rc = main(["route", "chair", "chat", "reply", "--as-leader", "--profile", str(profile)])
+    assert rc == 0
+    thread = leader_chat.read_thread(leader_chat.chat_path(runs_dir).read_text(encoding="utf-8"), limit=10)
+    assert thread == [{"at": thread[0]["at"], "from": "alice", "text": "reply"}]
