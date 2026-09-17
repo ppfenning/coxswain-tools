@@ -1,0 +1,12 @@
+usage: cox epic watch [-h] [--log LOG] [--max-seconds MAX_SECONDS] [--interval INTERVAL] [--json]
+                      pidfile
+
+positional arguments:
+  pidfile
+
+options:
+  -h, --help            show this help message and exit
+  --log LOG
+  --max-seconds MAX_SECONDS
+  --interval INTERVAL
+  --json

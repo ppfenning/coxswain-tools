@@ -2990,15 +2990,8 @@ def build_parser() -> argparse.ArgumentParser:
     sdp.add_argument("--json", action="store_true")
     sdp.set_defaults(fn=_steward_propose)
 
-    epic_p = sub.add_parser(
-        "epic", help="watch a detached run",
-        description="Watch a detached run.",
-        epilog="examples:\n  cox epic watch RUN.pid --log RUN.log\n  cox epic watch RUN.pid --json",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    epic_p.set_defaults(fn=_bare_group(epic_p))
-    e = epic_p.add_subparsers(dest="cmd", required=False)
-    w = e.add_parser("watch", help="poll a detached run's pidfile until it exits"); w.add_argument("pidfile"); w.add_argument("--log"); w.add_argument("--max-seconds", type=float, default=570); w.add_argument("--interval", type=float, default=20); w.add_argument("--json", action="store_true"); w.set_defaults(fn=_epic_watch)
+    group, rows = _table_entry("epic")
+    commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("plan")
     commands.build_parser(rows, [group], sub)
@@ -3240,6 +3233,23 @@ PLAN_COMMANDS = [
     ),
 ]
 
+EPIC_GROUP = commands.Group(
+    name="epic", help="watch a detached run",
+    description="Watch a detached run.",
+    epilog="examples:\n  cox epic watch RUN.pid --log RUN.log\n  cox epic watch RUN.pid --json",
+)
+EPIC_COMMANDS = [
+    commands.Command(
+        "watch", "epic", "poll a detached run's pidfile until it exits",
+        (
+            commands.Arg(("pidfile",)), commands.Arg(("--log",)),
+            commands.Arg(("--max-seconds",), {"type": float, "default": 570}), commands.Arg(("--interval",), {"type": float, "default": 20}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _epic_watch, False, (),
+    ),
+]
+
 COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
@@ -3247,6 +3257,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (HOME_GROUP, []),
     (USAGE_GROUP, USAGE_COMMANDS),
     (PLAN_GROUP, PLAN_COMMANDS),
+    (EPIC_GROUP, EPIC_COMMANDS),
 ]
 
 
