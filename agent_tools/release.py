@@ -267,6 +267,14 @@ def release_index_text(existing_index: str, version: str, manifest: Mapping) -> 
     return "\n\n".join(new_sections) + "\n"
 
 
+def versions_oldest_first(versions: Iterable[str]) -> list[str]:
+    """`versions` (bare, no `v` prefix) ordered oldest-first by the same
+    semver-with-beta rules `release_plan` sorts by; a name that doesn't parse
+    as a version sorts after every one that does, stable among themselves."""
+    parsed = [(v, _parse_semver(v)) for v in versions]
+    return [v for v, p in sorted(parsed, key=lambda vp: (1, ()) if vp[1] is None else (0, _sort_key(vp[1])))]
+
+
 def component_dir(root: str, name: str, overrides: Mapping[str, str] | None = None) -> str:
     """The directory `cox install` would have cloned `name` into under
     `root`, unless `overrides` names a different path for that component —
@@ -311,6 +319,12 @@ def push_argv(directory: str, version: str) -> list[str]:
 def github_release_view_argv(tag: str) -> list[str]:
     """`gh release view <tag>` — the idempotence check `github_release` runs first."""
     return ["gh", "release", "view", tag]
+
+
+def github_release_body_argv(tag: str) -> list[str]:
+    """`gh release view <tag> --json body -q .body` — just the body text, with
+    no header lines above a `--` separator to strip before comparing it."""
+    return ["gh", "release", "view", tag, "--json", "body", "-q", ".body"]
 
 
 def github_release_create_argv(tag: str, title: str, notes_path: str) -> list[str]:
