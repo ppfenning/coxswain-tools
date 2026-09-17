@@ -3063,6 +3063,35 @@ VERSIONS_GROUP = commands.Group(
     args=(commands.Arg(("--root",)), commands.Arg(("--manifest",))), fn=_versions,
 )
 
+INSTALL_GROUP = commands.Group(
+    name="install", help="clone/update coxswain components against the manifest", description="", epilog="",
+    args=(
+        commands.Arg(("--root",), {"required": True}),
+        commands.Arg(("--manifest",)),
+        commands.Arg(("--provider",), {"default": "claude-code"}),
+        commands.Arg(("--with",), {"action": "append", "default": None, "dest": "with_", "metavar": "FLAG"}),
+        commands.Arg(("--team",)),
+        commands.Arg(("--workspace",)),
+        commands.Arg(("--dry-run",), {"action": "store_true"}),
+    ),
+    fn=_install,
+)
+
+UPGRADE_GROUP = commands.Group(
+    name="upgrade", help="fetch and check out newer pinned versions; refuses dirty checkouts", description="", epilog="",
+    args=(
+        commands.Arg(("--root",), {"required": True}),
+        commands.Arg(("--manifest",)),
+        commands.Arg(("--provider",), {"default": "claude-code"}),
+        commands.Arg(("--with",), {"action": "append", "default": None, "dest": "with_", "metavar": "FLAG"}),
+        commands.Arg(("--team",)),
+        commands.Arg(("--workspace",)),
+        commands.Arg(("--to",)),
+        commands.Arg(("--dry-run",), {"action": "store_true"}),
+    ),
+    fn=_upgrade,
+)
+
 HOME_GROUP = commands.Group(
     name="home", help="the live dashboard: runs, leader, backlog", description="", epilog="",
     args=(commands.Arg(("--profile",)),), fn=_home,
@@ -3267,43 +3296,17 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("courier")
     commands.build_parser(rows, [group], sub)
 
-    ins = sub.add_parser("install", help="clone/update coxswain components against the manifest")
-    ins.add_argument("--root", required=True); ins.add_argument("--manifest"); ins.add_argument("--provider", default="claude-code")
-    ins.add_argument("--with", action="append", default=None, dest="with_", metavar="FLAG")
-    ins.add_argument("--team"); ins.add_argument("--workspace"); ins.add_argument("--dry-run", action="store_true")
-    ins.set_defaults(fn=_install)
+    group, rows = _table_entry("install")
+    commands.build_parser(rows, [group], sub)
 
-    up = sub.add_parser("upgrade", help="fetch and check out newer pinned versions; refuses dirty checkouts")
-    up.add_argument("--root", required=True); up.add_argument("--manifest"); up.add_argument("--provider", default="claude-code")
-    up.add_argument("--with", action="append", default=None, dest="with_", metavar="FLAG")
-    up.add_argument("--team"); up.add_argument("--workspace"); up.add_argument("--to"); up.add_argument("--dry-run", action="store_true")
-    up.set_defaults(fn=_upgrade)
+    group, rows = _table_entry("upgrade")
+    commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("versions")
     commands.build_parser(rows, [group], sub)
 
-    dev = sub.add_parser(
-        "dev", help="maintainer commands for the Coxswain repositories",
-        description="maintainer commands for the Coxswain repositories; not needed to use Coxswain",
-    ).add_subparsers(dest="cmd", required=True)
-    rel = dev.add_parser("release", help="the lockstep tag/bump-manifest/notes plan across coxswain's manifest, or (without --dry-run) tags and pushes every component")
-    rel.add_argument("version"); rel.add_argument("--manifest"); rel.add_argument("--dry-run", action="store_true")
-    rel.add_argument("--root", default="."); rel.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
-    rel.add_argument("--umbrella")
-    rel.add_argument("--allow-doc-drift", dest="allow_doc_drift", metavar="REASON", default=None,
-                      help="proceed despite a standing release-check drift, naming why")
-    rel.set_defaults(fn=_release)
-
-    relc = dev.add_parser("release-check", help="gather facts and print drifts between the CLI, the manifest, the docs and the release notes")
-    relc.add_argument("--manifest"); relc.add_argument("--root", default="."); relc.add_argument("--json", action="store_true")
-    relc.add_argument("--checkout", action="append", default=None, metavar="NAME=PATH")
-    relc.set_defaults(fn=_release_check)
-
-    bg = dev.add_parser("backfill-github-releases",
-                         help="walk the umbrella's past docs/releases/<version>.md files oldest-first, creating or editing the GitHub Release for every tagged repo missing or drifted from one")
-    bg.add_argument("--root", required=True, help="the checkouts root containing the umbrella and every component")
-    bg.add_argument("--dry-run", action="store_true")
-    bg.set_defaults(fn=_backfill_github_releases)
+    group, rows = _table_entry("dev")
+    commands.build_parser(rows, [group], sub)
 
     old_rel = sub.add_parser("release", help=argparse.SUPPRESS)
     # swallow every flag the old form took, so the hint prints instead of argparse erroring
@@ -3529,10 +3532,53 @@ SETUP_COMMANDS = [
     ),
 ]
 
+DEV_GROUP = commands.Group(
+    name="dev", help="maintainer commands for the Coxswain repositories",
+    description="maintainer commands for the Coxswain repositories; not needed to use Coxswain",
+    epilog="",
+)
+DEV_COMMANDS = [
+    commands.Command(
+        "release", "dev", "the lockstep tag/bump-manifest/notes plan across coxswain's manifest, or (without --dry-run) tags and pushes every component",
+        (
+            commands.Arg(("version",)),
+            commands.Arg(("--manifest",)),
+            commands.Arg(("--dry-run",), {"action": "store_true"}),
+            commands.Arg(("--root",), {"default": "."}),
+            commands.Arg(("--checkout",), {"action": "append", "default": None, "metavar": "NAME=PATH"}),
+            commands.Arg(("--umbrella",)),
+            commands.Arg(("--allow-doc-drift",), {"dest": "allow_doc_drift", "metavar": "REASON", "default": None,
+                                                    "help": "proceed despite a standing release-check drift, naming why"}),
+        ),
+        _release, False, (),
+    ),
+    commands.Command(
+        "release-check", "dev", "gather facts and print drifts between the CLI, the manifest, the docs and the release notes",
+        (
+            commands.Arg(("--manifest",)),
+            commands.Arg(("--root",), {"default": "."}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+            commands.Arg(("--checkout",), {"action": "append", "default": None, "metavar": "NAME=PATH"}),
+        ),
+        _release_check, False, (),
+    ),
+    commands.Command(
+        "backfill-github-releases", "dev",
+        "walk the umbrella's past docs/releases/<version>.md files oldest-first, creating or editing the GitHub Release for every tagged repo missing or drifted from one",
+        (
+            commands.Arg(("--root",), {"required": True, "help": "the checkouts root containing the umbrella and every component"}),
+            commands.Arg(("--dry-run",), {"action": "store_true"}),
+        ),
+        _backfill_github_releases, False, (),
+    ),
+]
+
 COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
     (VERSIONS_GROUP, []),
+    (INSTALL_GROUP, []),
+    (UPGRADE_GROUP, []),
     (HOME_GROUP, []),
     (STATS_GROUP, STATS_COMMANDS),
     (USAGE_GROUP, USAGE_COMMANDS),
@@ -3540,6 +3586,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (EPIC_GROUP, EPIC_COMMANDS),
     (ROUTE_GROUP, ROUTE_COMMANDS),
     (SETUP_GROUP, SETUP_COMMANDS),
+    (DEV_GROUP, DEV_COMMANDS),
 ]
 
 
