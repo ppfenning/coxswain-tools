@@ -27,7 +27,7 @@ def index_section(version: str, component_tags: dict[str, str], components: Mapp
         if spec.get("provides"):
             flag = f"{flag}, provides `{spec['provides']}`"
         if not spec.get("lockstep", True):
-            flag = f"{flag} (pinned, not lockstep)"
+            flag = f"{flag} (pinned)"
         rows.append(f"| {name} | {repo} | `{tag}` | {flag} |")
     table = "\n".join(["| Component | Repository or path | Tag | Required or flag |", "| --- | --- | --- | --- |", *rows])
     return f"## `{version}`\n\n{table}\n\nSee the [{version} release notes]({version}.md) for what landed in each component."
