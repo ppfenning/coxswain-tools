@@ -142,9 +142,18 @@ def _latest_by_id(blob: str) -> dict[str, dict]:
     return latest
 
 
-def inbox(blob: str, label: str | None = None) -> list[dict]:
+def inbox(blob: str, label: str | None = None, holder: str | None = None) -> list[dict]:
+    """`holder`: the label currently holding the leader lock, read at the edge.
+    An entry addressed to the generic `chair` reaches `label` when `label` is the
+    holder or `label` itself starts with `chair`; any other `to` needs an exact match."""
     entries = _latest_by_id(blob).values()
-    return [e for e in entries if not e["ack"] and (label is None or e["to"] == label)]
+
+    def _matches(e: dict) -> bool:
+        if label is None or e["to"] == label:
+            return True
+        return e["to"] == "chair" and (label == holder or label.startswith("chair"))
+
+    return [e for e in entries if not e["ack"] and _matches(e)]
 
 
 def ack(blob: str, message_id: str) -> str:

@@ -2993,15 +2993,25 @@ def _courier_send(a: argparse.Namespace) -> int:
     return 0
 
 
-def _print_inbox(blob: str, label: str | None) -> None:
-    for entry in courier.inbox(blob, label):
+def _print_inbox(blob: str, label: str | None, holder: str | None) -> None:
+    for entry in courier.inbox(blob, label, holder=holder):
         print(f"{entry['id']}: {entry['from']} -> {entry['to']}: {entry['note']} ({entry['ref']})")
+
+
+def _lock_holder_or_none(runs_dir: Path) -> str | None:
+    """A missing, unreadable, or torn lock file has no holder; it does not refuse
+    a read-only listing (cf. `runs_detail_screen.facts_for`'s same degrade)."""
+    try:
+        return (chair.read(runs_dir) or {}).get("session")
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _courier_inbox(a: argparse.Namespace) -> int:
     workspace = _courier_workspace(a)
     if workspace is None: return 2
-    _print_inbox(_read_text_or_none(workspace / "courier.jsonl") or "", a.label)
+    holder = _lock_holder_or_none(workspace / "runs")
+    _print_inbox(_read_text_or_none(workspace / "courier.jsonl") or "", a.label, holder)
     return 0
 
 
@@ -3073,7 +3083,9 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
             print(f"chair: beater failed to start: {exc}")
         else:
             print(f"chair: beating from pid {beater.pid}")
-        _print_inbox(_read_text_or_none(Path(workspace).expanduser() / "courier.jsonl") or "", chair_a.label)
+        # chair_a.label is the label `_route_chair_take` just wrote as the holder above;
+        # it is the holder, not a re-read of the file this same call just produced.
+        _print_inbox(_read_text_or_none(Path(workspace).expanduser() / "courier.jsonl") or "", chair_a.label, chair_a.label)
     os.chdir(cwd)
     os.execvp(argv[0], argv)
     return 0
