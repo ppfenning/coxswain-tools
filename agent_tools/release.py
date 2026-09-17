@@ -257,11 +257,12 @@ def release_index_text(existing_index: str, version: str, manifest: Mapping) -> 
     missed one must never delete a neighbouring version's entry."""
     component_tags = {name: f"v{version}" if spec.get("lockstep", True) else str(spec.get("tag"))
                        for name, spec in manifest.get("components", {}).items()}
-    section = index_section(version, component_tags)
-    heading = f"## {version}"
+    section = index_section(version, component_tags, manifest.get("components", {}))
+    headings = (f"## {version}", f"## `{version}`")
     body = existing_index.strip("\n")
     sections = [s.strip("\n") for s in re.split(r"\n(?=## )", body)] if body else []
-    at = next((i for i, s in enumerate(sections) if s == heading or s.startswith(f"{heading}\n")), None)
+    at = next((i for i, s in enumerate(sections)
+               if any(s == h or s.startswith(f"{h}\n") for h in headings)), None)
     new_sections = [*sections, section] if at is None else [*sections[:at], section, *sections[at + 1:]]
     return "\n\n".join(new_sections) + "\n"
 
