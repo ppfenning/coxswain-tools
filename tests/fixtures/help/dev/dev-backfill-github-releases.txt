@@ -1,0 +1,6 @@
+usage: cox dev backfill-github-releases [-h] --root ROOT [--dry-run]
+
+options:
+  -h, --help   show this help message and exit
+  --root ROOT  the checkouts root containing the umbrella and every component
+  --dry-run

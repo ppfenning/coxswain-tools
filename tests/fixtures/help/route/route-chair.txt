@@ -1,0 +1,13 @@
+usage: cox route chair [-h] {take,beat,release,status,clear,chat} ...
+
+positional arguments:
+  {take,beat,release,status,clear,chat}
+    take                take the chair lock if no live chair holds it
+    beat                refresh the chair lock's heartbeat
+    release             release the chair lock this session holds
+    status              the chair lock's holder and computed state
+    clear               remove the chair lock file, refusing a live holder unless --force
+    chat                append to or read the leader chat thread (runs/leader.chat.jsonl)
+
+options:
+  -h, --help            show this help message and exit

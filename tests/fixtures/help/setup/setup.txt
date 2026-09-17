@@ -1,0 +1,16 @@
+usage: cox setup [-h] [--profile PROFILE] {doctor,install} ...
+
+Does this machine's profile actually work.
+
+positional arguments:
+  {doctor,install}
+    doctor           check this machine's profile against what it needs
+    install          clone components and write a profile for this machine
+
+options:
+  -h, --help         show this help message and exit
+  --profile PROFILE
+
+examples:
+  cox setup doctor --profile PATH
+  cox setup install --root PATH --team NAME --workspace PATH

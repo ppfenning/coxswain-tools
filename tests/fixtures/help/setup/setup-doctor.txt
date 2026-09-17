@@ -1,0 +1,7 @@
+usage: cox setup doctor [-h] [--profile PROFILE] [--repo REPO] [--json]
+
+options:
+  -h, --help         show this help message and exit
+  --profile PROFILE
+  --repo REPO        target repo to check for a .agent/cartridge.yaml overlay (default: cwd)
+  --json

@@ -1,0 +1,8 @@
+usage: cox route lint [-h] [--repo REPO] initiative_dir
+
+positional arguments:
+  initiative_dir
+
+options:
+  -h, --help      show this help message and exit
+  --repo REPO

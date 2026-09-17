@@ -60,7 +60,7 @@ _KNOWN_KEYS = {
     "router",
 }
 
-_SPEND_KEYS = {"window_ceiling_usd", "node_cap_usd"}
+_SPEND_KEYS = {"window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd"}
 
 
 class ProfileError(Exception):
@@ -78,7 +78,7 @@ def _stripped_content(line: str) -> str:
 def parse_profile(text: str) -> dict:
     """Parse the flat `key: scalar` / `key: [a, b]` YAML subset in spec §1,
     plus one nested block: a bare `spend:` line followed by indented
-    `window_ceiling_usd:`/`node_cap_usd:` lines, both optional, parsed as
+    `window_ceiling_usd:`/`weekly_ceiling_usd:`/`node_cap_usd:` lines, all optional, parsed as
     floats onto the flat result.
 
     A nested key outside a `spend:` block, an unrecognized key inside one,

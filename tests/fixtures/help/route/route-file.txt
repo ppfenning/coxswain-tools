@@ -1,0 +1,13 @@
+usage: cox route file [-h] [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY]
+                      [--phase PHASE] [--intake] [--from-intake FROM_INTAKE]
+
+options:
+  -h, --help            show this help message and exit
+  --profile PROFILE
+  --repo REPO
+  --title TITLE
+  --body BODY
+  --phase PHASE
+  --intake
+  --from-intake FROM_INTAKE
+                        link and file an existing intake file's initiative, then retire it
