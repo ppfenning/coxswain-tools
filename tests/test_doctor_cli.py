@@ -340,3 +340,46 @@ def test_a_differing_major_gathered_through_import_warns_the_schema_row(tmp_path
     rows = _rows(capsys)
     assert rows["schema"] == {"check": "schema", "ok": False, "detail": "graphs 2.0"}
     assert rc == 1
+
+
+def test_schema_row_reads_cartridges_from_the_checkout_above_provider_profile(tmp_path, monkeypatch, capsys):
+    """`provider_profile` sits under `<checkout>/providers/`, per a real
+    install; the profile's own `cartridges_dir` names an empty workspace
+    directory the reader must never consult."""
+    checkout = tmp_path / "checkout"
+    (checkout / "core").mkdir(parents=True)
+    (checkout / "core" / "__init__.py").write_text('SCHEMA_VERSION = "1.0"\n')
+    provider_dir = checkout / "providers"
+    provider_dir.mkdir()
+
+    cartridges_dir = tmp_path / "workspace" / "cartridges"; cartridges_dir.mkdir(parents=True)
+    skills_a = tmp_path / "skills_a"; skills_a.mkdir()
+    skills_b = tmp_path / "skills_b"; skills_b.mkdir()
+    harness_dir = tmp_path / "harness"
+    workspace_dir = tmp_path / "workspace"
+    for name in ("work", "runs", "intake"):
+        (workspace_dir / name).mkdir(parents=True, exist_ok=True)
+    provider_profile = provider_dir / "provider.yaml"
+    provider_profile.write_text("command: fakeprovider\n")
+
+    _write_executable(harness_dir / ".venv" / "bin" / "python", _STUB.format(python=sys.executable))
+    (harness_dir / "harness").mkdir()
+    (harness_dir / "harness" / "__init__.py").write_text('CORE_SCHEMA = "1.0"\n')
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "fakeprovider", _PROVIDER.format(python=sys.executable))
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        "team: acme\n"
+        f"cartridges_dir: {cartridges_dir}\n"
+        f"skills_roots: [{skills_a}, {skills_b}]\n"
+        f"provider_profile: {provider_profile}\n"
+        f"harness_dir: {harness_dir}\n"
+        f"workspace_dir: {workspace_dir}\n"
+    )
+
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    rows = _rows(capsys)
+    assert rows["schema"] == {"check": "schema", "ok": True, "detail": "cartridges 1.0, graphs 1.0, tools 1.0"}
+    assert rc == 0
