@@ -3322,26 +3322,11 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("home")
     commands.build_parser(rows, [group], sub)
 
-    setup_p = sub.add_parser(
-        "setup", help="does this machine's profile actually work",
-        description="Does this machine's profile actually work.",
-        epilog="examples:\n  cox setup doctor --profile PATH\n  cox setup install --root PATH --team NAME --workspace PATH",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    setup_p.add_argument("--profile")
+    group, rows = _table_entry("setup")
+    setup_p = commands.build_parser(rows, [group], sub)["setup"]
+    # commands.build_parser's generic bare-group fallback prints help and
+    # exits 2; a bare `cox setup` instead opens the TUI, so override it here.
     setup_p.set_defaults(fn=_setup_tui)
-    su = setup_p.add_subparsers(dest="cmd", required=False)
-    sd = su.add_parser("doctor", help="check this machine's profile against what it needs"); sd.add_argument("--profile"); sd.add_argument("--repo", help="target repo to check for a .agent/cartridge.yaml overlay (default: cwd)"); sd.add_argument("--json", action="store_true"); sd.set_defaults(fn=_setup_doctor)
-    si = su.add_parser("install", help="clone components and write a profile for this machine")
-    si.add_argument("--root", required=True); si.add_argument("--team", required=True); si.add_argument("--workspace", required=True)
-    si.add_argument("--provider-profile"); si.add_argument("--skills-root"); si.add_argument("--assume", default="a", choices=("a", "r"))
-    si.add_argument("--plugins", action="store_true"); si.add_argument("--hook", action="store_true")
-    si.add_argument("--force-profile", action="store_true"); si.add_argument("--dry-run", action="store_true")
-    si.add_argument("--window-ceiling-usd", type=float, default=None, dest="window_ceiling_usd",
-                     help="write spend: window_ceiling_usd into the profile")
-    si.add_argument("--weekly-ceiling-usd", type=float, default=None, dest="weekly_ceiling_usd",
-                     help="write spend: weekly_ceiling_usd into the profile")
-    si.set_defaults(fn=_setup_install)
     return p
 
 
@@ -3479,6 +3464,43 @@ EPIC_COMMANDS = [
     ),
 ]
 
+def _setup_doctor_row(a: argparse.Namespace) -> int:
+    """Indirect through the module global, not a frozen reference: SETUP_COMMANDS
+    is built once at import, but test_setup_screen.py monkeypatches
+    `cli._setup_doctor` per test and expects the swap honoured."""
+    return _setup_doctor(a)
+
+
+SETUP_GROUP = commands.Group(
+    name="setup", help="does this machine's profile actually work",
+    description="Does this machine's profile actually work.",
+    epilog="examples:\n  cox setup doctor --profile PATH\n  cox setup install --root PATH --team NAME --workspace PATH",
+    args=(commands.Arg(("--profile",)),),
+)
+SETUP_COMMANDS = [
+    commands.Command(
+        "doctor", "setup", "check this machine's profile against what it needs",
+        (
+            commands.Arg(("--profile",)),
+            commands.Arg(("--repo",), {"help": "target repo to check for a .agent/cartridge.yaml overlay (default: cwd)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _setup_doctor_row, False, (),
+    ),
+    commands.Command(
+        "install", "setup", "clone components and write a profile for this machine",
+        (
+            commands.Arg(("--root",), {"required": True}), commands.Arg(("--team",), {"required": True}), commands.Arg(("--workspace",), {"required": True}),
+            commands.Arg(("--provider-profile",)), commands.Arg(("--skills-root",)), commands.Arg(("--assume",), {"default": "a", "choices": ("a", "r")}),
+            commands.Arg(("--plugins",), {"action": "store_true"}), commands.Arg(("--hook",), {"action": "store_true"}),
+            commands.Arg(("--force-profile",), {"action": "store_true"}), commands.Arg(("--dry-run",), {"action": "store_true"}),
+            commands.Arg(("--window-ceiling-usd",), {"type": float, "default": None, "dest": "window_ceiling_usd", "help": "write spend: window_ceiling_usd into the profile"}),
+            commands.Arg(("--weekly-ceiling-usd",), {"type": float, "default": None, "dest": "weekly_ceiling_usd", "help": "write spend: weekly_ceiling_usd into the profile"}),
+        ),
+        _setup_install, False, (),
+    ),
+]
+
 COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
@@ -3488,6 +3510,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (USAGE_GROUP, USAGE_COMMANDS),
     (PLAN_GROUP, PLAN_COMMANDS),
     (EPIC_GROUP, EPIC_COMMANDS),
+    (SETUP_GROUP, SETUP_COMMANDS),
 ]
 
 
