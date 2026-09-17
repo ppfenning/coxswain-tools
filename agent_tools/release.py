@@ -13,6 +13,8 @@ from pathlib import Path
 
 import yaml
 
+from agent_tools.release_check_index import index_section
+
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$")
 
 
@@ -242,6 +244,26 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     body = f"Bumps manifest.toml version to {version} to match tag {new_tag}."
     return _with_wait_workflows(tag_steps + [notes_step] + _bump_and_land(bump_step, branch, body) +
                                  [tag_self_step, umbrella_gr_step])
+
+
+def release_index_text(existing_index: str, version: str, manifest: Mapping) -> str:
+    """`existing_index` with its `## VERSION` section for `version` replaced
+    by `index_section`'s current rendering, or that rendering appended when
+    no such section exists yet. Keyed on the heading, not the rendered text,
+    so a rerun after `manifest` has changed updates that section in place
+    instead of leaving a stale one beside a fresh one. Sections split on any
+    `## ` at the start of a line, blank line before it or not, since a
+    hand-written `index.md` cannot be relied on for that blank line and a
+    missed one must never delete a neighbouring version's entry."""
+    component_tags = {name: f"v{version}" if spec.get("lockstep", True) else str(spec.get("tag"))
+                       for name, spec in manifest.get("components", {}).items()}
+    section = index_section(version, component_tags)
+    heading = f"## {version}"
+    body = existing_index.strip("\n")
+    sections = [s.strip("\n") for s in re.split(r"\n(?=## )", body)] if body else []
+    at = next((i for i, s in enumerate(sections) if s == heading or s.startswith(f"{heading}\n")), None)
+    new_sections = [*sections, section] if at is None else [*sections[:at], section, *sections[at + 1:]]
+    return "\n\n".join(new_sections) + "\n"
 
 
 def component_dir(root: str, name: str, overrides: Mapping[str, str] | None = None) -> str:

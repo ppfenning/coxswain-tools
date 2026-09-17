@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import cli, release, release_check
+from agent_tools import cli, release, release_check, release_check_index
 from agent_tools.release_check import Drift
 
 _MANIFEST_TOML = """
@@ -358,6 +358,46 @@ def test_component_version_is_none_with_no_version_field():
     assert release.component_version(text) is None
 
 
+def test_release_index_text_appends_the_sections_rendering_to_an_empty_file():
+    manifest = {"components": {"harness": {"repo": "org/harness"}, "cartridges": {"repo": "org/cartridges"}}}
+    text = release.release_index_text("", "0.1.0", manifest)
+    assert text == release_check_index.index_section("0.1.0", {"harness": "v0.1.0", "cartridges": "v0.1.0"}) + "\n"
+
+
+def test_release_index_text_is_unchanged_when_the_versions_section_is_already_present():
+    manifest = {"components": {"harness": {"repo": "org/harness"}}}
+    existing = f"{release_check_index.index_section('0.1.0', {'harness': 'v0.1.0'})}\n"
+    assert release.release_index_text(existing, "0.1.0", manifest) == existing
+
+
+def test_release_index_text_replaces_a_stale_section_for_the_same_version_instead_of_duplicating_it():
+    stale_manifest = {"components": {"crew": {"tag": "v0.6.0", "lockstep": False}}}
+    existing = release.release_index_text("", "0.7.0", stale_manifest)
+    rejoined_manifest = {"components": {"crew": {"tag": "v0.7.0", "lockstep": False}}}
+    text = release.release_index_text(existing, "0.7.0", rejoined_manifest)
+    assert text.count("## 0.7.0") == 1
+    assert text == release_check_index.index_section("0.7.0", {"crew": "v0.7.0"}) + "\n"
+
+
+def test_release_index_text_replaces_a_middle_section_in_place_leaving_the_others_positioned():
+    manifest = {"components": {"harness": {"repo": "org/harness"}}}
+    existing = release.release_index_text("", "0.1.0", manifest)
+    existing = release.release_index_text(existing, "0.2.0", manifest)
+    existing = release.release_index_text(existing, "0.3.0", manifest)
+    stale_manifest = {"components": {"harness": {"tag": "v0.1.5", "lockstep": False}}}
+    text = release.release_index_text(existing, "0.2.0", stale_manifest)
+    assert text.index("## 0.1.0") < text.index("## 0.2.0") < text.index("## 0.3.0")
+    assert "v0.1.5" in text
+
+
+def test_release_index_text_does_not_drop_an_adjacent_section_missing_its_blank_line():
+    manifest = {"components": {"harness": {"repo": "org/harness"}}}
+    hand_written = "## 0.3.0\n\n- harness: v0.3.0\n## 0.2.0\n\n- harness: v0.2.0\n"
+    text = release.release_index_text(hand_written, "0.3.0", manifest)
+    assert text.count("## 0.3.0") == 1
+    assert "## 0.2.0\n\n- harness: v0.2.0" in text
+
+
 def _fake_git_run(dirty=(), fail=None, off_branch=(), gh_conclusion="success"):
     """`fail`, when given, is `(directory, kind)` for the one call that
     should return non-zero — everything else in a clean, on-branch tree.
@@ -527,6 +567,29 @@ def test_cli_release_execute_records_tag_and_push_argv_per_component_and_the_umb
                                "status,conclusion,name,url,event,headBranch"]] * 3
     release_calls = [(c[2], c[3]) for c in gh_calls if c[1] == "release"]
     assert release_calls == [("view", "v0.1.0"), ("create", "v0.1.0")] * 3
+
+
+def test_cli_release_execute_appends_the_index_section_and_a_second_run_leaves_it_unchanged(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    umbrella_dir = tmp_path / "coxswain"
+    (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("notes")
+    index_path = umbrella_dir / "docs" / "releases" / "index.md"
+    index_path.write_text("## 0.0.1\n\n- harness: v0.0.1\n")
+    calls, fake_run = _fake_git_run()
+    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    monkeypatch.setattr(cli, "_component_declares_tag_trigger", lambda directory: True)
+    rc = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc == 0
+    section = release_check_index.index_section("0.1.0", {"harness": "v0.1.0", "cartridges": "v0.1.0"})
+    after_first = index_path.read_text()
+    assert section in after_first
+    assert "## 0.0.1\n\n- harness: v0.0.1" in after_first
+    rc2 = cli.main(["dev", "release", "0.1.0", "--manifest", str(manifest_path), "--root", str(tmp_path)])
+    assert rc2 == 0
+    assert index_path.read_text() == after_first
 
 
 def test_cli_release_execute_runs_a_pinned_component_to_success_with_no_tag_or_push_for_it(tmp_path, monkeypatch, capsys):
