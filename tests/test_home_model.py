@@ -16,6 +16,8 @@ from agent_tools.home_model import (
     chair_pane,
     chat_pane,
     frame,
+    health_pane,
+    layout,
     leader_pane,
     runs_pane,
     step,
@@ -289,4 +291,59 @@ def test_frame_at_161_fits_the_side_by_side_row_exactly():
         "holder: s1  status: live  heartbeat: 60s ago          queued 4  decomposed 2  landed 9                      tier sonnet effort high                              ",
         "                                                      ready: tools-home=3                                   spent $12.50  reset in 2h15m                         ",
         *_RUNS_PANE,
+    )
+
+
+def test_health_pane_lists_only_the_failing_check_with_its_detail():
+    rows = [{"check": "profile", "ok": False, "detail": "missing"}, {"check": "venv", "ok": True, "detail": ""}]
+    assert health_pane(rows, 80) == ("profile: missing",)
+
+
+def test_health_pane_collapses_to_one_line_when_every_row_passes():
+    rows = [{"check": "profile", "ok": True, "detail": ""}, {"check": "venv", "ok": True, "detail": ""}]
+    assert health_pane(rows, 80) == ("health: ok",)
+
+
+_TIGHT_PANELS = {
+    "chair": ("c1", "c2"),
+    "backlog": ("b1", "b2", "b3", "b4"),
+    "window": ("w1",),
+    "runs": ("r1",),
+}
+
+
+def test_layout_stacks_panels_full_width_under_160_columns():
+    assert layout(80, 100, _TIGHT_PANELS) == (
+        ("chair", 2),
+        ("backlog", 4),
+        ("window", 1),
+        ("runs", 1),
+    )
+
+
+def test_layout_places_two_columns_at_160_columns():
+    assert layout(160, 4, _TIGHT_PANELS) == (
+        ("chair", 2),
+        ("backlog", 4),
+        ("! window", 0),
+        ("! runs", 0),
+    )
+
+
+def test_layout_places_two_columns_above_160_columns():
+    assert layout(200, 4, _TIGHT_PANELS) == (
+        ("chair", 2),
+        ("backlog", 4),
+        ("! window", 0),
+        ("! runs", 0),
+    )
+
+
+def test_layout_cuts_a_panel_that_exceeds_its_height_with_a_marked_last_line():
+    panels = {"chair": ("c1",), "backlog": ("b1",), "window": ("w1",), "runs": ("r1", "r2", "r3", "r4", "r5")}
+    assert layout(80, 4, panels) == (
+        ("chair", 1),
+        ("backlog", 1),
+        ("window", 1),
+        ("! runs", 1),
     )
