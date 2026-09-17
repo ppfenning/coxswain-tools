@@ -26,6 +26,8 @@ __all__ = [
     "chair_pane",
     "chat_pane",
     "frame",
+    "health_pane",
+    "layout",
     "leader_pane",
     "panel_status",
     "runs_pane",
@@ -244,6 +246,12 @@ def window_pane(facts: Facts, width: int) -> tuple[str, ...]:
     return tuple(_cut(line, width) for line in lines)
 
 
+def health_pane(rows: list[dict], width: int) -> tuple[str, ...]:
+    failing = tuple(f"{row['check']}: {row['detail']}" for row in rows if not row["ok"])
+    lines = failing or ("health: ok",)
+    return tuple(_cut(line, width) for line in lines)
+
+
 def chat_pane(thread: Sequence[Mapping], width: int, draft: str) -> tuple[str, ...]:
     lines = ("CHAT", *(f"{e.get('from', '?')}: {e.get('text', '')}" for e in list(thread)[-3:]), f"> {draft}")
     return tuple(_cut(line, width) for line in lines)
@@ -273,3 +281,28 @@ def frame(facts: Facts, state: State, width: int) -> tuple[str, ...]:
     else:
         top = (*chair_pane(facts, width), *backlog_pane(facts, width), *window_pane(facts, width))
     return (*top, *runs)
+
+
+def _paired(names: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
+    """`names` two to a row, a trailing odd one alone."""
+    return tuple(names[i : i + 2] for i in range(0, len(names), 2))
+
+
+def layout(width: int, height: int, panels: Mapping[str, tuple[str, ...]]) -> tuple[tuple[str, int], ...]:
+    """`(name, height)` per panel in `panels`' own order: `\"runs\"` always its own full-width row and last;
+    the rest one per row under `_SIDE_BY_SIDE_WIDTH`, else paired two to a row; each row's height capped to
+    what remains of `height`, and a name prefixed with `_ATTENTION_MARK` where that cut it short."""
+    others = tuple(name for name in panels if name != "runs")
+    grouped = tuple((name,) for name in others) if width < _SIDE_BY_SIDE_WIDTH else _paired(others)
+    rows = grouped + ((("runs",),) if "runs" in panels else ())
+    remaining = height
+    result: dict[str, tuple[str, int]] = {}
+    for row in rows:
+        natural = max(len(panels[name]) for name in row)
+        allotted = min(natural, remaining)
+        remaining -= allotted
+        for name in row:
+            shown = min(len(panels[name]), allotted)
+            cut = shown < len(panels[name])
+            result[name] = (f"{_ATTENTION_MARK}{name}" if cut else name, shown)
+    return tuple(result[name] for name in panels)
