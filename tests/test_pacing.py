@@ -156,3 +156,29 @@ def test_unmeasured_window_reports_go_without_guessing_a_ceiling():
     assert result.verdict == "go"
     assert result.hold_until is None
     assert "unmeasured" in result.reason
+
+
+def _weekly(spent_usd: float, ceiling_usd: float | None) -> Window:
+    return Window(start=_START, end=_END, spent_usd=spent_usd, ceiling_usd=ceiling_usd,
+                  burn_usd_per_hour=0.0, runs_in_flight=1)
+
+
+def test_a_weekly_total_at_92_percent_still_launches():
+    now = _START.replace(hour=5)
+    result = assess(_window(spent_usd=20, ceiling_usd=100), _policy(), now, weekly=_weekly(92, 100))
+    assert result.verdict != "stop"
+
+
+def test_a_weekly_total_at_93_percent_refuses_with_the_weekly_reason():
+    now = _START.replace(hour=5)
+    result = assess(_window(spent_usd=20, ceiling_usd=100), _policy(), now, weekly=_weekly(93, 100))
+    assert result.verdict == "stop"
+    assert "weekly" in result.reason
+    assert "93%" in result.reason
+
+
+def test_a_window_at_50_percent_with_a_weekly_at_95_percent_still_refuses():
+    now = _START.replace(hour=5)
+    result = assess(_window(spent_usd=50, ceiling_usd=100), _policy(), now, weekly=_weekly(95, 100))
+    assert result.verdict == "stop"
+    assert "weekly" in result.reason

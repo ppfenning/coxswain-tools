@@ -1,8 +1,16 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from agent_tools import cli, home_screen
 from agent_tools.pacing import Window, assess
-from agent_tools.usage_window import DEFAULT_POLICY, block_remaining, ceiling_remaining, gather, window_from
+from agent_tools.usage_window import (
+    DEFAULT_POLICY,
+    block_remaining,
+    ceiling_remaining,
+    gather,
+    gather_weekly,
+    weekly_window_from,
+    window_from,
+)
 
 _NOW = datetime(2026, 9, 5, 12, 0, 0, tzinfo=UTC)
 
@@ -221,3 +229,25 @@ def test_home_screen_read_window_passes_none_when_the_profile_has_no_ceiling(tmp
     monkeypatch.setattr(home_screen.usage_window, "gather", _capturing_gather(captured))
     home_screen._read_window(tmp_path, _NOW)
     assert captured["ceiling_usd"] is None
+
+
+def test_weekly_window_from_includes_a_usage_file_three_days_old(tmp_path):
+    inside = _NOW - timedelta(days=3)
+    window = weekly_window_from([(inside, {"cost_usd": 9.0})], _NOW)
+    assert window.spent_usd == 9.0
+    assert window.start == _NOW - timedelta(days=7)
+
+
+def test_weekly_window_from_excludes_a_usage_file_eight_days_old(tmp_path):
+    outside = _NOW - timedelta(days=8)
+    window = weekly_window_from([(outside, {"cost_usd": 9.0})], _NOW)
+    assert window.spent_usd == 0.0
+
+
+def test_gather_weekly_threads_a_passed_ceiling_onto_the_window(tmp_path):
+    (tmp_path / "one.usage.json").write_text(
+        f'{{"cost_usd": 4.0, "ts": "{(_NOW - timedelta(days=1)).isoformat()}"}}', encoding="utf-8"
+    )
+    window = gather_weekly(tmp_path, _NOW, weekly_ceiling_usd=40.0)
+    assert window.spent_usd == 4.0
+    assert window.ceiling_usd == 40.0
