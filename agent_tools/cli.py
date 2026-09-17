@@ -2763,6 +2763,118 @@ def _bare_group(parser: argparse.ArgumentParser):
     return _fn
 
 
+RUNS_GROUP = commands.Group(
+    name="runs", help="what a harness run recorded, and cleaning up after it",
+    description="What a harness run recorded, and cleaning up after it.",
+    epilog="examples:\n  cox runs land <run> --repo PATH --apply\n  cox runs recover <run> <task> --repo PATH\n"
+           "  cox runs usage <run> --json\n  cox runs detail <run> --json",
+)
+RUNS_COMMANDS = [
+    commands.Command(
+        "usage", "runs", "usage stats and cost for one run",
+        (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"})),
+        _runs_usage, False, (),
+    ),
+    commands.Command(
+        "trace", "runs", "the tool-call trace for one run",
+        (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--role",)), commands.Arg(("-v", "--verbose"), {"action": "store_true"})),
+        _runs_trace, False, (),
+    ),
+    commands.Command(
+        "clean", "runs", "delete a run's worktree and branches locally",
+        (
+            commands.Arg(("run_id",)), commands.Arg(("--repo",), {"required": True}), commands.Arg(("--worktree-root",), {"default": "~/worktrees"}),
+            commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+            commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--force",), {"action": "store_true", "help": "delete every branch regardless of whether its task is on main"}),
+        ),
+        _runs_clean, False, (),
+    ),
+    commands.Command(
+        "land", "runs", "merge a run's branch into the target repo",
+        (
+            commands.Arg(("run_id",)), commands.Arg(("--repo",), {"required": True}), commands.Arg(("--task",)),
+            commands.Arg(("--phase",), {"help": "land the whole phase off its own epic branch instead of one task"}), commands.Arg(("--label",)),
+            commands.Arg(("--force",), {"action": "store_true", "help": "land despite a foreign live leader"}),
+            commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--no-merge",), {"action": "store_true"}),
+            commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+        ),
+        _runs_land, False, (),
+    ),
+    commands.Command(
+        "recover", "runs", "merge an approved task's commit into its phase branch after an escalated merge",
+        (
+            commands.Arg(("run_id",)), commands.Arg(("task_id",)), commands.Arg(("--repo",), {"required": True}),
+            commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the merge that would be made and exit without touching anything"}),
+        ),
+        _runs_recover, False, (),
+    ),
+    commands.Command(
+        "series", "runs", "per-run summary rows across a runs directory",
+        (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"}), commands.Arg(("--append",))),
+        _runs_series, False, (),
+    ),
+    commands.Command(
+        "events", "runs", "poll a run's log for structured events",
+        (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--follow",), {"action": "store_true"}), commands.Arg(("--json",), {"action": "store_true"})),
+        _runs_events, False, (),
+    ),
+    commands.Command(
+        "top", "runs", "live table of runs in flight; --once prints it and exits",
+        (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--interval",), {"type": float, "default": 3}), commands.Arg(("--once",), {"action": "store_true"})),
+        _runs_top, False, (),
+    ),
+    commands.Command(
+        "notify", "runs", "desktop notifications for exits, quarantines, budget stops and cost",
+        (
+            commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--once",), {"action": "store_true"}), commands.Arg(("--interval",), {"type": float, "default": 10}),
+            commands.Arg(("--replay",), {"action": "store_true", "help": "emit history on first start; default is silent for existing runs when no state file is present"}),
+        ),
+        _runs_notify, False, (),
+    ),
+    commands.Command(
+        "detail", "runs", "one run's timeline, objection and last tool calls",
+        (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"})),
+        _runs_detail, False, (),
+    ),
+    commands.Command(
+        "stranded", "runs", "every approved task record whose work item is not done, with its remedy",
+        (
+            commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _runs_stranded, False, (),
+    ),
+]
+
+VERSIONS_GROUP = commands.Group(
+    name="versions", help="component versions against the manifest", description="", epilog="",
+    args=(commands.Arg(("--root",)), commands.Arg(("--manifest",))), fn=_versions,
+)
+
+HOME_GROUP = commands.Group(
+    name="home", help="the live dashboard: runs, leader, backlog", description="", epilog="",
+    args=(commands.Arg(("--profile",)),), fn=_home,
+)
+
+USAGE_GROUP = commands.Group(
+    name="usage", help="spend pacing against the ceiling for the current window",
+    description="Spend pacing against the ceiling for the current window.",
+    epilog="examples:\n  cox usage assess\n  cox usage assess --json --runs-dir runs",
+)
+USAGE_COMMANDS = [
+    commands.Command(
+        "assess", "usage", "the pacing verdict for the current spend window",
+        (
+            commands.Arg(("--json",), {"action": "store_true"}),
+            commands.Arg(("--runs-dir",), {"default": "runs"}),
+            commands.Arg(("--profile",), {"help": "the routing profile naming the window ceiling (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+        ),
+        _usage_assess, False, (),
+    ),
+]
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="cox",
@@ -2784,90 +2896,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--print-argv", action="store_true", help="bare cox: print the claude argv and cwd instead of exec'ing it")
     sub = p.add_subparsers(dest="group", required=False)
 
-    runs_group = commands.Group(
-        name="runs", help="what a harness run recorded, and cleaning up after it",
-        description="What a harness run recorded, and cleaning up after it.",
-        epilog="examples:\n  cox runs land <run> --repo PATH --apply\n  cox runs recover <run> <task> --repo PATH\n"
-               "  cox runs usage <run> --json\n  cox runs detail <run> --json",
-    )
-    runs_commands = [
-        commands.Command(
-            "usage", "runs", "usage stats and cost for one run",
-            (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"})),
-            _runs_usage, False, (),
-        ),
-        commands.Command(
-            "trace", "runs", "the tool-call trace for one run",
-            (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--role",)), commands.Arg(("-v", "--verbose"), {"action": "store_true"})),
-            _runs_trace, False, (),
-        ),
-        commands.Command(
-            "clean", "runs", "delete a run's worktree and branches locally",
-            (
-                commands.Arg(("run_id",)), commands.Arg(("--repo",), {"required": True}), commands.Arg(("--worktree-root",), {"default": "~/worktrees"}),
-                commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
-                commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--force",), {"action": "store_true", "help": "delete every branch regardless of whether its task is on main"}),
-            ),
-            _runs_clean, False, (),
-        ),
-        commands.Command(
-            "land", "runs", "merge a run's branch into the target repo",
-            (
-                commands.Arg(("run_id",)), commands.Arg(("--repo",), {"required": True}), commands.Arg(("--task",)),
-                commands.Arg(("--phase",), {"help": "land the whole phase off its own epic branch instead of one task"}), commands.Arg(("--label",)),
-                commands.Arg(("--force",), {"action": "store_true", "help": "land despite a foreign live leader"}),
-                commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--no-merge",), {"action": "store_true"}),
-                commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
-            ),
-            _runs_land, False, (),
-        ),
-        commands.Command(
-            "recover", "runs", "merge an approved task's commit into its phase branch after an escalated merge",
-            (
-                commands.Arg(("run_id",)), commands.Arg(("task_id",)), commands.Arg(("--repo",), {"required": True}),
-                commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
-                commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the merge that would be made and exit without touching anything"}),
-            ),
-            _runs_recover, False, (),
-        ),
-        commands.Command(
-            "series", "runs", "per-run summary rows across a runs directory",
-            (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"}), commands.Arg(("--append",))),
-            _runs_series, False, (),
-        ),
-        commands.Command(
-            "events", "runs", "poll a run's log for structured events",
-            (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--follow",), {"action": "store_true"}), commands.Arg(("--json",), {"action": "store_true"})),
-            _runs_events, False, (),
-        ),
-        commands.Command(
-            "top", "runs", "live table of runs in flight; --once prints it and exits",
-            (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--interval",), {"type": float, "default": 3}), commands.Arg(("--once",), {"action": "store_true"})),
-            _runs_top, False, (),
-        ),
-        commands.Command(
-            "notify", "runs", "desktop notifications for exits, quarantines, budget stops and cost",
-            (
-                commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--once",), {"action": "store_true"}), commands.Arg(("--interval",), {"type": float, "default": 10}),
-                commands.Arg(("--replay",), {"action": "store_true", "help": "emit history on first start; default is silent for existing runs when no state file is present"}),
-            ),
-            _runs_notify, False, (),
-        ),
-        commands.Command(
-            "detail", "runs", "one run's timeline, objection and last tool calls",
-            (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"})),
-            _runs_detail, False, (),
-        ),
-        commands.Command(
-            "stranded", "runs", "every approved task record whose work item is not done, with its remedy",
-            (
-                commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
-                commands.Arg(("--json",), {"action": "store_true"}),
-            ),
-            _runs_stranded, False, (),
-        ),
-    ]
-    commands.build_parser(runs_commands, [runs_group], sub)
+    group, rows = _table_entry("runs")
+    commands.build_parser(rows, [group], sub)
 
     stats_p = sub.add_parser(
         "stats", help="load the run corpus into the stats store",
@@ -2917,15 +2947,8 @@ def build_parser() -> argparse.ArgumentParser:
     sm.add_argument("--json", action="store_true")
     sm.set_defaults(fn=_stats_spend_mix)
 
-    usage_p = sub.add_parser(
-        "usage", help="spend pacing against the ceiling for the current window",
-        description="Spend pacing against the ceiling for the current window.",
-        epilog="examples:\n  cox usage assess\n  cox usage assess --json --runs-dir runs",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    usage_p.set_defaults(fn=_bare_group(usage_p))
-    us = usage_p.add_subparsers(dest="cmd", required=False)
-    ua = us.add_parser("assess", help="the pacing verdict for the current spend window"); ua.add_argument("--json", action="store_true"); ua.add_argument("--runs-dir", default="runs"); ua.add_argument("--profile", help="the routing profile naming the window ceiling (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"); ua.set_defaults(fn=_usage_assess)
+    group, rows = _table_entry("usage")
+    commands.build_parser(rows, [group], sub)
 
     router_p = sub.add_parser(
         "router", help="the routing-profile flag and the tier decision it gates",
@@ -3026,25 +3049,8 @@ def build_parser() -> argparse.ArgumentParser:
         _launch_parser.add_argument("--force", action="store_true", help="launch despite a usage stop or a foreign live leader")
         _launch_parser.add_argument("--label")
 
-    courier_group = commands.Group(name="courier", help="the courier bus: hand a reference to another label", description="", epilog="")
-    courier_commands = [
-        commands.Command(
-            "send", "courier", "append a bus entry naming a courier reference",
-            (commands.Arg(("ref",)), commands.Arg(("--to",), {"required": True}), commands.Arg(("--note",), {"required": True}), commands.Arg(("--profile",))),
-            _courier_send, False, (),
-        ),
-        commands.Command(
-            "inbox", "courier", "list this label's unacknowledged bus entries",
-            (commands.Arg(("--label",)), commands.Arg(("--profile",))),
-            _courier_inbox, False, (),
-        ),
-        commands.Command(
-            "ack", "courier", "acknowledge one bus entry by id",
-            (commands.Arg(("id",)), commands.Arg(("--profile",))),
-            _courier_ack, False, (),
-        ),
-    ]
-    commands.build_parser(courier_commands, [courier_group], sub)
+    group, rows = _table_entry("courier")
+    commands.build_parser(rows, [group], sub)
 
     ins = sub.add_parser("install", help="clone/update coxswain components against the manifest")
     ins.add_argument("--root", required=True); ins.add_argument("--manifest"); ins.add_argument("--provider", default="claude-code")
@@ -3058,11 +3064,8 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--team"); up.add_argument("--workspace"); up.add_argument("--to"); up.add_argument("--dry-run", action="store_true")
     up.set_defaults(fn=_upgrade)
 
-    versions_group = commands.Group(
-        name="versions", help="component versions against the manifest", description="", epilog="",
-        args=(commands.Arg(("--root",)), commands.Arg(("--manifest",))), fn=_versions,
-    )
-    commands.build_parser([], [versions_group], sub)
+    group, rows = _table_entry("versions")
+    commands.build_parser(rows, [group], sub)
 
     dev = sub.add_parser(
         "dev", help="maintainer commands for the Coxswain repositories",
@@ -3092,11 +3095,8 @@ def build_parser() -> argparse.ArgumentParser:
     old_rel.add_argument("rest", nargs=argparse.REMAINDER)
     old_rel.set_defaults(fn=_release_moved)
 
-    home_group = commands.Group(
-        name="home", help="the live dashboard: runs, leader, backlog", description="", epilog="",
-        args=(commands.Arg(("--profile",)),), fn=_home,
-    )
-    commands.build_parser([], [home_group], sub)
+    group, rows = _table_entry("home")
+    commands.build_parser(rows, [group], sub)
 
     setup_p = sub.add_parser(
         "setup", help="does this machine's profile actually work",
@@ -3202,6 +3202,43 @@ def _courier_ack(a: argparse.Namespace) -> int:
     if updated == blob: print(f"courier: no entry {a.id}"); return 2
     path.write_text(updated, encoding="utf-8")
     return 0
+
+
+COURIER_GROUP = commands.Group(name="courier", help="the courier bus: hand a reference to another label", description="", epilog="")
+COURIER_COMMANDS = [
+    commands.Command(
+        "send", "courier", "append a bus entry naming a courier reference",
+        (commands.Arg(("ref",)), commands.Arg(("--to",), {"required": True}), commands.Arg(("--note",), {"required": True}), commands.Arg(("--profile",))),
+        _courier_send, False, (),
+    ),
+    commands.Command(
+        "inbox", "courier", "list this label's unacknowledged bus entries",
+        (commands.Arg(("--label",)), commands.Arg(("--profile",))),
+        _courier_inbox, False, (),
+    ),
+    commands.Command(
+        "ack", "courier", "acknowledge one bus entry by id",
+        (commands.Arg(("id",)), commands.Arg(("--profile",))),
+        _courier_ack, False, (),
+    ),
+]
+
+COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
+    (RUNS_GROUP, RUNS_COMMANDS),
+    (COURIER_GROUP, COURIER_COMMANDS),
+    (VERSIONS_GROUP, []),
+    (HOME_GROUP, []),
+    (USAGE_GROUP, USAGE_COMMANDS),
+]
+
+
+def _table_entry(name: str) -> tuple[commands.Group, list[commands.Command]]:
+    """`COMMAND_TABLE`'s (Group, rows) pair for `name`, so `build_parser` can
+    register each migrated group at its own original position -- interleaved
+    among the groups still hand-built -- instead of moving every migrated
+    group's registration to wherever the table is folded, which would reorder
+    `cox --help`'s top-level listing."""
+    return next((group, rows) for group, rows in COMMAND_TABLE if group.name == name)
 
 
 def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
