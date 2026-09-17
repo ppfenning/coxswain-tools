@@ -799,7 +799,7 @@ def test_launch_writes_launched_json_naming_the_lock_holder(tmp_path, capsys):
     assert json.loads(launched_path.read_text())["launched_by"] == "alice"
 
 
-def test_launch_with_no_held_lock_writes_launched_json_with_no_launched_by_key(tmp_path, capsys):
+def test_launch_with_no_claim_writes_launched_json_with_no_launched_by_key(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
     (ws / "runs").mkdir(parents=True)
@@ -813,6 +813,7 @@ def test_launch_with_no_held_lock_writes_launched_json_with_no_launched_by_key(t
         "--profile", str(profile),
         "--idea", str(idea),
         "--initiative-id", "fix-thing",
+        "--no-claim",
     ])
     assert rc == 0
     launched_path = ws / "runs" / "fix-thing-1.launched.json"
