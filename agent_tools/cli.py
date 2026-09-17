@@ -3092,9 +3092,11 @@ def build_parser() -> argparse.ArgumentParser:
     old_rel.add_argument("rest", nargs=argparse.REMAINDER)
     old_rel.set_defaults(fn=_release_moved)
 
-    home_p = sub.add_parser("home", help="the live dashboard: runs, leader, backlog")
-    home_p.add_argument("--profile")
-    home_p.set_defaults(fn=_home)
+    home_group = commands.Group(
+        name="home", help="the live dashboard: runs, leader, backlog", description="", epilog="",
+        args=(commands.Arg(("--profile",)),), fn=_home,
+    )
+    commands.build_parser([], [home_group], sub)
 
     setup_p = sub.add_parser(
         "setup", help="does this machine's profile actually work",
