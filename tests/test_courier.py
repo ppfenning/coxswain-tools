@@ -176,6 +176,26 @@ def test_inbox_filters_by_label():
     assert inbox(blob, label="epic") == [e2]
 
 
+def test_inbox_routes_the_generic_chair_to_the_labels_that_hold_or_start_with_it():
+    e1 = send(Reference("run", "r1"), "a", "chair", "one", "m1")
+    blob = _bus([e1])
+    assert inbox(blob, label="chair-0.6.0-G", holder="chair-0.6.0-G") == [e1]
+    assert inbox(blob, label="chair-0.7.0-H", holder="chair-0.6.0-G") == [e1]
+
+
+def test_inbox_does_not_route_a_specific_chair_label_to_a_different_one():
+    e1 = send(Reference("run", "r1"), "a", "chair-0.5.0-F", "one", "m1")
+    blob = _bus([e1])
+    assert inbox(blob, label="chair-0.6.0-G", holder="chair-0.6.0-G") == []
+
+
+def test_inbox_still_requires_an_exact_match_for_a_non_chair_label():
+    e1 = send(Reference("run", "r1"), "a", "cos", "one", "m1")
+    blob = _bus([e1])
+    assert inbox(blob, label="epic", holder="chair-0.6.0-G") == []
+    assert inbox(blob, label="cos", holder="chair-0.6.0-G") == [e1]
+
+
 def test_ack_flips_one_entrys_flag_and_leaves_the_others_unchanged():
     e1 = send(Reference("run", "r1"), "a", "cos", "one", "m1")
     e2 = send(Reference("run", "r2"), "a", "cos", "two", "m2")
@@ -213,6 +233,34 @@ def test_courier_send_refuses_a_reference_that_fails_to_resolve(tmp_path):
     a = argparse.Namespace(profile=str(profile), ref="coxswain://run/nope", to="cos", note="hi")
     assert _courier_send(a) != 0
     assert not (ws / "courier.jsonl").exists()
+
+
+def test_courier_inbox_degrades_to_no_holder_rather_than_raising_on_a_corrupt_lock_file(tmp_path, capsys):
+    from agent_tools import chair
+    from agent_tools.cli import _courier_inbox
+
+    profile, ws = _profile(tmp_path)
+    (ws / "courier.jsonl").write_text(_bus([send(Reference("run", "r1"), "a", "chair", "for chair", "m1")]), encoding="utf-8")
+    runs_dir = ws / "runs"
+    runs_dir.mkdir()
+    chair.chair_path(runs_dir).write_text("not json", encoding="utf-8")
+    rc = _courier_inbox(argparse.Namespace(profile=str(profile), label="chair-0.6.0-G"))
+    assert rc == 0
+    assert "for chair" in capsys.readouterr().out
+
+
+def test_courier_inbox_for_a_non_chair_label_is_unaffected_by_a_corrupt_lock_file(tmp_path, capsys):
+    from agent_tools import chair
+    from agent_tools.cli import _courier_inbox
+
+    profile, ws = _profile(tmp_path)
+    (ws / "courier.jsonl").write_text(_bus([send(Reference("run", "r1"), "a", "cos", "for cos", "m1")]), encoding="utf-8")
+    runs_dir = ws / "runs"
+    runs_dir.mkdir()
+    chair.chair_path(runs_dir).write_text("not json", encoding="utf-8")
+    rc = _courier_inbox(argparse.Namespace(profile=str(profile), label="cos"))
+    assert rc == 0
+    assert "for cos" in capsys.readouterr().out
 
 
 def test_courier_inbox_prints_only_the_labels_unacknowledged_entries(tmp_path, capsys):
