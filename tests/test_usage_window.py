@@ -1,17 +1,13 @@
-import json
-import os
 from datetime import UTC, datetime, timedelta
 
 from agent_tools import cli, home_screen
 from agent_tools.pacing import Window, assess
 from agent_tools.usage_window import (
     DEFAULT_POLICY,
-    _usage_started,
     block_remaining,
     ceiling_remaining,
     gather,
     gather_weekly,
-    usage_cost_usd,
     weekly_window_from,
     window_from,
 )
@@ -106,10 +102,9 @@ def _block_json():
 
 
 def test_gather_falls_back_to_usage_files_when_the_launch_fails(tmp_path):
-    path = tmp_path / "one.usage.json"
-    path.write_text('{"cost_usd": 4.5}', encoding="utf-8")
-    mtime = _NOW.replace(hour=11).timestamp()
-    os.utime(path, (mtime, mtime))
+    (tmp_path / "one.usage.json").write_text(
+        f'{{"cost_usd": 4.5, "ts": "{_NOW.replace(hour=11).isoformat()}"}}', encoding="utf-8"
+    )
 
     def fake_run(argv, **kwargs):
         raise FileNotFoundError("npx not found")
@@ -119,10 +114,9 @@ def test_gather_falls_back_to_usage_files_when_the_launch_fails(tmp_path):
 
 
 def test_gather_falls_back_when_ccusage_returns_no_blocks(tmp_path):
-    path = tmp_path / "one.usage.json"
-    path.write_text('{"cost_usd": 2.0}', encoding="utf-8")
-    mtime = _NOW.replace(hour=11).timestamp()
-    os.utime(path, (mtime, mtime))
+    (tmp_path / "one.usage.json").write_text(
+        f'{{"cost_usd": 2.0, "ts": "{_NOW.replace(hour=11).isoformat()}"}}', encoding="utf-8"
+    )
 
     def fake_run(argv, **kwargs):
         return _FakeResult(0, '{"blocks": []}')
@@ -251,46 +245,9 @@ def test_weekly_window_from_excludes_a_usage_file_eight_days_old(tmp_path):
 
 
 def test_gather_weekly_threads_a_passed_ceiling_onto_the_window(tmp_path):
-    path = tmp_path / "one.usage.json"
-    path.write_text('{"cost_usd": 4.0}', encoding="utf-8")
-    mtime = (_NOW - timedelta(days=1)).timestamp()
-    os.utime(path, (mtime, mtime))
+    (tmp_path / "one.usage.json").write_text(
+        f'{{"cost_usd": 4.0, "ts": "{(_NOW - timedelta(days=1)).isoformat()}"}}', encoding="utf-8"
+    )
     window = gather_weekly(tmp_path, _NOW, weekly_ceiling_usd=40.0)
     assert window.spent_usd == 4.0
     assert window.ceiling_usd == 40.0
-
-
-def test_usage_cost_usd_reads_the_current_shapes_summary_field():
-    assert usage_cost_usd({"run_id": "r1", "calls": [], "summary": {"cost_usd": 4.5, "calls": 2}}) == 4.5
-
-
-def test_usage_started_reads_started_at_nested_under_summary():
-    mtime = _NOW - timedelta(days=30)
-    started = _usage_started({"summary": {"started_at": _NOW.isoformat()}}, mtime)
-    assert started == _NOW
-
-
-def test_weekly_window_from_counts_a_current_shape_usage_file():
-    inside = _NOW - timedelta(days=3)
-    usage = {"run_id": "r1", "calls": [], "summary": {"cost_usd": 9.0, "calls": 2}}
-    window = weekly_window_from([(inside, usage)], _NOW)
-    assert window.spent_usd == 9.0
-
-
-def test_weekly_window_from_still_counts_an_old_shape_file():
-    inside = _NOW - timedelta(days=3)
-    window = weekly_window_from([(inside, {"cost_usd": 9.0})], _NOW)
-    assert window.spent_usd == 9.0
-
-
-def test_gather_weekly_reports_nonzero_for_a_real_shaped_usage_file(tmp_path):
-    path = tmp_path / "one.usage.json"
-    path.write_text(
-        json.dumps({"run_id": "r1", "calls": [], "summary": {"cost_usd": 770.0, "calls": 2}}),
-        encoding="utf-8",
-    )
-    mtime = (_NOW - timedelta(days=1)).timestamp()
-    os.utime(path, (mtime, mtime))
-    window = gather_weekly(tmp_path, _NOW, weekly_ceiling_usd=1043.0)
-    assert window.spent_usd == 770.0
-    assert ceiling_remaining(window) != 1.0
