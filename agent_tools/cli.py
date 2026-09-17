@@ -875,7 +875,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         print(f"land: {reason}")
         return 2
     if a.apply:
-        guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force)
+        guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim)
         if guard_rc is not None:
             return guard_rc
     default_branch = "main"
@@ -1260,17 +1260,24 @@ def _holder_label(a: argparse.Namespace) -> str:
     return getattr(a, "label", None) or os.environ.get("COX_SESSION_LABEL") or "unlabeled"
 
 
-def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool) -> int | None:
-    """Exit code 2 with the refusal printed when another live session holds the loop; None to proceed."""
+def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool, claim: bool = False) -> int | None:
+    """Exit code 2 with the refusal printed when another live session holds the loop;
+    None to proceed. `claim` takes an unheld, stale or crashed lock for `holder` before
+    proceeding, so launching or landing is what makes a session the leader."""
     record, rc = _leader_read_or_refuse(runs_dir)
     if rc is not None:
         return None
     state = chair.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), socket.gethostname(), _leader_heartbeat_minutes())
     line = chair.guard(record, holder, state)
-    if line is None:
-        return None
-    print(f"override: {line}" if force else line)
-    return None if force else 2
+    if line is not None:
+        print(f"override: {line}" if force else line)
+        return None if force else 2
+    if claim and state != "live":
+        pid, host = _leader_identity()
+        new_record, _ = chair.take(record, holder, pid, host, datetime.datetime.now(datetime.UTC), _leader_heartbeat_minutes(), _leader_pid_alive(record), steal=True)
+        chair.write(runs_dir, new_record)
+        print(f"taking the loop: {holder}" if record is None else f"taking the loop from {record.get('session')} ({state})")
+    return None
 
 
 def _leader_identity(explicit_pid: int | None = None) -> tuple[int, str]:
@@ -1610,7 +1617,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     if venv_rc is not None:
         return venv_rc
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
-    guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force)
+    guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim)
     if guard_rc is not None:
         return guard_rc
     usage_code, usage_lines = route.launch_gate(
@@ -2812,6 +2819,7 @@ RUNS_COMMANDS = [
             commands.Arg(("run_id",)), commands.Arg(("--repo",), {"required": True}), commands.Arg(("--task",)),
             commands.Arg(("--phase",), {"help": "land the whole phase off its own epic branch instead of one task"}), commands.Arg(("--label",)),
             commands.Arg(("--force",), {"action": "store_true", "help": "land despite a foreign live leader"}),
+            commands.Arg(("--no-claim",), {"action": "store_true", "help": "land without taking an unheld or stale loop"}),
             commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--no-merge",), {"action": "store_true"}),
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
         ),
@@ -3080,6 +3088,7 @@ def build_parser() -> argparse.ArgumentParser:
         _launch_parser.add_argument("--tier-ceiling", choices=("cheap", "standard", "deep"))
         _launch_parser.add_argument("--effort-ceiling", choices=("low", "high"))
         _launch_parser.add_argument("--force", action="store_true", help="launch despite a usage stop or a foreign live leader")
+        _launch_parser.add_argument("--no-claim", action="store_true", help="launch without taking an unheld or stale loop")
         _launch_parser.add_argument("--label")
 
     group, rows = _table_entry("courier")

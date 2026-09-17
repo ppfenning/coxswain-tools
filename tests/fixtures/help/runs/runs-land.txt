@@ -1,6 +1,6 @@
 usage: cox runs land [-h] --repo REPO [--task TASK] [--phase PHASE] [--label LABEL] [--force]
-                     [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge] [--runs-dir RUNS_DIR]
-                     [--profile PROFILE]
+                     [--no-claim] [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge]
+                     [--runs-dir RUNS_DIR] [--profile PROFILE]
                      run_id
 
 positional arguments:
@@ -13,6 +13,7 @@ options:
   --phase PHASE         land the whole phase off its own epic branch instead of one task
   --label LABEL
   --force               land despite a foreign live leader
+  --no-claim            land without taking an unheld or stale loop
   --worktree-root WORKTREE_ROOT
   --apply
   --no-merge
