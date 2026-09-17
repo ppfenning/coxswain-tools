@@ -120,6 +120,26 @@ def test_slugify_returns_empty_string_when_title_has_no_alphanumerics():
     assert route.slugify("   ") == ""
 
 
+def test_slugify_cuts_a_long_title_at_a_word_boundary_and_drops_leading_stopwords():
+    title = "Fix the Loop A Build's Structured Output Was A Placeholder For Something Broken Today Okay"
+    assert len(title) == 90
+    slug = route.slugify(title)
+    assert len(slug) <= 48
+    assert not slug.startswith(("the-", "a-", "an-", "cox-", "fix-", "loop-", "initiative-"))
+    assert slug == "build-s-structured-output-was-a-placeholder-for"
+
+
+def test_surface_candidates_keeps_only_backticked_tokens_that_look_like_paths():
+    body = (
+        "Touch `agent_tools/schema.py` and `tests/test_release.py`, "
+        "not `route status` or `https://example.com/file.py`."
+    )
+    assert route.surface_candidates(body, "/repos/widget") == [
+        "agent_tools/schema.py",
+        "tests/test_release.py",
+    ]
+
+
 def test_next_run_id_returns_first_free_id_for_prefix():
     existing = ["myinit-1", "myinit-2", "otherinit-1", "myinit-4"]
     assert route.next_run_id(existing, "myinit") == "myinit-3"
@@ -211,6 +231,26 @@ def test_initiative_files_refuses_a_title_that_slugifies_to_empty():
     # write into the work store this guard exists to prevent.
     with pytest.raises(ValueError):
         route.initiative_files("!!!", "body", "repo-url")
+
+
+def test_initiative_files_writes_surfaces_budget_attempts_lint_and_a_given_slug():
+    files = route.initiative_files(
+        "Fix the Bug", "Do the thing.", "repo-url",
+        surfaces=["agent_tools/schema.py"], budget_usd=2.0, slug="custom-slug",
+    )
+    task_text = files["work/custom-slug/build/custom-slug.md"]
+    assert "surfaces: [agent_tools/schema.py]" in task_text
+    assert "budget_usd: 2.0" in task_text
+    assert "attempts: []" in task_text
+    assert "lint: []" in task_text
+
+
+def test_initiative_files_quotes_a_surface_entry_containing_a_colon():
+    files = route.initiative_files(
+        "Fix the Bug", "Do the thing.", "repo-url", surfaces=["a:b.py", "plain.py"], budget_usd=2.0,
+    )
+    task_text = files["work/fix-the-bug/build/fix-the-bug.md"]
+    assert 'surfaces: ["a:b.py", plain.py]' in task_text
 
 
 def test_initiative_files_defaults_phase_to_build_and_body_to_title():

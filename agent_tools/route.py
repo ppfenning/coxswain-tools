@@ -35,6 +35,7 @@ __all__ = [
     "state_problems",
     "status_entries",
     "status_rows",
+    "surface_candidates",
     "work_item",
 ]
 
@@ -135,8 +136,14 @@ def parse_profile(text: str) -> dict:
     return result
 
 
+_SLUG_STOPWORDS = {"the", "a", "an", "cox", "fix", "loop", "initiative"}
+
+
 def slugify(title: str) -> str:
-    """Lower-case, non-alphanumerics collapsed to '-', truncated to 48 chars.
+    """Lower-case, non-alphanumerics collapsed to '-'. Longer than 48 chars,
+    leading stopwords (`the`, `a`, `an`, `cox`, `fix`, `loop`, `initiative`)
+    are dropped and the result is cut at the last word boundary under the
+    cap, never mid-word; otherwise returned as-is.
 
     A title with no alphanumeric characters (all punctuation/symbols)
     slugifies to the empty string; a caller that uses the result as a path
@@ -144,7 +151,17 @@ def slugify(title: str) -> str:
     this pure core does not refuse or substitute.
     """
     slug = re.sub(r"[^a-z0-9]+", "-", title.strip().lower()).strip("-")
-    return slug[:48].strip("-")
+    if len(slug) <= 48:
+        return slug
+    words = [w for w in slug.split("-") if w]
+    while len(words) > 1 and words[0] in _SLUG_STOPWORDS:
+        words = words[1:]
+    slug = "-".join(words)
+    if len(slug) <= 48:
+        return slug
+    cut = slug[:48]
+    boundary = cut.rfind("-")
+    return (cut[:boundary] if boundary > 0 else cut).strip("-")
 
 
 def next_run_id(existing_names, prefix: str) -> str:
@@ -244,29 +261,50 @@ def _slug_or_raise(title: str) -> str:
     return slug
 
 
-def initiative_files(title: str, body: str, repo: str, phase: str = "build") -> dict:
+def initiative_files(
+    title: str,
+    body: str,
+    repo: str,
+    phase: str = "build",
+    surfaces: list[str] | None = None,
+    budget_usd: float | None = None,
+    slug: str | None = None,
+) -> dict:
     """Content for a one-task initiative (spec §3, `route file` without
     `--intake`): `work/<slug>/initiative.md` and
     `work/<slug>/<phase>/<slug>.md`, keyed by path relative to the work
     store. `body` falls back to `title` when empty. No filesystem writes
     happen here — the caller applies the mapping.
+
+    `slug`, given, is normalized through the same guard as `title` and used
+    for the id and both paths in its place — an intake's own `slug:` field,
+    for instance, is never trusted raw as a path segment. `surfaces`
+    defaults to empty (unscoped); each entry is quoted the same way any
+    other frontmatter scalar is, so a path carrying `:` or `#` round-trips.
+    `budget_usd`, given, also adds `attempts: []` and `lint: []`; omitted,
+    none of the three appear.
     """
-    slug = _slug_or_raise(title)
+    slug = _slug_or_raise(slug or title)
     text = body if body else title
     initiative_text = _frontmatter(
         [("id", slug), ("title", title), ("repo", repo)], text
     )
-    task_text = _frontmatter(
-        [
-            ("id", slug),
-            ("phase", phase),
-            ("state", "ready"),
-            ("needs", _Raw("[]")),
-            ("surfaces", _Raw("[]")),
-            ("title", title),
-        ],
-        text,
-    )
+    surfaces_raw = _Raw("[" + ", ".join(_yaml_scalar(s) for s in surfaces) + "]") if surfaces else _Raw("[]")
+    task_fields = [
+        ("id", slug),
+        ("phase", phase),
+        ("state", "ready"),
+        ("needs", _Raw("[]")),
+        ("surfaces", surfaces_raw),
+        ("title", title),
+    ]
+    if budget_usd is not None:
+        task_fields += [
+            ("budget_usd", str(budget_usd)),
+            ("attempts", _Raw("[]")),
+            ("lint", _Raw("[]")),
+        ]
+    task_text = _frontmatter(task_fields, text)
     return {
         f"work/{slug}/initiative.md": initiative_text,
         f"work/{slug}/{phase}/{slug}.md": task_text,
@@ -301,6 +339,25 @@ def link_intake(initiative_text: str, intake_text: str, intake_path: str, initia
     new_initiative = _frontmatter({**initiative_fields, "intake": intake_path}.items(), initiative_body)
     new_intake = _frontmatter({**intake_fields, "initiative": initiative_id}.items(), intake_body)
     return new_initiative, new_intake
+
+
+_BACKTICKED = re.compile(r"`([^`\s]+)`")
+
+
+def surface_candidates(body: str, repo: str) -> list[str]:
+    """Backticked tokens in `body` that look like a path under `repo` — a
+    `/` or a recognizable file suffix, no whitespace, no `scheme://` — in
+    first-seen order, de-duplicated. Pure: this never touches a filesystem,
+    so a token that merely looks like a path but names nothing real is
+    still a candidate; the caller checks that.
+    """
+    found = []
+    for token in _BACKTICKED.findall(body):
+        if "://" in token or token in found:
+            continue
+        if "/" in token or re.search(r"\.[A-Za-z0-9]{1,8}$", token):
+            found.append(token)
+    return found
 
 
 def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:

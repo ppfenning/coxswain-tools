@@ -373,6 +373,61 @@ def test_file_from_intake_links_both_ways_retires_the_file_and_status_reports_de
     assert "intake decomposed: 1" in out
 
 
+def test_file_from_intake_writes_surfaces_from_real_backticked_files_under_repo(tmp_path, capsys):
+    profile, ws = _write_file_profile(tmp_path)
+    repo = tmp_path / "repos" / "widget"
+    (repo / "agent_tools").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    (repo / "agent_tools" / "schema.py").write_text("x")
+    (repo / "tests" / "test_release.py").write_text("x")
+    (ws / "intake").mkdir()
+    intake_path = ws / "intake" / "2026-09-01-fix-thing.md"
+    intake_path.write_text(
+        f"---\nid: fix-thing\ntitle: Fix the thing\nrepo: {repo}\n---\n\n"
+        "Touch `agent_tools/schema.py` and `tests/test_release.py`, not `agent_tools/missing.py`.\n"
+    )
+    rc = main(["route", "file", "--profile", str(profile), "--from-intake", str(intake_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "surfaces: agent_tools/schema.py, tests/test_release.py" in out
+    slug = route.slugify("Fix the thing")
+    task_text = (ws / "work" / slug / "build" / f"{slug}.md").read_text()
+    assert "surfaces: [agent_tools/schema.py, tests/test_release.py]" in task_text
+    assert "budget_usd: 2.0" in task_text
+    assert "attempts: []" in task_text
+    assert "lint: []" in task_text
+
+
+def test_file_from_intake_reports_no_surfaces_when_no_backticked_token_resolves(tmp_path, capsys):
+    profile, ws = _write_file_profile(tmp_path)
+    (ws / "intake").mkdir()
+    intake_path = ws / "intake" / "2026-09-01-fix-thing.md"
+    intake_path.write_text(
+        "---\nid: fix-thing\ntitle: Fix the thing\nrepo: /repos/widget\n---\n\n"
+        "See `agent_tools/missing.py` for context.\n"
+    )
+    rc = main(["route", "file", "--profile", str(profile), "--from-intake", str(intake_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "surfaces: none resolved from the intake body" in out
+    slug = route.slugify("Fix the thing")
+    task_text = (ws / "work" / slug / "build" / f"{slug}.md").read_text()
+    assert "surfaces: []" in task_text
+
+
+def test_file_from_intake_uses_the_slug_field_over_the_title(tmp_path, capsys):
+    profile, ws = _write_file_profile(tmp_path)
+    (ws / "intake").mkdir()
+    intake_path = ws / "intake" / "2026-09-01-fix-thing.md"
+    intake_path.write_text(
+        "---\nid: fix-thing\ntitle: Fix the thing\nrepo: /repos/widget\nslug: named-slug\n---\n\nDo it.\n"
+    )
+    rc = main(["route", "file", "--profile", str(profile), "--from-intake", str(intake_path)])
+    capsys.readouterr()
+    assert rc == 0
+    assert (ws / "work" / "named-slug" / "build" / "named-slug.md").exists()
+
+
 def test_file_from_intake_refuses_a_path_outside_the_workspace_intake_dir(tmp_path, capsys):
     profile, ws = _write_file_profile(tmp_path)
     outside = tmp_path / "outside.md"
