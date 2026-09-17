@@ -1,0 +1,14 @@
+usage: cox plan [-h] {serve} ...
+
+Visual plans through the local bridge.
+
+positional arguments:
+  {serve}
+    serve     serve a visual plan through the local bridge
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  cox plan serve work/<id> --kind plan
+  cox plan serve work/<id> --check
