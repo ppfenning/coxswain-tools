@@ -88,7 +88,15 @@ def call_rows(run_id: str, usage: Mapping[str, Any] | None) -> list[dict[str, An
     """One `calls` row per model invocation in a run's usage record, in call order.
     `task_id`/`join_confidence`/`failure_class` are left unset here: assigning them
     needs this run's task records and its calls' own trace files, which only the
-    edge (`ingest`, via `assign_task_ids`/`fill_failure_classes`) has."""
+    edge (`ingest`, via `assign_task_ids`/`fill_failure_classes`) has. `challenger`
+    is true exactly when the call's own `reason` is the literal string "challenger" —
+    router-steward.md §2, verbatim: "challenger status travels entirely in `reason`:
+    `select_tier` returns the fixed literal string `\"challenger\"`, not a prefix.
+    The CLI edge matches that exact string to set the `challenger` column ... on the
+    call row." `select_tier` itself is a later ticket's pure function and writes no
+    code in this repo yet (no hit for `select_tier` outside docs/design), so `reason`
+    is read here ahead of that CLI edge; a call with no `reason`, or any other
+    reason, ingests as `challenger=0`, never NULL (charter B4)."""
     calls = list((usage or {}).get("calls") or [])
     attempts = attempt_numbers(calls)
     return [
@@ -109,7 +117,7 @@ def call_rows(run_id: str, usage: Mapping[str, Any] | None) -> list[dict[str, An
             "tools": json.dumps(call["tools"]) if call.get("tools") is not None else None,
             "trace_path": call.get("trace"),
             "failure_class": None,
-            "challenger": int(bool(call.get("challenger"))),
+            "challenger": int(call.get("reason") == "challenger"),
             "task_id": None,
             "join_confidence": None,
             "recovered_from_trace": 0,
@@ -320,6 +328,7 @@ class IngestReport:
     provider_profile_from_ledger: int = 0
     provider_profile_from_node: int = 0
     provider_profile_unresolved: int = 0
+    challenger_calls: int = 0
 
 
 def discover_runs(runs_dir: Path) -> list[str]:
@@ -620,7 +629,8 @@ def ingest(
     default) means no task in this ingest can resolve `outcome_source='work_store'`.
     Every run's `provider_profile` is tallied by which source resolved it (ledger,
     node record, or neither); the three counts in the returned report always sum to
-    `runs_ingested`."""
+    `runs_ingested`. `challenger_calls` in the returned report is the total count of
+    calls, across every run ingested, tagged `challenger=1`."""
     runs_dir = Path(runs_dir)
     work_store_root = Path(work_store_root) if work_store_root is not None else None
     if not runs_dir.is_dir():
@@ -637,6 +647,7 @@ def ingest(
     # edge, already imperative and already writing the database per run (A7), so one
     # more per-run list append here costs nothing a pure core would have avoided.
     profile_sources: list[str] = []
+    challenger_calls = 0
     for run_id in run_ids:
         loaded = load_run(runs_dir, run_id)
         unparsed.extend(loaded["unparsed"])
@@ -664,6 +675,7 @@ def ingest(
         attempts = [_fix_loop_attempts(record) for _, _, record in loaded["task_files"]]
         joined_calls = assign_task_ids(calls, [t["task_id"] for t in tasks], attempts)
         tasks = rollup_task_costs(joined_calls, tasks)
+        challenger_calls += sum(c.get("challenger") or 0 for c in joined_calls)
         _upsert(conn, run_id, run, joined_calls, tasks)
     conn.commit()
     conn.close()
@@ -673,4 +685,5 @@ def ingest(
         provider_profile_from_ledger=profile_sources.count("ledger"),
         provider_profile_from_node=profile_sources.count("node"),
         provider_profile_unresolved=profile_sources.count("none"),
+        challenger_calls=challenger_calls,
     )
