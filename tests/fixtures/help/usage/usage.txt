@@ -1,0 +1,14 @@
+usage: cox usage [-h] {assess} ...
+
+Spend pacing against the ceiling for the current window.
+
+positional arguments:
+  {assess}
+    assess    the pacing verdict for the current spend window
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  cox usage assess
+  cox usage assess --json --runs-dir runs

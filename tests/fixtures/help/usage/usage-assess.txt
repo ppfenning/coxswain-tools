@@ -1,0 +1,8 @@
+usage: cox usage assess [-h] [--json] [--runs-dir RUNS_DIR] [--profile PROFILE]
+
+options:
+  -h, --help           show this help message and exit
+  --json
+  --runs-dir RUNS_DIR
+  --profile PROFILE    the routing profile naming the window ceiling (default: ~/.config/agent-
+                       tools/profile.yaml or $AGENT_TOOLS_PROFILE)
