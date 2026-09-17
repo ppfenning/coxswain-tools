@@ -1,0 +1,8 @@
+usage: cox courier ack [-h] [--profile PROFILE] id
+
+positional arguments:
+  id
+
+options:
+  -h, --help         show this help message and exit
+  --profile PROFILE

@@ -3029,15 +3029,25 @@ def build_parser() -> argparse.ArgumentParser:
         _launch_parser.add_argument("--force", action="store_true", help="launch despite a usage stop or a foreign live leader")
         _launch_parser.add_argument("--label")
 
-    courier_p = sub.add_parser("courier", help="the courier bus: hand a reference to another label")
-    courier_p.set_defaults(fn=_bare_group(courier_p)); cr = courier_p.add_subparsers(dest="cmd", required=False)
-    crs = cr.add_parser("send", help="append a bus entry naming a courier reference")
-    crs.add_argument("ref"); crs.add_argument("--to", required=True); crs.add_argument("--note", required=True)
-    crs.add_argument("--profile"); crs.set_defaults(fn=_courier_send)
-    cri = cr.add_parser("inbox", help="list this label's unacknowledged bus entries")
-    cri.add_argument("--label"); cri.add_argument("--profile"); cri.set_defaults(fn=_courier_inbox)
-    cra = cr.add_parser("ack", help="acknowledge one bus entry by id")
-    cra.add_argument("id"); cra.add_argument("--profile"); cra.set_defaults(fn=_courier_ack)
+    courier_group = commands.Group(name="courier", help="the courier bus: hand a reference to another label", description="", epilog="")
+    courier_commands = [
+        commands.Command(
+            "send", "courier", "append a bus entry naming a courier reference",
+            (commands.Arg(("ref",)), commands.Arg(("--to",), {"required": True}), commands.Arg(("--note",), {"required": True}), commands.Arg(("--profile",))),
+            _courier_send, False, (),
+        ),
+        commands.Command(
+            "inbox", "courier", "list this label's unacknowledged bus entries",
+            (commands.Arg(("--label",)), commands.Arg(("--profile",))),
+            _courier_inbox, False, (),
+        ),
+        commands.Command(
+            "ack", "courier", "acknowledge one bus entry by id",
+            (commands.Arg(("id",)), commands.Arg(("--profile",))),
+            _courier_ack, False, (),
+        ),
+    ]
+    commands.build_parser(courier_commands, [courier_group], sub)
 
     ins = sub.add_parser("install", help="clone/update coxswain components against the manifest")
     ins.add_argument("--root", required=True); ins.add_argument("--manifest"); ins.add_argument("--provider", default="claude-code")

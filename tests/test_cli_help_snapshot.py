@@ -18,9 +18,13 @@ import pytest
 
 from agent_tools import cli
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "help" / "runs"
-GROUP = "runs"
+HELP_ROOT = Path(__file__).resolve().parent / "fixtures" / "help"
+GROUPS = ["runs", "courier"]
 COLUMNS = "100"  # argparse wraps at the terminal width; pin it so the text is stable
+
+
+def fixtures_for(group: str) -> Path:
+    return HELP_ROOT / group
 
 
 def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
@@ -28,32 +32,41 @@ def _subparsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentP
     return dict(action.choices)
 
 
-def help_texts() -> dict[str, str]:
+def help_texts(group: str) -> dict[str, str]:
     """fixture stem -> help text, for the group and each of its subcommands."""
     os.environ["COLUMNS"] = COLUMNS
-    group = _subparsers(cli.build_parser())[GROUP]
-    texts = {GROUP: group.format_help()}
-    for name, sub in _subparsers(group).items():
-        texts[f"{GROUP}-{name}"] = sub.format_help()
+    top = _subparsers(cli.build_parser())[group]
+    texts = {group: top.format_help()}
+    for name, sub in _subparsers(top).items():
+        texts[f"{group}-{name}"] = sub.format_help()
     return texts
 
 
 def _write() -> None:
-    FIXTURES.mkdir(parents=True, exist_ok=True)
-    for stem, text in help_texts().items():
-        (FIXTURES / f"{stem}.txt").write_text(text)
-        print(f"wrote {FIXTURES / f'{stem}.txt'}")
+    for group in GROUPS:
+        fixtures = fixtures_for(group)
+        fixtures.mkdir(parents=True, exist_ok=True)
+        for stem, text in help_texts(group).items():
+            (fixtures / f"{stem}.txt").write_text(text)
+            print(f"wrote {fixtures / f'{stem}.txt'}")
 
 
-@pytest.mark.parametrize("stem", sorted(p.stem for p in FIXTURES.glob("*.txt")))
-def test_help_matches_its_fixture(stem: str, monkeypatch) -> None:
+def _cases() -> list[tuple[str, str]]:
+    return sorted(
+        (group, p.stem) for group in GROUPS for p in fixtures_for(group).glob("*.txt")
+    )
+
+
+@pytest.mark.parametrize("group,stem", _cases())
+def test_help_matches_its_fixture(group: str, stem: str, monkeypatch) -> None:
     monkeypatch.setenv("COLUMNS", COLUMNS)
-    assert help_texts()[stem] == (FIXTURES / f"{stem}.txt").read_text()
+    assert help_texts(group)[stem] == (fixtures_for(group) / f"{stem}.txt").read_text()
 
 
-def test_every_subcommand_has_a_fixture_and_no_fixture_is_stale(monkeypatch) -> None:
+@pytest.mark.parametrize("group", GROUPS)
+def test_every_subcommand_has_a_fixture_and_no_fixture_is_stale(group: str, monkeypatch) -> None:
     monkeypatch.setenv("COLUMNS", COLUMNS)
-    assert set(help_texts()) == {p.stem for p in FIXTURES.glob("*.txt")}
+    assert set(help_texts(group)) == {p.stem for p in fixtures_for(group).glob("*.txt")}
 
 
 if __name__ == "__main__":

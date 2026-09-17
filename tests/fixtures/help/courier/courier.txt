@@ -1,0 +1,10 @@
+usage: cox courier [-h] {send,inbox,ack} ...
+
+positional arguments:
+  {send,inbox,ack}
+    send            append a bus entry naming a courier reference
+    inbox           list this label's unacknowledged bus entries
+    ack             acknowledge one bus entry by id
+
+options:
+  -h, --help        show this help message and exit
