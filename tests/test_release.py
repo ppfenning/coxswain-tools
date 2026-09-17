@@ -974,7 +974,23 @@ def _backfill_umbrella(tmp_path, manifest_toml=_BACKFILL_MANIFEST, notes="## cox
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
     (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text(notes)
+    for name in ("harness", "crew", "cartridges", "graphs", "tools", "route", "cox"):
+        (tmp_path / name).mkdir(exist_ok=True)  # a component with no checkout is skipped, so give them one
     return umbrella_dir, {"0.1.0": manifest_toml}
+
+
+def test_backfill_skips_a_component_with_no_checkout_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    """The 0.2.0 manifest names `hud`, which has no checkout here: the first live
+    backfill died on it with FileNotFoundError before reaching later versions."""
+    _backfill_umbrella(tmp_path, manifest_toml=_BACKFILL_MANIFEST + '\n[components.hud]\nrepo = "org/hud"\ntag = "v0.1.0"\n')
+    calls, run = _fake_backfill_run({"0.1.0": _BACKFILL_MANIFEST + '\n[components.hud]\nrepo = "org/hud"\ntag = "v0.1.0"\n'})
+    monkeypatch.setattr(cli, "_real_run", run)
+    rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path), "--dry-run"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "skipped org/hud v0.1.0: no checkout at" in out
+    assert "would create org/harness v0.1.0" in out
+    assert not [c for c in calls if c[:3] == ["gh", "release", "view"] and c[3] == "v0.1.0" and "hud" in " ".join(c)]
 
 
 def _fake_backfill_run(manifest_by_version, view_bodies=None):
@@ -1091,6 +1107,8 @@ lockstep = false
 def test_backfill_a_pinned_component_is_only_processed_at_the_version_it_was_tagged(tmp_path, monkeypatch):
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    for name in ("harness", "crew"):
+        (tmp_path / name).mkdir(exist_ok=True)
     (umbrella_dir / "docs" / "releases" / "0.4.0.md").write_text(
         "## coxswain-harness\nharness notes\n\n## coxswain-crew\ncrew notes\n")
     (umbrella_dir / "docs" / "releases" / "0.6.0.md").write_text("## coxswain-harness\nharness notes v6\n")
@@ -1112,6 +1130,8 @@ def test_backfill_a_pinned_component_is_only_processed_at_the_version_it_was_tag
 def test_backfill_unchanged_since_fallback_names_the_prior_tag_not_the_one_being_created(tmp_path, monkeypatch):
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    for name in ("harness", "crew"):
+        (tmp_path / name).mkdir(exist_ok=True)
     (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("## coxswain-harness\nharness notes\n")
     (umbrella_dir / "docs" / "releases" / "0.2.0.md").write_text("no component sections this cut\n")
     manifest_v2 = _BACKFILL_MANIFEST.replace('version = "0.1.0"', 'version = "0.2.0"').replace(
@@ -1148,8 +1168,8 @@ def test_backfill_dry_run_prints_would_and_makes_no_create_or_edit_calls(tmp_pat
     rc = cli.main(["dev", "backfill-github-releases", "--root", str(tmp_path), "--dry-run"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "would created org/harness v0.1.0" in out
-    assert "would created org/coxswain v0.1.0" in out
+    assert "would create org/harness v0.1.0" in out
+    assert "would create org/coxswain v0.1.0" in out
     write_calls = [c for c in calls if c[:3] in (["gh", "release", "create"], ["gh", "release", "edit"])]
     assert write_calls == []
 
@@ -1157,6 +1177,8 @@ def test_backfill_dry_run_prints_would_and_makes_no_create_or_edit_calls(tmp_pat
 def test_backfill_processes_multiple_versions_oldest_first(tmp_path, monkeypatch, capsys):
     umbrella_dir = tmp_path / "coxswain"
     (umbrella_dir / "docs" / "releases").mkdir(parents=True)
+    for name in ("harness", "crew"):
+        (tmp_path / name).mkdir(exist_ok=True)
     (umbrella_dir / "docs" / "releases" / "0.2.0.md").write_text("## coxswain-harness\nharness notes v2\n")
     (umbrella_dir / "docs" / "releases" / "0.1.0.md").write_text("## coxswain-harness\nharness notes v1\n")
     calls, run = _fake_backfill_run({"0.1.0": _BACKFILL_MANIFEST, "0.2.0": _BACKFILL_MANIFEST})
