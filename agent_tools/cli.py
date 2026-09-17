@@ -2347,11 +2347,17 @@ def _backfill_github_releases(a: argparse.Namespace) -> int:
                 items.append((name, spec["repo"], tag, release.component_dir(root, name),
                               f"## coxswain-{name}", from_tag, f"coxswain-{name} {version}"))
         for _name, repo, tag, directory, heading, from_tag, title in items:
+            if not Path(directory).is_dir():
+                # An old manifest can name a component that has no checkout
+                # here (the 0.2.0 `hud`); its release is not ours to write.
+                print(f"skipped {repo} {tag}: no checkout at {directory}")
+                continue
             text = (Path(umbrella, notes_path).read_text(encoding="utf-8") if heading is None else
                     _github_release_notes_text(umbrella, notes_path, heading, from_tag, link))
             view_rc, view_out = _real_run(release.github_release_body_argv(tag), directory)
-            prefix = "would " if a.dry_run else ""
             state = "created" if view_rc != 0 else ("already-current" if view_out.strip() == text.strip() else "edited")
+            prefix = "would " if a.dry_run else ""
+            shown = {"created": "create", "edited": "edit"}.get(state, state) if a.dry_run else state
             if state != "already-current" and not a.dry_run:
                 with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as tmp:
                     tmp.write(text)
@@ -2361,7 +2367,7 @@ def _backfill_github_releases(a: argparse.Namespace) -> int:
                 if write_rc != 0:
                     print(f"FAILED {repo} {tag}: {write_out.strip()}")
                     return 2
-            print(f"{prefix}{state} {repo} {tag}")
+            print(f"{prefix}{shown} {repo} {tag}")
     return 0
 
 
