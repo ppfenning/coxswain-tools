@@ -37,6 +37,40 @@ def test_the_edge_refuses_with_exit_2_and_force_overrides(tmp_path, capsys, monk
     assert cli._leader_guard_or_refuse(tmp_path, "loop-a", False) is None
 
 
+def test_claim_with_no_lock_takes_it_and_says_so(tmp_path, capsys):
+    assert cli._leader_guard_or_refuse(tmp_path, "loop-b", False, claim=True) is None
+    assert capsys.readouterr().out == "taking the loop: loop-b\n"
+    assert chair.read(tmp_path)["session"] == "loop-b"
+
+
+def test_claim_under_a_live_foreign_lock_still_refuses_and_takes_nothing(tmp_path):
+    record = _record("loop-a", os.getpid())
+    record["heartbeat_at"] = datetime.datetime.now(datetime.UTC).isoformat()
+    (tmp_path / "chair.json").write_text(json.dumps(record))
+    assert cli._leader_guard_or_refuse(tmp_path, "loop-b", False, claim=True) == 2
+    assert chair.read(tmp_path) == record
+
+
+def test_claim_under_a_stale_lock_takes_it_over_and_names_the_previous_holder(tmp_path, capsys):
+    (tmp_path / "chair.json").write_text(json.dumps(_record("loop-a", os.getpid())))
+    assert cli._leader_guard_or_refuse(tmp_path, "loop-b", False, claim=True) is None
+    assert capsys.readouterr().out == "taking the loop from loop-a (stale)\n"
+    assert chair.read(tmp_path)["session"] == "loop-b"
+
+
+def test_no_claim_proceeds_without_writing(tmp_path):
+    original = _record("loop-a", os.getpid())
+    (tmp_path / "chair.json").write_text(json.dumps(original))
+    assert cli._leader_guard_or_refuse(tmp_path, "loop-b", False, claim=False) is None
+    assert chair.read(tmp_path) == original
+
+
+def test_read_only_call_never_claims_and_writes_nothing(tmp_path):
+    assert cli._leader_guard_or_refuse(tmp_path, "loop-b", False) is None
+    assert not (tmp_path / "chair.json").exists()
+    assert not (tmp_path / "leader.json").exists()
+
+
 def test_read_finds_chair_json_when_present(tmp_path):
     record = _record("loop-a", os.getpid())
     (tmp_path / "chair.json").write_text(json.dumps(record))
