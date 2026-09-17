@@ -3061,8 +3061,11 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--team"); up.add_argument("--workspace"); up.add_argument("--to"); up.add_argument("--dry-run", action="store_true")
     up.set_defaults(fn=_upgrade)
 
-    ver = sub.add_parser("versions", help="component versions against the manifest")
-    ver.add_argument("--root"); ver.add_argument("--manifest"); ver.set_defaults(fn=_versions)
+    versions_group = commands.Group(
+        name="versions", help="component versions against the manifest", description="", epilog="",
+        args=(commands.Arg(("--root",)), commands.Arg(("--manifest",))), fn=_versions,
+    )
+    commands.build_parser([], [versions_group], sub)
 
     dev = sub.add_parser(
         "dev", help="maintainer commands for the Coxswain repositories",
