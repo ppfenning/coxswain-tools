@@ -2333,14 +2333,6 @@ def _release_detail(step: dict) -> str:
     return fmt(step) if fmt is not None else str(step)
 
 
-def _default_branch(directory: str, run) -> str:
-    """`directory`'s default branch, read from `origin/HEAD` — `"main"` when
-    that symbolic ref can't be read (a plain checkout with no such ref set,
-    or a directory the fake runner in tests never populated one for)."""
-    ref_rc, ref_out = run(["git", "-C", directory, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], None)
-    return ref_out.strip().rsplit("/", 1)[-1] if ref_rc == 0 and ref_out.strip() else "main"
-
-
 def _checkout_ready(directory: str, run) -> tuple[bool, str]:
     """Clean and on its default branch, or `(False, reason)` — checked
     before a single tag is made, since a release must never tag some
@@ -2352,77 +2344,11 @@ def _checkout_ready(directory: str, run) -> tuple[bool, str]:
         return False, f"{directory} is dirty"
     _, branch_out = run(["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], None)
     current = branch_out.strip()
-    default = _default_branch(directory, run)
+    ref_rc, ref_out = run(["git", "-C", directory, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], None)
+    default = ref_out.strip().rsplit("/", 1)[-1] if ref_rc == 0 and ref_out.strip() else "main"
     if current != default:
         return False, f"{directory} is on {current}, not {default}"
     return True, ""
-
-
-def _release_step_dir(component: str, root: str, overrides: dict, umbrella: str) -> str:
-    """The checkout a `bump_pyproject`/`push`/`pr_create`/`wait_checks`/`merge`
-    step runs against: `umbrella` for the manifest's own bump (its component
-    is always `"manifest"`, never a real manifest entry), otherwise that
-    component's own checkout."""
-    return umbrella if component == "manifest" else release.component_dir(root, component, overrides)
-
-
-def _release_bump(directory: str, branch: str, commit_subject: str, paths: list[str], write, run) -> tuple[bool, str]:
-    """Checks out `branch` from the default branch in `directory`, and only
-    once that succeeds calls `write()` to rewrite `paths` on disk — `write`
-    never runs, and nothing on the default branch is ever touched, when the
-    checkout itself fails (a stale local `branch` left by an earlier partial
-    run, a hook, a permission error). Then stages `paths` and commits them
-    with `commit_subject`. `(False, detail)` names the first git call that
-    failed."""
-    co_rc, co_out = run(release.checkout_branch_argv(directory, branch), None)
-    if co_rc != 0:
-        return False, co_out.strip() or "checkout failed"
-    write()
-    add_rc, add_out = run(release.add_argv(directory, *paths), None)
-    if add_rc != 0:
-        return False, add_out.strip() or "add failed"
-    commit_rc, commit_out = run(release.commit_argv(directory, commit_subject, *paths), None)
-    if commit_rc != 0:
-        return False, commit_out.strip() or "commit failed"
-    return True, "committed"
-
-
-def _release_bump_pyproject(directory: str, path: Path, to: str, branch: str, commit_subject: str,
-                             run) -> tuple[bool, str]:
-    """`_release_bump` for a `bump_pyproject` step: rewrites `path`'s version
-    line to `to`, only once `branch` is checked out."""
-    def write():
-        path.write_text(release.bumped_version_line(path.read_text(), to))
-    return _release_bump(directory, branch, commit_subject, ["pyproject.toml"], write, run)
-
-
-def _release_bump_manifest(umbrella: str, manifest_file: Path, to: str, branch: str, commit_subject: str,
-                            rejoining: set, run) -> tuple[bool, str]:
-    """`_release_bump` for a `bump_manifest` step: rewrites `manifest_file`'s
-    version and component tags, and — when the umbrella checkout carries its
-    own `pyproject.toml` — that file's version line and, when `uv.lock` also
-    exists and that pyproject names a package, its matching `[[package]]`
-    stanza's version — all only once `branch` is checked out. Which of the
-    umbrella's files exist is read before the checkout (a read touches
-    nothing), so `paths` is known up front without ever writing early."""
-    pyproject_path = Path(umbrella) / "pyproject.toml"
-    lock_path = Path(umbrella) / "uv.lock"
-    paths = ["manifest.toml"]
-    package_name = None
-    if pyproject_path.exists():
-        package_name = tomllib.loads(pyproject_path.read_text()).get("project", {}).get("name")
-        paths.append("pyproject.toml")
-        if lock_path.exists() and package_name:
-            paths.append("uv.lock")
-
-    def write():
-        manifest_file.write_text(release.bumped_manifest_text(manifest_file.read_text(), to, rejoining=rejoining))
-        if "pyproject.toml" in paths:
-            pyproject_path.write_text(release.bumped_version_line(pyproject_path.read_text(), to))
-        if "uv.lock" in paths:
-            lock_path.write_text(release.bumped_uv_lock_text(lock_path.read_text(), package_name, to))
-
-    return _release_bump(umbrella, branch, commit_subject, paths, write, run)
 
 
 def _component_declares_tag_trigger(directory: str) -> bool:
@@ -2506,31 +2432,28 @@ def _github_release_notes_text(umbrella: str, notes_path: str, heading: str, fro
 
 
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run,
-                      manifest: dict, manifest_path: str) -> int:
-    """Runs `steps` for real, through `run`. Every checkout that will be
-    tagged or branched — every component, the umbrella when `tag_self` is in
-    the plan, and any component or the umbrella a `bump_pyproject` or
-    `bump_manifest` step will branch — and the umbrella's release note are
-    all checked before a single tag is made. Then each `tag` step's tag and
+                      manifest: dict) -> int:
+    """Runs `steps` for real, through `run`. Refuses outright, before `run`
+    is ever called, when the plan still carries a `bump_manifest` step: that
+    step only happens by bumping and committing the manifest by hand, so a
+    plan built from a not-yet-bumped manifest must never tag and push —
+    pushed tags cannot be recalled, and a printed line is not the same as
+    the manifest actually saying the new version. Otherwise every checkout
+    that will be tagged — every component, plus the umbrella when
+    `tag_self` is in the plan — and the umbrella's release note are all
+    checked before a single tag is made. Then each `tag` step's tag and
     push run in turn, and `tag_self` tags and pushes the umbrella; a
     `pinned` step runs no git command at all, since its component keeps the
-    tag the manifest already names. A `bump_pyproject`/`bump_manifest` step
-    checks out its `branch`, rewrites the version on disk and commits it —
-    a no-op, printing "already at <version>", when the file already reads
-    `to`, and every later `push`/`pr_create`/`wait_checks`/`merge` step for
-    that same component no-ops the same way rather than push a branch
-    nothing was committed to. `merge` squash-merges and, once that lands,
-    switches the checkout back to its default branch and pulls it — the very
-    next step for that same directory is the pre-existing `tag`/`tag_self`
-    executor, which tags HEAD with no ref, so without this the tag would
-    land on the stale pre-squash commit `bump_pyproject`/`bump_manifest`
-    left checked out on `release/<version>` instead of what actually merged.
-    A `github_release` step checks `gh release view` first and edits an
-    existing release instead of creating one. One line per step; the first
-    failure stops the rest."""
+    tag the manifest already names. A `github_release` step checks
+    `gh release view` first and edits an existing release instead of
+    creating one. One line per step; the first failure stops the rest."""
     refusal = next((s for s in steps if s["kind"] == "refuse"), None)
     if refusal is not None:
         print(f"refuse {refusal['component']}: {refusal['detail']}")
+        return 2
+
+    if any(s["kind"] == "bump_manifest" for s in steps):
+        print("refuse manifest: bump and commit the manifest to this version by hand before executing this release")
         return 2
 
     tag_checkouts = [(s["component"], release.component_dir(root, s["component"], overrides))
@@ -2546,12 +2469,6 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
         if not (Path(umbrella) / notes_step["path"]).exists():
             print(f"refuse notes: {notes_step['path']} missing under {umbrella}")
             return 2
-
-    # A component whose bump_pyproject/bump_manifest step no-ops (the file was
-    # already at the target version) has nothing to push, PR, wait on or
-    # merge; its later land steps no-op the same way rather than push a
-    # branch nothing was ever committed to.
-    already_bumped: dict[str, str] = {}
 
     for step in steps:
         kind = step["kind"]
@@ -2575,89 +2492,6 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
             print(f"note {step['component']}: {step['detail']}")
         elif kind == "pinned":
             print(f"pinned {step['component']}: {step['tag']}")
-        elif kind == "bump_pyproject":
-            directory = release.component_dir(root, step["component"], overrides)
-            path = Path(directory) / "pyproject.toml"
-            if release.component_version(path.read_text()) == step["to"]:
-                already_bumped[step["component"]] = step["to"]
-                print(f"bump_pyproject {step['component']}: already at {step['to']}")
-                continue
-            ok, detail = _release_bump_pyproject(directory, path, step["to"], step["branch"],
-                                                  step["commit_subject"], run)
-            if not ok:
-                print(f"FAILED bump_pyproject {step['component']}: {detail}")
-                return 2
-            print(f"bump_pyproject {step['component']}: {step['from']} -> {step['to']}")
-        elif kind == "bump_manifest":
-            manifest_file = Path(manifest_path)
-            if tomllib.loads(manifest_file.read_text()).get("coxswain", {}).get("version") == step["to"]:
-                already_bumped[step["component"]] = step["to"]
-                print(f"bump_manifest {step['component']}: already at {step['to']}")
-                continue
-            ok, detail = _release_bump_manifest(umbrella, manifest_file, step["to"], step["branch"],
-                                                 step["commit_subject"], release.rejoined(steps), run)
-            if not ok:
-                print(f"FAILED bump_manifest {step['component']}: {detail}")
-                return 2
-            print(f"bump_manifest {step['component']}: {step['from']} -> {step['to']}")
-        elif kind == "push":
-            if step["component"] in already_bumped:
-                print(f"push {step['component']}: already at {already_bumped[step['component']]}")
-                continue
-            directory = _release_step_dir(step["component"], root, overrides, umbrella)
-            push_rc, push_out = run(release.push_branch_argv(directory, step["branch"]), None)
-            if push_rc != 0:
-                print(f"FAILED push {step['component']}: {push_out.strip()}")
-                return 2
-            print(f"push {step['component']}: {step['branch']}")
-        elif kind == "pr_create":
-            if step["component"] in already_bumped:
-                print(f"pr_create {step['component']}: already at {already_bumped[step['component']]}")
-                continue
-            directory = _release_step_dir(step["component"], root, overrides, umbrella)
-            pr_rc, pr_out = run(release.pr_create_argv(step["title"], step["body"]), directory)
-            if pr_rc != 0:
-                print(f"FAILED pr_create {step['component']}: {pr_out.strip()}")
-                return 2
-            print(f"pr_create {step['component']}: {step['title']}")
-        elif kind == "wait_checks":
-            if step["component"] in already_bumped:
-                print(f"wait_checks {step['component']}: already at {already_bumped[step['component']]}")
-                continue
-            directory = _release_step_dir(step["component"], root, overrides, umbrella)
-            wc_rc, wc_out = run(release.pr_checks_argv(), directory)
-            if wc_rc != 0:
-                print(f"FAILED wait_checks {step['component']}: {wc_out.strip()}")
-                return 2
-            print(f"wait_checks {step['component']}: {wc_out.strip() or 'green'}")
-        elif kind == "merge":
-            if step["component"] in already_bumped:
-                print(f"merge {step['component']}: already at {already_bumped[step['component']]}")
-                continue
-            directory = _release_step_dir(step["component"], root, overrides, umbrella)
-            merge_rc, merge_out = run(release.pr_merge_argv(), directory)
-            if merge_rc != 0:
-                print(f"FAILED merge {step['component']}: {merge_out.strip()}")
-                return 2
-            # `gh pr merge --squash` lands the bump as a brand-new commit on
-            # the default branch upstream; it does not touch this local
-            # checkout, which `bump_pyproject`/`bump_manifest` left on
-            # `release/<version>`. The very next step for this same directory
-            # is the pre-existing `tag`/`tag_self` executor, which tags HEAD
-            # with no ref — so without switching back and pulling here, it
-            # would tag the stale pre-squash commit on the release branch,
-            # not what actually landed, and leave the checkout parked off
-            # the default branch for the next release to refuse.
-            default = _default_branch(directory, run)
-            co_rc, co_out = run(release.checkout_ref_argv(directory, default), None)
-            if co_rc != 0:
-                print(f"FAILED merge {step['component']}: {co_out.strip()}")
-                return 2
-            pull_rc, pull_out = run(release.pull_argv(directory, default), None)
-            if pull_rc != 0:
-                print(f"FAILED merge {step['component']}: {pull_out.strip()}")
-                return 2
-            print(f"merge {step['component']}: merged")
         elif kind == "tag_self":
             self_tag_rc, self_tag_out = run(release.tag_argv(umbrella, version), None)
             if self_tag_rc != 0:
@@ -2766,16 +2600,15 @@ def _release(a: argparse.Namespace) -> int:
         found = release.component_version(pyproject_path.read_text())
         if found is not None:
             component_versions[name] = found
-    plan_steps = release.release_plan(
+    steps = release.gate(drifts, a.allow_doc_drift) + release.release_plan(
         manifest, a.version, existing_tags, component_versions=component_versions, pinned_commits=pinned_commits,
         tools_repository_url=_tools_repository_url())
-    steps = release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps
     if a.dry_run:
         for step in steps:
             print(f"{step['kind']} {step['component']}: {_release_detail(step)}")
         return 2 if any(step["kind"] == "refuse" for step in steps) else 0
     umbrella = a.umbrella or str(Path(root) / "coxswain")
-    return _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest, str(manifest_path))
+    return _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest)
 
 
 def _backfill_github_releases(a: argparse.Namespace) -> int:
@@ -3322,11 +3155,26 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("home")
     commands.build_parser(rows, [group], sub)
 
-    group, rows = _table_entry("setup")
-    setup_p = commands.build_parser(rows, [group], sub)["setup"]
-    # commands.build_parser's generic bare-group fallback prints help and
-    # exits 2; a bare `cox setup` instead opens the TUI, so override it here.
+    setup_p = sub.add_parser(
+        "setup", help="does this machine's profile actually work",
+        description="Does this machine's profile actually work.",
+        epilog="examples:\n  cox setup doctor --profile PATH\n  cox setup install --root PATH --team NAME --workspace PATH",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    setup_p.add_argument("--profile")
     setup_p.set_defaults(fn=_setup_tui)
+    su = setup_p.add_subparsers(dest="cmd", required=False)
+    sd = su.add_parser("doctor", help="check this machine's profile against what it needs"); sd.add_argument("--profile"); sd.add_argument("--repo", help="target repo to check for a .agent/cartridge.yaml overlay (default: cwd)"); sd.add_argument("--json", action="store_true"); sd.set_defaults(fn=_setup_doctor)
+    si = su.add_parser("install", help="clone components and write a profile for this machine")
+    si.add_argument("--root", required=True); si.add_argument("--team", required=True); si.add_argument("--workspace", required=True)
+    si.add_argument("--provider-profile"); si.add_argument("--skills-root"); si.add_argument("--assume", default="a", choices=("a", "r"))
+    si.add_argument("--plugins", action="store_true"); si.add_argument("--hook", action="store_true")
+    si.add_argument("--force-profile", action="store_true"); si.add_argument("--dry-run", action="store_true")
+    si.add_argument("--window-ceiling-usd", type=float, default=None, dest="window_ceiling_usd",
+                     help="write spend: window_ceiling_usd into the profile")
+    si.add_argument("--weekly-ceiling-usd", type=float, default=None, dest="weekly_ceiling_usd",
+                     help="write spend: weekly_ceiling_usd into the profile")
+    si.set_defaults(fn=_setup_install)
     return p
 
 
@@ -3464,43 +3312,6 @@ EPIC_COMMANDS = [
     ),
 ]
 
-def _setup_doctor_row(a: argparse.Namespace) -> int:
-    """Indirect through the module global, not a frozen reference: SETUP_COMMANDS
-    is built once at import, but test_setup_screen.py monkeypatches
-    `cli._setup_doctor` per test and expects the swap honoured."""
-    return _setup_doctor(a)
-
-
-SETUP_GROUP = commands.Group(
-    name="setup", help="does this machine's profile actually work",
-    description="Does this machine's profile actually work.",
-    epilog="examples:\n  cox setup doctor --profile PATH\n  cox setup install --root PATH --team NAME --workspace PATH",
-    args=(commands.Arg(("--profile",)),),
-)
-SETUP_COMMANDS = [
-    commands.Command(
-        "doctor", "setup", "check this machine's profile against what it needs",
-        (
-            commands.Arg(("--profile",)),
-            commands.Arg(("--repo",), {"help": "target repo to check for a .agent/cartridge.yaml overlay (default: cwd)"}),
-            commands.Arg(("--json",), {"action": "store_true"}),
-        ),
-        _setup_doctor_row, False, (),
-    ),
-    commands.Command(
-        "install", "setup", "clone components and write a profile for this machine",
-        (
-            commands.Arg(("--root",), {"required": True}), commands.Arg(("--team",), {"required": True}), commands.Arg(("--workspace",), {"required": True}),
-            commands.Arg(("--provider-profile",)), commands.Arg(("--skills-root",)), commands.Arg(("--assume",), {"default": "a", "choices": ("a", "r")}),
-            commands.Arg(("--plugins",), {"action": "store_true"}), commands.Arg(("--hook",), {"action": "store_true"}),
-            commands.Arg(("--force-profile",), {"action": "store_true"}), commands.Arg(("--dry-run",), {"action": "store_true"}),
-            commands.Arg(("--window-ceiling-usd",), {"type": float, "default": None, "dest": "window_ceiling_usd", "help": "write spend: window_ceiling_usd into the profile"}),
-            commands.Arg(("--weekly-ceiling-usd",), {"type": float, "default": None, "dest": "weekly_ceiling_usd", "help": "write spend: weekly_ceiling_usd into the profile"}),
-        ),
-        _setup_install, False, (),
-    ),
-]
-
 COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
@@ -3510,7 +3321,6 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (USAGE_GROUP, USAGE_COMMANDS),
     (PLAN_GROUP, PLAN_COMMANDS),
     (EPIC_GROUP, EPIC_COMMANDS),
-    (SETUP_GROUP, SETUP_COMMANDS),
 ]
 
 
