@@ -1,14 +1,9 @@
 """Pure box-drawing and meter rendering for cox home btop panels."""
 from dataclasses import dataclass
 
+from agent_tools.home_model import Line, Span
 
-@dataclass(frozen=True)
-class Span:
-    text: str
-    role: str = "plain"
-
-
-Line = tuple[Span, ...]
+__all__ = ["BORDERS", "MIN_SIZE", "Borders", "Line", "Span", "box", "meter"]
 
 
 @dataclass(frozen=True)

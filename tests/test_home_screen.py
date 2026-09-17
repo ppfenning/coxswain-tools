@@ -107,10 +107,22 @@ def test_draw_contains_each_panes_expected_lines_and_marks_a_stale_panel():
     draw(stdscr, _facts_fixture(), state, statuses)
 
     text = [call[2] for call in stdscr.addnstr_calls]
-    assert any("LEADER" in line for line in text)
+    assert any("Leader" in line for line in text)
     assert any("queued 1" in line for line in text)
-    assert any("WINDOW" in line for line in text)
-    assert any(line.startswith("! ") and "BACKLOG" in line for line in text)
+    assert any("Window" in line for line in text)
+    assert any("! Backlog" in line for line in text)
+
+
+def test_draw_marks_only_the_stale_panel_when_titles_share_one_row_at_a_wide_width():
+    stdscr = _FakeStdscr(size=(24, 200))
+    state = home_model.State(plugin_dir="/plugins/coxswain", leader_liveness="live", other_holder=None)
+    statuses = {"leader": "fresh", "runs": "fresh", "backlog": "stale", "window": "fresh"}
+
+    draw(stdscr, _facts_fixture(), state, statuses)
+
+    top_row = next(call[2] for call in stdscr.addnstr_calls if "Leader" in call[2])
+    assert "! Backlog" in top_row
+    assert "! Leader" not in top_row
 
 
 def test_t_key_runs_claude_with_the_plugin_dir_and_opening():
