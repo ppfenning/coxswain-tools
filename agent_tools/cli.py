@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import uuid
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,7 @@ import yaml
 from agent_tools import (
     chair,
     cleanup,
+    courier,
     doctor,
     epic,
     install,
@@ -2671,6 +2673,16 @@ def build_parser() -> argparse.ArgumentParser:
         _launch_parser.add_argument("--force", action="store_true", help="launch despite a usage stop or a foreign live leader")
         _launch_parser.add_argument("--label")
 
+    courier_p = sub.add_parser("courier", help="the courier bus: hand a reference to another label")
+    courier_p.set_defaults(fn=_bare_group(courier_p)); cr = courier_p.add_subparsers(dest="cmd", required=False)
+    crs = cr.add_parser("send", help="append a bus entry naming a courier reference")
+    crs.add_argument("ref"); crs.add_argument("--to", required=True); crs.add_argument("--note", required=True)
+    crs.add_argument("--profile"); crs.set_defaults(fn=_courier_send)
+    cri = cr.add_parser("inbox", help="list this label's unacknowledged bus entries")
+    cri.add_argument("--label"); cri.add_argument("--profile"); cri.set_defaults(fn=_courier_inbox)
+    cra = cr.add_parser("ack", help="acknowledge one bus entry by id")
+    cra.add_argument("id"); cra.add_argument("--profile"); cra.set_defaults(fn=_courier_ack)
+
     ins = sub.add_parser("install", help="clone/update coxswain components against the manifest")
     ins.add_argument("--root", required=True); ins.add_argument("--manifest"); ins.add_argument("--provider", default="claude-code")
     ins.add_argument("--with", action="append", default=None, dest="with_", metavar="FLAG")
@@ -2772,6 +2784,48 @@ def _spawn(argv: list[str]) -> subprocess.Popen:
     )
 
 
+def _courier_workspace(a: argparse.Namespace) -> Path | None:
+    profile, reason, *_ = _gather_context(_profile_path(a))
+    if reason: print(f"routing: {reason}"); return None
+    return Path(profile["workspace_dir"]).expanduser()
+
+
+def _courier_send(a: argparse.Namespace) -> int:
+    workspace = _courier_workspace(a)
+    if workspace is None: return 2
+    ref = courier.parse_reference(a.ref)
+    if ref is None or courier.resolve(ref, workspace) is None:
+        print(f"courier: {a.ref} does not resolve"); return 2
+    path = workspace / "courier.jsonl"
+    sender = (chair.read(workspace / "runs") or {}).get("session") or "cli"
+    entry = courier.send(ref, sender, a.to, a.note, uuid.uuid4().hex)
+    path.write_text(courier.append_line(_read_text_or_none(path) or "", entry), encoding="utf-8")
+    return 0
+
+
+def _print_inbox(blob: str, label: str | None) -> None:
+    for entry in courier.inbox(blob, label):
+        print(f"{entry['id']}: {entry['from']} -> {entry['to']}: {entry['note']} ({entry['ref']})")
+
+
+def _courier_inbox(a: argparse.Namespace) -> int:
+    workspace = _courier_workspace(a)
+    if workspace is None: return 2
+    _print_inbox(_read_text_or_none(workspace / "courier.jsonl") or "", a.label)
+    return 0
+
+
+def _courier_ack(a: argparse.Namespace) -> int:
+    workspace = _courier_workspace(a)
+    if workspace is None: return 2
+    path = workspace / "courier.jsonl"
+    blob = _read_text_or_none(path) or ""
+    updated = courier.ack(blob, a.id)
+    if updated == blob: print(f"courier: no entry {a.id}"); return 2
+    path.write_text(updated, encoding="utf-8")
+    return 0
+
+
 def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     """Bare `cox` (spec §7): a real Claude Code session with the coxswain
     plugin loaded and the profile's workspace as cwd. Resolves the profile
@@ -2829,6 +2883,7 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
             print(f"chair: beater failed to start: {exc}")
         else:
             print(f"chair: beating from pid {beater.pid}")
+        _print_inbox(_read_text_or_none(Path(workspace).expanduser() / "courier.jsonl") or "", chair_a.label)
     os.chdir(cwd)
     os.execvp(argv[0], argv)
     return 0

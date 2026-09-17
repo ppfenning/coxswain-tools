@@ -1,8 +1,9 @@
+import argparse
 import json
 
 import pytest
 
-from agent_tools.courier import Reference, format_reference, parse_reference, resolve
+from agent_tools.courier import Reference, ack, append_line, format_reference, inbox, parse_reference, resolve, send
 
 _REFS = [
     Reference("run", "r1"),
@@ -99,3 +100,140 @@ def test_resolve_intake(tmp_path):
 
 def test_resolve_missing_run_is_none(tmp_path):
     assert resolve(Reference("run", "nope"), tmp_path) is None
+
+
+def test_send_builds_an_unacknowledged_entry():
+    entry = send(Reference("run", "r1"), "chair-2026-09-16", "cos", "look at this", "m1")
+    assert entry == {
+        "ref": "coxswain://run/r1", "from": "chair-2026-09-16", "to": "cos", "note": "look at this",
+        "id": "m1", "ack": False,
+    }
+
+
+def test_append_line_on_an_empty_blob_writes_one_line():
+    entry = send(Reference("run", "r1"), "a", "b", "note", "m1")
+    blob = append_line("", entry)
+    lines = blob.splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == entry
+
+
+def test_append_line_on_a_non_empty_blob_keeps_the_prior_lines_and_adds_one():
+    first = append_line("", send(Reference("run", "r1"), "a", "b", "note", "m1"))
+    entry2 = send(Reference("run", "r2"), "a", "b", "note two", "m2")
+    blob = append_line(first, entry2)
+    lines = blob.splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[1]) == entry2
+
+
+def _bus(entries):
+    blob = ""
+    for entry in entries:
+        blob = append_line(blob, entry)
+    return blob
+
+
+def test_inbox_returns_only_unacknowledged_entries():
+    e1 = send(Reference("run", "r1"), "a", "cos", "one", "m1")
+    e2 = send(Reference("run", "r2"), "a", "cos", "two", "m2")
+    blob = _bus([e1, {**e2, "ack": True}])
+    assert inbox(blob) == [e1]
+
+
+def test_inbox_filters_by_label():
+    e1 = send(Reference("run", "r1"), "a", "cos", "one", "m1")
+    e2 = send(Reference("run", "r2"), "a", "epic", "two", "m2")
+    blob = _bus([e1, e2])
+    assert inbox(blob, label="epic") == [e2]
+
+
+def test_ack_flips_one_entrys_flag_and_leaves_the_others_unchanged():
+    e1 = send(Reference("run", "r1"), "a", "cos", "one", "m1")
+    e2 = send(Reference("run", "r2"), "a", "cos", "two", "m2")
+    blob = _bus([e1, e2])
+    updated = ack(blob, "m1")
+    assert inbox(updated) == [e2]
+
+
+def test_ack_of_an_unknown_id_leaves_the_blob_unchanged():
+    blob = _bus([send(Reference("run", "r1"), "a", "cos", "one", "m1")])
+    assert ack(blob, "nope") == blob
+
+
+def _profile(tmp_path):
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {ws}\n")
+    return profile, ws
+
+
+def test_courier_send_refuses_a_reference_that_fails_to_parse(tmp_path):
+    from agent_tools.cli import _courier_send
+
+    profile, ws = _profile(tmp_path)
+    a = argparse.Namespace(profile=str(profile), ref="not-a-reference", to="cos", note="hi")
+    assert _courier_send(a) != 0
+    assert not (ws / "courier.jsonl").exists()
+
+
+def test_courier_send_refuses_a_reference_that_fails_to_resolve(tmp_path):
+    from agent_tools.cli import _courier_send
+
+    profile, ws = _profile(tmp_path)
+    a = argparse.Namespace(profile=str(profile), ref="coxswain://run/nope", to="cos", note="hi")
+    assert _courier_send(a) != 0
+    assert not (ws / "courier.jsonl").exists()
+
+
+def test_courier_inbox_prints_only_the_labels_unacknowledged_entries(tmp_path, capsys):
+    from agent_tools.cli import _courier_inbox
+
+    profile, ws = _profile(tmp_path)
+    mine = send(Reference("run", "r1"), "a", "cos", "for cos", "m1")
+    theirs = send(Reference("run", "r2"), "a", "epic", "for epic", "m2")
+    (ws / "courier.jsonl").write_text(_bus([mine, theirs]), encoding="utf-8")
+    rc = _courier_inbox(argparse.Namespace(profile=str(profile), label="cos"))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "for cos" in out and "for epic" not in out
+
+
+def test_courier_ack_flips_the_entry_and_a_second_ack_reports_no_entry(tmp_path, capsys):
+    from agent_tools.cli import _courier_ack, _courier_inbox
+
+    profile, ws = _profile(tmp_path)
+    entry = send(Reference("run", "r1"), "a", "cos", "for cos", "m1")
+    (ws / "courier.jsonl").write_text(_bus([entry]), encoding="utf-8")
+    assert _courier_ack(argparse.Namespace(profile=str(profile), id="m1")) == 0
+    _courier_inbox(argparse.Namespace(profile=str(profile), label=None))
+    assert "for cos" not in capsys.readouterr().out
+    assert _courier_ack(argparse.Namespace(profile=str(profile), id="nope")) != 0
+
+
+class _FakeBeater:
+    pid = 424242
+
+
+def test_bare_cox_prints_the_inbox_for_the_chair_label_it_just_took(tmp_path, monkeypatch, capsys):
+    """End to end through `main`: chair take succeeds, the inbox line for that
+    chair's own label prints before the (stubbed) exec — `tests/test_launcher.py`'s
+    own `_fake_spawn`/`shutil.which` stubs, reused so the beater and claude are
+    never really spawned."""
+    import datetime
+
+    from agent_tools.cli import main
+
+    profile, ws = _profile(tmp_path)
+    label = f"chair-{datetime.datetime.now(datetime.UTC):%Y-%m-%d}"
+    entry = send(Reference("run", "r1"), "a", label, "look at this", "m1")
+    (ws / "courier.jsonl").write_text(append_line("", entry), encoding="utf-8")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr("agent_tools.cli._spawn", lambda argv: _FakeBeater())
+    monkeypatch.setattr("os.execvp", lambda *a: None)
+    monkeypatch.setattr("os.chdir", lambda *a: None)
+    rc = main(["--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "look at this" in out

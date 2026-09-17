@@ -10,7 +10,7 @@ from typing import NamedTuple
 from agent_tools.route import intake_entries, parse_frontmatter
 from agent_tools.stats_ingest import LEDGER_PATH, _read_ledger
 
-__all__ = ["Reference", "format_reference", "parse_reference", "resolve"]
+__all__ = ["Reference", "ack", "append_line", "format_reference", "inbox", "parse_reference", "resolve", "send"]
 
 _KINDS = ("run", "task", "pr", "intake", "proposal", "finding")
 _PATTERN = re.compile(r"^coxswain://([a-z]+)/(.+)$")
@@ -95,3 +95,32 @@ def resolve(ref: Reference, workspace_dir: Path | str, ledger_path: Path | str |
     if ref.kind == "intake":
         return _intake_record(workspace_dir, ref.id)
     return _work_item(workspace_dir, ref.id)
+
+
+def send(ref: Reference, sender: str, to: str, note: str, message_id: str) -> dict:
+    """Builds one bus entry; never writes it (docs/design/courier.md `#the-bus`)."""
+    return {"ref": format_reference(ref), "from": sender, "to": to, "note": note, "id": message_id, "ack": False}
+
+
+def append_line(blob: str, entry: dict) -> str:
+    return blob + json.dumps(entry) + "\n"
+
+
+def _latest_by_id(blob: str) -> dict[str, dict]:
+    """Last line per id wins, in first-seen order."""
+    latest: dict[str, dict] = {}
+    for line in blob.splitlines():
+        if line.strip():
+            entry = json.loads(line)
+            latest[entry["id"]] = entry
+    return latest
+
+
+def inbox(blob: str, label: str | None = None) -> list[dict]:
+    entries = _latest_by_id(blob).values()
+    return [e for e in entries if not e["ack"] and (label is None or e["to"] == label)]
+
+
+def ack(blob: str, message_id: str) -> str:
+    entry = _latest_by_id(blob).get(message_id)
+    return blob if entry is None else append_line(blob, {**entry, "ack": True})
