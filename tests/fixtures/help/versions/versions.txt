@@ -1,0 +1,6 @@
+usage: cox versions [-h] [--root ROOT] [--manifest MANIFEST]
+
+options:
+  -h, --help           show this help message and exit
+  --root ROOT
+  --manifest MANIFEST
