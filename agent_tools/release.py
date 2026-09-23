@@ -481,19 +481,36 @@ _MANIFEST_SECTION_RE = re.compile(r"^\[components\.([\w-]+)\]\s*$")
 _MANIFEST_LOCKSTEP_FALSE_RE = re.compile(r"^\s*lockstep\s*=\s*false\s*$", re.IGNORECASE)
 _MANIFEST_VERSION_RE = re.compile(r'(\s*version\s*=\s*")[^"]*(")')
 _MANIFEST_TAG_RE = re.compile(r'(\s*tag\s*=\s*")v[^"]*(")')
+# Any `[table]` or `[table.sub]` header, to know which table an inline-table
+# line sits under — an inline component only ever appears directly under the
+# bare `[components]` table, never under `[coxswain]` or some other table
+# that happens to hold an unrelated inline table with its own `tag` key.
+_MANIFEST_TABLE_RE = re.compile(r"^\[([\w.-]+)\]\s*$")
+# An inline-table component: `name = { repo = ..., tag = "v...", ... }` on one line.
+_MANIFEST_INLINE_RE = re.compile(r"^\s*([\w-]+)\s*=\s*\{(.*)\}\s*$")
+_MANIFEST_INLINE_LOCKSTEP_FALSE_RE = re.compile(r"\blockstep\s*=\s*false\b", re.IGNORECASE)
+_MANIFEST_INLINE_TAG_RE = re.compile(r'(\btag\s*=\s*")v[^"]*(")')
 
 
 def _pinned_components(text: str) -> set[str]:
-    """Component names whose `[components.<name>]` section declares
-    `lockstep = false` anywhere in it."""
+    """Component names whose `[components.<name>]` section, or whose own
+    `name = { ... }` inline-table line directly under `[components]`,
+    declares `lockstep = false` anywhere in it."""
     section = None
+    table = None
     pinned = set()
     for line in text.splitlines():
         m = _MANIFEST_SECTION_RE.match(line)
+        t = _MANIFEST_TABLE_RE.match(line)
+        inline = _MANIFEST_INLINE_RE.match(line)
         if m:
-            section = m.group(1)
+            section, table = m.group(1), None
+        elif t:
+            section, table = None, t.group(1)
         elif section and _MANIFEST_LOCKSTEP_FALSE_RE.match(line):
             pinned.add(section)
+        elif table == "components" and inline and _MANIFEST_INLINE_LOCKSTEP_FALSE_RE.search(inline.group(2)):
+            pinned.add(inline.group(1))
     return pinned
 
 
@@ -504,21 +521,33 @@ def rejoined(steps: list[dict]) -> set[str]:
 
 def bumped_manifest_text(text: str, version: str, rejoining: Iterable[str] = ()) -> str:
     """`text` with every `version = "..."` value, and every `tag = "v..."`
-    value outside a `lockstep = false` component's section, rewritten to
-    `version` — comments, blank lines and layout untouched; a pinned
-    component's own `tag` line is left exactly as it reads, unless named in `rejoining`."""
+    value outside a `lockstep = false` component's section — whether the
+    component is a `[components.<name>]` section or a `name = { ... }`
+    inline table directly under `[components]` — rewritten to `version`;
+    comments, blank lines and layout untouched, and every other key on an
+    inline table's line kept byte-identical. A pinned component's own `tag`
+    is left exactly as it reads, unless named in `rejoining`."""
     new_tag = "v" + version
     pinned = _pinned_components(text) - set(rejoining)
     section = None
+    table = None
     out = []
     for line in text.splitlines(keepends=True):
-        m = _MANIFEST_SECTION_RE.match(line.rstrip("\n"))
+        stripped = line.rstrip("\n")
+        m = _MANIFEST_SECTION_RE.match(stripped)
+        t = _MANIFEST_TABLE_RE.match(stripped)
+        inline = _MANIFEST_INLINE_RE.match(stripped)
         if m:
-            section = m.group(1)
+            section, table = m.group(1), None
+        elif t:
+            section, table = None, t.group(1)
         if _MANIFEST_VERSION_RE.match(line):
             out.append(_MANIFEST_VERSION_RE.sub(lambda m: f"{m.group(1)}{version}{m.group(2)}", line))
         elif _MANIFEST_TAG_RE.match(line) and section not in pinned:
             out.append(_MANIFEST_TAG_RE.sub(lambda m: f"{m.group(1)}{new_tag}{m.group(2)}", line))
+        elif (table == "components" and inline and inline.group(1) not in pinned
+              and _MANIFEST_INLINE_TAG_RE.search(inline.group(2))):
+            out.append(_MANIFEST_INLINE_TAG_RE.sub(lambda m: f"{m.group(1)}{new_tag}{m.group(2)}", line))
         else:
             out.append(line)
     return "".join(out)
