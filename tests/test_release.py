@@ -1524,3 +1524,32 @@ def test_backfill_umbrella_repo_matches_umbrella_release_slugs_own_fallback(tmp_
     assert rc == 0
     expected_slug = release.umbrella_release_slug(tomllib.loads(_BACKFILL_MANIFEST_NO_UMBRELLA_REPO), _TOOLS_REPO_URL)
     assert f"created {expected_slug} v0.1.0" in out
+
+
+def _wait_checks_run(answers):
+    calls = []
+
+    def run(argv, cwd):
+        calls.append(argv)
+        return next(answers)
+    return calls, run
+
+
+def test_release_execute_wait_checks_polls_until_green(tmp_path, capsys):
+    calls, run = _wait_checks_run(iter([(1, "no checks reported on the 'release/0.2.0' branch")] * 2 + [(0, "")]))
+    slept = []
+    rc = cli._release_execute([{"kind": "wait_checks", "component": "harness"}], "0.2.0", str(tmp_path), {}, str(tmp_path),
+                               run, {"components": {}}, str(tmp_path / "manifest.toml"), sleep=slept.append, now=lambda: 0.0)
+    assert rc == 0
+    assert calls == [release.pr_checks_argv()] * 3 and slept == [15, 15]
+    assert "wait_checks harness: green" in capsys.readouterr().out
+
+
+def test_release_execute_wait_checks_times_out_past_grace(tmp_path, capsys):
+    calls, run = _wait_checks_run(iter([(1, "no checks reported on the 'release/0.2.0' branch")] * 100))
+    clock = [0.0]
+    rc = cli._release_execute([{"kind": "wait_checks", "component": "harness"}], "0.2.0", str(tmp_path), {}, str(tmp_path),
+                               run, {"components": {}}, str(tmp_path / "manifest.toml"),
+                               sleep=lambda s: clock.__setitem__(0, clock[0] + s), now=lambda: clock[0])
+    assert rc == 2
+    assert "FAILED wait_checks harness: no checks reported within 180s" in capsys.readouterr().out
