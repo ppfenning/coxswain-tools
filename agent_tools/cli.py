@@ -814,7 +814,7 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
         r = subprocess.run(["gh", "pr", "create", "--title", step["title"], "--body", step["body"]], cwd=repo, capture_output=True, text=True)
         return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
     if kind == "wait_checks":
-        return _wait_checks(repo, float(step.get("timeout_s", 300)))
+        return _wait_checks(repo, float(step.get("timeout_s", 180)))
     if kind == "merge":
         r = subprocess.run(["gh", "pr", "merge", "--squash", "--delete-branch"], cwd=repo, capture_output=True, text=True)
         return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
@@ -860,21 +860,28 @@ def _close_approved_item(item_path: str | None) -> None:
         print(message)
 
 
-def _wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
-    """Poll `gh pr checks` until a check reports, one is green, or `timeout_s` passes with none registered."""
-    started = now()
+def _await_checks(poll, timeout_s: float = 180.0, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
+    """`poll() -> (returncode, output)` until green or failed. No check yet means not yet: retry every 15s for `timeout_s`."""
+    started, waiting = now(), False
     while True:
-        r = subprocess.run(["gh", "pr", "checks", "--watch", "--fail-fast"], cwd=repo, capture_output=True, text=True)
-        output = (r.stdout or "") + (r.stderr or "")
-        decision = land.wait_decision(r.returncode, output, now() - started, timeout_s)
-        if decision == "green":
-            return True, "green"
+        rc, output = poll()
+        decision = land.wait_decision(rc, output, now() - started, timeout_s)
         if decision == "retry":
-            sleep(10)
-            continue
-        if decision == "timeout":
-            return False, f"no checks registered within {timeout_s:.0f}s"
-        return False, output.strip()
+            if not waiting:
+                print(f"no checks reported yet, waiting up to {timeout_s:.0f}s for the first one to appear")
+            waiting = True
+            sleep(15)
+        elif decision == "timeout":
+            return False, f"no checks reported within {timeout_s:.0f}s"
+        else:
+            return decision == "green", "green" if decision == "green" else output.strip()
+
+
+def _wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
+    def poll() -> tuple[int, str]:
+        r = subprocess.run(["gh", "pr", "checks", "--watch", "--fail-fast"], cwd=repo, capture_output=True, text=True)
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+    return _await_checks(poll, timeout_s, sleep, now)
 
 
 def _repo_is_dirty(repo: Path) -> bool:
@@ -2510,7 +2517,7 @@ def _github_release_notes_text(umbrella: str, notes_path: str, heading: str, fro
 
 
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run,
-                      manifest: dict, manifest_path: str) -> int:
+                      manifest: dict, manifest_path: str, sleep=time.sleep, now=time.monotonic) -> int:
     """Runs `steps` for real, through `run`. Every checkout that will be
     tagged or branched — every component, the umbrella when `tag_self` is in
     the plan, and any component or the umbrella a `bump_pyproject` or
@@ -2629,11 +2636,11 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"wait_checks {step['component']}: already at {already_bumped[step['component']]}")
                 continue
             directory = _release_step_dir(step["component"], root, overrides, umbrella)
-            wc_rc, wc_out = run(release.pr_checks_argv(), directory)
-            if wc_rc != 0:
-                print(f"FAILED wait_checks {step['component']}: {wc_out.strip()}")
+            wc_ok, wc_out = _await_checks(lambda d=directory: run(release.pr_checks_argv(), d), sleep=sleep, now=now)
+            if not wc_ok:
+                print(f"FAILED wait_checks {step['component']}: {wc_out}")
                 return 2
-            print(f"wait_checks {step['component']}: {wc_out.strip() or 'green'}")
+            print(f"wait_checks {step['component']}: {wc_out}")
         elif kind == "merge":
             if step["component"] in already_bumped:
                 print(f"merge {step['component']}: already at {already_bumped[step['component']]}")
