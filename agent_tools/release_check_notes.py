@@ -3,9 +3,7 @@ landed PR or commit in that component's history."""
 
 from __future__ import annotations
 
-import json
 import re
-import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -58,14 +56,10 @@ def landed_from_git(text: str) -> set[str]:
     return {line.split()[0] for line in text.splitlines() if line.strip()}
 
 
-def landed_from_gh(text: str) -> set[str]:
-    try:
-        prs = json.loads(text)
-    except json.JSONDecodeError:
-        return set()
-    if not isinstance(prs, list):
-        return set()
-    return {str(pr["number"]) for pr in prs if isinstance(pr, dict) and "number" in pr}
+def previous_version(version: str, versions: list[str]) -> str | None:
+    def key(v: str) -> tuple[int, ...]:
+        return tuple(map(int, re.findall(r"\d+", v)))
+    return max((v for v in versions if key(v) < key(version)), key=key, default=None)
 
 
 def _bullet_drift(notes_path: str, line_no: int, text: str, components: set[str],
@@ -101,16 +95,18 @@ def check_notes(facts: Mapping) -> list[Drift]:
     return [d for d in drifts if d is not None]
 
 
-def _component_landed(directory: str, run: Callable, gh_available: bool) -> set[str]:
+def _component_landed(directory: str, run: Callable, version: str, previous: str | None) -> set[str]:
     if not Path(directory).is_dir():
         return set()
-    git_result = run(["git", "log", "--oneline"], cwd=directory, capture_output=True, text=True)
-    found = landed_from_git(git_result.stdout)
-    if not gh_available:
-        return found
-    gh_result = run(["gh", "pr", "list", "--state", "merged", "--json", "number"],
-                     cwd=directory, capture_output=True, text=True)
-    return found | landed_from_gh(gh_result.stdout)
+
+    def has_tag(tag: str) -> bool:
+        return bool(run(["git", "rev-parse", "--verify", "--quiet", tag], cwd=directory, capture_output=True, text=True).stdout.strip())
+
+    rev = (f"v{previous}.." if previous and has_tag(f"v{previous}") else "") + (f"v{version}" if has_tag(f"v{version}") else "HEAD")
+    log = run(["git", "log", "--oneline", rev], cwd=directory, capture_output=True, text=True).stdout
+    # PR numbers come from the range's own subjects: `gh pr list` returns only 30 PRs unless --limit is passed,
+    # and it also lists PRs merged after the version's tag.
+    return landed_from_git(log) | set(_PR.findall(log))
 
 
 def gather_notes_facts(root: str, manifest: Mapping, run: Callable) -> dict:
@@ -118,10 +114,14 @@ def gather_notes_facts(root: str, manifest: Mapping, run: Callable) -> dict:
     version = manifest.get("coxswain", {}).get("version")
     notes_path = Path(root) / "coxswain" / "docs" / "releases" / f"{version}.md" if version else None
     umbrella_dir = str(Path(root) / "coxswain")
-    gh_available = shutil.which("gh") is not None
+    stems = [p.stem for p in (Path(umbrella_dir) / "docs" / "releases").glob("*.md") if re.fullmatch(r"\d+(\.\d+)*", p.stem)]
+    previous = previous_version(version, stems) if version else None
+
+    def landed(directory: str) -> set[str]:
+        return _component_landed(directory, run, version or "", previous)
+
     return {
         "notes_bullets": bullets_from_notes(notes_path.read_text()) if notes_path and notes_path.exists() else [],
-        "landed": {name: _component_landed(release.component_dir(root, name), run, gh_available) for name in components}
-        | {"coxswain": _component_landed(umbrella_dir, run, gh_available)},
-        "pr_numbers_measured": dict.fromkeys(components, gh_available) | {"coxswain": gh_available},
+        "landed": {name: landed(release.component_dir(root, name)) for name in components}
+        | {"coxswain": landed(umbrella_dir)},
     }

@@ -3,14 +3,13 @@ from agent_tools.release_check import Drift
 from agent_tools.release_check_notes import (
     bullets_from_notes,
     check_notes,
-    landed_from_gh,
     landed_from_git,
     parse_bullet,
+    previous_version,
 )
 
 
-def test_check_notes_resolves_against_facts_plans_own_component_dirs_and_release_notes_keys(tmp_path, monkeypatch):
-    monkeypatch.setattr(release_check_notes.shutil, "which", lambda name: "/usr/bin/gh")
+def test_check_notes_resolves_against_facts_plans_own_component_dirs_and_release_notes_keys(tmp_path):
     (tmp_path / "cox").mkdir()
     notes_dir = tmp_path / "coxswain" / "docs" / "releases"
     notes_dir.mkdir(parents=True)
@@ -18,7 +17,7 @@ def test_check_notes_resolves_against_facts_plans_own_component_dirs_and_release
     manifest = {"coxswain": {"version": "0.1.0"}, "components": {"cox": {"repo": "x"}}}
 
     def fake_run(cmd, cwd, capture_output, text):
-        stdout = "" if cmd[0] == "git" else '[{"number": 42}]'
+        stdout = "abc1234 added retry (#42)" if cmd[1] == "log" else ""
         return type("Result", (), {"stdout": stdout})()
 
     facts = release_check.facts_plan(str(tmp_path), manifest) | release_check_notes.gather_notes_facts(
@@ -27,8 +26,7 @@ def test_check_notes_resolves_against_facts_plans_own_component_dirs_and_release
     assert check_notes(facts) == []
 
 
-def test_check_notes_has_no_drift_for_a_coxswain_bullet_citing_a_pr_in_the_umbrella_history(tmp_path, monkeypatch):
-    monkeypatch.setattr(release_check_notes.shutil, "which", lambda name: "/usr/bin/gh")
+def test_check_notes_has_no_drift_for_a_coxswain_bullet_citing_a_pr_in_the_umbrella_history(tmp_path):
     (tmp_path / "coxswain").mkdir()
     notes_dir = tmp_path / "coxswain" / "docs" / "releases"
     notes_dir.mkdir(parents=True)
@@ -36,7 +34,7 @@ def test_check_notes_has_no_drift_for_a_coxswain_bullet_citing_a_pr_in_the_umbre
     manifest = {"coxswain": {"version": "0.1.0"}, "components": {}}
 
     def fake_run(cmd, cwd, capture_output, text):
-        stdout = "" if cmd[0] == "git" else '[{"number": 101}]'
+        stdout = "abc1234 fixed releasable.yml (#101)" if cmd[1] == "log" else ""
         return type("Result", (), {"stdout": stdout})()
 
     facts = release_check.facts_plan(str(tmp_path), manifest) | release_check_notes.gather_notes_facts(
@@ -45,8 +43,7 @@ def test_check_notes_has_no_drift_for_a_coxswain_bullet_citing_a_pr_in_the_umbre
     assert check_notes(facts) == []
 
 
-def test_check_notes_drifts_for_a_coxswain_bullet_whose_citation_is_absent_from_the_umbrella_history(tmp_path, monkeypatch):
-    monkeypatch.setattr(release_check_notes.shutil, "which", lambda name: "/usr/bin/gh")
+def test_check_notes_drifts_for_a_coxswain_bullet_whose_citation_is_absent_from_the_umbrella_history(tmp_path):
     (tmp_path / "coxswain").mkdir()
     notes_dir = tmp_path / "coxswain" / "docs" / "releases"
     notes_dir.mkdir(parents=True)
@@ -54,7 +51,7 @@ def test_check_notes_drifts_for_a_coxswain_bullet_whose_citation_is_absent_from_
     manifest = {"coxswain": {"version": "0.1.0"}, "components": {}}
 
     def fake_run(cmd, cwd, capture_output, text):
-        stdout = "" if cmd[0] == "git" else '[{"number": 7}]'
+        stdout = "abc1234 other change (#7)" if cmd[1] == "log" else ""
         return type("Result", (), {"stdout": stdout})()
 
     facts = release_check.facts_plan(str(tmp_path), manifest) | release_check_notes.gather_notes_facts(
@@ -153,14 +150,6 @@ def test_landed_from_git_parses_short_shas_out_of_oneline_log():
     assert landed_from_git("abc1234 fix bug\ndef5678 add feature") == {"abc1234", "def5678"}
 
 
-def test_landed_from_gh_parses_pr_numbers_out_of_json():
-    assert landed_from_gh('[{"number": 42}, {"number": 7}]') == {"42", "7"}
-
-
-def test_landed_from_gh_returns_empty_set_on_non_json_output():
-    assert landed_from_gh("gh: A new release of gh is available") == set()
-
-
 def test_an_unmeasured_pr_citation_is_not_a_drift():
     facts = {"component_dirs": {"tools": "/r/tools"}, "landed": {"tools": set()}, "pr_numbers_measured": {"tools": False},
              "release_notes": "notes.md", "notes_bullets": [(3, "- tools: the gate (#59)")]}
@@ -180,3 +169,33 @@ def test_bullets_from_notes_joins_a_wrapped_bullets_continuation_lines():
         (3, "- The sweep graph exists: module, apply and verify, registered in the CLI and documented (graphs #83, #84)."),
         (5, "- A second bullet (graphs #85)."),
     ]
+
+
+def test_previous_version_is_the_greatest_release_below_the_one_checked():
+    assert previous_version("0.11.0", ["0.9.0", "0.10.0", "0.11.0", "0.12.0"]) == "0.10.0"
+    assert previous_version("0.1.0", ["0.1.0"]) is None
+
+
+def test_landed_set_is_the_previous_tag_to_the_versions_own_tag_when_cut_else_to_head(tmp_path):
+    (tmp_path / "coxswain").mkdir()
+    notes_dir = tmp_path / "coxswain" / "docs" / "releases"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "0.10.0.md").write_text("- coxswain: older (#1)\n")
+    (notes_dir / "0.11.0.md").write_text("- coxswain: inside the cut (#186)\n- coxswain: after the cut (#190)\n")
+    manifest = {"coxswain": {"version": "0.11.0"}, "components": {}}
+    logs = {"v0.10.0..v0.11.0": "abc1234 shipped (#186)", "v0.10.0..HEAD": "def5678 later (#190)\nabc1234 shipped (#186)",
+            "HEAD": "def5678 later (#190)\nabc1234 shipped (#186)\n0123456 older (#1)"}
+
+    def drift_lines(tags: set[str]) -> list[int]:
+        def fake_run(cmd, cwd, capture_output, text):
+            stdout = ("9f8e7d6" if cmd[-1] in tags else "") if cmd[1] == "rev-parse" else logs.get(cmd[-1], "")
+            return type("Result", (), {"stdout": stdout})()
+
+        facts = release_check.facts_plan(str(tmp_path), manifest) | release_check_notes.gather_notes_facts(
+            str(tmp_path), manifest, fake_run
+        )
+        return [d.a_line for d in check_notes(facts)]
+
+    assert drift_lines({"v0.10.0", "v0.11.0"}) == [2]  # cut: #190 merged after the tag does not count
+    assert drift_lines({"v0.10.0"}) == []  # not yet cut: the range runs to HEAD
+    assert drift_lines(set()) == []  # no previous tag in this checkout: the whole history
