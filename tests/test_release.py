@@ -273,6 +273,79 @@ def test_bumped_manifest_text_rewrites_a_rejoining_components_tag_but_keeps_lock
     assert after["components"]["crew"]["lockstep"] is False
 
 
+# Rebuilt from the ticket's quotation of the umbrella's manifest.toml, which
+# is not in this repository: a `[coxswain]` table of scalars, then a bare
+# `[components]` table of one-line inline tables, each carrying more keys
+# than `bumped_manifest_text` reads, in no fixed order (`cartridges = { repo
+# = ..., tag = "v0.12.0", required = true, ... }`, `crew = { ..., lockstep =
+# false, ... }`). Repo names and the `schema` key are invented. The
+# `[notify]` table holds inline tables with their own `tag` and `lockstep`
+# keys, standing in for unrelated inline tables that must never be read as
+# components. Replace the fixture with the real file's text when it is to hand.
+_MANIFEST_TOML_INLINE = (
+    '[coxswain]\n'
+    'version = "0.12.0"\n'
+    'repo = "ppfenning/coxswain"\n\n'
+    '[components]\n'
+    'harness = { repo = "ppfenning/harness", tag = "v0.12.0", required = true, schema = 4 }\n'
+    'cartridges = { repo = "ppfenning/cartridges", tag = "v0.12.0", required = true, schema = 3 }\n'
+    'crew = { repo = "ppfenning/crew", required = false, tag = "v0.12.0", lockstep = false, schema = 2 }\n\n'
+    '[notify]\n'
+    'slack = { channel = "#releases", tag = "v9.9.9", lockstep = false }\n'
+    'pager = { channel = "#oncall", tag = "v9.9.9" }\n'
+)
+
+
+def test_bumped_manifest_text_rewrites_the_inline_table_components_tags_and_pins_a_lockstep_false_inline_component():
+    after_text = release.bumped_manifest_text(_MANIFEST_TOML_INLINE, "0.12.1")
+
+    assert 'harness = { repo = "ppfenning/harness", tag = "v0.12.1", required = true, schema = 4 }\n' in after_text
+    assert ('cartridges = { repo = "ppfenning/cartridges", tag = "v0.12.1", required = true, schema = 3 }\n'
+            in after_text)
+    assert ('crew = { repo = "ppfenning/crew", required = false, tag = "v0.12.0", lockstep = false, schema = 2 }\n'
+            in after_text)
+
+    after = tomllib.loads(after_text)
+    assert after["coxswain"]["version"] == "0.12.1"
+    assert after["components"]["harness"]["tag"] == "v0.12.1"
+    assert after["components"]["cartridges"]["tag"] == "v0.12.1"
+    assert after["components"]["cartridges"]["repo"] == "ppfenning/cartridges"
+    assert after["components"]["cartridges"]["required"] is True
+    assert after["components"]["cartridges"]["schema"] == 3
+    assert after["components"]["crew"]["tag"] == "v0.12.0"
+    assert after["components"]["crew"]["lockstep"] is False
+    assert after["components"]["crew"]["required"] is False
+
+
+def test_bumped_manifest_text_rewrites_a_rejoining_inline_table_components_tag_but_keeps_lockstep_false():
+    after_text = release.bumped_manifest_text(_MANIFEST_TOML_INLINE, "0.12.1", rejoining={"crew"})
+    after = tomllib.loads(after_text)
+
+    assert after["components"]["crew"]["tag"] == "v0.12.1"
+    assert after["components"]["crew"]["lockstep"] is False
+    assert after["components"]["cartridges"]["tag"] == "v0.12.1"
+
+
+def test_bumped_manifest_text_leaves_an_inline_table_outside_the_components_table_untouched():
+    """A `name = { ..., tag = "...", lockstep = false, ... }` line under some
+    other table (`[notify]` here) is not a component and must never be read
+    or rewritten as one, even though its shape matches a component's."""
+    after_text = release.bumped_manifest_text(_MANIFEST_TOML_INLINE, "0.12.1")
+    assert 'slack = { channel = "#releases", tag = "v9.9.9", lockstep = false }\n' in after_text
+    assert 'pager = { channel = "#oncall", tag = "v9.9.9" }\n' in after_text
+    assert tomllib.loads(after_text)["notify"]["pager"]["tag"] == "v9.9.9"
+
+
+def test__pinned_components_reads_lockstep_false_from_an_inline_table_under_components():
+    text = '[components]\ncrew = { repo = "org/crew", tag = "v0.6.0", lockstep = false }\n'
+    assert release._pinned_components(text) == {"crew"}
+
+
+def test__pinned_components_ignores_an_inline_tables_lockstep_false_outside_components():
+    text = '[notify]\nslack = { channel = "#releases", tag = "v9.9.9", lockstep = false }\n'
+    assert release._pinned_components(text) == set()
+
+
 def test_rejoined_names_the_components_release_plan_gave_a_rejoin_step():
     manifest = {"coxswain": {"version": "0.1.0"},
                 "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
