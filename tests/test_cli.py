@@ -221,3 +221,23 @@ def test_release_check_checkout_override_resolves_the_named_directory_not_the_co
     versions_drift = next(d for d in payload["drifts"] if d["check"] == "versions" and "0.1.5" in d["correction"])
     assert "0.2.0" in versions_drift["correction"]
     assert versions_drift["b_file"] == str(override_dir / "pyproject.toml")
+
+
+def _clock():
+    t, slept = [0.0], []
+    return slept, (lambda s: (slept.append(s), t.__setitem__(0, t[0] + s))), (lambda: t[0])
+
+
+def test_await_checks_reaches_green_after_two_empty_polls(capsys):
+    answers = iter([(1, "no checks reported on the 'release/x' branch")] * 2 + [(0, "all passed")])
+    slept, sleep, now = _clock()
+    assert cli._await_checks(lambda: next(answers), sleep=sleep, now=now) == (True, "green")
+    assert slept == [15, 15]
+    assert capsys.readouterr().out.count("no checks reported yet") == 1
+
+
+def test_await_checks_times_out_when_nothing_appears_within_the_grace_period():
+    slept, sleep, now = _clock()
+    result = cli._await_checks(lambda: (1, "no checks reported on the 'release/x' branch"), sleep=sleep, now=now)
+    assert result == (False, "no checks reported within 180s")
+    assert set(slept) == {15}
