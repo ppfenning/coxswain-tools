@@ -986,7 +986,8 @@ def _await_checks(poll, timeout_s: float = 180.0, sleep=time.sleep, now=time.mon
         decision = land.wait_decision(rc, output, now() - started, timeout_s)
         if decision == "retry":
             if not waiting:
-                print(f"no checks reported yet, waiting up to {timeout_s:.0f}s for the first one to appear")
+                print(f"{output.strip()}; polling every 15s until they finish" if land.is_pending(rc)
+                      else f"no checks reported yet, waiting up to {timeout_s:.0f}s for the first one to appear")
             waiting = True
             sleep(15)
         elif decision == "timeout":
@@ -995,10 +996,36 @@ def _await_checks(poll, timeout_s: float = 180.0, sleep=time.sleep, now=time.mon
             return decision == "green", "green" if decision == "green" else output.strip()
 
 
+def _read_checks(repo: Path):
+    """`(True, (check_runs, status))` for HEAD's REST check bodies, or `(False, detail)` on a failed or unparseable call."""
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True)
+    if head.returncode != 0:
+        return False, head.stderr.strip() or "git rev-parse HEAD failed"
+    argvs = land.rest_checks_argvs(head.stdout.strip())
+    bodies = []
+    for argv, key in zip(argvs, ("check_runs", "statuses")):
+        r = subprocess.run(argv, cwd=repo, capture_output=True, text=True)
+        body = land.merge_pages(r.stdout or "", key) if r.returncode == 0 else None
+        if body is None:
+            return False, (r.stderr or r.stdout or "").strip() or f"unreadable output from {argv[-1]}"
+        bodies.append(body)
+    return True, tuple(bodies)
+
+
 def _wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
+    # Edge bend (A2): a count of consecutive unreadable polls, reset by any readable one.
+    errors = 0
+
     def poll() -> tuple[int, str]:
-        r = subprocess.run(["gh", "pr", "checks", "--watch", "--fail-fast"], cwd=repo, capture_output=True, text=True)
-        return r.returncode, (r.stdout or "") + (r.stderr or "")
+        nonlocal errors
+        ok, value = _read_checks(repo)
+        errors = 0 if ok else errors + 1
+        if ok:
+            return land.check_poll_result(*value)
+        result = land.unreadable_poll(errors, value)
+        if land.is_pending(result[0]):
+            sleep(land.poll_backoff_s(errors))  # on top of the 15s between polls: a rate limit needs room
+        return result
     return _await_checks(poll, timeout_s, sleep, now)
 
 
@@ -1822,11 +1849,18 @@ def _route_sync(a: argparse.Namespace) -> int:
     items = route_sync_gh.items_from_store(workspace)
     if a.item:
         items = [item for item in items if item.id == a.item]
+        # Never fall through to the full listing: an unknown or shared id would run `item-list`.
+        if len(items) != 1:
+            print(f"route sync: --item {a.item!r} matches {len(items)} work-store items, expected exactly one")
+            return 2
     project, rc = _resolve_sync_project(a, items, _route_sync_state_path(profile_path))
     if rc is not None:
         return rc
     repo_names = sorted({item.repo for item in items if item.repo})
-    ok, result = route_sync_gh.existing(subprocess.run, repo_names, project)
+    if a.item:
+        ok, result = route_sync_gh.existing_item(subprocess.run, items[0].repo, items[0].issue, project)
+    else:
+        ok, result = route_sync_gh.existing(subprocess.run, repo_names, project)
     if not ok:
         print(f"route sync: {result}")
         return 2
