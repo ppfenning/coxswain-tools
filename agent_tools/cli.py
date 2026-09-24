@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -2378,6 +2379,7 @@ _RELEASE_DETAIL = {
     "tag_self": lambda step: step["tag"],
     "wait_workflows": lambda step: step["tag"],
     "pinned": lambda step: step["tag"],
+    "tap_formula_pr": lambda step: f"{step['repo']} {step['path']} from {step['index_url']}",
     "rejoin": lambda step: f"{step['from']} -> {step['tag']} ({step['commits']} commits)",
     "github_release": lambda step: (f"{step['repo']} -> "
         f"{' '.join(release.github_release_create_argv(step['tag'], step['title'], step['notes_path']))}"),
@@ -2413,6 +2415,11 @@ def _checkout_ready(directory: str, run) -> tuple[bool, str]:
     if current != default:
         return False, f"{directory} is on {current}, not {default}"
     return True, ""
+
+
+def _fetch_index(url: str) -> dict:
+    with urllib.request.urlopen(url, timeout=30) as response:
+        return json.load(response)
 
 
 def _release_step_dir(component: str, root: str, overrides: dict, umbrella: str) -> str:
@@ -2563,7 +2570,8 @@ def _github_release_notes_text(umbrella: str, notes_path: str, heading: str, fro
 
 
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run,
-                      manifest: dict, manifest_path: str, sleep=time.sleep, now=time.monotonic) -> int:
+                      manifest: dict, manifest_path: str, sleep=time.sleep, now=time.monotonic,
+                      fetch_index=_fetch_index) -> int:
     """Runs `steps` for real, through `run`. Every checkout that will be
     tagged or branched — every component, the umbrella when `tag_self` is in
     the plan, and any component or the umbrella a `bump_pyproject` or
@@ -2755,6 +2763,31 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 print(f"FAILED github_release {step['component']}: {gr_out.strip()}")
                 return 2
             print(f"github_release {step['component']}: {step['tag']}")
+        elif kind == "tap_formula_pr":
+            try:
+                sdist = release.sdist_from_index(fetch_index(step["index_url"]))
+            except (OSError, ValueError) as exc:
+                sdist, detail = None, str(exc)
+            else:
+                detail = "the index lists no sdist"
+            if sdist is None:
+                print(f"FAILED tap_formula_pr tap: {step['index_url']}: {detail}")
+                return 2
+            directory = release.component_dir(root, release.TAP_CHECKOUT, overrides)
+            formula = Path(directory) / step["path"]
+            ok, detail = _release_bump(
+                directory, step["branch"], step["title"], [step["path"]],
+                lambda f=formula, s=sdist: f.write_text(release.bumped_formula_text(f.read_text(), version, *s)), run)
+            if not ok:
+                print(f"FAILED tap_formula_pr tap: {detail}")
+                return 2
+            for argv, cwd in ((release.push_branch_argv(directory, step["branch"]), None),
+                              (release.pr_create_argv(step["title"], f"Bumps the formula to {version} on PyPI."), directory)):
+                rc, out = run(argv, cwd)
+                if rc != 0:
+                    print(f"FAILED tap_formula_pr tap: {out.strip()}")
+                    return 2
+            print(f"tap_formula_pr tap: {step['title']}")
         else:
             print(f"FAILED {kind} {step.get('component', '')}: no executor for this step kind")
             return 2
@@ -2783,6 +2816,14 @@ def _tools_repository_url() -> str | None:
         if name.strip() == "Repository":
             return url.strip()
     return None
+
+
+def _tap_state(directory: str) -> str:
+    """`clean`, `dirty` or `absent`; a checkout whose status git cannot read is `absent`."""
+    if not (Path(directory) / ".git").exists():
+        return "absent"
+    result = subprocess.run(["git", "-C", directory, "status", "--porcelain"], capture_output=True, text=True)
+    return "absent" if result.returncode != 0 else "dirty" if result.stdout.strip() else "clean"
 
 
 def _release_moved(a: argparse.Namespace) -> int:
@@ -2825,7 +2866,8 @@ def _release(a: argparse.Namespace) -> int:
             component_versions[name] = found
     plan_steps = release.release_plan(
         manifest, a.version, existing_tags, component_versions=component_versions, pinned_commits=pinned_commits,
-        tools_repository_url=_tools_repository_url())
+        tools_repository_url=_tools_repository_url(),
+        tap_state=_tap_state(release.component_dir(root, release.TAP_CHECKOUT, overrides)))
     steps = release.gate(drifts, a.allow_doc_drift, plan_steps) + plan_steps
     if a.dry_run:
         for step in steps:
