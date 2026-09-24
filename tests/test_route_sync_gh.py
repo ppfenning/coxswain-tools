@@ -37,6 +37,13 @@ def test_items_from_store_reads_one_intake_and_one_work_item(tmp_path):
     assert task.repo == "acme/widgets" and task.gate == "cheap"
 
 
+def test_a_reused_pid_is_not_published_as_in_flight(tmp_path):
+    _seed_workspace(tmp_path)
+    _write(tmp_path / "runs" / "run1.launched.json", json.dumps({"at": "1970-01-01T00:01:40+00:00"}))
+    items = {item.id: item for item in route_sync_gh.items_from_store(tmp_path)}
+    assert items["task1"].state == "ready"
+
+
 def test_repo_of_falls_back_to_the_literal_value_when_nothing_resolves_on_disk():
     assert route_sync_gh._repo_of("acme/widgets") == "acme/widgets"
     assert route_sync_gh._repo_of("") == ""
