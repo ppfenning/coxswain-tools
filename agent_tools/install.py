@@ -15,17 +15,43 @@ def _requested(spec: Mapping, with_flags: set[str]) -> bool:
     return bool(spec.get("required")) or spec.get("flag") in with_flags
 
 
-def _checkout_step(name: str, spec: Mapping, checkout: Mapping) -> dict:
-    """One component judged against its checkout: `refuse` beats everything
-    else, an absent checkout is `clone`, a checkout at the wrong tag is
-    `fetch_checkout`, and a checkout already at the pinned tag is `skip`."""
-    pinned = spec.get("tag")
+CHANNELS = ("release", "edge")
+
+
+def _pinned(spec: Mapping, channel: str) -> str | None:
+    return spec.get("ref", "main") if channel == "edge" else spec.get("tag")
+
+
+def _installed(checkout: Mapping, channel: str) -> str | None:
+    return checkout.get("branch") if channel == "edge" else checkout.get("tag")
+
+
+def _at_pin(checkout: Mapping, pinned: str | None, channel: str) -> bool:
+    """On edge, at the pin means on that branch at its tip (`branch_tip`)."""
+    return _installed(checkout, channel) == pinned and (channel != "edge" or bool(checkout.get("branch_tip")))
+
+
+def _channel_refusal(requested: list, channel: str) -> dict | None:
+    """All or nothing: a release install may not include a branch-only pin."""
+    if channel not in CHANNELS:
+        return {"kind": "refuse", "component": "channel", "detail": f"unknown channel: {channel}"}
+    branch_only = [name for name, spec in requested if channel == "release" and spec.get("ref") and not spec.get("tag")]
+    if not branch_only:
+        return None
+    lead = "mixed channels" if len(branch_only) < len(requested) else "branch-only manifest"
+    return {"kind": "refuse", "component": branch_only[0],
+            "detail": f"{lead}: {branch_only[0]} pins a branch, not a tag; --edge moves every component or none"}
+
+
+def _checkout_step(name: str, spec: Mapping, checkout: Mapping, channel: str = "release") -> dict:
+    """`refuse` (dirty) beats everything, then absent is `clone`, off the pin is `fetch_checkout`, at it `skip`."""
+    pinned = _pinned(spec, channel)
     if checkout.get("dirty"):
         return {"kind": "refuse", "component": name, "detail": f"{name} checkout is dirty; refusing to touch it"}
     if not checkout.get("present"):
         return {"kind": "clone", "component": name, "detail": f"clone {spec.get('repo')} at {pinned}"}
-    if checkout.get("tag") != pinned:
-        return {"kind": "fetch_checkout", "component": name, "detail": f"{checkout.get('tag')} -> {pinned}"}
+    if not _at_pin(checkout, pinned, channel):
+        return {"kind": "fetch_checkout", "component": name, "detail": f"{_installed(checkout, channel)} -> {pinned}"}
     return {"kind": "skip", "component": name, "detail": f"already at {pinned}"}
 
 
@@ -56,33 +82,37 @@ def plan(manifest: Mapping, facts: Mapping, options: Mapping) -> list[dict]:
     checkouts = facts.get("checkouts", {})
     requested = [(name, spec) for name, spec in manifest.get("components", {}).items()
                  if _requested(spec, with_flags)]
+    channel = options.get("channel", "release")
+    refusal = _channel_refusal(requested, channel)
+    if refusal:
+        return [refusal]
     empty_checkout = {"present": False, "tag": None, "dirty": False}
-    checkout_steps = [_checkout_step(name, spec, checkouts.get(name, empty_checkout)) for name, spec in requested]
+    checkout_steps = [_checkout_step(name, spec, checkouts.get(name, empty_checkout), channel)
+                      for name, spec in requested]
     setup_install_step = {"kind": "setup_install", "component": "setup_install",
-                           "detail": f"team={options.get('team')} workspace={options.get('workspace')}"}
+                           "detail": f"channel={channel} team={options.get('team')} workspace={options.get('workspace')}"}
     doctor_step = {"kind": "doctor", "component": "doctor",
                    "detail": f"run cox setup doctor; provider CLI on PATH: {facts.get('provider_cli_on_path')}"}
     desktop_steps = [_desktop_step(name, spec) for name, spec in requested if spec.get("path")]
     return checkout_steps + [setup_install_step, doctor_step] + desktop_steps
 
 
-def _component_row(name: str, spec: Mapping, checkouts: Mapping) -> tuple:
-    pinned = spec.get("tag")
+def _component_row(name: str, spec: Mapping, checkouts: Mapping, channel: str = "release") -> tuple:
+    pinned = _pinned(spec, channel)
     checkout = checkouts.get(name)
     if not checkout or not checkout.get("present"):
         return (name, pinned, None, "missing")
-    installed = checkout.get("tag")
-    return (name, pinned, installed, "ok" if installed == pinned else "drift")
+    return (name, pinned, _installed(checkout, channel), "ok" if _at_pin(checkout, pinned, channel) else "drift")
 
 
-def rows(manifest: Mapping, facts: Mapping) -> list[tuple]:
+def rows(manifest: Mapping, facts: Mapping, channel: str = "release") -> list[tuple]:
     """`(component, pinned_tag, installed_tag, status)` for every manifest
-    component (`missing` absent, `drift` present at the wrong tag, `ok`
-    present at the pinned tag) plus one `extra` row per checkout present in
-    `facts` that the manifest never declared."""
+    component (`missing` absent, `drift` present off its pin, `ok` present at
+    it) plus one `extra` row per checkout present in `facts` that the
+    manifest never declared. On `edge` the pin and installed columns hold branches."""
     components = manifest.get("components", {})
     checkouts = facts.get("checkouts", {})
-    component_rows = [_component_row(name, spec, checkouts) for name, spec in components.items()]
+    component_rows = [_component_row(name, spec, checkouts, channel) for name, spec in components.items()]
     extra_rows = [(name, None, checkout.get("tag"), "extra") for name, checkout in checkouts.items()
                   if name not in components and checkout.get("present")]
     return component_rows + extra_rows

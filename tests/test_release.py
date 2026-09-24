@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -251,6 +252,78 @@ def test_bumped_manifest_text_preserves_comments_and_changes_only_the_values():
     before["coxswain"]["version"] = after["coxswain"]["version"]
     before["components"]["harness"]["tag"] = after["components"]["harness"]["tag"]
     assert before == after
+
+
+_FORMULA = ('class Cox < Formula\n  url "https://x/cox-0.1.0.tar.gz"\n  sha256 "' + "0" * 64 + '"\n\n'
+            '  resource "dep" do\n    url "https://x/dep-1.0.tar.gz"\n    sha256 "' + "a" * 64 + '"\n  end\nend\n')
+
+
+def test_bumped_formula_text_rewrites_url_and_sha_and_leaves_the_resource_stanza():
+    after = release.bumped_formula_text(_FORMULA, "0.2.0", "https://x/cox-0.2.0.tar.gz", "b" * 64)
+    assert after == _FORMULA.replace("cox-0.1.0", "cox-0.2.0").replace("0" * 64, "b" * 64)
+
+
+def test_bumped_formula_text_returns_unrecognised_text_verbatim():
+    assert release.bumped_formula_text("not a formula\n", "0.2.0", "u", "s") == "not a formula\n"
+
+
+def _tools_manifest(**tools):
+    return {"coxswain": {"version": "0.1.0"},
+            "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
+                            "tools": {"repo": "ppfenning/coxswain-tools", "tag": "v0.1.0", **tools}}}
+
+
+def _tap_kinds(manifest, version="0.2.0", **kw):
+    steps = release.release_plan(manifest, version, _no_tags(manifest), tools_repository_url=_TOOLS_REPO_URL, **kw)
+    return steps, [s["kind"] for s in steps]
+
+
+def test_release_plan_plans_the_tap_step_last_when_the_tools_repo_is_tagged():
+    steps, kinds = _tap_kinds(_tools_manifest(), "0.2.0-beta.2")
+    assert kinds[-1] == "tap_formula_pr"
+    assert steps[-1]["index_url"] == "https://pypi.org/pypi/coxswain-tools/0.2.0b2/json"
+
+
+def test_release_plan_omits_the_tap_step_when_the_tools_repo_is_pinned_and_so_never_tagged():
+    assert "tap_formula_pr" not in _tap_kinds(_tools_manifest(lockstep=False))[1]
+
+
+def test_release_plan_omits_the_tap_step_when_no_step_tags_the_tools_repo():
+    assert "tap_formula_pr" not in _tap_kinds(_manifest())[1]
+
+
+def test_release_plan_refuses_naming_the_tap_when_its_checkout_is_dirty():
+    steps, _ = _tap_kinds(_tools_manifest(), tap_state="dirty")
+    assert [s["component"] for s in steps if s["kind"] == "refuse"] == ["tap"]
+
+
+def test_sdist_from_index_picks_the_sdist_url_and_sha256():
+    payload = {"urls": [{"packagetype": "bdist_wheel", "url": "w", "digests": {"sha256": "1"}},
+                        {"packagetype": "sdist", "url": "s", "digests": {"sha256": "2"}}]}
+    assert release.sdist_from_index(payload) == ("s", "2")
+    assert release.sdist_from_index({"urls": []}) is None
+
+
+def test_tap_state_reads_absent_clean_and_dirty(tmp_path):
+    assert cli._tap_state(str(tmp_path / "missing")) == "absent"
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+    assert cli._tap_state(str(tmp_path)) == "clean"
+    (tmp_path / "f").write_text("x")
+    assert cli._tap_state(str(tmp_path)) == "dirty"
+
+
+def test_cli_release_execute_opens_the_tap_pr_with_the_index_sdist(tmp_path):
+    formula = tmp_path / "homebrew-coxswain" / "Formula" / "cox.rb"
+    formula.parent.mkdir(parents=True)
+    formula.write_text(_FORMULA)
+    steps, _ = _tap_kinds(_tools_manifest())
+    calls, fake_run = _fake_git_run()
+    index = {"urls": [{"packagetype": "sdist", "url": "https://x/cox-0.2.0.tar.gz", "digests": {"sha256": "b" * 64}}]}
+    rc = cli._release_execute(steps[-1:], "0.2.0", str(tmp_path), {}, str(tmp_path), fake_run, {}, "",
+                              fetch_index=lambda url: index)
+    assert rc == 0
+    assert 'url "https://x/cox-0.2.0.tar.gz"' in formula.read_text() and "b" * 64 in formula.read_text()
+    assert ["gh", "pr", "create", "--title", "cox 0.2.0", "--body", "Bumps the formula to 0.2.0 on PyPI."] in calls
 
 
 def test_bumped_manifest_text_leaves_a_lockstep_false_components_tag_untouched():

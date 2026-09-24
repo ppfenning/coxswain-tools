@@ -26,22 +26,35 @@ def _enrich(step: Mapping, components: Mapping, options: Mapping) -> dict:
     kind = step["kind"]
     if kind in ("clone", "fetch_checkout"):
         spec = components.get(step.get("component"), {})
-        return {**step, "repo": spec.get("repo"), "tag": spec.get("tag")}
+        return {**step, "repo": spec.get("repo"), "tag": spec.get("tag"), "ref": spec.get("ref", "main"),
+                "channel": options.get("channel", "release")}
     if kind == "setup_install":
         return {**step, "team": options.get("team"), "workspace": options.get("workspace")}
     return dict(step)
 
 
+def _edge(step: Mapping) -> bool:
+    return step.get("channel") == "edge"
+
+
 def _clone_argv(step: Mapping, root: str) -> list:
-    return ["git", "clone", "--branch", step["tag"], "--depth", "1",
+    pin = step["ref"] if _edge(step) else step["tag"]
+    return ["git", "clone", "--branch", pin, "--depth", "1",
             f"https://github.com/{step['repo']}.git", f"{root}/{step['component']}"]
 
 
 def _fetch_argv(step: Mapping, root: str) -> list:
+    if _edge(step):
+        ref = step["ref"]
+        return ["git", "-C", f"{root}/{step['component']}", "fetch", "origin",
+                f"+refs/heads/{ref}:refs/remotes/origin/{ref}"]
     return ["git", "-C", f"{root}/{step['component']}", "fetch", "--tags"]
 
 
 def _checkout_argv(step: Mapping, root: str) -> list:
+    """Edge moves the local branch onto the fetched tip; release checks out the tag."""
+    if _edge(step):
+        return ["git", "-C", f"{root}/{step['component']}", "checkout", "-B", step["ref"], f"origin/{step['ref']}"]
     return ["git", "-C", f"{root}/{step['component']}", "checkout", step["tag"]]
 
 
