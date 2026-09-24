@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agent_tools.land import arbitration_verdict
+
 
 def _scoped_item(record: dict, candidates: list[dict]) -> dict | None:
     """The one item this record's task names. A task id repeats across
@@ -18,8 +20,8 @@ def _scoped_item(record: dict, candidates: list[dict]) -> dict | None:
 
 
 def _approved_and_unlanded(record: dict) -> bool:
-    return (record.get("review", {}).get("verdict") == "approve"
-            and record.get("arbitration", {}).get("verdict") == "approve"
+    return ((record.get("review") or {}).get("verdict") == "approve"
+            and arbitration_verdict(record) == "approve"
             and not record.get("landed"))
 
 

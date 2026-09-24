@@ -28,6 +28,7 @@ from typing import Any
 
 __all__ = [
     "approve_to_done",
+    "arbitration_verdict",
     "checks_argv",
     "gate_steps",
     "gate_stop",
@@ -50,11 +51,22 @@ def _verdict(record: dict[str, Any], section: str) -> str | None:
     return (record.get(section) or {}).get("verdict")
 
 
+_ARBITER_SKIPPED = "arbiter: skipped (both approved)"
+
+
+def arbitration_verdict(record: dict[str, Any]) -> str | None:
+    """A dict gives its "verdict"; the arbiter-skip string means both approved; null or else is None."""
+    arbitration = record.get("arbitration")
+    if isinstance(arbitration, dict):
+        return arbitration.get("verdict")
+    return "approve" if arbitration == _ARBITER_SKIPPED else None
+
+
 def _approved(record: dict[str, Any]) -> str | None:
     """None when the record's decision is approve, else the reason it is not.
     An arbiter only runs on disagreement, so unanimous approval leaves no
     arbitration verdict at all — the best outcome, not a missing one."""
-    arbitration = _verdict(record, "arbitration")
+    arbitration = arbitration_verdict(record)
     if arbitration == "approve":
         return None
     if arbitration is not None:
@@ -115,7 +127,7 @@ def phase_pr_body(phase_record: dict[str, Any], task_records: list[dict[str, Any
             f"- {r.get('task')}: {r.get('title', r.get('task'))}",
             f"  Review: {_verdict(r, 'review')}",
             f"  Adversary: {_verdict(r, 'adversary')}",
-            f"  Arbitration: {_verdict(r, 'arbitration') or 'unanimous'}",
+            f"  Arbitration: {arbitration_verdict(r) or 'unanimous'}",
             f"  Fix-loop attempts: {facts.get('fix_loop_attempts')}",
             f"  Files touched: {', '.join(facts.get('files_touched', []))}",
         ]
@@ -291,7 +303,7 @@ def issue_closes(issue: str | int | None) -> str | None:
 def pr_body(record: dict[str, Any], issue: str | int | None = None) -> str:
     """The PR description: verdicts, fix-loop attempts, checks, and cost if present, then the `Closes` line for `issue`."""
     lines = [f"Run: {record.get('run')}", f"Task: {record.get('task')}"]
-    review, arbitration = _verdict(record, "review"), _verdict(record, "arbitration")
+    review, arbitration = _verdict(record, "review"), arbitration_verdict(record)
     if review:
         lines.append(f"Review verdict: {review}")
     if arbitration:

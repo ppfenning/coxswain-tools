@@ -24,6 +24,20 @@ def test_an_approved_unlanded_record_with_a_ready_item_is_listed_with_its_remedy
                       "remedy": "cox runs land r1 --task t1 --repo /repo/acme"}]
 
 
+def test_a_null_arbitration_record_does_not_crash_and_is_not_stranded():
+    assert runs_stranded.stranded([_record(arbitration=None)], [_item("ready")]) == []
+
+
+def test_a_null_review_record_does_not_crash_and_is_not_stranded():
+    assert runs_stranded.stranded([_record(review=None)], [_item("ready")]) == []
+
+
+def test_an_arbiter_skipped_record_counts_as_approved_and_is_stranded():
+    record = _record(arbitration="arbiter: skipped (both approved)")
+    rows = runs_stranded.stranded([record], [_item("ready")])
+    assert [r["task"] for r in rows] == ["t1"]
+
+
 def test_a_done_item_is_not_stranded():
     assert runs_stranded.stranded([_record()], [_item("done")]) == []
 

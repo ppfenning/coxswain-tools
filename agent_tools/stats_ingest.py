@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools.events import Event, from_log
+from agent_tools.land import arbitration_verdict
 from agent_tools.records import load_trace
 from agent_tools.route import parse_frontmatter
 from agent_tools.runs_detail import NODE_ORDER
@@ -285,7 +286,6 @@ def task_row(
         "work_store_done": work_store_done,
     }
     outcome, outcome_source = resolve_outcome(scoped)
-    arbitration = record.get("arbitration")
     attempt = record.get("attempt")
     attempts = record.get("attempts")
     outcome_kind = (
@@ -303,7 +303,7 @@ def task_row(
         "outcome": outcome,
         "outcome_source": outcome_source,
         "review_rounds": _rounds(record.get("review")),
-        "arbitration_verdict": arbitration.get("verdict") if isinstance(arbitration, Mapping) else None,
+        "arbitration_verdict": arbitration_verdict(record),
         "fix_loop_rounds": _rounds(record.get("fix_loop")),
         "cost_usd": record.get("cost_usd"),
         "reason": record.get("reason"),

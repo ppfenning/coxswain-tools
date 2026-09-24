@@ -129,6 +129,12 @@ def test_task_row_ignores_a_budget_stop_event_but_still_honors_a_quarantine_even
     assert (row_t2["outcome"], row_t2["outcome_source"]) == ("quarantined", "log_line")
 
 
+def test_task_row_reads_the_arbiter_skip_string_as_an_approve_verdict():
+    record = {"ticket": "t1", "arbitration": "arbiter: skipped (both approved)"}
+    row = stats_ingest.task_row("r1", "p1", "t1", record, gate_diffs=(), log_events=())
+    assert row["arbitration_verdict"] == "approve"
+
+
 def test_task_row_fills_outcome_kind_from_the_last_attempts_kind():
     record = {"ticket": "t1", "attempts": [{"kind": "refused"}, {"kind": "unverified"}]}
     row = stats_ingest.task_row("r1", "p1", "t1", record, gate_diffs=(), log_events=())
