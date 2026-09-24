@@ -942,3 +942,102 @@ def test_no_arbitration_and_a_dissenting_reviewer_still_refuses():
     assert land.land_plan(record, {}, "main") == [
         {"kind": "refuse", "reason": "no arbitration, and the reviewers were ['approve', 'revise']"}
     ]
+
+
+# --- resume: an existing pr/<task> branch with the cherry-picked tree is reused ---
+
+_CHERRY = {"kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
+           "onto": "pr/seams-task", "from": "main"}
+
+
+def test_resume_decision_is_fresh_when_neither_side_exists():
+    assert land.resume_decision("T", None, None, []) == {"kind": "fresh"}
+
+
+def test_resume_decision_resumes_on_a_matching_local_branch_alone():
+    assert land.resume_decision("T", "T", None, []) == {"kind": "resume", "local": True, "remote": False}
+
+
+def test_resume_decision_resumes_on_a_matching_remote_branch_alone():
+    assert land.resume_decision("T", None, "T", []) == {"kind": "resume", "local": False, "remote": True}
+
+
+def test_resume_decision_resumes_when_both_sides_match():
+    assert land.resume_decision("T", "T", "T", []) == {"kind": "resume", "local": True, "remote": True}
+
+
+def test_resume_decision_refuses_a_differing_side_naming_both_trees():
+    assert land.resume_decision("T", "T", "U", []) == {
+        "kind": "refuse", "reason": "remote tree U differs from the cherry-picked tree T"}
+
+
+def test_resume_decision_refuses_an_open_pr_naming_its_number():
+    assert land.resume_decision("T", "T", "T", [7]) == {"kind": "refuse", "reason": "open pull request #7 points at the branch"}
+
+
+def test_resume_steps_swaps_only_the_cherry_pick_and_leaves_a_non_resume_alone():
+    steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Add seams module"]}, "main")
+    resumed = land.resume_steps(steps, {"kind": "resume", "local": True, "remote": False}, "pr/seams-task")
+    assert [s["kind"] for s in resumed] == [k if k != "cherry_pick" else "reuse_branch" for k in _STEP_ORDER]
+    assert resumed[1] == {"kind": "reuse_branch", "branch": "pr/seams-task", "local": True, "remote": False}
+    assert land.resume_steps(steps, {"kind": "fresh"}, "pr/seams-task") == steps
+
+
+def _apply_resume(repo, tmp_path, monkeypatch, prs=()):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    ran = []
+    monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step: (ran.append(step["kind"]) or True, "https://x/pull/7"))
+    monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch: list(prs))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs"), "--gate", "full"])
+    return rc, ran
+
+
+def test_cli_apply_resumes_on_a_local_pr_branch_with_the_cherry_picked_tree(repo, tmp_path, capsys, monkeypatch):
+    sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    rc, ran = _apply_resume(repo, tmp_path, monkeypatch)
+    assert rc == 0, capsys.readouterr().out
+    assert ran[:9] == [k if k != "cherry_pick" else "reuse_branch" for k in _STEP_ORDER]
+
+
+def test_cli_apply_refuses_a_matching_pr_branch_that_has_an_open_pr(repo, tmp_path, capsys, monkeypatch):
+    sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    rc, ran = _apply_resume(repo, tmp_path, monkeypatch, prs=[7])
+    assert (rc, ran) == (2, [])
+    assert "open pull request #7" in capsys.readouterr().out
+
+
+def test_cli_apply_refuses_a_differing_pr_branch_naming_the_diff(repo, tmp_path, capsys, monkeypatch):
+    sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "main"], check=True, env=_ENV)
+    rc, ran = _apply_resume(repo, tmp_path, monkeypatch)
+    out = capsys.readouterr().out
+    assert (rc, ran) == (2, [])
+    assert "already exists" in out and "local tree" in out and "files differing: f" in out
+
+
+def test_execute_reuse_branch_checks_out_the_existing_local_branch(repo):
+    sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {"kind": "reuse_branch", "branch": "pr/seams-task", "local": True, "remote": False})
+    assert (ok, detail) == (True, "reusing pr/seams-task")
+    assert cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "pr/seams-task"
+
+
+def _with_origin_holding_the_pr_branch(repo, tmp_path):
+    origin = tmp_path / "origin.git"
+    sp.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    sp.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
+    sp.run(["git", "-C", str(repo), "push", "-q", "origin", "agents/epic-x-5/seams-task:refs/heads/pr/seams-task"], check=True, env=_ENV)
+
+
+def test_execute_reuse_branch_creates_the_local_branch_from_origin_when_only_the_remote_has_it(repo, tmp_path):
+    _with_origin_holding_the_pr_branch(repo, tmp_path)
+    sp.run(["git", "-C", str(repo), "fetch", "-q", "origin"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {"kind": "reuse_branch", "branch": "pr/seams-task", "local": False, "remote": True})
+    assert (ok, detail) == (True, "reusing pr/seams-task")
+    assert cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "pr/seams-task"
+
+
+def test_land_resume_finds_a_remote_only_branch_with_the_cherry_picked_tree(repo, tmp_path, monkeypatch):
+    _with_origin_holding_the_pr_branch(repo, tmp_path)
+    monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch: [])
+    assert cli._land_resume(repo, _CHERRY) == {"kind": "resume", "local": False, "remote": True}
