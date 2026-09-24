@@ -21,6 +21,7 @@ the record and the branches with `git log`, then walks the plan through
 from __future__ import annotations
 
 import shlex
+from pathlib import PurePath
 from typing import Any
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "phase_pr_body",
     "pr_body",
     "recover_plan",
+    "recover_record",
     "wait_decision",
 ]
 
@@ -184,6 +186,20 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
         {"kind": "clean", "run": run, "task": task, "branch": scratch_branch},
         {"kind": "mark_done", "task": task},
     ]
+
+
+def recover_record(path: str, ticket: str | None, initiative: str) -> dict[str, Any]:
+    """The `{run, task, phase, initiative}` record `recover_plan` expects, read
+    off the task file's path `<run>/tasks/<phase>/<task>.json`, or a one-step
+    `refuse` dict. The record's `run_id` is a truncated composite and is never
+    read. A path of another shape, or a `ticket` that is not the filename, refuses."""
+    parts = PurePath(path).parts
+    if len(parts) < 4 or parts[-3] != "tasks" or not parts[-1].endswith(".json"):
+        return {"kind": "refuse", "reason": f"{path}: not a task record path, expected <run>/tasks/<phase>/<task>.json"}
+    run, phase, task = parts[-4], parts[-2], parts[-1][: -len(".json")]
+    if ticket != task:
+        return {"kind": "refuse", "reason": f"{path}: record ticket {ticket!r} disagrees with its filename {task!r}"}
+    return {"run": run, "task": task, "phase": phase, "initiative": initiative}
 
 
 def recover_plan(record: dict[str, Any], branches: dict[str, list[str]]) -> list[dict[str, Any]]:
