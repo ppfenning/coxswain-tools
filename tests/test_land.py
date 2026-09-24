@@ -37,6 +37,24 @@ def test_refuse_without_approval():
     ]
 
 
+def test_arbitration_verdict_of_a_null_arbitration_is_none():
+    assert land.arbitration_verdict({"arbitration": None}) is None
+
+
+def test_arbitration_verdict_of_a_dict_is_its_verdict():
+    assert land.arbitration_verdict({"arbitration": {"verdict": "revise"}}) == "revise"
+
+
+def test_arbitration_verdict_of_the_arbiter_skip_string_is_approve():
+    assert land.arbitration_verdict({"arbitration": "arbiter: skipped (both approved)"}) == "approve"
+
+
+def test_land_plan_over_the_arbiter_skip_string_plans_a_normal_land():
+    branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+    steps = land.land_plan(_record(arbitration="arbiter: skipped (both approved)"), branches, "main")
+    assert steps[0] == {"kind": "pick_branch", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module"}
+
+
 def test_branch_choice_scratch_branch():
     branches = {"agents/epic-x-5/seams-task": ["Add seams module"], "epic/x/seams": ["Add seams module", "Add other thing"]}
     steps = land.land_plan(_record(), branches, "main")
