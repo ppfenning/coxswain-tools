@@ -96,3 +96,9 @@ def test_render_of_a_refuse_step():
 def test_an_item_with_no_repository_is_refused_not_planned():
     steps = plan([_item(repo="")], issues={}, project_items={}, tracker="github-projects")
     assert steps == [{"kind": "refuse", "item_id": "item-1", "detail": "no repository resolves for this item"}]
+
+
+def test_an_empty_field_with_no_value_on_the_board_plans_no_set():
+    steps = plan([_item(phase="", gate="")], issues={}, project_items={}, tracker="github-projects")
+    assert [s["field"] for s in steps if s["kind"] == "project_set"] == ["State", "Run", "Cost"]
+

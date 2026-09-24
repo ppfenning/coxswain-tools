@@ -233,6 +233,8 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
         if not issue:
             return False, "gh issue create returned no issue url"
         ctx["just_created"] = {"issue": issue, "repo": step["repo"]}
+        # Recorded at once, so a later failed step cannot leave the issue unknown and a rerun duplicate it.
+        _writeback(ctx["root"], step["item_id"], issue)
         return True, issue
     if kind == "issue_edit":
         repo = _step_repo(step["issue"], ctx)
@@ -267,8 +269,10 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
                           "-f", f"field={field_id}", "-f", f"option={option_id}"],
                          capture_output=True, text=True)
         else:
+            # `gh` refuses an empty `--text` ("no changes to make"); an emptied field is cleared.
+            value = ["--text", str(step["value"])] if step["value"] != "" else ["--clear"]
             result = run(["gh", "project", "item-edit", "--id", item_id, "--project-id",
-                          ctx["project_node_id"], "--field-id", field_id, "--text", str(step["value"])],
+                          ctx["project_node_id"], "--field-id", field_id, *value],
                          capture_output=True, text=True)
         return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
     if kind == "writeback":
