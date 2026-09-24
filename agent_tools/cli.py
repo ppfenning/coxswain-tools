@@ -705,15 +705,20 @@ def _branch_exists(repo: Path, branch: str) -> bool:
 
 
 def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None,
-                  item_path: str | None = None) -> list[dict]:
+                  item_path: str | None = None, workspace: str | None = None,
+                  item_id: str | None = None) -> list[dict]:
     """Steps enriched with what only the edge knows: each `mark_done`'s own
     record file path (`task_paths` maps task name to path in phase mode), and
     the configured worktree root for `clean`/`clean_phase`. `item_path` (task
     mode only) is the work item `mark_done` will also try to close out. A
     `checks` step that names a `branch` (phase mode) gets no filesystem write
     here — a dry run must stay read-only, so the actual worktree is only ever
-    created at execution time, inside `_execute_land_step`, under `--apply`."""
+    created at execution time, inside `_execute_land_step`, under `--apply`.
+    A `route_sync` step gets the `workspace` to sync and the item's own `id`
+    (`item_id`, else the task name the plan used)."""
     def enrich(step: dict) -> dict:
+        if step["kind"] == "route_sync":
+            return {**step, "item": item_id or step["item"], "workspace": workspace}
         if step["kind"] == "mark_done":
             marked = {**step, "path": (task_paths or {}).get(step["task"], path)}
             return {**marked, "item": item_path, "from": "approved", "to": "done"} if item_path else marked
@@ -858,7 +863,38 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
         record_path.write_text(json.dumps({**record, "landed": True}, indent=2), encoding="utf-8")
         _close_approved_item(step.get("item"))
         return True, f"{step['task']} marked landed at {record_path}"
+    if kind == "route_sync":
+        # The PR is already merged: a failed sync is reported, never a failed land.
+        sync = argparse.Namespace(item=step["item"], workspace=step["workspace"], dry_run=False, project=None, profile=None)
+        try:
+            rc = _route_sync(sync)
+        except Exception as exc:
+            return True, f"sync of {step['item']} failed after the merge ({type(exc).__name__}: {exc}); land not undone"
+        return True, f"synced {step['item']}" if rc == 0 else f"sync of {step['item']} failed after the merge (exit {rc}); land not undone"
     return False, f"unknown step {kind!r}"
+
+
+def _land_item_facts(item_path: str | None) -> tuple[str | None, str | None]:
+    """`(id, issue)` from the work item's frontmatter, each `None` when the
+    item is absent or does not carry it. `issue` is whatever the sync wrote
+    back, normally a bare number."""
+    text = _read_text_or_none(Path(item_path)) if item_path else None
+    fields = route.parse_frontmatter(text)[0] if text is not None else {}
+    item_id, issue = fields.get("id"), fields.get("issue")
+    return (str(item_id) if item_id else None), (str(issue) if issue else None)
+
+
+def _resolved_tracker(runs_dir: Path) -> str:
+    """`tracker` from `<runs_dir>/policy.tracker.json` when a landing step has
+    dropped one there; `github-projects` when absent, unreadable or not a name.
+    A remote-is-github.com check is not made here."""
+    text = _read_text_or_none(runs_dir / "policy.tracker.json")
+    try:
+        raw = json.loads(text) if text is not None else None
+    except json.JSONDecodeError:
+        raw = None
+    tracker = raw.get("tracker") if isinstance(raw, dict) else None
+    return tracker if isinstance(tracker, str) and tracker else "github-projects"
 
 
 def _close_approved_item(item_path: str | None) -> None:
@@ -941,8 +977,11 @@ def _runs_land(a: argparse.Namespace) -> int:
         branches = _land_branches(repo, record, default_branch)
         item_path = (str(runs_dir.parent / "work" / record["initiative"] / record["phase"] / f"{record['task']}.md")
                      if record.get("initiative") else None)
-        steps = _land_enrich(land.land_plan(record, branches, default_branch, repo_facts), path=searched,
-                              worktree_root=a.worktree_root, item_path=item_path)
+        item_id, issue = _land_item_facts(item_path)
+        plan_steps = land.land_plan(record, branches, default_branch, repo_facts,
+                                    tracker=_resolved_tracker(runs_dir), issue=issue)
+        steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, item_path=item_path,
+                              workspace=str(runs_dir.parent), item_id=item_id)
     level = a.gate or _resolved_gate_level(runs_dir)
     if a.gate:
         print(f"land: --gate {level} overrides the resolved level")
