@@ -1,19 +1,10 @@
-usage: cox dev [-h] {release,release-check,backfill-github-releases,commands} ...
+usage: cox dev [-h] ...
 
-maintainer commands for the Coxswain repositories; not needed to use Coxswain
+moved: run `uv run --frozen python -m devtools <command> ...` from the coxswain checkout (from
+0.15.0)
 
 positional arguments:
-  {release,release-check,backfill-github-releases,commands}
-    release             the lockstep tag/bump-manifest/notes plan across coxswain's manifest, or
-                        (without --dry-run) tags and pushes every component
-    release-check       gather facts and print drifts between the CLI, the manifest, the docs and
-                        the release notes
-    backfill-github-releases
-                        walk the umbrella's past docs/releases/<version>.md files oldest-first,
-                        creating or editing the GitHub Release for every tagged repo missing or
-                        drifted from one
-    commands            write the plugin's slash-command pages and the README's Commands section
-                        from the command table
+  rest
 
 options:
-  -h, --help            show this help message and exit
+  -h, --help  show this help message and exit

@@ -1,9 +1,0 @@
-usage: cox dev release-check [-h] [--manifest MANIFEST] [--root ROOT] [--json]
-                             [--checkout NAME=PATH]
-
-options:
-  -h, --help            show this help message and exit
-  --manifest MANIFEST
-  --root ROOT
-  --json
-  --checkout NAME=PATH

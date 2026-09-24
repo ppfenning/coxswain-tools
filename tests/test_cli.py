@@ -216,44 +216,8 @@ def test_print_argv_takes_no_lock_and_spawns_nothing(launcher_profile, monkeypat
     assert spawn_calls == []
 
 
-def test_release_dry_run_reads_component_versions_from_checkouts_and_bumps_each_below_target(tmp_path, capsys, monkeypatch):
-    manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(
-        '[coxswain]\nversion = "0.1.0"\n\n'
-        '[components.harness]\nrepo = "org/harness"\ntag = "v0.1.0"\n\n'
-        '[components.cartridges]\nrepo = "org/cartridges"\ntag = "v0.1.0"\n'
-    )
-    for name in ("harness", "cartridges"):
-        component_dir = tmp_path / name
-        component_dir.mkdir()
-        (component_dir / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
-    monkeypatch.setattr(cli, "_maintainer_remote_url", lambda directory: "git@github.com:ppfenning/coxswain.git")
-    monkeypatch.setattr(cli, "_remote_tags", lambda repo: [])
-    rc = cli.main(["dev", "release", "0.2.0", "--dry-run", "--manifest", str(manifest_path), "--root", str(tmp_path)])
-    out = capsys.readouterr().out
-    assert rc == 0
-    for name in ("harness", "cartridges"):
-        assert f"bump_pyproject {name}:" in out
-        assert "'from': '0.1.0'" in out and "'to': '0.2.0'" in out
 
 
-def test_release_check_checkout_override_resolves_the_named_directory_not_the_coxswain_prefix_fallback(tmp_path, capsys):
-    manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text(
-        '[coxswain]\nversion = "0.2.0"\n\n'
-        '[components.graphs]\nrepo = "org/graphs"\ntag = "v0.1.0"\n'
-    )
-    override_dir = tmp_path / "custom-graphs-checkout"
-    override_dir.mkdir()
-    (override_dir / "pyproject.toml").write_text('[project]\nversion = "0.1.5"\n')
-    rc = cli.main(["dev", "release-check", "--manifest", str(manifest_path), "--root", str(tmp_path),
-                   "--checkout", f"graphs={override_dir}", "--json"])
-    out = capsys.readouterr().out
-    assert rc == 0
-    payload = json.loads(out)
-    versions_drift = next(d for d in payload["drifts"] if d["check"] == "versions" and "0.1.5" in d["correction"])
-    assert "0.2.0" in versions_drift["correction"]
-    assert versions_drift["b_file"] == str(override_dir / "pyproject.toml")
 
 
 def _clock():
@@ -274,3 +238,17 @@ def test_await_checks_times_out_when_nothing_appears_within_the_grace_period():
     result = cli._await_checks(lambda: (1, "no checks reported on the 'release/x' branch"), sleep=sleep, now=now)
     assert result == (False, "no checks reported within 180s")
     assert set(slept) == {15}
+
+
+MOVED = "moved: run `uv run --frozen python -m devtools <command> ...` from the coxswain checkout (from 0.15.0)"
+
+
+@pytest.mark.parametrize("argv", [
+    ["dev"],
+    ["dev", "release", "0.15.0", "--dry-run", "--manifest", "x.toml"],
+    ["dev", "release-check", "--json"],
+    ["release", "0.15.0", "--dry-run"],
+])
+def test_cox_dev_and_cox_release_print_the_devtools_pointer_and_exit_two(argv, capsys):
+    assert cli.main(argv) == 2
+    assert capsys.readouterr().out == MOVED + "\n"
