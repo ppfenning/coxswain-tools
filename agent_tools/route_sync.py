@@ -70,7 +70,7 @@ def _project_steps(key: str | None, wanted: dict, project_items: dict) -> list[d
     known = current or {}
     add_step = [{"kind": "project_add", "issue": key}] if current is None else []
     set_steps = [{"kind": "project_set", "issue": key, "field": field, "value": value}
-                 for field, value in wanted.items() if known.get(field) != value]
+                 for field, value in wanted.items() if (known.get(field) or "") != value]
     return add_step + set_steps
 
 
