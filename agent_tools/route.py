@@ -624,7 +624,8 @@ def _describe_initiative(i: dict) -> str:
     return f'{i["id"]} ({", ".join(bits) or "unlaunchable"})'
 
 
-def render_context(profile_or_none, intake: dict, runs, initiatives, problems: list | None = None) -> str:
+def render_context(profile_or_none, intake: dict, runs, initiatives, problems: list | None = None,
+                   gate_level: str | None = None) -> str:
     """The human-readable layout `agent-tools route context` prints, spec
     §2. `profile_or_none` is a parsed profile dict or None; `intake` is an
     `intake_groups` result; `runs` and `initiatives` are already-gathered
@@ -658,6 +659,7 @@ def render_context(profile_or_none, intake: dict, runs, initiatives, problems: l
     else:
         lines.append("ready: none")
     lines += [f"problem: {p}" for p in problems or []]
+    lines += [f"gate: {gate_level}"] if gate_level is not None else []
     return "\n".join(lines)
 
 
@@ -732,7 +734,8 @@ def _intake_group_line(name: str, entries: list) -> str:
     return f"intake {name}: {len(entries)}" + (f" — {names}" if entries else "")
 
 
-def render_status(rows: list, groups: dict | None = None, problems: list | None = None) -> str:
+def render_status(rows: list, groups: dict | None = None, problems: list | None = None,
+                  gate_level: str | None = None) -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
@@ -747,6 +750,7 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     if groups is not None:
         lines += [_intake_group_line(name, groups[name]) for name in ("queued", "decomposed", "landed")]
     lines += [f"problem: {p}" for p in problems or []]
+    lines += [f"gate: {gate_level}"] if gate_level is not None else []
     return "\n".join(lines)
 
 

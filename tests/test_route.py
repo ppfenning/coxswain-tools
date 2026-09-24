@@ -562,6 +562,11 @@ def test_render_context_with_profile_and_no_activity():
     )
 
 
+def test_render_context_appends_the_gate_line_when_given():
+    text = route.render_context(FIXTURE_PROFILE, EMPTY_INTAKE_GROUPS, [], [], gate_level="phase")
+    assert text.splitlines()[-1] == "gate: phase"
+
+
 def test_render_context_without_profile_is_the_one_liner():
     text = route.render_context(None, [], [], [])
     assert text == (
@@ -1029,6 +1034,12 @@ def test_render_status_omits_intake_section_when_groups_is_none():
     rows = [{"id": "a", "pid": None, "state": "no pidfile", "started": None,
              "quarantined": [], "reused": [], "summary": None, "usage": None}]
     assert route.render_status(rows) == "a: no pidfile"
+
+
+def test_render_status_appends_the_gate_line_when_given():
+    rows = [{"id": "a", "pid": None, "state": "no pidfile", "started": None,
+             "quarantined": [], "reused": [], "summary": None, "usage": None}]
+    assert route.render_status(rows, gate_level="ticket") == "a: no pidfile\ngate: ticket"
 
 
 def test_link_intake_adds_both_fields_and_keeps_everything_else():

@@ -940,6 +940,10 @@ def _runs_land(a: argparse.Namespace) -> int:
                      if record.get("initiative") else None)
         steps = _land_enrich(land.land_plan(record, branches, default_branch, repo_facts), path=searched,
                               worktree_root=a.worktree_root, item_path=item_path)
+    level = a.gate or _resolved_gate_level(runs_dir)
+    if a.gate:
+        print(f"land: --gate {level} overrides the resolved level")
+    planned, steps = steps, land.gate_steps(steps, level)
     if not a.apply:
         print(json.dumps(steps, indent=2))
         return 2 if any(s["kind"] == "refuse" for s in steps) else 0
@@ -950,11 +954,15 @@ def _runs_land(a: argparse.Namespace) -> int:
     if pr_branch is not None and pr_branch in cleanup.git_branches(repo):
         print(f"land: refusing, branch {pr_branch} already exists in {repo}")
         return 2
+    pr = ""
     for i, step in enumerate(steps):
         if step["kind"] == "refuse":
             print(f"refused: {step['reason']}")
             return 2
+        if step["kind"] == "note":
+            continue
         ok, detail = _execute_land_step(repo, step)
+        pr = detail if step["kind"] == "pr_create" and ok else pr
         if step["kind"] == "checks" and not ok and detail.startswith(_LAUNCH_ERROR):
             # A check whose executable `subprocess` can't find is a refusal,
             # not an ordinary failure, and it fires before `push` so a check
@@ -969,7 +977,10 @@ def _runs_land(a: argparse.Namespace) -> int:
         if step["kind"] == "wait_checks" and a.no_merge:
             print("stopping after wait_checks (--no-merge)")
             return 0
-    return 0
+    stop = land.gate_stop(planned, steps, level, pr)
+    if stop:
+        print(stop)
+    return 3 if stop else 0
 
 
 def _runs_recover(a: argparse.Namespace) -> int:
@@ -1143,7 +1154,8 @@ def _route_context(a: argparse.Namespace) -> int:
         first_line = route.render_context(profile, empty_groups, [], []).partition("\n")[0]
         print(f"{first_line} ({reason})")
     else:
-        print(f"{route.render_context(profile, intake, runs, initiatives, problems)}\nusage: {usage_reason}")
+        gate_level = _resolved_gate_level(Path(profile["workspace_dir"]).expanduser() / "runs")
+        print(f"{route.render_context(profile, intake, runs, initiatives, problems, gate_level=gate_level)}\nusage: {usage_reason}")
     return 0
 
 
@@ -1252,7 +1264,7 @@ def _route_status(a: argparse.Namespace) -> int:
                 doc = {"runs": rows, "intake": groups, "problems": problems}
             print(json.dumps(doc, indent=2))
         else:
-            print(route.render_status(rows, groups, problems))
+            print(route.render_status(rows, groups, problems, gate_level=_resolved_gate_level(ws / "runs")))
     except Exception as exc:
         print(f"routing: status unavailable ({type(exc).__name__}: {exc})")
     return 0
@@ -2925,6 +2937,19 @@ def _setup_tui(a: argparse.Namespace) -> int:
 
 _USAGE_ASSESS_EXIT = {"go": 0, "go_degraded": 0, "hold": 3, "stop": 4}
 
+_GATE_LEVELS = ("ticket", "phase", "epic", "full")
+
+
+def _resolved_gate_level(runs_dir: Path) -> str:
+    """`level` from `<runs_dir>/policy.gate.json`; `ticket` when absent, unreadable or unknown, never `full`."""
+    text = _read_text_or_none(runs_dir / "policy.gate.json")
+    try:
+        raw = json.loads(text) if text is not None else None
+    except json.JSONDecodeError:
+        raw = None
+    level = raw.get("level") if isinstance(raw, dict) else None
+    return level if level in _GATE_LEVELS else "ticket"
+
 
 def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
     """The cartridge's resolved `policy.pacing`, read from
@@ -3031,6 +3056,7 @@ RUNS_COMMANDS = [
             commands.Arg(("--no-claim",), {"action": "store_true", "help": "land without taking an unheld or stale loop"}),
             commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--no-merge",), {"action": "store_true"}),
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+            commands.Arg(("--gate",), {"choices": ["ticket", "phase", "epic", "full"], "help": "override the resolved gate level for this invocation"}),
         ),
         _runs_land, False, (),
     ),
