@@ -1254,10 +1254,10 @@ def test_launch_gate_hold_narrates_the_reason_and_continues():
     assert lines == ["routing: usage hold: headroom below minimum"]
 
 
-def test_launch_gate_go_degraded_narrates_the_reason_and_continues():
-    code, lines = route.launch_gate(_assessment("go_degraded", "degrading to tier=cheap effort=low"), force=False)
+def test_launch_gate_go_degraded_is_an_advisory_and_continues():
+    code, lines = route.launch_gate(_assessment("go_degraded", "ceilings tier=cheap effort=low"), force=False)
     assert code is None
-    assert lines == ["routing: usage go_degraded: degrading to tier=cheap effort=low"]
+    assert lines == ["routing: advisory: usage go_degraded: ceilings tier=cheap effort=low"]
 
 
 def test_launch_gate_go_is_silent():
