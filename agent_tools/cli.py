@@ -48,6 +48,8 @@ from agent_tools import (
     release_check_pages,
     release_check_readmes,
     route,
+    route_sync,
+    route_sync_gh,
     router,
     runs_bar,
     runs_detail,
@@ -1661,6 +1663,85 @@ def _harness_ready_or_refuse(harness_dir: str):
         print(f"routing: harness venv missing at {harness_dir}; install it (see the harness README)")
         return 2
     return None
+
+
+def _route_sync_state_path(profile_path: Path) -> Path:
+    """Where the resolved `owner/N` project persists across runs: a sidecar
+    next to the profile, not a key inside it. `route.parse_profile` accepts
+    a fixed field set (`route.py`'s `_KNOWN_KEYS`), and `project` is not one
+    of them, so writing it into the profile itself would leave that file
+    unparsable by every other route command from then on."""
+    return profile_path.with_name(profile_path.name + ".route-sync-project")
+
+
+def _resolve_sync_project(a: argparse.Namespace, items: list, state_path: Path):
+    """`(project, None)` on success, `(None, 2)` after printing the reason.
+    `project` comes back `None` (no error) only for a dry-run preview run
+    before any project exists — nothing to create yet, nothing to preview
+    against either."""
+    if a.project:
+        return a.project, None
+    cached = _read_text_or_none(state_path)
+    if cached and cached.strip():
+        return cached.strip(), None
+    owner = items[0].repo.split("/", 1)[0] if items and "/" in items[0].repo else ""
+    if not owner:
+        print("route sync: no --project given and no repo to derive a project owner from")
+        return None, 2
+    ok, found = route_sync_gh.find_project(subprocess.run, owner)
+    if not ok:
+        print(f"route sync: {found}")
+        return None, 2
+    if found is not None:
+        return f"{owner}/{found}", None
+    if a.dry_run:
+        return None, None
+    ok, number = route_sync_gh.create_project(subprocess.run, owner)
+    if not ok:
+        print(f"route sync: {number}")
+        return None, 2
+    project = f"{owner}/{number}"
+    state_path.write_text(f"{project}\n")
+    return project, None
+
+
+def _route_sync(a: argparse.Namespace) -> int:
+    """Mirror the work store onto GitHub Projects: `--dry-run` renders the
+    plan and touches nothing that outlives the run; otherwise `execute`
+    runs it and stops at the first failed `gh` call. Refuses at once, exit
+    2, when `gh` is not authenticated."""
+    if not route_sync_gh.auth_ok(subprocess.run):
+        print("route sync: gh is not authenticated; run `gh auth login`")
+        return 2
+    profile_path = _profile_path(a)
+    text = _read_text_or_none(profile_path)
+    try:
+        profile = route.parse_profile(text) if text is not None else {}
+    except route.ProfileError as exc:
+        print(f"route sync: profile unreadable: {exc}")
+        return 2
+    workspace = a.workspace or profile.get("workspace_dir") or "."
+    items = route_sync_gh.items_from_store(workspace)
+    if a.item:
+        items = [item for item in items if item.id == a.item]
+    project, rc = _resolve_sync_project(a, items, _route_sync_state_path(profile_path))
+    if rc is not None:
+        return rc
+    repo_names = sorted({item.repo for item in items if item.repo})
+    ok, result = route_sync_gh.existing(subprocess.run, repo_names, project)
+    if not ok:
+        print(f"route sync: {result}")
+        return 2
+    issues, project_items, item_node_ids = result
+    steps = route_sync.plan(items, issues, project_items, "github-projects")
+    if a.dry_run:
+        print("\n".join(route_sync.render(steps)))
+        return 0
+    log = route_sync_gh.execute(steps, subprocess.run, project, workspace, items, item_node_ids)
+    for kind, _, detail in log:
+        print(f"{kind}: {detail}")
+    hard_failure = any(not step_ok for kind, step_ok, _ in log if kind != "refuse")
+    return 1 if hard_failure else 0
 
 
 def _route_launch(a: argparse.Namespace) -> int:
@@ -3387,6 +3468,9 @@ def build_parser() -> argparse.ArgumentParser:
     lch.add_argument("--since"); lch.add_argument("--json", action="store_true")
     lch.add_argument("--as-leader", action="store_true", help="send as the lock's holder; refuses unless this process is the live holder")
     lch.set_defaults(fn=_route_chair_chat)
+    sy = r.add_parser("sync", help="mirror the work store onto the GitHub Projects board")
+    sy.add_argument("--profile"); sy.add_argument("--item"); sy.add_argument("--project"); sy.add_argument("--workspace"); sy.add_argument("--dry-run", action="store_true")
+    sy.set_defaults(fn=_route_sync)
     lc = r.add_parser("launch", help="run one of the harness's graphs directly").add_subparsers(dest="graph", required=True)
     ep = lc.add_parser("epic", help="launch the epic graph against a filed initiative"); ep.add_argument("--profile"); ep.add_argument("--initiative", required=True); ep.add_argument("--repo")
     ep.add_argument("--fix-attempts", type=int, default=None); ep.add_argument("--dry-run", action="store_true"); ep.set_defaults(fn=_route_launch, graph="epic")

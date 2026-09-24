@@ -91,3 +91,8 @@ def test_render_has_one_line_per_step():
 def test_render_of_a_refuse_step():
     steps = [{"kind": "refuse", "item_id": "item-1", "detail": "unknown state: 'blocked'"}]
     assert render(steps) == ["refuse item-1: unknown state: 'blocked'"]
+
+
+def test_an_item_with_no_repository_is_refused_not_planned():
+    steps = plan([_item(repo="")], issues={}, project_items={}, tracker="github-projects")
+    assert steps == [{"kind": "refuse", "item_id": "item-1", "detail": "no repository resolves for this item"}]

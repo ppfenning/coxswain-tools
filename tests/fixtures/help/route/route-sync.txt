@@ -1,0 +1,10 @@
+usage: cox route sync [-h] [--profile PROFILE] [--item ITEM] [--project PROJECT]
+                      [--workspace WORKSPACE] [--dry-run]
+
+options:
+  -h, --help            show this help message and exit
+  --profile PROFILE
+  --item ITEM
+  --project PROJECT
+  --workspace WORKSPACE
+  --dry-run

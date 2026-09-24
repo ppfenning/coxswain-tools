@@ -60,6 +60,8 @@ cox route file --repo PATH --title TEXT [--body FILE|-] [--phase NAME] [--intake
 cox route launch epic --initiative DIR [--repo PATH] [--fix-attempts N] [--dry-run]   start the harness detached with a pidfile and log, and AGENT_GRAPHS_TRACE_DIR set to `<runs_dir>/<run-id>-trace` so every node writes a trace; exit 2 on a missing profile or harness venv, a missing initiative.md, a dirty repo, or a live run of the same initiative
 cox route launch decompose --idea FILE --initiative-id ID [--dry-run]   start the harness detached; exit 2 on a missing profile, harness venv, or idea file
 cox route launch cos [--dry-run]   start the chief of staff detached: it reads intake and runs, dispatches within the bound, and consumes what it dispatched
+cox route sync [--item ID] [--project OWNER/N] [--dry-run]   one-way mirror of the work store onto a GitHub Projects board; exit 2 if gh is not authenticated
+cox route sync --project OWNER/N                accept an existing project instead of creating one named "Coxswain" under the repo's owner
 cox router select --role ROLE [--profile PATH] [--json]   the effective tier for ROLE under the profile's router: off|shadow|on flag — off returns the floor, shadow logs select_tier's tier as non-authoritative and still returns the floor, on returns select_tier's tier
 cox steward propose [--profile PATH] [--json]   ceiling-change candidates clearing the evidence bar, written as new intake files under the profile's workspace; never opens or edits a provider profile
 cox setup   a small terminal UI over setup doctor, setup install and cartridge init (needs a terminal)

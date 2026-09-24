@@ -1,15 +1,16 @@
-usage: cox route [-h] {context,status,file,lint,groups,chair,launch} ...
+usage: cox route [-h] {context,status,file,lint,groups,chair,sync,launch} ...
 
 File work for the harness, and see what is queued or running.
 
 positional arguments:
-  {context,status,file,lint,groups,chair,launch}
+  {context,status,file,lint,groups,chair,sync,launch}
     context             the routing profile's resolved context
     status              what is queued or running for this profile
     file                file a new ticket for the harness
     lint                static ticket lint over a filed initiative, work-shape.md §3
     groups              print the newest plans/intake-groups/<date>.md file, work-shape.md §5
     chair               the chair lock for the landing loop (runs/chair.json)
+    sync                mirror the work store onto the GitHub Projects board
     launch              run one of the harness's graphs directly
 
 options:
