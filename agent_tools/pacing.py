@@ -13,7 +13,10 @@ pace ratio that has climbed past the last rung either ladder can offer
 returns `stop` before headroom is even considered, so a temporary spike in
 `burn_usd_per_hour` can never mask the harsher pace verdict as the softer
 one. The last combined rung (cheapest tier, lowest effort) is still
-`go_degraded`; `stop` only fires one threshold beyond that.
+`go_degraded`; `stop` only fires one threshold beyond that. The pace ratio
+is noise at the start of a window, so it is judged only once
+`elapsed_fraction >= policy.min_elapsed_fraction`; before that the hard stop
+and the absolute headroom still apply and pace does not.
 """
 
 from __future__ import annotations
@@ -49,6 +52,7 @@ class Policy:
     min_headroom_usd: float
     hard_stop_fraction: float = 0.99
     weekly_hard_stop_fraction: float = 0.93
+    min_elapsed_fraction: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -165,7 +169,8 @@ def _assess_window(window: Window, policy: Policy, now: datetime, elapsed_fracti
             reason=f"spent {spent_fraction:.0%} of ceiling (hard stop at {policy.hard_stop_fraction:.0%})",
         )
 
-    ratio = _ratio(spent_fraction, elapsed_fraction)
+    pace_judged = elapsed_fraction >= policy.min_elapsed_fraction
+    ratio = _ratio(spent_fraction, elapsed_fraction) if pace_judged else 0.0
     # The last combined ladder index (cheapest tier, lowest effort) is still
     # a degraded rung, not a stop; stop needs one threshold past it.
     max_rung = (len(policy.tier_ladder) - 1) + (len(policy.effort_ladder) - 1)
@@ -196,12 +201,14 @@ def _assess_window(window: Window, policy: Policy, now: datetime, elapsed_fracti
             spent_fraction=spent_fraction, elapsed_fraction=elapsed_fraction,
             projected_total=projected_total, headroom_usd=headroom_usd,
             verdict="go", tier_ceiling=tier_ceiling, effort_ceiling=effort_ceiling,
-            hold_until=None, reason=f"{pace}; on pace",
+            hold_until=None,
+            reason=f"{pace}; on pace" if pace_judged
+            else f"{pace}; pace not judged before {policy.min_elapsed_fraction:.0%} elapsed",
         )
 
     return Assessment(
         spent_fraction=spent_fraction, elapsed_fraction=elapsed_fraction,
         projected_total=projected_total, headroom_usd=headroom_usd,
         verdict="go_degraded", tier_ceiling=tier_ceiling, effort_ceiling=effort_ceiling,
-        hold_until=None, reason=f"{pace}; degrading to tier={tier_ceiling} effort={effort_ceiling}",
+        hold_until=None, reason=f"{pace}; ceilings tier={tier_ceiling} effort={effort_ceiling}",
     )

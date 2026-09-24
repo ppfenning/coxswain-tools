@@ -599,16 +599,19 @@ def overlay(profile: dict, tier_ceiling: str | None, effort_ceiling: str | None)
 def launch_gate(assessment: Assessment, force: bool) -> tuple[int | None, list[str]]:
     """Pure: what `route launch` does with one usage `Assessment`, computed
     once via the gatherer. `stop` refuses before anything starts unless
-    `force` overrides it; `hold` and `go_degraded` only narrate the reason
-    and let the launch continue; `go` is silent. This function decides —
+    `force` overrides it; `hold` only narrates the reason and lets the launch
+    continue; `go_degraded` does the same as an advisory, since the epic
+    launch path applies no ceiling; `go` is silent. This function decides —
     `_route_launch` only prints the returned lines and returns the code.
     """
     if assessment.verdict == "stop" and not force:
         return 2, [f"routing: usage stop: {assessment.reason}"]
     if assessment.verdict == "stop":
         return None, [f"routing: usage stop overridden by --force: {assessment.reason}"]
-    if assessment.verdict in ("hold", "go_degraded"):
-        return None, [f"routing: usage {assessment.verdict}: {assessment.reason}"]
+    if assessment.verdict == "go_degraded":
+        return None, [f"routing: advisory: usage go_degraded: {assessment.reason}"]
+    if assessment.verdict == "hold":
+        return None, [f"routing: usage hold: {assessment.reason}"]
     return None, []
 
 

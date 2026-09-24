@@ -103,13 +103,35 @@ def test_ratio_defaults_to_zero_at_the_very_start_of_the_window():
     assert result.tier_ceiling == "deep"
 
 
-def test_ratio_is_infinite_when_time_has_not_elapsed_but_money_has_been_spent():
-    result = assess(_window(spent_usd=5, ceiling_usd=100), _policy(), _START)
-    assert result.elapsed_fraction == 0.0
-    assert result.spent_fraction == 0.05
-    assert result.verdict == "stop"
-    assert result.tier_ceiling == "cheap"
-    assert result.effort_ceiling == "low"
+def test_pace_is_not_judged_before_the_minimum_elapsed_fraction():
+    now = _START.replace(minute=6)  # elapsed_fraction 0.01
+    result = assess(_window(spent_usd=3, ceiling_usd=100), _policy(), now)
+    assert result.verdict == "go"
+    assert result.tier_ceiling == "deep"
+    assert result.reason == "spent 3% of ceiling at 1% elapsed; pace not judged before 10% elapsed"
+
+
+def test_five_percent_spent_at_two_percent_elapsed_goes_instead_of_stopping():
+    now = _START.replace(minute=12)  # elapsed_fraction 0.02
+    result = assess(_window(spent_usd=5, ceiling_usd=100), _policy(), now)
+    assert result.verdict == "go"
+
+
+def test_the_same_spend_at_fifteen_percent_elapsed_is_judged_by_pace():
+    now = _START.replace(hour=1, minute=30)  # elapsed_fraction 0.15
+    assert assess(_window(spent_usd=5, ceiling_usd=100), _policy(), now).verdict == "go"
+    assert assess(_window(spent_usd=50, ceiling_usd=100), _policy(), now).verdict == "stop"  # ratio 3.33
+
+
+def test_the_hard_stop_still_fires_at_the_start_of_a_window():
+    now = _START.replace(minute=6)
+    assert assess(_window(spent_usd=99, ceiling_usd=100), _policy(), now).verdict == "stop"
+
+
+def test_the_headroom_hold_still_applies_before_pace_is_judged():
+    now = _START.replace(minute=6)
+    result = assess(_window(spent_usd=3, ceiling_usd=100, burn_usd_per_hour=10.0), _policy(), now)
+    assert result.verdict == "hold"
 
 
 def test_elapsed_fraction_is_complete_for_a_zero_length_window():
