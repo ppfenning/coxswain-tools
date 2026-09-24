@@ -20,6 +20,7 @@ the record and the branches with `git log`, then walks the plan through
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections.abc import Sequence
 from pathlib import PurePath
@@ -30,6 +31,7 @@ __all__ = [
     "checks_argv",
     "gate_steps",
     "gate_stop",
+    "issue_closes",
     "land_plan",
     "phase_landable",
     "phase_pr_body",
@@ -163,7 +165,7 @@ def gate_steps(steps: Sequence[dict[str, Any]], level: str) -> list[dict[str, An
 def gate_stop(planned: Sequence[dict[str, Any]], gated: Sequence[dict[str, Any]], level: str, pr: str) -> str | None:
     """None when every planned step is kept, else the one line saying where the gate stopped and which PR stays open."""
     kept = [s for s in gated if s["kind"] != "note"]
-    if len(kept) == len(planned) or any(s["kind"] == "refuse" for s in gated):
+    if len(kept) == len([s for s in planned if s["kind"] != "note"]) or any(s["kind"] == "refuse" for s in gated):
         return None
     last = kept[-1]["kind"]
     return f"gate: {level} stopped after {last}; pull request {pr or '(none opened)'} left open, unmerged"
@@ -171,10 +173,13 @@ def gate_stop(planned: Sequence[dict[str, Any]], gated: Sequence[dict[str, Any]]
 
 def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_branch: str,
               repo_facts: dict[str, Any] | None = None, *, items: list[dict[str, Any]] | None = None,
-              task_records: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+              task_records: list[dict[str, Any]] | None = None, tracker: str | None = None,
+              issue: str | None = None) -> list[dict[str, Any]]:
     """The ordered steps to land `record`, or a one-step `refuse`. Phase mode
     (`items` given) lands the whole phase off its own branch instead of one
-    task's commit."""
+    task's commit. Task mode only: `tracker` other than None or `none` adds a
+    closing `route_sync`, and `issue` adds `Closes #n` to the PR body; `none`
+    plans neither and says so in a note."""
     if items is not None:
         return _phase_plan(record, items, task_records or [], repo_facts)
     if _proposal(record, "draft_pr_create") is None:
@@ -200,16 +205,24 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
 
     pr_branch = f"pr/{task}"
     draft = _proposal(record, "draft_pr_create")
+    mirrored = tracker != "none"
+    if not mirrored:
+        sync = [{"kind": "note", "reason": "route sync skipped: tracker is none"}]
+    elif tracker is None:
+        sync = []
+    else:
+        sync = [{"kind": "route_sync", "item": task}]
     return [
         {"kind": "pick_branch", "branch": chosen, "commit_subject": subject},
         {"kind": "cherry_pick", "branch": chosen, "commit_subject": subject, "onto": pr_branch, "from": default_branch},
         {"kind": "checks", "checks": checks_argv(repo_facts or {})},
         {"kind": "push", "branch": pr_branch},
-        {"kind": "pr_create", "title": draft.get("title", subject), "body": pr_body(record)},
+        {"kind": "pr_create", "title": draft.get("title", subject), "body": pr_body(record, issue if mirrored else None)},
         {"kind": "wait_checks"},
         {"kind": "merge", "squash": True, "delete_branch": True},
         {"kind": "clean", "run": run, "task": task, "branch": scratch_branch},
         {"kind": "mark_done", "task": task},
+        *sync,
     ]
 
 
@@ -269,8 +282,14 @@ def wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: flo
     return "failed"
 
 
-def pr_body(record: dict[str, Any]) -> str:
-    """The PR description: verdicts, fix-loop attempts, checks, and cost if present."""
+def issue_closes(issue: str | int | None) -> str | None:
+    """`Closes #n` for a bare `n`, `#n`, or a legacy `owner/repo#n` or `owner/n`; the issue lives in the PR's own repo, so an owner is never emitted."""
+    m = re.fullmatch(r"(?:[\w.-]+/[\w.-]+#|[\w.-]+/|#)?(\d+)", str(issue or "").strip())
+    return f"Closes #{m[1]}" if m else None
+
+
+def pr_body(record: dict[str, Any], issue: str | int | None = None) -> str:
+    """The PR description: verdicts, fix-loop attempts, checks, and cost if present, then the `Closes` line for `issue`."""
     lines = [f"Run: {record.get('run')}", f"Task: {record.get('task')}"]
     review, arbitration = _verdict(record, "review"), _verdict(record, "arbitration")
     if review:
@@ -292,7 +311,8 @@ def pr_body(record: dict[str, Any]) -> str:
         cost = None
     if cost is not None:
         lines.append(f"Cost: ${cost:.2f}")
-    return "\n".join(lines)
+    closes = issue_closes(issue)
+    return "\n".join(lines + ["", closes] if closes else lines)
 
 
 def approve_to_done(text: str) -> tuple[str | None, str | None]:

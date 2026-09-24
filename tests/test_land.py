@@ -213,6 +213,106 @@ def test_pr_body_omits_the_cost_line_rather_than_raising_on_an_unparseable_cost(
     assert "Cost:" not in land.pr_body(_record(cost_usd="n/a"))
 
 
+# --- route sync hooks: pure plan, then the edge ---
+
+_ONE_COMMIT = {"agents/epic-x-5/seams-task": ["Add seams module"]}
+
+
+def _pr_body_of(steps):
+    return next(s for s in steps if s["kind"] == "pr_create")["body"]
+
+
+@pytest.mark.parametrize("issue", ["7", "#7", "owner/name#7", "owner/7", 7])
+def test_issue_closes_is_the_bare_number_whatever_shape_it_arrived_in(issue):
+    assert land.issue_closes(issue) == "Closes #7"
+
+
+@pytest.mark.parametrize("issue", [None, "", "seven", "owner/name#"])
+def test_issue_closes_is_none_for_no_issue_or_an_unparseable_one(issue):
+    assert land.issue_closes(issue) is None
+
+
+def test_the_plan_carries_route_sync_after_mark_done():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects")
+    assert [s["kind"] for s in steps] == _STEP_ORDER + ["route_sync"]
+    assert steps[-1] == {"kind": "route_sync", "item": "seams-task"}
+
+
+def test_the_pr_body_closes_the_issue_and_never_emits_an_owner():
+    for issue in ("7", "owner/name#7"):
+        body = _pr_body_of(land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects", issue=issue))
+        assert body.endswith("\n\nCloses #7")
+        assert "owner" not in body
+
+
+def test_the_pr_body_has_no_closes_line_without_an_issue():
+    assert "Closes" not in _pr_body_of(land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects"))
+
+
+def test_tracker_none_plans_neither_the_sync_nor_the_closes_line_and_says_so():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="none", issue="7")
+    assert [s["kind"] for s in steps] == _STEP_ORDER + ["note"]
+    assert steps[-1]["reason"] == "route sync skipped: tracker is none"
+    assert "Closes" not in _pr_body_of(steps)
+
+
+def test_an_unresolved_tracker_leaves_the_plan_as_it_was():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main")
+    assert [s["kind"] for s in steps] == _STEP_ORDER
+
+
+def test_a_skip_note_is_not_a_step_the_gate_reports_as_left_unrun():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="none")
+    assert land.gate_stop(steps, land.gate_steps(steps, "full"), "full", "") is None
+
+
+def _sync_step():
+    return {"kind": "route_sync", "item": "seams-task", "workspace": "/w"}
+
+
+@pytest.mark.parametrize("outcome", [1, RuntimeError("boom")])
+def test_execute_route_sync_calls_the_sync_in_process_and_a_failure_never_fails_the_land(monkeypatch, tmp_path, outcome):
+    seen = []
+
+    def fake(ns):
+        seen.append(ns)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+    monkeypatch.setattr(cli, "_route_sync", fake)
+    ok, detail = cli._execute_land_step(tmp_path, _sync_step())
+    assert ok is True and "failed after the merge" in detail
+    ns = seen[0]
+    assert (ns.item, ns.workspace, ns.dry_run, ns.project, ns.profile) == ("seams-task", "/w", False, None, None)
+
+
+def test_execute_route_sync_reports_success(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_route_sync", lambda ns: 0)
+    assert cli._execute_land_step(tmp_path, _sync_step()) == (True, "synced seams-task")
+
+
+def test_land_enrich_gives_route_sync_its_workspace_and_the_items_own_id():
+    steps = cli._land_enrich([{"kind": "route_sync", "item": "seams-task"}], path="p", worktree_root="r",
+                             workspace="/w", item_id="SEAM-1")
+    assert steps == [{"kind": "route_sync", "item": "SEAM-1", "workspace": "/w"}]
+
+
+def test_land_item_facts_reads_id_and_issue_from_the_frontmatter(tmp_path):
+    item = tmp_path / "t.md"
+    item.write_text("---\nid: SEAM-1\nissue: 243\n---\nbody\n")
+    assert cli._land_item_facts(str(item)) == ("SEAM-1", "243")
+    assert cli._land_item_facts(str(tmp_path / "missing.md")) == (None, None)
+    assert cli._land_item_facts(None) == (None, None)
+
+
+def test_resolved_tracker_defaults_to_github_projects_and_reads_the_policy_file(tmp_path):
+    assert cli._resolved_tracker(tmp_path) == "github-projects"
+    (tmp_path / "policy.tracker.json").write_text('{"tracker": "none"}')
+    assert cli._resolved_tracker(tmp_path) == "none"
+    (tmp_path / "policy.tracker.json").write_text("{not json")
+    assert cli._resolved_tracker(tmp_path) == "github-projects"
+
+
 # --- cli._land_branches: the edge asks git, not prose, about merges ---
 
 def test_land_branches_asks_git_for_no_merges_rather_than_sniffing_subjects(monkeypatch):
@@ -698,7 +798,7 @@ def test_cli_apply_at_phase_level_prints_the_truncation_line_and_exits_3(repo, t
 def test_cli_apply_at_full_level_merges_and_exits_0(repo, tmp_path, capsys, monkeypatch):
     rc, ran = _apply_gated(repo, tmp_path, monkeypatch, "--gate", "full")
     assert rc == 0
-    assert ran == _STEP_ORDER
+    assert ran == _STEP_ORDER + ["route_sync"]
     assert "left open" not in capsys.readouterr().out
 
 
