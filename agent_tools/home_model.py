@@ -16,7 +16,7 @@ class Span:
 
 Line = tuple[Span, ...]
 
-from agent_tools import panel, runs_top  # noqa: E402  (after Span/Line so panel.py can import them back)
+from agent_tools import panel, regatta, runs_top  # noqa: E402  (after Span/Line so panel.py can import them back)
 
 __all__ = [
     "Drill",
@@ -51,6 +51,8 @@ _ATTENTION_MARK = "! "
 _ELLIPSIS = "…"
 _SIDE_BY_SIDE_WIDTH = 160
 _COLUMN_COUNT = 3
+_REGATTA_MIN_HEIGHT = 24
+_REGATTA_MIN_PANEL = 3
 OPENING_CONTEXT = "cox route context"
 SETUP_ARGV = ("cox", "setup")
 _ATTENTION_REASONS = {"exited": ("gate", "l"), "quarantined": ("quarantine", "i"), "budget": ("budget stop", "i")}
@@ -65,6 +67,7 @@ class Facts:
     window: dict
     now: float
     chat: tuple[dict, ...] = ()
+    tick: int = 0
 
     @property
     def chair(self) -> dict | None:
@@ -288,9 +291,16 @@ def _join_boxes(boxes: tuple[tuple[Line, ...], ...]) -> tuple[Line, ...]:
     return tuple(sum(((sep + part if i else part) for i, part in enumerate(row)), ()) for row in zip(*boxes))
 
 
+def _regatta_height(runs: int, spare: int, height: int) -> int:
+    """Rows for the regatta: one per run plus finish and border, trimmed to `spare`, none under either minimum."""
+    fitted = min(runs + 3, spare)
+    return fitted if height >= _REGATTA_MIN_HEIGHT and fitted >= _REGATTA_MIN_PANEL else 0
+
+
 def frame(facts: Facts, state: State, width: int, height: int) -> tuple[Line, ...]:
-    """Layout: Leader/Backlog/Window boxed equal width and height, side by side at or above `_SIDE_BY_SIDE_WIDTH`
-    else stacked; `runs_pane` boxed full width into whatever of `height` remains."""
+    """Layout: REGATTA on top when the runs table still fits beneath it; Leader/Backlog/Window boxed equal width
+    and height, side by side at or above `_SIDE_BY_SIDE_WIDTH` else stacked; `runs_pane` boxed full width into
+    whatever of `height` remains."""
     side_by_side = width >= _SIDE_BY_SIDE_WIDTH
     widths = _columns(width, _COLUMN_COUNT) if side_by_side else (width, width, width)
     titles = ("Leader", "Backlog", "Window")
@@ -299,8 +309,11 @@ def frame(facts: Facts, state: State, width: int, height: int) -> tuple[Line, ..
     boxes = tuple(panel.box(title, body, w, box_height) for title, body, w in zip(titles, panes, widths))
     top = _join_boxes(boxes) if side_by_side else tuple(line for b in boxes for line in b)
     top_height = box_height if side_by_side else box_height * len(boxes)
-    runs = panel.box("Runs", runs_pane(facts, width - 2), width, max(height - top_height, 0))
-    return (*top, *runs)
+    runs_body = runs_pane(facts, width - 2)
+    sail_height = _regatta_height(len(facts.runs_rows), height - top_height - len(runs_body) - 2, height)
+    sail = panel.box("REGATTA", regatta.regatta(facts.runs_rows, width - 2, facts.tick), width, sail_height)
+    runs = panel.box("Runs", runs_body, width, max(height - top_height - sail_height, 0))
+    return (*sail, *top, *runs)
 
 
 def _paired(names: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:

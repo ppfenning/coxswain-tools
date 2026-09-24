@@ -279,6 +279,26 @@ def test_frame_returns_every_line_exactly_width_columns():
     assert all(sum(len(s.text) for s in line) == 161 for line in lines)
 
 
+_STATE = State(plugin_dir="/p", leader_liveness="none", other_holder=None)
+
+
+def _titles(lines) -> list[str]:
+    return [s.text for line in lines for s in line if s.role == "title"]
+
+
+def test_frame_puts_the_regatta_panel_above_the_leader_row_at_a_normal_height():
+    assert [t for t in _titles(frame(_live_leader_facts(), _STATE, 200, 40)) if t != "finish"][:2] == ["REGATTA", "Leader"]
+
+
+def test_frame_omits_the_regatta_panel_below_the_minimum_height():
+    assert "REGATTA" not in _titles(frame(_live_leader_facts(), _STATE, 200, 23))
+
+
+def test_frame_passes_the_tick_to_the_lanes_unchanged():
+    lane = frame(_live_leader_facts(tick=7), _STATE, 80, 60)[2]
+    assert "<~~<" in "".join(s.text for s in lane)
+
+
 def test_health_pane_lists_only_the_failing_check_with_its_detail():
     rows = [{"check": "profile", "ok": False, "detail": "missing"}, {"check": "venv", "ok": True, "detail": ""}]
     assert health_pane(rows, 80) == ("profile: missing",)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import dataclasses
+import itertools
 import socket
 import subprocess
 import time
@@ -222,9 +223,11 @@ def main(runs_dir, work_dir, intake_dir, plugin_dir: str, refresh_seconds: float
         attrs = {role: curses.color_pair(n) for role, n in numbers.items()}
         cache: dict = {}
         state = home_model.State(plugin_dir=plugin_dir, leader_liveness="none", other_holder=None)
+        ticks = itertools.count()
         while True:
             facts_obj, cache = facts(runs_dir, work_dir, intake_dir, time.time(), cache,
                                       window_ceiling_usd=window_ceiling_usd)
+            facts_obj = dataclasses.replace(facts_obj, tick=next(ticks))
             other_holder = facts_obj.chair.get("session") if facts_obj.chair and facts_obj.chair_liveness == "live" else None
             state = dataclasses.replace(state, leader_liveness=facts_obj.chair_liveness, other_holder=other_holder)
             draw(stdscr, facts_obj, state, cache.get("_status", {}), attrs)
