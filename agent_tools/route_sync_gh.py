@@ -114,6 +114,8 @@ def items_from_store(workspace) -> list[route_sync.Item]:
     return intake + work
 
 
+# `gh` returns 30 rows unless told otherwise; a missed row is replanned as new on every sync.
+_LIMIT = "10000"
 _FIELD_TITLES = {t.lower(): t for t in ("State", "Phase", "Run", "Cost", "Gate")}
 
 
@@ -125,7 +127,7 @@ def existing(run, repo_names: list[str], project: str | None):
     issues: dict[str, dict] = {}
     for repo in repo_names:
         result = run(["gh", "issue", "list", "--repo", repo, "--label", _LABEL, "--state", "all",
-                      "--json", "number,title,body"], capture_output=True, text=True)
+                      "--json", "number,title,body", "--limit", _LIMIT], capture_output=True, text=True)
         if result.returncode != 0:
             return False, result.stderr.strip() or result.stdout.strip()
         for row in json.loads(result.stdout or "[]"):
@@ -134,7 +136,7 @@ def existing(run, repo_names: list[str], project: str | None):
     item_node_ids: dict[str, str] = {}
     if project is not None:
         owner, _, number = project.partition("/")
-        result = run(["gh", "project", "item-list", number, "--owner", owner, "--format", "json"],
+        result = run(["gh", "project", "item-list", number, "--owner", owner, "--format", "json", "--limit", _LIMIT],
                      capture_output=True, text=True)
         if result.returncode != 0:
             return False, result.stderr.strip() or result.stdout.strip()
