@@ -705,6 +705,57 @@ def _branch_exists(repo: Path, branch: str) -> bool:
     return r.returncode == 0
 
 
+def _git_out(repo: Path, *args: str) -> str | None:
+    """Stripped stdout of `git -C repo <args>`, or `None` when git exits non-zero."""
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _open_prs_for(repo: Path, branch: str) -> list[int] | str:
+    """Numbers of the open PRs whose head is `branch`, or the reason they
+    could not be listed."""
+    try:
+        r = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number"],
+                           cwd=repo, capture_output=True, text=True)
+    except OSError as exc:
+        return f"could not list open pull requests for {branch}: {exc}"
+    if r.returncode != 0:
+        return f"could not list open pull requests for {branch}: {(r.stderr or r.stdout).strip()}"
+    try:
+        return [int(p["number"]) for p in json.loads(r.stdout or "[]")]
+    except (ValueError, KeyError, TypeError):
+        return f"could not read the open pull requests for {branch}: {r.stdout.strip()}"
+
+
+def _land_resume(repo: Path, cherry_pick: dict) -> dict:
+    """`land.resume_decision` for the `pr/<task>` branch a `cherry_pick` step
+    would create. The expected tree is what cherry-picking the one commit onto
+    `from` yields, computed by `git merge-tree` without touching the checkout.
+    Open PRs are only asked for once every existing branch already matches."""
+    branch, base = cherry_pick["onto"], cherry_pick["from"]
+    local = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{tree}}")
+    fetched = subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+                             capture_output=True, text=True).returncode == 0
+    remote = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}^{{tree}}") if fetched else None
+    if local is None and remote is None:
+        return land.resume_decision("", None, None, [])
+    shas = (_git_out(repo, "rev-list", f"{base}..{cherry_pick['branch']}") or "").split()
+    merged = _git_out(repo, "merge-tree", "--write-tree", f"--merge-base={shas[0]}^", base, shas[0]) if len(shas) == 1 else None
+    expected = merged.splitlines()[0] if merged else None
+    if expected is None:
+        return {"kind": "refuse", "reason": f"cannot compute the cherry-picked tree of {cherry_pick['branch']} onto {base}"}
+    existing = [t for t in (local, remote) if t is not None]
+    prs = _open_prs_for(repo, branch) if all(t == expected for t in existing) else []
+    if isinstance(prs, str):
+        return {"kind": "refuse", "reason": prs}
+    decision = land.resume_decision(expected, local, remote, prs)
+    if decision["kind"] != "refuse":
+        return decision
+    files = sorted({f for t in existing if t != expected
+                    for f in (_git_out(repo, "diff-tree", "-r", "--name-only", expected, t) or "").split()})
+    return {**decision, "reason": decision["reason"] + (f"; files differing: {', '.join(files)}" if files else "")}
+
+
 def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None,
                   item_path: str | None = None, workspace: str | None = None,
                   item_id: str | None = None) -> list[dict]:
@@ -815,6 +866,10 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
             subprocess.run(["git", "-C", str(repo), "cherry-pick", "--abort"], capture_output=True, text=True)
             return False, cp.stderr.strip() or cp.stdout.strip()
         return True, f"cherry-picked {shas[0][:8]} onto {step['onto']}"
+    if kind == "reuse_branch":
+        args = ["checkout", step["branch"]] if step["local"] else ["checkout", "-b", step["branch"], f"origin/{step['branch']}"]
+        co = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+        return co.returncode == 0, (f"reusing {step['branch']}" if co.returncode == 0 else co.stderr.strip() or co.stdout.strip())
     if kind == "checks":
         if "branch" in step:
             # Phase mode: never check out the phase branch in the working
@@ -993,10 +1048,18 @@ def _runs_land(a: argparse.Namespace) -> int:
     if _repo_is_dirty(repo):
         print(f"land: refusing, {repo} is dirty")
         return 2
-    pr_branch = next((s["onto"] for s in steps if s["kind"] == "cherry_pick"), None)
-    if pr_branch is not None and pr_branch in cleanup.git_branches(repo):
-        print(f"land: refusing, branch {pr_branch} already exists in {repo}")
-        return 2
+    cherry_pick = next((s for s in steps if s["kind"] == "cherry_pick"), None)
+    if cherry_pick is not None:
+        # An existing pr/<task> is not necessarily stale or foreign: a retried
+        # push can leave a same-tree branch behind, and the rerun should reuse it.
+        decision = _land_resume(repo, cherry_pick)
+        if decision["kind"] == "refuse":
+            print(f"land: refusing, branch {cherry_pick['onto']} already exists in {repo}: {decision['reason']}")
+            return 2
+        if decision["kind"] == "resume":
+            print(f"land: resuming on existing branch {cherry_pick['onto']}")
+        steps = land.resume_steps(steps, decision, cherry_pick["onto"])
+        planned = land.resume_steps(planned, decision, cherry_pick["onto"])
     pr = ""
     for i, step in enumerate(steps):
         if step["kind"] == "refuse":
