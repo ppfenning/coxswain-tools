@@ -52,7 +52,8 @@ def apply_cleanup(repo: Path | str, plan: dict[str, Any], *, dry_run: bool = Tru
                    dropped: Sequence[str] = (), reasons: dict[str, str] | None = None, force: bool = False) -> list[str]:
     """The edge. Returns what was (or would be) done, one line each. A branch
     whose task is neither `landed` nor `dropped` is a draft and is kept,
-    printed with its stop reason, unless `force`."""
+    printed with its stop reason, unless `force`. The draft is the agents branch;
+    a recorded task's `epic/...--<task>` is a private merge target and goes."""
     repo = Path(repo)
     reasons = reasons or {}
     lines = []
@@ -65,7 +66,8 @@ def apply_cleanup(repo: Path | str, plan: dict[str, Any], *, dry_run: bool = Tru
     for b in plan["branches"]:
         task = _task_of(b)
         settled = task in landed or task in dropped
-        if not settled and not force:
+        private_target = b.startswith("epic/") and task in reasons
+        if not settled and not force and not private_target:
             lines.append(f"kept draft branch {b}: {reasons.get(task, 'unlanded')}")
             continue
         suffix = " (forced)" if force and not settled else ""
