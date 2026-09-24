@@ -153,6 +153,14 @@ def test_context_text_with_full_profile_ends_with_the_usage_reason_line(tmp_path
     assert out.splitlines()[-1] == "usage: window is unmeasured: no usable ceiling_usd; reporting pace only"
 
 
+def test_context_text_with_full_profile_prints_the_resolved_gate_level(tmp_path, capsys):
+    profile = _write_workspace(tmp_path)
+    rc = main(["route", "context", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.splitlines()[-2] == "gate: ticket"
+
+
 def test_context_json_with_full_profile_carries_the_same_usage_reason(tmp_path, capsys):
     profile = _write_workspace(tmp_path)
     rc = main(["route", "context", "--profile", str(profile), "--json"])
@@ -274,7 +282,7 @@ def test_status_text_with_profile_lists_alive_dead_and_no_pidfile_runs(tmp_path,
     rc = main(["route", "status", "--profile", str(profile)])
     out = capsys.readouterr().out
     assert rc == 0
-    assert out == route.render_status(_expected_status_rows(ws)) + "\n"
+    assert out == route.render_status(_expected_status_rows(ws), gate_level="ticket") + "\n"
 
 
 def test_status_json_treats_pid_zero_as_not_alive_and_survives_an_oversized_pidfile(tmp_path, capsys):

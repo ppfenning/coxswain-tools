@@ -1,6 +1,6 @@
 usage: cox runs land [-h] --repo REPO [--task TASK] [--phase PHASE] [--label LABEL] [--force]
                      [--no-claim] [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge]
-                     [--runs-dir RUNS_DIR] [--profile PROFILE]
+                     [--runs-dir RUNS_DIR] [--profile PROFILE] [--gate {ticket,phase,epic,full}]
                      run_id
 
 positional arguments:
@@ -19,3 +19,5 @@ options:
   --no-merge
   --runs-dir RUNS_DIR   override: resolve task records here instead of the profile's workspace_dir
   --profile PROFILE
+  --gate {ticket,phase,epic,full}
+                        override the resolved gate level for this invocation

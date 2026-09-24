@@ -77,6 +77,69 @@ def test_a_record_silent_on_initiative_refuses_cleanly_when_only_a_phase_branch_
     assert steps == [{"kind": "refuse", "reason": "no branch is exactly one commit ahead of main", "found": {"epic/x/seams": 1}}]
 
 
+# --- gate_steps, gate_stop: pure ---
+
+_GATED_STEPS = [
+    {"kind": "pick_branch", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module"},
+    {"kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
+     "onto": "pr/seams-task", "from": "main"},
+    {"kind": "checks", "checks": [("tests", ["pytest", "-q"])]},
+    {"kind": "push", "branch": "pr/seams-task"},
+    {"kind": "pr_create", "title": "Add seams", "body": "Run: epic-x-5"},
+    {"kind": "wait_checks"},
+    {"kind": "merge", "squash": True, "delete_branch": True},
+    {"kind": "clean", "run": "epic-x-5", "task": "seams-task", "branch": "agents/epic-x-5/seams-task"},
+    {"kind": "mark_done", "task": "seams-task"},
+]
+_TICKET_NOTE = {"kind": "note", "reason": "gate: ticket — the pull request is open and waits for a person"}
+
+
+def test_gate_steps_ticket_truncates_after_pr_create_and_appends_a_note():
+    assert land.gate_steps(_GATED_STEPS, "ticket") == _GATED_STEPS[:5] + [_TICKET_NOTE]
+
+
+def test_gate_steps_phase_truncates_before_a_merge_with_no_target():
+    assert land.gate_steps(_GATED_STEPS, "phase") == _GATED_STEPS[:6]
+
+
+def test_gate_steps_epic_truncates_before_a_merge_with_no_target():
+    assert land.gate_steps(_GATED_STEPS, "epic") == _GATED_STEPS[:6]
+
+
+def test_gate_steps_phase_keeps_a_merge_into_its_own_phase_branch():
+    steps = _GATED_STEPS[:6] + [{"kind": "merge", "source": "agents/epic-x-5/seams-task", "target": "epic/x/seams"}]
+    assert land.gate_steps(steps, "phase") == steps
+
+
+def test_gate_steps_full_returns_the_steps_unchanged():
+    assert land.gate_steps(_GATED_STEPS, "full") == _GATED_STEPS
+
+
+def test_gate_steps_leaves_a_refusal_untouched_at_every_level():
+    refusal = [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
+    assert [land.gate_steps(refusal, level) for level in ("ticket", "phase", "epic", "full")] == [refusal] * 4
+
+
+def test_gate_steps_an_unrecognized_level_fails_safe_to_ticket_not_full():
+    assert land.gate_steps(_GATED_STEPS, "bogus") == _GATED_STEPS[:5] + [_TICKET_NOTE]
+
+
+def test_gate_stop_names_the_level_the_last_step_and_the_open_pr():
+    gated = land.gate_steps(_GATED_STEPS, "phase")
+    assert land.gate_stop(_GATED_STEPS, gated, "phase", "https://x/pull/7") == (
+        "gate: phase stopped after wait_checks; pull request https://x/pull/7 left open, unmerged"
+    )
+
+
+def test_gate_stop_at_ticket_names_pr_create_not_the_note():
+    gated = land.gate_steps(_GATED_STEPS, "ticket")
+    assert land.gate_stop(_GATED_STEPS, gated, "ticket", "https://x/pull/7").startswith("gate: ticket stopped after pr_create;")
+
+
+def test_gate_stop_is_none_when_the_plan_runs_to_completion():
+    assert land.gate_stop(_GATED_STEPS, land.gate_steps(_GATED_STEPS, "full"), "full", "https://x/pull/7") is None
+
+
 # --- recover_plan: pure ---
 
 def test_recover_plan_resolves_the_scratch_branch_into_the_phase_branch():
@@ -484,9 +547,14 @@ def test_execute_mark_done_leaves_a_non_approved_item_untouched_and_prints_it(tm
 
 # --- cli end to end: dry-run default, and the dirty-checkout refusal ---
 
+def _full_gate(tmp_path):
+    (tmp_path / "runs/policy.gate.json").write_text(json.dumps({"level": "full"}), encoding="utf-8")
+
+
 def test_cli_dry_run_is_the_default_and_prints_the_plan(repo, tmp_path, capsys, monkeypatch):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    _full_gate(tmp_path)
     monkeypatch.chdir(tmp_path)
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
     out = capsys.readouterr().out
@@ -502,6 +570,7 @@ def test_cli_dry_run_plan_carries_the_item_path(repo, tmp_path, capsys, monkeypa
     item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
     item_path = item_dir / "seams-task.md"
     item_path.write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    _full_gate(tmp_path)
     monkeypatch.chdir(tmp_path)
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
     steps = json.loads(capsys.readouterr().out)
@@ -606,6 +675,36 @@ def test_cli_recover_closes_an_approved_item_even_when_already_recovered(repo, t
     assert rc == 0, out
     assert "already contains the commit" in out
     assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody.\n"
+
+
+def _apply_gated(repo, tmp_path, monkeypatch, *gate):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    ran = []
+    monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step: (ran.append(step["kind"]) or True, "https://x/pull/7"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs"), *gate])
+    return rc, ran
+
+
+def test_cli_apply_at_phase_level_prints_the_truncation_line_and_exits_3(repo, tmp_path, capsys, monkeypatch):
+    rc, ran = _apply_gated(repo, tmp_path, monkeypatch, "--gate", "phase")
+    assert rc == 3
+    assert ran[-1] == "wait_checks"
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "gate: phase stopped after wait_checks; pull request https://x/pull/7 left open, unmerged"
+    )
+
+
+def test_cli_apply_at_full_level_merges_and_exits_0(repo, tmp_path, capsys, monkeypatch):
+    rc, ran = _apply_gated(repo, tmp_path, monkeypatch, "--gate", "full")
+    assert rc == 0
+    assert ran == _STEP_ORDER
+    assert "left open" not in capsys.readouterr().out
+
+
+def test_cli_apply_with_no_policy_stops_at_ticket_after_pr_create(repo, tmp_path, monkeypatch):
+    rc, ran = _apply_gated(repo, tmp_path, monkeypatch)
+    assert (rc, ran[-1]) == (3, "pr_create")
 
 
 def test_cli_apply_refuses_on_a_dirty_checkout(repo, tmp_path, capsys):
