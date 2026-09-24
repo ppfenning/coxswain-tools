@@ -526,31 +526,53 @@ _MANIFEST_TAG_RE = re.compile(r'(\s*tag\s*=\s*")v[^"]*(")')
 # bare `[components]` table, never under `[coxswain]` or some other table
 # that happens to hold an unrelated inline table with its own `tag` key.
 _MANIFEST_TABLE_RE = re.compile(r"^\[([\w.-]+)\]\s*$")
-# An inline-table component: `name = { repo = ..., tag = "v...", ... }` on one line.
-_MANIFEST_INLINE_RE = re.compile(r"^\s*([\w-]+)\s*=\s*\{(.*)\}\s*$")
+# An inline-table component opens on a `name = {` line and may close on a later one.
+_MANIFEST_INLINE_START_RE = re.compile(r"^\s*([\w-]+)\s*=\s*\{(.*)$")
 _MANIFEST_INLINE_LOCKSTEP_FALSE_RE = re.compile(r"\blockstep\s*=\s*false\b", re.IGNORECASE)
 _MANIFEST_INLINE_TAG_RE = re.compile(r'(\btag\s*=\s*")v[^"]*(")')
 
 
+def _inline_owners(lines: list[str]) -> list[str | None]:
+    """The component each line belongs to: the `name = {` entry directly under
+    `[components]` whose braces are still open on that line, else None.
+    Braces are counted per line; a brace inside a quoted string is not handled."""
+    owners = []
+    table = None
+    owner = None
+    depth = 0
+    for line in lines:
+        text = line.rstrip("\n")
+        header = _MANIFEST_TABLE_RE.match(text)
+        start = _MANIFEST_INLINE_START_RE.match(text)
+        if depth > 0:
+            depth = max(0, depth + text.count("{") - text.count("}"))
+        else:
+            table = header.group(1) if header else table
+            opens = table == "components" and start is not None
+            owner = start.group(1) if opens else None
+            depth = max(0, text.count("{") - text.count("}")) if opens else 0
+        owners.append(owner)
+    return owners
+
+
 def _pinned_components(text: str) -> set[str]:
     """Component names whose `[components.<name>]` section, or whose own
-    `name = { ... }` inline-table line directly under `[components]`,
-    declares `lockstep = false` anywhere in it."""
+    `name = { ... }` inline table directly under `[components]`, on one line
+    or several, declares `lockstep = false` anywhere in it."""
     section = None
-    table = None
     pinned = set()
-    for line in text.splitlines():
+    lines = text.splitlines()
+    for line, owner in zip(lines, _inline_owners(lines)):
         m = _MANIFEST_SECTION_RE.match(line)
         t = _MANIFEST_TABLE_RE.match(line)
-        inline = _MANIFEST_INLINE_RE.match(line)
         if m:
-            section, table = m.group(1), None
+            section = m.group(1)
         elif t:
-            section, table = None, t.group(1)
+            section = None
         elif section and _MANIFEST_LOCKSTEP_FALSE_RE.match(line):
             pinned.add(section)
-        elif table == "components" and inline and _MANIFEST_INLINE_LOCKSTEP_FALSE_RE.search(inline.group(2)):
-            pinned.add(inline.group(1))
+        elif owner and _MANIFEST_INLINE_LOCKSTEP_FALSE_RE.search(line):
+            pinned.add(owner)
     return pinned
 
 
@@ -563,31 +585,31 @@ def bumped_manifest_text(text: str, version: str, rejoining: Iterable[str] = ())
     """`text` with every `version = "..."` value, and every `tag = "v..."`
     value outside a `lockstep = false` component's section — whether the
     component is a `[components.<name>]` section or a `name = { ... }`
-    inline table directly under `[components]` — rewritten to `version`;
-    comments, blank lines and layout untouched, and every other key on an
-    inline table's line kept byte-identical. A pinned component's own `tag`
-    is left exactly as it reads, unless named in `rejoining`."""
+    inline table directly under `[components]`, on one line or several —
+    rewritten to `version`; comments, blank lines and layout untouched, and
+    every other key on an inline table's lines kept byte-identical. A pinned
+    component's own `tag` is left exactly as it reads, unless named in
+    `rejoining`."""
     new_tag = "v" + version
     pinned = _pinned_components(text) - set(rejoining)
     section = None
-    table = None
     out = []
-    for line in text.splitlines(keepends=True):
+    lines = text.splitlines(keepends=True)
+    for line, owner in zip(lines, _inline_owners(lines)):
         stripped = line.rstrip("\n")
         m = _MANIFEST_SECTION_RE.match(stripped)
         t = _MANIFEST_TABLE_RE.match(stripped)
-        inline = _MANIFEST_INLINE_RE.match(stripped)
         if m:
-            section, table = m.group(1), None
+            section = m.group(1)
         elif t:
-            section, table = None, t.group(1)
+            section = None
         if _MANIFEST_VERSION_RE.match(line):
             out.append(_MANIFEST_VERSION_RE.sub(lambda m: f"{m.group(1)}{version}{m.group(2)}", line))
+        elif owner:
+            keep = owner in pinned
+            out.append(line if keep else _MANIFEST_INLINE_TAG_RE.sub(lambda m: f"{m.group(1)}{new_tag}{m.group(2)}", line))
         elif _MANIFEST_TAG_RE.match(line) and section not in pinned:
             out.append(_MANIFEST_TAG_RE.sub(lambda m: f"{m.group(1)}{new_tag}{m.group(2)}", line))
-        elif (table == "components" and inline and inline.group(1) not in pinned
-              and _MANIFEST_INLINE_TAG_RE.search(inline.group(2))):
-            out.append(_MANIFEST_INLINE_TAG_RE.sub(lambda m: f"{m.group(1)}{new_tag}{m.group(2)}", line))
         else:
             out.append(line)
     return "".join(out)
