@@ -181,3 +181,64 @@ def test_cox_runs_clean_deletes_a_dropped_tasks_branch_through_the_profiles_work
     assert rc == 0
     assert "deleted branch agents/epic-x-5/task" in out
     assert "agents/epic-x-5/task" not in cleanup.git_branches(repo_unlanded)
+
+
+@pytest.fixture
+def repo_refused(tmp_path):
+    root = tmp_path / "r"; root.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    (root / "f").write_text("x"); sp.run(["git", "-C", str(root), "add", "-A"], check=True, env=env)
+    sp.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True, env=env)
+    for b in ("agents/epic-x-5/task", "epic/x/seams--task", "epic/y/other--elsewhere"):
+        sp.run(["git", "-C", str(root), "branch", b], check=True)
+    return root
+
+
+def _clean_refused(root, **kw):
+    plan = cleanup.plan_cleanup(run_id="epic-x-5", worktrees=[], branches=cleanup.git_branches(root), worktree_root=str(root.parent / "wt"))
+    return cleanup.apply_cleanup(root, plan, dry_run=False, **kw)
+
+
+def test_a_refused_tasks_agents_branch_survives_and_is_named_and_its_phase_task_branch_goes(repo_refused):
+    lines = _clean_refused(repo_refused, reasons={"task": "attempts_exhausted"})
+    assert "kept draft branch agents/epic-x-5/task: attempts_exhausted" in lines
+    assert "deleted branch epic/x/seams--task" in lines
+    assert not any("kept draft branch epic/x/seams--task" in l for l in lines)
+    branches = cleanup.git_branches(repo_refused)
+    assert "agents/epic-x-5/task" in branches and "epic/x/seams--task" not in branches
+
+
+def test_a_phase_task_branch_with_no_record_in_this_run_is_still_kept(repo_refused):
+    lines = _clean_refused(repo_refused, reasons={"task": "attempts_exhausted"})
+    assert "kept draft branch epic/y/other--elsewhere: unlanded" in lines
+    assert "epic/y/other--elsewhere" in cleanup.git_branches(repo_refused)
+
+
+def test_a_landed_task_loses_both_branches(repo_refused):
+    lines = _clean_refused(repo_refused, landed=["task"], reasons={"task": "unlanded"})
+    assert "deleted branch agents/epic-x-5/task" in lines and "deleted branch epic/x/seams--task" in lines
+    branches = cleanup.git_branches(repo_refused)
+    assert "agents/epic-x-5/task" not in branches and "epic/x/seams--task" not in branches
+
+
+def test_cox_runs_clean_keeps_a_refused_tasks_agents_branch_and_deletes_its_phase_task_branch(repo_refused, tmp_path, capsys):
+    task_dir = tmp_path / "workspace/runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "task.json").write_text(json.dumps({"status": "refused", "reason": "attempts_exhausted"}), encoding="utf-8")
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(f"workspace_dir: {tmp_path / 'workspace'}\n", encoding="utf-8")
+    rc = cli.main(["runs", "clean", "epic-x-5", "--repo", str(repo_refused), "--profile", str(profile_path), "--apply"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "kept draft branch agents/epic-x-5/task: attempts_exhausted" in out
+    assert "deleted branch epic/x/seams--task" in out
+    branches = cleanup.git_branches(repo_refused)
+    assert "agents/epic-x-5/task" in branches and "epic/x/seams--task" not in branches
+    assert "epic/y/other--elsewhere" in branches
+
+
+def test_force_deletes_both_branches_of_a_refused_task(repo_refused):
+    lines = _clean_refused(repo_refused, force=True, reasons={"task": "attempts_exhausted"})
+    assert "deleted branch agents/epic-x-5/task (forced)" in lines
+    branches = cleanup.git_branches(repo_refused)
+    assert "agents/epic-x-5/task" not in branches and "epic/x/seams--task" not in branches
