@@ -21,12 +21,15 @@ the record and the branches with `git log`, then walks the plan through
 from __future__ import annotations
 
 import shlex
+from collections.abc import Sequence
 from pathlib import PurePath
 from typing import Any
 
 __all__ = [
     "approve_to_done",
     "checks_argv",
+    "gate_steps",
+    "gate_stop",
     "land_plan",
     "phase_landable",
     "phase_pr_body",
@@ -142,6 +145,28 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "tasks": landed_tasks},
         *[{"kind": "mark_done", "task": t} for t in landed_tasks],
     ]
+
+
+def gate_steps(steps: Sequence[dict[str, Any]], level: str) -> list[dict[str, Any]]:
+    """`phase`/`epic` keep a `merge` that carries a `target` (a ticket into its phase branch) and stop before one that does not; an unknown level is `ticket`, never `full`."""
+    steps = list(steps)
+    if level == "full" or any(s["kind"] == "refuse" for s in steps):
+        return steps
+    if level in ("phase", "epic"):
+        idx = next((i for i, s in enumerate(steps) if s["kind"] == "merge" and "target" not in s), None)
+        return steps if idx is None else steps[:idx]
+    idx = next((i for i, s in enumerate(steps) if s["kind"] == "pr_create"), None)
+    note = {"kind": "note", "reason": "gate: ticket — the pull request is open and waits for a person"}
+    return steps if idx is None else steps[: idx + 1] + [note]
+
+
+def gate_stop(planned: Sequence[dict[str, Any]], gated: Sequence[dict[str, Any]], level: str, pr: str) -> str | None:
+    """None when every planned step is kept, else the one line saying where the gate stopped and which PR stays open."""
+    kept = [s for s in gated if s["kind"] != "note"]
+    if len(kept) == len(planned) or any(s["kind"] == "refuse" for s in gated):
+        return None
+    last = kept[-1]["kind"]
+    return f"gate: {level} stopped after {last}; pull request {pr or '(none opened)'} left open, unmerged"
 
 
 def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_branch: str,

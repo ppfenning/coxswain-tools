@@ -11,7 +11,7 @@ from agent_tools import cli
 
 def _land_ns(**overrides):
     base = {"run_id": "epic-x-5", "repo": None, "task": None, "phase": None, "label": None, "force": False,
-                "worktree_root": "~/worktrees", "apply": False, "no_merge": False, "runs_dir": None, "profile": None}
+                "worktree_root": "~/worktrees", "apply": False, "no_merge": False, "runs_dir": None, "profile": None, "gate": None}
     base.update(overrides)
     return argparse.Namespace(**base)
 
@@ -41,6 +41,7 @@ def phase_runs_dir(tmp_path):
     (tasks_dir / "seams-dropped.json").write_text(json.dumps({"status": "dropped"}), encoding="utf-8")
     _work_item(tmp_path / "work", "x", "seams", "seams-task", "done")
     _work_item(tmp_path / "work", "x", "seams", "seams-dropped", "dropped")
+    (runs_dir / "policy.gate.json").write_text(json.dumps({"level": "full"}), encoding="utf-8")
     return runs_dir
 
 
@@ -87,6 +88,38 @@ def test_task_flag_forces_task_mode_even_when_the_phase_has_two_records(phase_ru
     steps = json.loads(capsys.readouterr().out)
     assert rc == 2
     assert steps == [{"kind": "refuse", "reason": "no branch is exactly one commit ahead of main", "found": {}}]
+
+
+def test_resolved_gate_level_defaults_to_ticket_when_the_file_is_absent(tmp_path):
+    assert cli._resolved_gate_level(tmp_path) == "ticket"
+
+
+def test_resolved_gate_level_reads_the_level_cartridge_policy_dropped(tmp_path):
+    (tmp_path / "policy.gate.json").write_text(json.dumps({"level": "epic"}), encoding="utf-8")
+    assert cli._resolved_gate_level(tmp_path) == "epic"
+
+
+def test_resolved_gate_level_reads_an_unknown_level_as_ticket_not_full(tmp_path):
+    (tmp_path / "policy.gate.json").write_text(json.dumps({"level": "yolo"}), encoding="utf-8")
+    assert cli._resolved_gate_level(tmp_path) == "ticket"
+
+
+def test_absent_policy_truncates_the_dry_run_plan_at_ticket(phase_runs_dir, tmp_path, capsys):
+    (phase_runs_dir / "policy.gate.json").unlink()
+    repo = tmp_path / "repo"; repo.mkdir()
+    rc = cli._runs_land(_land_ns(repo=str(repo), runs_dir=str(phase_runs_dir)))
+    steps = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert [s["kind"] for s in steps] == ["pick_branch", "checks", "push", "pr_create", "note"]
+
+
+def test_gate_flag_overrides_the_resolved_level_and_prints_that_it_did(phase_runs_dir, tmp_path, capsys):
+    repo = tmp_path / "repo"; repo.mkdir()
+    rc = cli._runs_land(_land_ns(repo=str(repo), runs_dir=str(phase_runs_dir), gate="ticket"))
+    first_line, _, rest = capsys.readouterr().out.partition("\n")
+    assert first_line == "land: --gate ticket overrides the resolved level"
+    assert rc == 0
+    assert [s["kind"] for s in json.loads(rest)][-1] == "note"
 
 
 def _launcher_ns(profile_path, **overrides):
