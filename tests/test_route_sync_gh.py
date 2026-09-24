@@ -225,3 +225,37 @@ def test_cli_exits_2_when_gh_is_not_authenticated(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: _Result(returncode=1))
     rc = cli.main(["route", "sync", "--dry-run", "--workspace", str(tmp_path)])
     assert rc == 2
+
+
+def test_a_failed_set_after_create_still_records_the_issue_and_an_empty_value_clears(tmp_path):
+    _write(tmp_path / "intake" / "i1.md", "---\nid: i1\ntitle: T\n---\nbody\n")
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[:3] == ["gh", "project", "view"]:
+            return _Result(stdout=json.dumps({"id": "PVT_1"}))
+        if argv[:3] == ["gh", "project", "field-list"]:
+            return _Result(stdout=json.dumps({"fields": [{"name": "Phase", "id": "PVTF_2"}, {"name": "Run", "id": "PVTF_3"}]}))
+        if argv[:3] == ["gh", "issue", "create"]:
+            return _Result(stdout="https://github.com/acme/widgets/issues/9")
+        if argv[:3] == ["gh", "project", "item-add"]:
+            return _Result(stdout=json.dumps({"id": "PVTI_9"}))
+        if "--text" in argv:
+            return _Result(returncode=1, stderr="boom")
+        return _Result(stdout="{}")
+
+    steps = [
+        {"kind": "issue_create", "repo": "acme/widgets", "title": "T", "body": "body", "label": "coxswain", "item_id": "i1"},
+        {"kind": "project_add", "issue": None},
+        {"kind": "project_set", "issue": None, "field": "Phase", "value": ""},
+        {"kind": "project_set", "issue": None, "field": "Run", "value": "run-1"},
+        {"kind": "writeback", "item_id": "i1", "issue": None},
+    ]
+    log = route_sync_gh.execute(steps, run, "acme/7", tmp_path)
+    assert [(kind, ok) for kind, ok, _ in log] == [
+        ("issue_create", True), ("project_add", True), ("project_set", True), ("project_set", False),
+    ]
+    assert calls[-2][-1] == "--clear"
+    assert "issue: 9" in (tmp_path / "intake" / "i1.md").read_text()
+
