@@ -79,7 +79,7 @@ def _runs_usage(a: argparse.Namespace) -> int:
     else:
         pid_text = _read_text_or_none(runs_dir / f"{a.run_id}.pid")
         pid = route.parse_pid(pid_text) if pid_text is not None else None
-        live = pid is not None and epic.alive(pid)
+        live = epic.run_live(pid, runs_dir / f"{a.run_id}.pid")
         trace_dir = runs_dir / f"{a.run_id}-trace"
         traces = stats_ingest._read_traces(trace_dir, [])
         if not live and not traces:
@@ -1151,7 +1151,7 @@ def _gather_context(profile_path: Path):
     ws = Path(workspace).expanduser()
     pid_paths = sorted((ws / "runs").glob("*.pid"))
     pids = {p.stem: t for p in pid_paths if (t := _read_text_or_none(p)) is not None}
-    alive = {rid: (pid := route.parse_pid(t)) is not None and epic.alive(pid) for rid, t in pids.items()}
+    alive = {rid: epic.run_live(route.parse_pid(t), ws / "runs" / f"{rid}.pid") for rid, t in pids.items()}
     started = {rid: _mtime_iso(ws / "runs" / f"{rid}.pid") for rid in pids}
     # the initiative id is the DIRECTORY name: work/<initiative>/<phase>/<task>.md;
     # the edge only reads and names the path parts — route.work_item normalises
@@ -1202,20 +1202,6 @@ def _route_context(a: argparse.Namespace) -> int:
     return 0
 
 
-def _run_alive(pid):
-    """`epic.alive`, guarded: pid 0 or negative is never dispatched to
-    `os.kill` (pid 0 signals the caller's whole process group, not a run),
-    and a pidfile large enough to overflow `os.kill`'s pid_t reads as dead
-    rather than crashing the session.
-    """
-    if pid is None or pid <= 0:
-        return False
-    try:
-        return epic.alive(pid)
-    except OverflowError:
-        return False
-
-
 def _refuse_if_already_running(runs_dir: Path, prefix: str):
     """spec: at most one live run per `prefix` — the single-writer rule
     applied to a run-id prefix. Returns the refusal line to print, or
@@ -1226,7 +1212,7 @@ def _refuse_if_already_running(runs_dir: Path, prefix: str):
             continue
         pid_text = _read_text_or_none(pidfile)
         pid = route.parse_pid(pid_text) if pid_text is not None else None
-        if _run_alive(pid):
+        if epic.run_live(pid, pidfile):
             return f"routing: {pidfile.stem} is already running (pid {pid})"
     return None
 
@@ -1266,7 +1252,7 @@ def _intake_groups_for(ws: Path):
 
 def _status_rows_for(runs_dir: Path) -> list:
     pids = {p.stem: t for p in sorted(runs_dir.glob("*.pid")) if (t := _read_text_or_none(p)) is not None}
-    alive = {run_id: _run_alive(route.parse_pid(t)) for run_id, t in pids.items()}
+    alive = {run_id: epic.run_live(route.parse_pid(t), runs_dir / f"{run_id}.pid") for run_id, t in pids.items()}
     started = {run_id: _mtime_iso(runs_dir / f"{run_id}.pid") for run_id in pids}
     runs = route.run_entries(pids, alive, started)
     summaries = {p.stem: epic.summarize_log(_read_text_or_none(p) or "") for p in runs_dir.glob("*.log")}

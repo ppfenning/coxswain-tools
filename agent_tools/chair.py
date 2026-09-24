@@ -178,6 +178,7 @@ def write(runs_dir: Path, record: dict[str, Any] | None) -> None:
 
 
 def pid_alive(pid: int) -> bool:
+    # Chair lock only: a reused pid reads alive here, and the heartbeat in `liveness` is what catches it. Run pidfiles use `epic.run_live`.
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
