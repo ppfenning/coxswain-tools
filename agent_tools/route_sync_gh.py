@@ -64,7 +64,7 @@ def _pid_alive(root: Path, run_id: str) -> bool:
     if not pid_path.is_file():
         return False
     text = pid_path.read_text().strip()
-    return text.isdigit() and epic.alive(int(text))
+    return text.isdigit() and epic.run_live(int(text), pid_path)
 
 
 def _run_cost(root: Path, run_id: str) -> float:
