@@ -927,6 +927,38 @@ def test_initiative_summaries_a_dropped_item_satisfies_a_dependents_needs_and_is
     assert route.initiative_summaries(items) == [{"id": "delta", "phase": "build", "ready": 1}]
 
 
+_HELD = {"id": "cli", "initiative": "sync", "phase": "2-edge", "state": "blocked", "needs": [], "file": "2-edge/cli.md"}
+_HOOKS = {"id": "hooks", "initiative": "sync", "phase": "3-hooks", "state": "ready", "needs": [], "file": "3-hooks/hooks.md"}
+
+
+def test_initiative_summaries_omits_an_initiative_whose_only_ready_task_sits_behind_a_blocked_phase():
+    assert route.initiative_summaries([_HELD, _HOOKS]) == []
+
+
+def test_initiative_summaries_omits_a_ready_task_that_needs_a_blocked_item():
+    same_phase = {**_HOOKS, "phase": "2-edge", "needs": ["cli"]}
+    assert route.initiative_summaries([_HELD, same_phase]) == []
+
+
+def test_initiative_summaries_keeps_an_initiative_with_one_ready_task_not_behind_a_blocked_item():
+    early = {"id": "e", "initiative": "sync", "phase": "1-first", "state": "ready", "needs": [], "file": "1-first/e.md"}
+    assert route.initiative_summaries([_HELD, _HOOKS, early]) == [{"id": "sync", "phase": "1-first", "ready": 1}]
+
+
+def test_launch_blockers_names_the_blocked_file_a_ready_task_sits_behind():
+    assert route.launch_blockers([_HELD, _HOOKS]) == ["2-edge/cli.md"]
+
+
+def test_launch_blockers_is_empty_with_no_blocked_item_or_no_ready_task():
+    assert route.launch_blockers([_HOOKS]) == []
+    assert route.launch_blockers([_HELD]) == []
+
+
+def test_launch_blockers_ignores_a_blocked_item_in_a_later_phase():
+    late = {**_HELD, "phase": "4-late", "file": "4-late/cli.md"}
+    assert route.launch_blockers([late, _HOOKS]) == []
+
+
 def test_initiative_summaries_sorts_rows_by_initiative_id():
     # Six initiatives, each with one ready, unblocked task, supplied in
     # reverse order. Grouping them with a bare set (no `sorted`) would come

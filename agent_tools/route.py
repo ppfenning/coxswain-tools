@@ -21,6 +21,7 @@ __all__ = [
     "intake_entries",
     "intake_file",
     "latest_groups_file",
+    "launch_blockers",
     "launch_gate",
     "lint_items",
     "next_run_id",
@@ -976,6 +977,30 @@ def _ready_unblocked(item: dict, done_ids: set) -> bool:
     return item["state"] == "ready" and all(need in done_ids for need in item["needs"])
 
 
+def _blockers_of(item: dict, own_items: list) -> list[dict]:
+    """`blocked` siblings a task sits behind: one it names in `needs`, or one
+    in an earlier phase. A held item is not done, so work behind it is not ready.
+    """
+    return [
+        other
+        for other in own_items
+        if other["state"] == "blocked" and (other["id"] in item["needs"] or other["phase"] < item["phase"])
+    ]
+
+
+def launch_blockers(items: list) -> list[str]:
+    """Sorted `file` of every `blocked` item, in one initiative's `items`,
+    that a `ready` task sits behind (see `_blockers_of`). A launch would
+    run that held item again, so `route launch` refuses on a non-empty result.
+    """
+    return sorted({
+        blocker["file"]
+        for item in items
+        if item["state"] == "ready"
+        for blocker in _blockers_of(item, items)
+    })
+
+
 def state_problems(items: list) -> list[str]:
     """One `"<initiative>: <file>: unknown state '<value>'"` line per item
     whose `state` is not in `STATES` — a typo, or a value some other tool
@@ -998,9 +1023,11 @@ def _initiative_summary(initiative_id: str, own_items: list):
         return {"id": initiative_id, "phase": None, "ready": 0}
     awaiting_merge = sum(1 for item in own_items if item["state"] == "approved")
     done_ids = {item["id"] for item in own_items if item["state"] in TERMINAL}
-    ready_phases = sorted(
-        {item["phase"] for item in own_items if _ready_unblocked(item, done_ids)}
-    )
+
+    def counts_ready(item: dict) -> bool:
+        return _ready_unblocked(item, done_ids) and not _blockers_of(item, own_items)
+
+    ready_phases = sorted({item["phase"] for item in own_items if counts_ready(item)})
     if not ready_phases:
         if not awaiting_merge:
             return None
@@ -1009,7 +1036,7 @@ def _initiative_summary(initiative_id: str, own_items: list):
     ready_count = sum(
         1
         for item in own_items
-        if item["phase"] == phase and _ready_unblocked(item, done_ids)
+        if item["phase"] == phase and counts_ready(item)
     )
     summary = {"id": initiative_id, "phase": phase, "ready": ready_count}
     if awaiting_merge:

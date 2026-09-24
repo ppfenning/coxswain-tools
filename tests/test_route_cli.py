@@ -1265,6 +1265,64 @@ def test_launch_with_force_overrides_a_usage_stop_and_continues(tmp_path, capsys
     assert "dry-run:" in out and "cos" in out
 
 
+def _held_initiative(tmp_path):
+    """An epic whose ready phase-3 task sits behind a blocked phase-2 task."""
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    initiative_dir = ws / "work" / "demo"
+    (initiative_dir / "2-edge").mkdir(parents=True)
+    (initiative_dir / "3-hooks").mkdir()
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    (initiative_dir / "2-edge" / "cli.md").write_text("---\nid: cli\nstate: blocked\n---\n\nHELD.\n")
+    (initiative_dir / "3-hooks" / "hooks.md").write_text("---\nid: hooks\nstate: ready\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    argv = ["route", "launch", "epic", "--profile", str(profile), "--initiative", str(initiative_dir), "--repo", str(repo)]
+    return ws, argv
+
+
+def test_launch_epic_refuses_a_blocked_item_and_force_alone_does_not_lift_it(tmp_path, capsys):
+    ws, argv = _held_initiative(tmp_path)
+    rc = main([*argv, "--force"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert len(out.strip().splitlines()) == 1
+    assert "2-edge/cli.md" in out and "--include-blocked" in out
+    assert not (ws / "runs" / "demo-1.pid").exists()
+
+
+def test_launch_epic_include_blocked_alone_launches_with_the_override_line(tmp_path, capsys):
+    ws, argv = _held_initiative(tmp_path)
+    rc = main([*argv, "--include-blocked"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "override: launching demo despite blocked 2-edge/cli.md" in out
+    assert _wait_for(ws / "runs" / "demo-1.pid")
+
+
+def test_launch_epic_both_flags_lift_the_blocked_guard_and_the_usage_stop(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(usage_window, "gather", _stopped_window)
+    ws, argv = _held_initiative(tmp_path)
+    rc = main([*argv, "--force", "--include-blocked"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "despite blocked 2-edge/cli.md" in out
+    assert "overridden by --force" in out
+    assert _wait_for(ws / "runs" / "demo-1.pid")
+
+
+def test_launch_epic_include_blocked_alone_does_not_lift_a_usage_stop(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(usage_window, "gather", _stopped_window)
+    ws, argv = _held_initiative(tmp_path)
+    rc = main([*argv, "--include-blocked"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "usage stop" in out
+    assert not (ws / "runs" / "demo-1.pid").exists()
+
+
 def test_gather_to_assess_seam_survives_an_aware_now_with_no_stub_on_gather():
     """Regression for the naive-clock bug: `window_from` builds an aware
     window from ccusage's own ISO timestamps, and `assess` must accept an
