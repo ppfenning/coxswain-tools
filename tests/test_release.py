@@ -419,6 +419,64 @@ def test__pinned_components_ignores_an_inline_tables_lockstep_false_outside_comp
     assert release._pinned_components(text) == set()
 
 
+# The umbrella's 0.12.1 manifest shape: graphs spreads its inline table over
+# several lines, crew is pinned with `lockstep = false`. Repo names invented.
+_MANIFEST_TOML_MULTILINE = (
+    '[coxswain]\n'
+    'version = "0.12.1"\n\n'
+    '[components]\n'
+    'cartridges = { repo = "ppfenning/coxswain-cartridges", tag = "v0.12.1", required = true }\n'
+    'tools      = { repo = "ppfenning/coxswain-tools",      tag = "v0.12.1", required = true }\n'
+    'graphs     = { repo = "ppfenning/coxswain-graphs",     tag = "v0.12.1", required = true, docs = [\n'
+    '    "README.md",\n'
+    '    "docs/design.md",\n'
+    '] }\n'
+    'crew       = { repo = "ppfenning/coxswain-crew",       tag = "v0.9.0", required = false, lockstep = false }\n'
+)
+
+
+def test_bumped_manifest_text_rewrites_a_multi_line_inline_components_tag_and_changes_no_other_byte():
+    after_text = release.bumped_manifest_text(_MANIFEST_TOML_MULTILINE, "0.13.0")
+
+    assert after_text == (_MANIFEST_TOML_MULTILINE
+                          .replace('version = "0.12.1"', 'version = "0.13.0"')
+                          .replace('tag = "v0.12.1"', 'tag = "v0.13.0"'))
+    after = tomllib.loads(after_text)["components"]
+    assert [after[k]["tag"] for k in ("graphs", "cartridges", "tools", "crew")] == [
+        "v0.13.0", "v0.13.0", "v0.13.0", "v0.9.0"]
+    assert after["graphs"]["docs"] == ["README.md", "docs/design.md"]
+
+
+_MANIFEST_TOML_MULTILINE_PINNED = (
+    '[components]\n'
+    'graphs = { repo = "org/graphs", tag = "v0.5.0", docs = [\n'
+    '    "README.md",\n'
+    '], lockstep = false }\n'
+    'tools = { repo = "org/tools", tag = "v0.5.0" }\n'
+)
+
+
+def test_a_multi_line_inline_component_with_lockstep_false_on_a_continuation_line_stays_pinned():
+    text = _MANIFEST_TOML_MULTILINE_PINNED
+    assert release._pinned_components(text) == {"graphs"}
+
+    after = tomllib.loads(release.bumped_manifest_text(text, "0.6.0"))["components"]
+    assert after["graphs"]["tag"] == "v0.5.0"
+    assert after["tools"]["tag"] == "v0.6.0"
+
+
+def test_a_rejoining_multi_line_inline_component_gets_its_tag_rewritten_and_keeps_lockstep_false():
+    after = tomllib.loads(release.bumped_manifest_text(
+        _MANIFEST_TOML_MULTILINE_PINNED, "0.6.0", rejoining={"graphs"}))["components"]
+    assert after["graphs"]["tag"] == "v0.6.0"
+    assert after["graphs"]["lockstep"] is False
+
+
+def test__inline_owners_carries_a_components_name_across_its_lines_and_stops_where_the_braces_balance():
+    lines = ['[components]', 'a = { x = [', '  "y",', '] }', 'b = { c = 1 }', '[other]', 'd = { e = 1 }']
+    assert release._inline_owners(lines) == [None, "a", "a", "a", "b", None, None]
+
+
 def test_rejoined_names_the_components_release_plan_gave_a_rejoin_step():
     manifest = {"coxswain": {"version": "0.1.0"},
                 "components": {"harness": {"repo": "org/harness", "tag": "v0.1.0"},
