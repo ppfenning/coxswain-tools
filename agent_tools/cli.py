@@ -654,6 +654,21 @@ def _land_record(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | 
     return record, str(path), 1
 
 
+def _initiative_of(work_root: Path, task_id: str) -> str | None:
+    """The one initiative whose `work/<initiative>/<phase>/*.md` holds an item
+    with this id (`id` falls back to the file stem, as `route.work_item` does),
+    or `None` when none or several do. The task record never names it."""
+    found = set()
+    for p in work_root.glob("*/*/*.md"):
+        text = _read_text_or_none(p)
+        if text is None:
+            continue
+        item = route.work_item(route.parse_frontmatter(text)[0], initiative=p.parent.parent.name, phase_dir=p.parent.name, stem=p.stem)
+        if item["id"] == task_id:
+            found.add(item["initiative"])
+    return found.pop() if len(found) == 1 else None
+
+
 def _land_branches(repo: Path, record: dict, default_branch: str) -> dict[str, list[str]]:
     """Commit subjects ahead of `default_branch`, per candidate branch, with
     merge commits already excluded by `git` itself (`--no-merges`) rather
@@ -971,15 +986,21 @@ def _runs_recover(a: argparse.Namespace) -> int:
     if record is None:
         print(f"recover: looked in {searched}, found {count} task records, expected 1")
         return 2
-    initiative, phase = record.get("initiative"), record.get("phase")
-    if not initiative or not phase:
-        print(f"recover: {a.task_id}: record names no initiative/phase, cannot resolve a phase branch")
+    work_root = runs_dir.parent / "work"
+    initiative = _initiative_of(work_root, a.task_id)
+    if initiative is None:
+        print(f"recover: {a.task_id}: no single initiative under {work_root} holds this task")
         return 2
+    record = land.recover_record(searched, record.get("ticket"), initiative)
+    if record.get("kind") == "refuse":
+        print(f"recover: {record['reason']}")
+        return 2
+    phase = record["phase"]
     phase_branch = f"epic/{initiative}/{phase}"
     if not _branch_exists(repo, phase_branch):
         print(f"recover: phase branch {phase_branch} does not exist in {repo}")
         return 2
-    item_path = str(runs_dir.parent / "work" / initiative / phase / f"{a.task_id}.md")
+    item_path = str(work_root / initiative / phase / f"{a.task_id}.md")
     mark_done_step = {"kind": "mark_done", "item": item_path, "from": "approved", "to": "done"}
     branches = _recover_branches(repo, record, phase_branch)
     step = land.recover_plan(record, branches)[0]

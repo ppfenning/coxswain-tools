@@ -111,6 +111,28 @@ def test_recover_plan_an_unresolvable_task_refuses_rather_than_a_partial_plan():
     }]
 
 
+# --- recover_record: pure ---
+
+def test_recover_record_reads_run_phase_and_task_off_the_path():
+    assert land.recover_record("runs/r-2/tasks/p/t.json", "t", "i") == {"run": "r-2", "task": "t", "phase": "p", "initiative": "i"}
+
+
+def test_recover_record_refuses_a_path_without_the_tasks_segment():
+    step = land.recover_record("runs/r-2/p/t.json", "t", "i")
+    assert step["kind"] == "refuse"
+    assert "expected <run>/tasks/<phase>/<task>.json" in step["reason"]
+
+
+def test_recover_record_refuses_a_ticket_that_disagrees_with_the_filename():
+    step = land.recover_record("runs/r-2/tasks/p/t.json", "other", "i")
+    assert step["kind"] == "refuse"
+    assert "disagrees with its filename" in step["reason"]
+
+
+def test_recover_record_refuses_a_record_with_no_ticket():
+    assert land.recover_record("runs/r-2/tasks/p/t.json", None, "i")["kind"] == "refuse"
+
+
 # --- pr_body: pure ---
 
 def test_pr_body_contains_verdicts_and_run_id():
@@ -492,10 +514,61 @@ def test_cli_dry_run_plan_carries_the_item_path(repo, tmp_path, capsys, monkeypa
 
 # --- cli end to end: recover closes the work item too ---
 
+def _on_disk_record(**overrides):
+    """The task record as the harness writes it: `ticket` and a truncated
+    composite `run_id`, with no run, task, phase or initiative key."""
+    return {"run_id": "epic-x-5:seams:seams-t", "ticket": "seams-task", "review": {"verdict": "approve"}, "proposals": [], **overrides}
+
+
+def _recover_dry_run(repo, tmp_path, record, capsys, work_dirs=("x/seams",)):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "main"], check=True, env=_ENV)
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(record), encoding="utf-8")
+    for d in work_dirs:
+        (tmp_path / "work" / d).mkdir(parents=True)
+        (tmp_path / "work" / d / "seams-task.md").write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs"), "--dry-run"])
+    return rc, capsys.readouterr().out
+
+
+def test_cli_recover_resolves_a_record_with_only_the_on_disk_keys(repo, tmp_path, capsys):
+    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(), capsys)
+    assert rc == 0, out
+    assert "would merge agents/epic-x-5/seams-task into epic/x/seams" in out
+
+
+def test_cli_recover_refuses_when_the_record_ticket_disagrees_with_its_filename(repo, tmp_path, capsys):
+    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(ticket="other-task"), capsys)
+    assert rc == 2
+    assert "disagrees with its filename" in out
+
+
+def test_cli_recover_refuses_when_no_initiative_holds_the_task(repo, tmp_path, capsys):
+    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(), capsys, work_dirs=())
+    assert rc == 2
+    assert "no single initiative" in out
+
+
+def test_cli_recover_refuses_when_two_initiatives_hold_the_task(repo, tmp_path, capsys):
+    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(), capsys, work_dirs=("x/seams", "y/seams"))
+    assert rc == 2
+    assert "no single initiative" in out
+
+
+def test_initiative_of_takes_the_id_from_frontmatter_and_falls_back_to_the_stem(tmp_path):
+    (tmp_path / "a/p").mkdir(parents=True)
+    (tmp_path / "b/p").mkdir(parents=True)
+    (tmp_path / "a/p/renamed.md").write_text("---\nid: from-frontmatter\n---\n\nBody.\n", encoding="utf-8")
+    (tmp_path / "b/p/from-stem.md").write_text("---\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    assert cli._initiative_of(tmp_path, "from-frontmatter") == "a"
+    assert cli._initiative_of(tmp_path, "renamed") is None
+    assert cli._initiative_of(tmp_path, "from-stem") == "b"
+
+
 def test_cli_recover_merges_and_closes_an_approved_item(repo, tmp_path, capsys):
     sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "main"], check=True, env=_ENV)
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
     item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
     item_path = item_dir / "seams-task.md"
     item_path.write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
@@ -509,7 +582,7 @@ def test_cli_recover_merges_and_closes_an_approved_item(repo, tmp_path, capsys):
 def test_cli_recover_dry_run_leaves_an_approved_item_byte_identical(repo, tmp_path, capsys):
     sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
     item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
     item_path = item_dir / "seams-task.md"
     original = "---\nid: seams-task\nstate: approved\n---\n\nBody.\n"
@@ -524,7 +597,7 @@ def test_cli_recover_dry_run_leaves_an_approved_item_byte_identical(repo, tmp_pa
 def test_cli_recover_closes_an_approved_item_even_when_already_recovered(repo, tmp_path, capsys):
     sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
     item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
     item_path = item_dir / "seams-task.md"
     item_path.write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
