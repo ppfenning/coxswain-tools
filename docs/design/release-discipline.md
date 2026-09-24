@@ -1,5 +1,7 @@
 # Release discipline
 
+> The `cox dev` code this describes (release, release-check, commands render) moved to the coxswain repository's unshipped `devtools/` package; from 0.15.0 it runs as `uv run --frozen python -m devtools <command>` from the coxswain checkout.
+
 Status: approved by the chair 2026-09-15 under Pat's standing order (2026-09-08). Groups intake G6 from
 `workspace/plans/agent-platform/2026-09-08-intake-grouping.md`:
 `a-release-is-done-when-its-workflows-are-green`, `release-check-reports-36-false-drifts-on-a-clean-tree`.
