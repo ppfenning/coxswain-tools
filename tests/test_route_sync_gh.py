@@ -68,6 +68,7 @@ def test_existing_parses_the_two_listings():
     assert item_node_ids == {"5": "PVTI_5"}
     assert calls[0][:5] == ["gh", "issue", "list", "--repo", "acme/widgets"]
     assert calls[1][:3] == ["gh", "project", "item-list"] and "7" in calls[1]
+    assert calls[0][-2:] == ["--limit", "10000"] and calls[1][-2:] == ["--limit", "10000"]
 
 
 def test_existing_returns_a_detail_on_a_failed_gh_call_instead_of_an_empty_map():
