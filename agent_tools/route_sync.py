@@ -78,6 +78,8 @@ def _item_steps(item: Item, issues: dict, project_items: dict) -> list[dict]:
     wanted = _fields(item)
     if wanted is None:
         return [{"kind": "refuse", "item_id": item.id, "detail": f"unknown state: {item.state!r}"}]
+    if not item.repo and item.issue is None:
+        return [{"kind": "refuse", "item_id": item.id, "detail": "no repository resolves for this item"}]
     issue_steps, key = _issue_steps(item, issues)
     project_steps = _project_steps(key, wanted, project_items)
     writeback = [{"kind": "writeback", "item_id": item.id, "issue": key}] if item.issue is None else []
