@@ -1842,6 +1842,17 @@ def _route_launch(a: argparse.Namespace) -> int:
     if venv_rc is not None:
         return venv_rc
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
+    if a.graph == "epic":
+        # Only --include-blocked lifts this guard; --force never does.
+        initiative_id = Path(a.initiative).name
+        held = route.launch_blockers([
+            item for item in _work_items(runs_dir.parent) if item["initiative"] == initiative_id
+        ])
+        if held and not a.include_blocked:
+            print(f"routing: {initiative_id} has a ready task behind blocked {', '.join(held)}; pass --include-blocked to launch anyway")
+            return 2
+        if held:
+            print(f"override: launching {initiative_id} despite blocked {', '.join(held)} (--include-blocked)")
     guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim)
     if guard_rc is not None:
         return guard_rc
@@ -3546,6 +3557,7 @@ def build_parser() -> argparse.ArgumentParser:
     co.set_defaults(fn=_route_launch, graph="cos")
     sw = lc.add_parser("sweep", help="launch the sweep graph against an idea"); sw.add_argument("--idea", required=True); sw.add_argument("--initiative-id", required=True)
     sw.add_argument("--label"); sw.add_argument("--dry-run", action="store_true"); sw.set_defaults(fn=_route_launch_sweep)
+    ep.add_argument("--include-blocked", action="store_true", help="launch despite a ready task behind a blocked item (--force does not)")
     for _launch_parser in (ep, de, co):
         _launch_parser.add_argument("--tier-ceiling", choices=("cheap", "standard", "deep"))
         _launch_parser.add_argument("--effort-ceiling", choices=("low", "high"))
