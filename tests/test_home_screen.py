@@ -1,9 +1,20 @@
 import threading
 import time
 
-from agent_tools import home_model, leader_chat, theme
+from agent_tools import home_layout, home_model, leader_chat, theme
 from agent_tools.home_model import Span
-from agent_tools.home_screen import _key_for, _paint, _panel, _read_with_timeout, _send_chat, draw, facts, run_effect
+from agent_tools.home_screen import (
+    _key_for,
+    _paint,
+    _panel,
+    _read_with_timeout,
+    _send_chat,
+    draw,
+    facts,
+    load_layout,
+    run_effect,
+    save_layout,
+)
 
 _PAIRS = theme.pair_numbers(theme.default)
 
@@ -250,3 +261,16 @@ def test_typing_l_into_a_focused_chat_extends_the_draft_and_does_not_land():
     assert state.chat_draft == "l"
     assert state.land_armed is None
     assert effect is None
+
+
+def test_a_malformed_or_missing_layout_file_yields_the_default(tmp_path):
+    bad = tmp_path / "home.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert load_layout(bad) == home_layout.DEFAULT
+    assert load_layout(tmp_path / "absent.json") == home_layout.DEFAULT
+
+
+def test_a_saved_layout_survives_a_restart(tmp_path):
+    moved = home_layout.step(home_layout.DEFAULT, "3")
+    save_layout(tmp_path / "cox" / "home.json", moved)
+    assert load_layout(tmp_path / "cox" / "home.json") == moved

@@ -11,17 +11,18 @@ import concurrent.futures
 import contextlib
 import dataclasses
 import itertools
+import json
 import socket
 import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_tools import home_model, leader, leader_chat, route, runs_top_screen, theme, usage_window
+from agent_tools import home_layout, home_model, leader, leader_chat, route, runs_top_screen, theme, usage_window
 from agent_tools.home_model import Span
 from agent_tools.pacing import assess
 
-__all__ = ["draw", "facts", "main", "run_effect"]
+__all__ = ["draw", "facts", "load_layout", "main", "run_effect", "save_layout"]
 
 _TIMEOUT_SECONDS = 2.0
 _REFRESH_SECONDS = 2.0
@@ -173,12 +174,32 @@ def _paint(stdscr, y: int, line: home_model.Line, width: int, attrs: dict[str, i
         col += len(span.text)
 
 
+def _layout_path() -> Path:
+    return Path.home() / ".config" / "cox" / "home.json"
+
+
+def load_layout(path: Path) -> home_layout.Layout:
+    """`DEFAULT` when the file is missing, unreadable or malformed, so `cox home` always opens."""
+    try:
+        return home_layout.from_json(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return home_layout.DEFAULT
+
+
+def save_layout(path: Path, layout: home_layout.Layout) -> None:
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(home_layout.to_json(layout)), encoding="utf-8")
+
+
 def draw(stdscr, facts_obj: home_model.Facts, state: home_model.State, statuses: dict,
-         attrs: dict[str, int]) -> None:
+         attrs: dict[str, int], layout: home_layout.Layout | None = None) -> None:
     stdscr.clear()
     height, width = stdscr.getmaxyx()
     chat_lines = home_model.chat_pane(facts_obj.chat, width, state.chat_draft)
-    frame_lines = home_model.frame(facts_obj, state, width, max(height - len(chat_lines), 0))
+    body_height = max(height - len(chat_lines), 0)
+    frame_lines = (home_model.frame(facts_obj, state, width, body_height) if layout is None
+                   else home_layout.render(layout, facts_obj, width, body_height))
     stale_titles = {title for title, key in _PANEL_STATUS_KEYS if statuses.get(key, "fresh") != "fresh"}
     lines = [_marked(line, stale_titles) for line in frame_lines] + [(Span(text),) for text in chat_lines]
     for i, line in enumerate(lines[:height]):
@@ -224,17 +245,26 @@ def main(runs_dir, work_dir, intake_dir, plugin_dir: str, refresh_seconds: float
         cache: dict = {}
         state = home_model.State(plugin_dir=plugin_dir, leader_liveness="none", other_holder=None)
         ticks = itertools.count()
+        path = _layout_path()
+        layout, focus = load_layout(path), "runs"
         while True:
             facts_obj, cache = facts(runs_dir, work_dir, intake_dir, time.time(), cache,
                                       window_ceiling_usd=window_ceiling_usd)
             facts_obj = dataclasses.replace(facts_obj, tick=next(ticks))
             other_holder = facts_obj.chair.get("session") if facts_obj.chair and facts_obj.chair_liveness == "live" else None
             state = dataclasses.replace(state, leader_liveness=facts_obj.chair_liveness, other_holder=other_holder)
-            draw(stdscr, facts_obj, state, cache.get("_status", {}), attrs)
+            draw(stdscr, facts_obj, state, cache.get("_status", {}), attrs, layout)
             ch = stdscr.getch()
             if ch == -1:
                 continue
             key = _key_for(ch)
+            if key in home_layout.KEYS and not state.chat_focused:
+                focus = home_layout.focus_after(key, focus)
+                stepped = home_layout.step(layout, key, focus)
+                if stepped != layout:
+                    save_layout(path, stepped)
+                layout = stepped
+                continue
             state, effect = home_model.step(state, key)
             if isinstance(effect, home_model.Send):
                 _send_chat(runs_dir, effect.text)
