@@ -2188,7 +2188,7 @@ def _load_manifest(path: Path) -> dict | None:
         return None
 
 
-def _checkout_facts(path: Path) -> dict:
+def _checkout_facts(path: Path, fetch: bool = False) -> dict:
     """A component's checkout state. Present only when `<path>/.git`
     exists: `git -C` walks up to the nearest enclosing repository, so a
     bare directory — or one merely nested inside some other checkout —
@@ -2199,13 +2199,23 @@ def _checkout_facts(path: Path) -> dict:
                                capture_output=True, text=True)
     tag = describe.stdout.strip() if describe.returncode == 0 else None
     status = subprocess.run(["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True)
-    return {"present": True, "tag": tag, "dirty": bool(status.stdout.strip())}
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True)
+
+    branch = git("branch", "--show-current").stdout.strip()
+    fresh = not fetch or (bool(branch) and git("fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}").returncode == 0)
+    tip = git("rev-parse", f"origin/{branch}")
+    at_tip = bool(branch) and fresh and tip.returncode == 0 and tip.stdout.strip() == git("rev-parse", "HEAD").stdout.strip()
+    return {"present": True, "tag": tag, "dirty": bool(status.stdout.strip()), "branch": branch or None,
+            "branch_tip": at_tip}
 
 
-def _gather_checkout_facts(root: Path, components: dict) -> dict:
+def _gather_checkout_facts(root: Path, components: dict, fetch: bool = False) -> dict:
     """Every manifest component, plus any other git checkout actually
-    present under `root` — the `extra` rows `install.rows` can then report."""
-    declared = {name: _checkout_facts(root / name) for name in components}
+    present under `root` — the `extra` rows `install.rows` can then report.
+    `fetch` refreshes each declared checkout's remote branch first (edge)."""
+    options = {"fetch": True} if fetch else {}
+    declared = {name: _checkout_facts(root / name, **options) for name in components}
     if not root.exists():
         return declared
     undeclared = {p.name for p in root.iterdir()
@@ -2263,7 +2273,7 @@ def _install_execute(steps: list, manifest: dict, options: dict, root: Path) -> 
                 print(f"    {line}")
     post_facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {}))}
     display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s}
-               for c, p, i, s in install.rows(manifest, post_facts)]
+               for c, p, i, s in install.rows(manifest, post_facts, options.get("channel", "release"))]
     print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status"]))
     return 0 if all(result["exit"] in (0, None) for result in results) else 2
 
@@ -2275,16 +2285,19 @@ def _install(a: argparse.Namespace) -> int:
         print(f"refusing: no manifest at {manifest_path}")
         return 2
     root = Path(a.root)
+    channel = "edge" if a.edge else "release"
     facts = {
         "root": str(root),
-        "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
+        "checkouts": _gather_checkout_facts(root, manifest.get("components", {}), fetch=a.edge),
         "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, a.provider)) is not None,
     }
-    options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team, "workspace": a.workspace}
+    options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team,
+               "workspace": a.workspace, "channel": channel}
     schema_state, schema_detail = schema.status(_schema_versions(str(root / "harness"), str(root / "cartridges")))
     if schema_state != "ok":
         print(f"schema  WARN  {schema_detail}")
     steps = install.plan(manifest, facts, options)
+    print(f"channel: {channel}")
     for step in steps:
         print(f"{step['kind']} {step['component']}: {step['detail']}")
     if a.dry_run:
@@ -3126,6 +3139,7 @@ INSTALL_GROUP = commands.Group(
         commands.Arg(("--with",), {"action": "append", "default": None, "dest": "with_", "metavar": "FLAG"}),
         commands.Arg(("--team",)),
         commands.Arg(("--workspace",)),
+        commands.Arg(("--edge",), {"action": "store_true"}),
         commands.Arg(("--dry-run",), {"action": "store_true"}),
     ),
     fn=_install,
