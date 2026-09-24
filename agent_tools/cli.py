@@ -673,14 +673,22 @@ def _initiative_of(work_root: Path, task_id: str) -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
+def _initiative_of_phase(work_root: Path, phase: str) -> str | None:
+    """The one initiative whose `work/<initiative>/<phase>/` holds a ticket, or
+    `None` when none or several do. The phase record may not name it."""
+    found = {p.parent.parent.name for p in work_root.glob(f"*/{phase}/*.md") if p.name != "initiative.md"}
+    return found.pop() if len(found) == 1 else None
+
+
 def _land_branches(repo: Path, record: dict, default_branch: str) -> dict[str, list[str]]:
     """Commit subjects ahead of `default_branch`, per candidate branch, with
-    merge commits already excluded by `git` itself (`--no-merges`) rather
-    than guessed from a subject's wording."""
+    merge commits excluded by `git` (`--no-merges`) and patch-equivalent
+    commits already on `default_branch` dropped (`--cherry-pick`)."""
     candidates = [f"agents/{record['run']}/{record['task']}", f"epic/{record.get('initiative')}/{record['phase']}"]
     branches: dict[str, list[str]] = {}
     for b in candidates:
-        out = subprocess.run(["git", "-C", str(repo), "log", "--no-merges", "--format=%s", f"{default_branch}..{b}"], capture_output=True, text=True)
+        out = subprocess.run(["git", "-C", str(repo), "log", "--no-merges", "--cherry-pick", "--right-only", "--format=%s", f"{default_branch}...{b}"],
+                             capture_output=True, text=True)
         if out.returncode == 0:
             branches[b] = [line for line in out.stdout.splitlines() if line]
     return branches
@@ -1017,13 +1025,14 @@ def _runs_land(a: argparse.Namespace) -> int:
         if phase_record is None:
             print(f"land: no phase record at {searched}")
             return 2
-        initiative = phase_record.get("initiative")
+        initiative = phase_record.get("initiative") or _initiative_of_phase(runs_dir.parent / "work", phase)
         items, items_path = (_phase_items(runs_dir.parent / "work", initiative, phase)
-                              if initiative else (None, f"{runs_dir.parent / 'work'} (no initiative on the phase record)"))
+                              if initiative else (None, f"{runs_dir.parent / 'work'} (no single initiative holds phase {phase})"))
         if items is None:
             print(f"land: no work items at {items_path}, expected the phase's tickets")
             return 2
-        plan_steps = land.land_plan(phase_record, {}, default_branch, repo_facts, items=items, task_records=task_records)
+        plan_steps = land.land_plan({**phase_record, "initiative": initiative}, {}, default_branch, repo_facts,
+                                    items=items, task_records=task_records)
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths)
     else:
         record, searched, count = _land_record(runs_dir, a.run_id, a.task)

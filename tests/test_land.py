@@ -345,6 +345,41 @@ def test_land_branches_asks_git_for_no_merges_rather_than_sniffing_subjects(monk
     assert calls and all("--no-merges" in c for c in calls)
 
 
+def _git(root, *argv):
+    sp.run(["git", "-C", str(root), *argv], check=True, capture_output=True, env=_ENV)
+
+
+def _stacked_repo(tmp_path, *, parent_on_main):
+    """main, plus a scratch branch carrying a parent commit then its own commit.
+    With `parent_on_main` the parent's patch was squash-landed onto main."""
+    root = tmp_path / "stacked"; root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    (root / "f").write_text("x"); _git(root, "add", "-A"); _git(root, "commit", "-qm", "init")
+    _git(root, "checkout", "-qb", "agents/epic-x-5/seams-task")
+    (root / "parent").write_text("p"); _git(root, "add", "-A"); _git(root, "commit", "-qm", "parent commit")
+    (root / "own").write_text("o"); _git(root, "add", "-A"); _git(root, "commit", "-qm", "own commit")
+    _git(root, "checkout", "-q", "main")
+    if parent_on_main:
+        (root / "parent").write_text("p"); _git(root, "add", "-A"); _git(root, "commit", "-qm", "parent squashed")
+    return root
+
+
+def test_land_branches_drops_a_commit_whose_patch_is_already_on_main(tmp_path):
+    root = _stacked_repo(tmp_path, parent_on_main=True)
+    branches = cli._land_branches(root, _record(), "main")
+    assert branches["agents/epic-x-5/seams-task"] == ["own commit"]
+    step = land.land_plan(_record(), branches, "main")[0]
+    assert (step["kind"], step["branch"]) == ("pick_branch", "agents/epic-x-5/seams-task")
+
+
+def test_land_branches_keeps_a_parent_commit_that_is_not_on_main(tmp_path):
+    root = _stacked_repo(tmp_path, parent_on_main=False)
+    branches = cli._land_branches(root, _record(), "main")
+    assert branches["agents/epic-x-5/seams-task"] == ["own commit", "parent commit"]
+    steps = land.land_plan(_record(), branches, "main")
+    assert steps[0]["kind"] == "refuse" and "exactly one commit" in steps[0]["reason"]
+
+
 # --- cli._execute_land_step: the git-only arms, for real, no gh ---
 
 @pytest.fixture
@@ -697,6 +732,34 @@ def test_cli_dry_run_plan_carries_the_item_path(repo, tmp_path, capsys, monkeypa
     assert mark_done["item"] == str(item_path)
     assert mark_done["from"] == "approved"
     assert mark_done["to"] == "done"
+
+
+# --- cli end to end: phase land resolves the initiative from the work store ---
+
+def _phase_land_dry_run(repo, tmp_path, capsys, monkeypatch, work_dirs):
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "runs/epic-x-5:seams.json").write_text(json.dumps({"phase_verdict": {"reasoning": "solid"}}), encoding="utf-8")
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record(status="done")), encoding="utf-8")
+    for d in work_dirs:
+        (tmp_path / "work" / d).mkdir(parents=True)
+        (tmp_path / "work" / d / "seams-task.md").write_text("---\nid: seams-task\nstate: done\n---\n\nBody.\n", encoding="utf-8")
+    _full_gate(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["runs", "land", "epic-x-5", "--phase", "seams", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    return rc, capsys.readouterr().out
+
+
+def test_phase_land_finds_the_initiative_in_the_work_store_when_the_record_names_none(repo, tmp_path, capsys, monkeypatch):
+    rc, out = _phase_land_dry_run(repo, tmp_path, capsys, monkeypatch, ("x/seams",))
+    assert rc == 0
+    assert next(s for s in json.loads(out) if s["kind"] == "pick_branch")["branch"] == "epic/x/seams"
+
+
+def test_phase_land_refuses_when_two_initiatives_hold_the_phase(repo, tmp_path, capsys, monkeypatch):
+    rc, out = _phase_land_dry_run(repo, tmp_path, capsys, monkeypatch, ("x/seams", "y/seams"))
+    assert rc == 2
+    assert "no single initiative holds phase seams" in out
 
 
 # --- cli end to end: recover closes the work item too ---
