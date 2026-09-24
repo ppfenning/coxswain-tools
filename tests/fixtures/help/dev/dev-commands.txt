@@ -1,0 +1,14 @@
+usage: cox dev commands [-h] [--target {all,pages,readme}] [--pages-dir PAGES_DIR]
+                        [--readme README]
+                        {render}
+
+positional arguments:
+  {render}              the only action: render
+
+options:
+  -h, --help            show this help message and exit
+  --target {all,pages,readme}
+  --pages-dir PAGES_DIR
+                        where the slash-command pages are written; without it only the README is
+                        rendered
+  --readme README

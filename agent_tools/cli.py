@@ -27,6 +27,7 @@ from agent_tools import (
     chair,
     cleanup,
     commands,
+    commands_render,
     courier,
     doctor,
     epic,
@@ -3451,34 +3452,11 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("usage")
     commands.build_parser(rows, [group], sub)
 
-    router_p = sub.add_parser(
-        "router", help="the routing-profile flag and the tier decision it gates",
-        description="The routing-profile flag and the tier decision it gates.",
-        epilog="examples:\n  cox router select --role build\n  cox router select --role build --json",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    router_p.set_defaults(fn=_bare_group(router_p))
-    rt = router_p.add_subparsers(dest="cmd", required=False)
-    rs = rt.add_parser("select", help="the effective tier for a role under the profile's router: off|shadow|on flag")
-    rs.add_argument("--role", required=True)
-    rs.add_argument("--db", default="workspace/stats/stats.db")
-    rs.add_argument("--profile", help="the routing profile naming the provider profile and the router flag (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)")
-    rs.add_argument("--json", action="store_true")
-    rs.set_defaults(fn=_router_select)
+    group, rows = _table_entry("router")
+    commands.build_parser(rows, [group], sub)
 
-    steward_p = sub.add_parser(
-        "steward", help="ceiling-change candidates from stats.db, proposed as intake files",
-        description="Ceiling-change candidates from stats.db, proposed as intake files.",
-        epilog="examples:\n  cox steward propose\n  cox steward propose --json",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    steward_p.set_defaults(fn=_bare_group(steward_p))
-    sd = steward_p.add_subparsers(dest="cmd", required=False)
-    sdp = sd.add_parser("propose", help="write each candidate clearing the evidence bar as a new intake file; never edits a provider profile")
-    sdp.add_argument("--db", default="workspace/stats/stats.db")
-    sdp.add_argument("--profile", help="the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)")
-    sdp.add_argument("--json", action="store_true")
-    sdp.set_defaults(fn=_steward_propose)
+    group, rows = _table_entry("steward")
+    commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("epic")
     commands.build_parser(rows, [group], sub)
@@ -3765,6 +3743,29 @@ SETUP_COMMANDS = [
     ),
 ]
 
+
+def _dev_commands(a: argparse.Namespace) -> int:
+    """`cox dev commands render`: rewrite the README's marked Commands block,
+    and with --pages-dir the slash-command pages, from `COMMAND_TABLE`."""
+    if a.target in ("all", "readme"):
+        readme = Path(a.readme)
+        text = _read_text_or_none(readme)
+        if text is None:
+            print(f"commands render: cannot read {readme}"); return 2
+        updated = commands_render.splice(text, commands_render.render_readme_block(COMMAND_TABLE))
+        if updated is None:
+            print(f"commands render: {readme} lacks the {commands_render.BEGIN} / {commands_render.END} markers"); return 2
+        readme.write_text(updated, encoding="utf-8")
+    if a.target == "pages" and not a.pages_dir:
+        print("commands render: --target pages needs --pages-dir"); return 2
+    if a.target in ("all", "pages") and a.pages_dir:
+        out = Path(a.pages_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        for name, page in commands_render.render_pages(COMMAND_TABLE).items():
+            (out / name).write_text(page, encoding="utf-8")
+    return 0
+
+
 DEV_GROUP = commands.Group(
     name="dev", help="maintainer commands for the Coxswain repositories",
     description="maintainer commands for the Coxswain repositories; not needed to use Coxswain",
@@ -3804,6 +3805,51 @@ DEV_COMMANDS = [
         ),
         _backfill_github_releases, False, (),
     ),
+    commands.Command(
+        "commands", "dev", "write the plugin's slash-command pages and the README's Commands section from the command table",
+        (
+            commands.Arg(("verb",), {"choices": ("render",), "help": "the only action: render"}),
+            commands.Arg(("--target",), {"choices": ("all", "pages", "readme"), "default": "all"}),
+            commands.Arg(("--pages-dir",), {"help": "where the slash-command pages are written; without it only the README is rendered"}),
+            commands.Arg(("--readme",), {"default": "README.md"}),
+        ),
+        _dev_commands, False, (),
+    ),
+]
+
+ROUTER_GROUP = commands.Group(
+    name="router", help="the routing-profile flag and the tier decision it gates",
+    description="The routing-profile flag and the tier decision it gates.",
+    epilog="examples:\n  cox router select --role build\n  cox router select --role build --json",
+)
+ROUTER_COMMANDS = [
+    commands.Command(
+        "select", "router", "the effective tier for a role under the profile's router: off|shadow|on flag",
+        (
+            commands.Arg(("--role",), {"required": True}),
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--profile",), {"help": "the routing profile naming the provider profile and the router flag (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _router_select, False, (),
+    ),
+]
+
+STEWARD_GROUP = commands.Group(
+    name="steward", help="ceiling-change candidates from stats.db, proposed as intake files",
+    description="Ceiling-change candidates from stats.db, proposed as intake files.",
+    epilog="examples:\n  cox steward propose\n  cox steward propose --json",
+)
+STEWARD_COMMANDS = [
+    commands.Command(
+        "propose", "steward", "write each candidate clearing the evidence bar as a new intake file; never edits a provider profile",
+        (
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--profile",), {"help": "the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _steward_propose, False, (),
+    ),
 ]
 
 COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
@@ -3818,6 +3864,8 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (PLAN_GROUP, PLAN_COMMANDS),
     (EPIC_GROUP, EPIC_COMMANDS),
     (ROUTE_GROUP, ROUTE_COMMANDS),
+    (ROUTER_GROUP, ROUTER_COMMANDS),
+    (STEWARD_GROUP, STEWARD_COMMANDS),
     (SETUP_GROUP, SETUP_COMMANDS),
     (DEV_GROUP, DEV_COMMANDS),
 ]
