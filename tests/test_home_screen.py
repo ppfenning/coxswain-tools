@@ -1,3 +1,4 @@
+import threading
 import time
 
 from agent_tools import home_model, leader_chat, theme
@@ -13,13 +14,15 @@ def test_panel_status_is_fresh_within_timeout_stale_past_it_and_absent_with_no_v
     assert home_model.panel_status(None, 0.0, 2.0) == "absent"
 
 
-def test_read_with_timeout_returns_none_for_a_slow_reader_within_bounded_time():
-    started = time.monotonic()
+def test_read_with_timeout_returns_none_without_waiting_for_a_blocked_reader():
+    release = threading.Event()
+    try:
+        result = _read_with_timeout(release.wait, timeout_seconds=0.05)
 
-    result = _read_with_timeout(lambda: time.sleep(0.5), timeout_seconds=0.05)
-
-    assert result is None
-    assert time.monotonic() - started < 0.3
+        assert result is None
+        assert not release.is_set()  # the reader was still blocked when the call returned
+    finally:
+        release.set()
 
 
 def test_read_with_timeout_returns_none_for_a_raising_reader():
