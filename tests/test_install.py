@@ -1,7 +1,7 @@
 import subprocess
 import sys
 
-from agent_tools import cli, install
+from agent_tools import cli, install, install_exec
 
 
 def _fake_schema_package(tmp_path, monkeypatch, *, cartridges, graphs):
@@ -343,3 +343,112 @@ def test_cli_versions_root_flag_overrides_the_manifests_own_directory(tmp_path, 
     out = capsys.readouterr().out
     assert rc == 0
     assert "harness" in out and "ok" in out
+
+
+def _edge_manifest():
+    return {"components": {"harness": {"repo": "org/harness", "ref": "trunk", "required": True},
+                            "cartridges": {"repo": "org/cartridges", "required": True}},
+            "providers": {"claude-code": {"status": "supported"}}}
+
+
+def _first_kind(manifest, checkout, channel):
+    checkouts = dict.fromkeys(manifest["components"], checkout)
+    steps = install.plan(manifest, _facts(checkouts), {**_options(), "channel": channel})
+    return steps[0]["kind"]
+
+
+def test_each_channel_clones_fetches_skips_and_refuses_a_dirty_checkout():
+    absent = {"present": False, "tag": None, "dirty": False}
+    at_pin = {"present": True, "tag": "v1.0.0", "branch": "trunk", "branch_tip": True, "dirty": False}
+    off_pin = {"present": True, "tag": "v0.9.0", "branch": "trunk", "branch_tip": False, "dirty": False}
+    dirty = {**at_pin, "dirty": True}
+    checkouts = (absent, off_pin, at_pin, dirty)
+    expected = ["clone", "fetch_checkout", "skip", "refuse"]
+    assert [_first_kind(_manifest(), c, "release") for c in checkouts] == expected
+    assert [_first_kind(_edge_manifest(), c, "edge") for c in checkouts] == expected
+
+
+def test_edge_defaults_a_ref_less_component_to_main():
+    steps = install.plan(_edge_manifest(), _facts(), {**_options(), "channel": "edge"})
+    assert [s["detail"] for s in steps[:2]] == ["clone org/harness at trunk", "clone org/cartridges at main"]
+
+
+def test_a_release_run_with_a_branch_pinned_component_refuses_naming_the_mix():
+    manifest = _manifest()
+    manifest["components"]["cartridges"] = {"repo": "org/cartridges", "ref": "main", "required": True}
+    steps = install.plan(manifest, _facts(), _options())
+    assert [(s["kind"], s["component"]) for s in steps] == [("refuse", "cartridges")]
+    assert "mixed channels" in steps[0]["detail"]
+
+
+def test_the_channel_is_named_in_the_setup_install_step():
+    def detail(channel):
+        steps = install.plan(_manifest(), _facts(), {**_options(), "channel": channel})
+        return next(s["detail"] for s in steps if s["kind"] == "setup_install")
+    assert detail("release").startswith("channel=release ") and detail("edge").startswith("channel=edge ")
+
+
+def test_cli_install_edge_prints_its_channel(tmp_path, capsys):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    rc = cli.main(["install", "--edge", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
+                   "--provider", "claude-code", "--team", "pat", "--workspace", str(tmp_path / "ws")])
+    out = capsys.readouterr().out
+    assert rc == 0 and "channel: edge" in out and "channel=edge" in out
+
+
+def test_a_release_run_over_a_branch_only_manifest_refuses_without_calling_it_mixed():
+    manifest = {"components": {"harness": {"repo": "org/harness", "ref": "main", "required": True}},
+                "providers": {"claude-code": {"status": "supported"}}}
+    steps = install.plan(manifest, _facts(), _options())
+    assert [(s["kind"], s["component"]) for s in steps] == [("refuse", "harness")]
+    assert steps[0]["detail"].startswith("branch-only manifest")
+
+
+def test_edge_rows_compare_the_branch_and_its_tip_not_a_tag():
+    manifest = {"components": {"harness": {"repo": "org/harness", "tag": "v1.0.0"},
+                               "cartridges": {"repo": "org/cartridges", "ref": "trunk"}}}
+    checkouts = {"harness": {"present": True, "tag": None, "branch": "main", "branch_tip": True, "dirty": False},
+                 "cartridges": {"present": True, "tag": None, "branch": "trunk", "branch_tip": False, "dirty": False}}
+    assert install.rows(manifest, _facts(checkouts), "edge") == [
+        ("harness", "main", "main", "ok"), ("cartridges", "trunk", "trunk", "drift")]
+
+
+def _run(cwd, *argv):
+    return subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def _commit(work, text):
+    (work / "f").write_text(text)
+    _run(work, "git", "add", "-A")
+    _run(work, "git", "commit", "-q", "-m", text)
+    _run(work, "git", "push", "-q", "origin", "main")
+
+
+def test_an_edge_checkout_behind_the_remote_fetches_and_then_lands_on_the_tip(tmp_path):
+    origin, work, root = tmp_path / "origin.git", tmp_path / "work", tmp_path / "root"
+    _run(tmp_path, "git", "init", "-q", "--bare", "-b", "main", str(origin))
+    work.mkdir()
+    _run(work, "git", "init", "-q", "-b", "main")
+    _run(work, "git", "config", "user.email", "a@b.c")
+    _run(work, "git", "config", "user.name", "t")
+    _run(work, "git", "remote", "add", "origin", str(origin))
+    _commit(work, "1")
+    root.mkdir()
+    _run(tmp_path, "git", "clone", "-q", str(origin), str(root / "harness"))
+    _commit(work, "2")
+    manifest = {"components": {"harness": {"repo": "org/harness", "required": True}},
+                "providers": {"claude-code": {"status": "supported"}}}
+    options = {**_options(), "channel": "edge"}
+
+    def steps():
+        return install.plan(manifest, _facts({"harness": cli._checkout_facts(root / "harness", fetch=True)}), options)
+
+    assert steps()[0]["kind"] == "fetch_checkout"
+    def run(argv, cwd):
+        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+        return proc.returncode, proc.stdout + proc.stderr
+    results = install_exec.execute(install_exec.from_plan(steps()[:1], manifest=manifest, options=options),
+                                   root=str(root), run=run)
+    assert results[0]["exit"] == 0 and (root / "harness" / "f").read_text() == "2"
+    assert steps()[0]["kind"] == "skip"

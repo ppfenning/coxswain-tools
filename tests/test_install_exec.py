@@ -36,6 +36,25 @@ def test_fetch_checkout_argv_shape_fetches_then_checks_out_the_pinned_tag():
     assert results[0]["exit"] == 0
 
 
+def test_an_edge_fetch_checkout_fetches_the_branch_and_resets_the_local_branch_onto_it():
+    steps = [{"kind": "fetch_checkout", "component": "harness", "repo": "acme/harness", "tag": None,
+              "ref": "main", "channel": "edge"}]
+    fetch_argv = ["git", "-C", "/root/harness", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"]
+    checkout_argv = ["git", "-C", "/root/harness", "checkout", "-B", "main", "origin/main"]
+    run, calls = _fake_run({})
+    install_exec.execute(steps, root="/root", run=run)
+    assert calls == [(fetch_argv, None), (checkout_argv, None)]
+
+
+def test_from_plan_carries_the_channel_and_ref_so_an_edge_clone_uses_the_branch():
+    manifest = {"components": {"harness": {"repo": "acme/harness", "ref": "trunk"}}}
+    steps = install_exec.from_plan([{"kind": "clone", "component": "harness"}], manifest=manifest,
+                                   options={"channel": "edge"})
+    run, calls = _fake_run({})
+    install_exec.execute(steps, root="/root", run=run)
+    assert calls[0][0][:4] == ["git", "clone", "--branch", "trunk"]
+
+
 def test_refuse_stops_before_any_later_step_runs():
     steps = [
         {"kind": "refuse", "component": "harness", "detail": "harness checkout is dirty"},

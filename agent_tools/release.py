@@ -171,10 +171,41 @@ def _component_github_release_step(name: str, repo: str, tag: str, version: str,
     return step
 
 
+_TAP_REPO = "ppfenning/homebrew-coxswain"
+_PYPI_PACKAGE = "coxswain-tools"
+
+
+TAP_CHECKOUT = "homebrew-coxswain"
+
+
+def _tap_formula_steps(steps: list[dict], version: str, tools_repository_url: str | None,
+                        umbrella_slug: str | None, tap_state: str) -> list[dict]:
+    """Nothing unless `steps` tags the tools repo, whose tag push runs the PyPI publish; a `refuse` when the tap checkout is not `clean`."""
+    tools_slug = "/".join(tools_repository_url.rstrip("/").split("/")[-2:]) if tools_repository_url else None
+    publishing = tools_slug is not None and any(
+        (s["kind"] in ("tag", "rejoin") and s["repo"] == tools_slug)
+        or (s["kind"] == "tag_self" and umbrella_slug == tools_slug) for s in steps)
+    if not publishing:
+        return []
+    if tap_state != "clean":
+        return _refuse("tap", f"tap checkout {_TAP_REPO} is {tap_state}; the formula bump needs a clean checkout")
+    pypi_version = re.sub(r"-beta\.(\d+)$", r"b\1", version)
+    return [{"kind": "tap_formula_pr", "component": "tap", "repo": _TAP_REPO, "path": "Formula/cox.rb",
+             "version": version, "branch": f"release/{version}", "title": f"cox {version}",
+             "index_url": f"https://pypi.org/pypi/{_PYPI_PACKAGE}/{pypi_version}/json"}]
+
+
+def sdist_from_index(payload: Mapping) -> tuple[str, str] | None:
+    """The `(url, sha256)` of the sdist in a PyPI `/pypi/<name>/<version>/json` payload, or None when it lists none."""
+    return next(((u["url"], u["digests"]["sha256"]) for u in payload.get("urls", [])
+                 if u.get("packagetype") == "sdist"), None)
+
+
 def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, list[str] | None],
                   component_versions: Mapping[str, str | None] | None = None,
                   pinned_commits: Mapping[str, int] | None = None,
-                  tools_repository_url: str | None = None) -> list[dict]:
+                  tools_repository_url: str | None = None,
+                  tap_state: str = "clean") -> list[dict]:
     """Steps in order: per `repo` component, either a plain `tag` (its
     `component_versions` entry is missing or already at `version`) or a
     `bump_pyproject`-and-land sequence ending in `tag` — unless its manifest
@@ -201,7 +232,13 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
     old release must never be rewritten by a later cut. `tools_repository_url`
     is this package's own `Repository` URL, another fact gathered at the edge
     (from installed package metadata) rather than read here, used only as a
-    fallback for the umbrella's slug when the manifest names none."""
+    fallback for the umbrella's slug when the manifest names none.
+
+    A final `tap_formula_pr` step follows only when this plan tags the tools
+    repo (`tools_repository_url`) with a `tag`, `rejoin` or `tag_self`: that
+    tag push is what publishes to PyPI, so a `lockstep = false` component
+    never triggers it. A `refuse` naming the tap replaces it when
+    `tap_state` (`clean`, `dirty` or `absent`) says the checkout is unfit."""
     parsed = _parse_semver(version)
     if parsed is None:
         return _refuse(version, f"{version!r} is not a valid version (expected X.Y.Z or X.Y.Z-beta.N)")
@@ -269,15 +306,18 @@ def release_plan(manifest: Mapping, version: str, existing_tags: Mapping[str, li
         if _sort_key(parsed) < _sort_key(current_parsed):
             return _refuse(version, f"{version} is not greater than the current version {current}")
         if _sort_key(parsed) == _sort_key(current_parsed):
-            return _with_wait_workflows(tag_steps + [notes_step, tag_self_step, umbrella_gr_step])
+            steps = tag_steps + [notes_step, tag_self_step, umbrella_gr_step]
+            return _with_wait_workflows(steps) + _tap_formula_steps(steps, version, tools_repository_url,
+                                                                    umbrella_slug, tap_state)
 
     branch = f"release/{version}"
     subject = f"manifest: bump to {version} to match the tag"
     bump_step = {"kind": "bump_manifest", "component": "manifest", "from": current, "to": version,
                  "branch": branch, "commit_subject": subject}
     body = f"Bumps manifest.toml version to {version} to match tag {new_tag}."
-    return _with_wait_workflows(tag_steps + [notes_step] + _bump_and_land(bump_step, branch, body) +
-                                 [tag_self_step, umbrella_gr_step])
+    steps = tag_steps + [notes_step] + _bump_and_land(bump_step, branch, body) + [tag_self_step, umbrella_gr_step]
+    return _with_wait_workflows(steps) + _tap_formula_steps(steps, version, tools_repository_url,
+                                                            umbrella_slug, tap_state)
 
 
 def release_index_text(existing_index: str, version: str, manifest: Mapping) -> str:
@@ -548,6 +588,26 @@ def bumped_manifest_text(text: str, version: str, rejoining: Iterable[str] = ())
         elif (table == "components" and inline and inline.group(1) not in pinned
               and _MANIFEST_INLINE_TAG_RE.search(inline.group(2))):
             out.append(_MANIFEST_INLINE_TAG_RE.sub(lambda m: f"{m.group(1)}{new_tag}{m.group(2)}", line))
+        else:
+            out.append(line)
+    return "".join(out)
+
+
+_FORMULA_URL_RE = re.compile(r'^(\s*url\s+")[^"]*(")')
+_FORMULA_SHA_RE = re.compile(r'^(\s*sha256\s+")[^"]*(")')
+_FORMULA_RESOURCE_RE = re.compile(r"^\s*resource\s")
+
+
+def bumped_formula_text(text: str, version: str, sdist_url: str, sha256: str) -> str:
+    """`text` with the `url` and `sha256` lines before the first `resource` stanza rewritten; `version` is carried by `sdist_url`."""
+    out = []
+    in_resource = False
+    for line in text.splitlines(keepends=True):
+        in_resource = in_resource or _FORMULA_RESOURCE_RE.match(line) is not None
+        if not in_resource and _FORMULA_URL_RE.match(line):
+            out.append(_FORMULA_URL_RE.sub(lambda m: f"{m.group(1)}{sdist_url}{m.group(2)}", line))
+        elif not in_resource and _FORMULA_SHA_RE.match(line):
+            out.append(_FORMULA_SHA_RE.sub(lambda m: f"{m.group(1)}{sha256}{m.group(2)}", line))
         else:
             out.append(line)
     return "".join(out)
