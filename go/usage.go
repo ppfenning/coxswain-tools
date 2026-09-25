@@ -8,11 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // Port of `cox usage assess` (agent_tools/usage_window.py, pacing.py, cli._usage_assess).
@@ -118,66 +116,19 @@ func loadPolicy(raw []byte) Policy {
 	return p
 }
 
-func stripComment(line string) string {
-	for i := 1; i < len(line); i++ {
-		if line[i] == '#' && strings.ContainsRune(" \t\r\n\v\f", rune(line[i-1])) {
-			return strings.TrimRightFunc(line[:i], unicode.IsSpace)
-		}
-	}
-	return line
-}
-
-// profileKeys is route._KNOWN_KEYS; testdata/profile-keys.json holds Python's list and both test suites check it.
-var profileKeys = []string{
-	"assume", "cartridges_dir", "forge", "harness_dir", "provider_profile", "repo_map", "router",
-	"skills_roots", "sources", "team", "tracker", "workspace_dir",
-}
-
-func knownKey(key string) bool { return slices.Contains(profileKeys, key) }
-
-// parseProfile is route.parse_profile narrowed to the two ceilings. Any line
-// Python rejects is an error here too, so the caller drops both ceilings as cli does.
+// parseProfile is ParseProfile narrowed to the two ceilings. Any line Python
+// rejects is an error here too, so the caller drops both ceilings as cli does.
 func parseProfile(text string) (Ceilings, error) {
+	profile, err := ParseProfile(text)
+	if err != nil {
+		return Ceilings{}, err
+	}
 	var out Ceilings
-	inSpend := false
-	for i, raw := range strings.Split(text, "\n") {
-		line := strings.TrimSuffix(raw, "\r")
-		bad := fmt.Errorf("line %d: %s", i+1, raw)
-		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), "#") {
-			continue
-		}
-		key, value, hasColon := strings.Cut(stripComment(line), ":")
-		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-		if line != strings.TrimLeftFunc(line, unicode.IsSpace) {
-			if !inSpend || !hasColon {
-				return Ceilings{}, bad
-			}
-			n, err := strconv.ParseFloat(value, 64)
-			switch {
-			case err != nil:
-				return Ceilings{}, bad
-			case key == "window_ceiling_usd":
-				out.Window = &n
-			case key == "weekly_ceiling_usd":
-				out.Weekly = &n
-			case key != "node_cap_usd":
-				return Ceilings{}, bad
-			}
-			continue
-		}
-		inSpend = false
-		switch {
-		case !hasColon:
-			return Ceilings{}, bad
-		case key == "spend" && value != "":
-			return Ceilings{}, bad
-		case key == "spend":
-			inSpend = true
-		case !knownKey(key):
-			return Ceilings{}, bad
-		case (key == "sources" || key == "repo_map") && !json.Valid([]byte(value)):
-			return Ceilings{}, bad
-		}
+	if n, ok := profile["window_ceiling_usd"].(float64); ok {
+		out.Window = &n
+	}
+	if n, ok := profile["weekly_ceiling_usd"].(float64); ok {
+		out.Weekly = &n
 	}
 	return out, nil
 }
