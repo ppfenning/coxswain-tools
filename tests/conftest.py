@@ -28,7 +28,7 @@ def strip_ansi(text: str) -> str:
 def pytest_addoption(parser):
     parser.addoption(
         "--regen", action="store_true",
-        help="rewrite the snapshots (the help fixtures and go/commands.json) before the run, instead of only comparing",
+        help="rewrite the help fixtures before the run, instead of only comparing",
     )
 
 
@@ -39,7 +39,4 @@ def pytest_configure(config):
         return
     import test_cli_help_snapshot
 
-    from agent_tools import command_table_json
-
     test_cli_help_snapshot._write()
-    command_table_json.main()
