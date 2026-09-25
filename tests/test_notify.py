@@ -1,5 +1,6 @@
 import argparse
 import json
+import sqlite3
 
 import pytest
 
@@ -149,3 +150,30 @@ def test_runs_notify_cli_dispatch_reads_the_dropped_policy_file_end_to_end(tmp_p
     out = capsys.readouterr().out
     assert "budget stop" in out
     assert "task quarantined" not in out
+
+
+_STORE_CALL = {
+    "call_id": "c1", "run_id": "run9", "seq": 1, "task_id": None, "role": "build", "tier": "cheap",
+    "model_alias": "haiku", "cost_usd": 1.5, "ceiling_usd": 2.0, "ceiling_source": "profile", "turns": 10,
+    "duration_ms": 1000, "input_tokens": 1, "cache_read_tokens": 0, "cache_creation_tokens": 0,
+    "input_total": 1, "output_tokens": 2, "ok": 1, "ts": "2026-09-25T04:34:43+00:00", "decision_json": None,
+}
+
+
+def _write_store_only_run(runs_dir):
+    """An ended run that exists only in cox.db: a runs row with ended_at and one call, no usage file."""
+    conn = sqlite3.connect(runs_dir / "cox.db")
+    conn.execute("CREATE TABLE node_calls (" + ", ".join(_STORE_CALL) + ")")
+    conn.execute("CREATE TABLE runs (run_id, ended_at)")
+    marks = ", ".join("?" * len(_STORE_CALL))
+    conn.execute("INSERT INTO node_calls VALUES (" + marks + ")", tuple(_STORE_CALL.values()))
+    conn.execute("INSERT INTO runs VALUES ('run9', '2026-09-25T05:03:46+00:00')")
+    conn.commit()
+    conn.close()
+
+
+def test_a_store_only_ended_run_reads_its_usage_from_the_store(tmp_path):
+    _write_store_only_run(tmp_path)
+    got = notify._usage(tmp_path, "run9", already_emitted=False)
+    assert got["summary"]["cost_usd"] == 1.5
+    assert notify._usage(tmp_path, "run9", already_emitted=True) is None
