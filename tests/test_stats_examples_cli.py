@@ -61,3 +61,37 @@ def test_an_unknown_role_exits_two_naming_both_roles(runs, capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "handoff" in captured.err and "review_charter" in captured.err
+
+
+def test_several_roles_write_one_stream_handoff_first(runs, capsys):
+    assert main(["stats", "examples", str(runs), "--role", "handoff", "--role", "review_charter"]) == 0
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [r["label"] for r in rows] == ["yes", "no", "approve", "approve"]
+    assert rows[2]["state"] == {"patch": "diff", "plan": "a"}
+
+
+def test_several_roles_with_out_write_one_file_in_the_order_given(runs, tmp_path, capsys):
+    out = tmp_path / "examples.jsonl"
+    argv = ["stats", "examples", str(runs), "--role", "review_charter", "--role", "handoff", "--out", str(out)]
+    assert main(argv) == 0
+    assert capsys.readouterr().out == ""
+    assert [json.loads(line)["label"] for line in out.read_text().splitlines()] == ["approve", "approve", "yes", "no"]
+
+
+def test_several_roles_report_counts_per_role(runs, capsys):
+    assert main(["stats", "examples", str(runs), "--role", "handoff", "--role", "review_charter"]) == 0
+    expected = "read 4; handoff: written 2, skipped 2; review_charter: written 2, skipped 2"
+    assert capsys.readouterr().err.strip() == expected
+
+
+def test_an_unknown_role_among_several_exits_two_and_writes_no_file(runs, tmp_path, capsys):
+    out = tmp_path / "examples.jsonl"
+    argv = ["stats", "examples", str(runs), "--role", "handoff", "--role", "arbitrate", "--out", str(out)]
+    assert main(argv) == 2
+    assert capsys.readouterr().out == ""
+    assert not out.exists()
+
+
+def test_a_repeated_role_is_written_once(runs, capsys):
+    assert main(["stats", "examples", str(runs), "--role", "handoff", "--role", "handoff"]) == 0
+    assert len(capsys.readouterr().out.splitlines()) == 2
