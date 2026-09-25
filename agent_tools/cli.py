@@ -3120,7 +3120,7 @@ STATS_COMMANDS = [
         _stats_examples, False, (),
     ),
     commands.Command(
-        "system-one", "stats", "shadow-to-on graduation report per role, and a proposal for Pat",
+        "system-one", "stats", "shadow-to-on graduation report per role, and a proposal for the maintainer to approve",
         (
             commands.Arg(("runs_dir",), {"nargs": "?", "default": "runs"}),
             commands.Arg(("--role",), {"default": None, "help": "report this role only"}),

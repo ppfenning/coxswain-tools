@@ -56,6 +56,7 @@ cox runs bar [--runs-dir RUNS_DIR]   one Waybar JSON line: runs in flight, cost,
 cox runs notify [--runs-dir RUNS_DIR] [--once] [--interval INTERVAL] [--replay]   desktop notifications for exits, quarantines, budget stops and cost
 cox runs detail RUN_ID [--runs-dir RUNS_DIR] [--json]   one run's timeline, objection and last tool calls
 cox runs stranded [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   every approved task record whose work item is not done, with its remedy
+cox runs cause RUN_ID TASK_ID ticket|code|harness|unknown [--note NOTE] [--runs-dir RUNS_DIR] [--profile PROFILE]   record why one run's attempt at a task was quarantined
 cox courier send REF --to TO --note NOTE [--profile PROFILE]   append a bus entry naming a courier reference
 cox courier inbox [--label LABEL] [--profile PROFILE]   list this label's unacknowledged bus entries
 cox courier ack ID [--profile PROFILE]   acknowledge one bus entry by id
@@ -70,6 +71,9 @@ cox stats series [--db DB] [--json] [--cartridge-sha CARTRIDGE_SHA] [--provider-
 cox stats coverage [--db DB] [--json]   known/total provenance rows for runs, calls and tasks
 cox stats bounds [--db DB] [--json] [--level strict|moderate|liberal] [--profile PROFILE] [--write WRITE]   n/p50/p95/max and strict/moderate/liberal candidate ceilings per role and model
 cox stats spend-mix [--db DB] [--json]   per-model token counts and cost share by class, plus the build-only split
+cox stats chair [RUNS_DIR] [--since SINCE] [--json] [--session SESSION] [--work-store-root WORK_STORE_ROOT] [--projects-dir PROJECTS_DIR] [--profile PROFILE]   harness PRs and $, chair $ per PR, hand-finished lands and quarantine $ by cause
+cox stats examples [RUNS_DIR] --role ROLE [--out OUT] [--since SINCE]   the local system-one backend's training file (JSON lines) from task records
+cox stats system-one [RUNS_DIR] [--role ROLE] [--since SINCE] [--json] [--propose] [--plans-dir PLANS_DIR]   shadow-to-on graduation report per role, and a proposal for the maintainer to approve
 cox usage assess [--json] [--runs-dir RUNS_DIR] [--profile PROFILE]   the pacing verdict for the current spend window
 cox plan serve DIR [--kind KIND] [--check] [--no-open]   serve a visual plan through the local bridge
 cox epic watch PIDFILE [--log LOG] [--max-seconds MAX_SECONDS] [--interval INTERVAL] [--json]   poll a detached run's pidfile until it exits

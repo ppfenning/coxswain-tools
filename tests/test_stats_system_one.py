@@ -124,7 +124,7 @@ def test_the_proposal_states_numbers_change_saving_and_risk():
 
 Verdict: READY
 
-Proposal only. Nothing was edited. Pat approves and makes the change.
+Proposal only. Nothing was edited. The maintainer approves and makes the change.
 
 ## Numbers
 
