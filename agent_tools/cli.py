@@ -75,6 +75,7 @@ from agent_tools import (
     stats_query,
     stats_schema,
     stats_system_one,
+    stats_tiers_cmd,
     steward,
     store_dialect,
     store_url,
@@ -200,6 +201,13 @@ def _canonical_date(text: str) -> bool:
         return datetime.date.fromisoformat(text).isoformat() == text
     except ValueError:
         return False
+
+
+def _stats_tiers(a: argparse.Namespace) -> int:
+    if a.since is not None and not _canonical_date(a.since):
+        print(f"cox stats tiers: --since must be a date as YYYY-MM-DD, got {a.since!r}", file=sys.stderr)
+        return 2
+    return stats_tiers_cmd.run(a.db, a.since, a.min_samples, a.json)
 
 
 def _stats_gates(a: argparse.Namespace) -> int:
@@ -3728,7 +3736,7 @@ STATS_GROUP = commands.Group(
     name="stats", help="load the run corpus into the stats store",
     description="Load the run corpus into the stats store.",
     epilog="examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db"
-           "\n  cox stats roles --json\n  cox stats gates --since 2026-09-01\n  cox stats explain build --json\n  cox stats series --json"
+           "\n  cox stats roles --json\n  cox stats tiers --since 2026-09-01\n  cox stats gates --since 2026-09-01\n  cox stats explain build --json\n  cox stats series --json"
            "\n  cox stats coverage --json\n  cox stats bounds --json\n  cox stats spend-mix --json"
            "\n  cox stats examples --role handoff --out examples.jsonl"
            "\n  cox stats system-one --role handoff --propose",
@@ -3753,6 +3761,16 @@ STATS_COMMANDS = [
             commands.Arg(("--provider-profile",), {"default": None, "help": "keep only runs on this provider_profile"}),
         ),
         _stats_roles, False, (),
+    ),
+    commands.Command(
+        "tiers", "stats", "per-role model summaries, a cost-aware pick and the spend it would save",
+        (
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--since",), {"default": None, "help": "keep only rows dated on or after DATE (YYYY-MM-DD)"}),
+            commands.Arg(("--min-samples",), {"type": int, "default": 20, "help": "tasks a model needs before it can be picked (default 20)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _stats_tiers, False, (),
     ),
     commands.Command(
         "gates", "stats", "what each review, validation and plan gate costs and how often it changes the outcome",
