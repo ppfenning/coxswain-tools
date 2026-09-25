@@ -14,7 +14,7 @@ import io
 import json
 import re
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,7 @@ from agent_tools import epic
 
 __all__ = [
     "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly", "phase_manifests",
-    "phase_names", "run_started", "summarize", "usage", "usages",
+    "phase_names", "run_started", "store_usages", "summarize", "usage", "usages",
 ]
 
 STORE_FILENAME = "cox.db"
@@ -138,29 +138,39 @@ def _store_usage(run_id: str, calls: list[dict]) -> dict:
     return {"run_id": run_id, "calls": calls, "summary": summarize(calls)}
 
 
-def _store_runs(runs_dir: Path) -> dict[str, list[dict]]:
-    """Every run with `node_calls` rows and a `runs` row that has ended (`ended_at` set, or no live pid), its calls ordered by ts then seq."""
+def _store_runs(runs_dir: Path, exclude: Collection[str] = (), since: str | None = None) -> dict[str, list[dict]]:
+    """Every run with `node_calls` rows and a `runs` row that has ended (`ended_at` set, or no live pid), its calls ordered by ts then seq.
+    Runs in `exclude` are dropped before any row becomes a call and before the pid check. With `since`, a run whose `ended_at` is set and earlier is dropped in SQL."""
     conn = connect_readonly(runs_dir)
     if conn is None:
         return {}
     conn.row_factory = sqlite3.Row
+    where, params = ("WHERE r.ended_at IS NULL OR r.ended_at >= ? ", (since,)) if since is not None else ("", ())
     try:
         rows = conn.execute(
             "SELECT n.*, r.ended_at AS run_ended_at FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
-            "ORDER BY n.run_id, n.ts, n.seq"
+            f"{where}ORDER BY n.run_id, n.ts, n.seq",
+            params,
         ).fetchall()
     except sqlite3.DatabaseError:
         return {}
     finally:
         conn.close()
+    skip = frozenset(exclude)
     grouped: dict[str, list[sqlite3.Row]] = {}
     for row in rows:
-        grouped.setdefault(row["run_id"], []).append(row)
+        if row["run_id"] not in skip:
+            grouped.setdefault(row["run_id"], []).append(row)
     return {
         rid: [call_from_row(r) for r in group]
         for rid, group in grouped.items()
         if _run_ended(runs_dir, rid, group[0]["run_ended_at"])
     }
+
+
+def store_usages(runs_dir: Path, exclude: Collection[str] = (), since: str | None = None) -> dict[str, dict]:
+    """Run id to usage for each ended store run not in `exclude`. `since` is an ISO timestamp: a run that ended before it is left out."""
+    return {rid: _store_usage(rid, calls) for rid, calls in _store_runs(Path(runs_dir), exclude, since).items()}
 
 
 def usages(runs_dir: Path) -> dict[str, dict]:
@@ -170,8 +180,7 @@ def usages(runs_dir: Path) -> dict[str, dict]:
         for path in sorted(Path(runs_dir).glob("*.usage.json"))
         if (body := _read_file(path)) is not None
     }
-    stored = {rid: _store_usage(rid, calls) for rid, calls in _store_runs(Path(runs_dir)).items() if rid not in files}
-    return {**files, **stored}
+    return {**files, **store_usages(runs_dir, exclude=files)}
 
 
 def _manifest_files(runs_dir: Path) -> dict[str, list[dict]]:
