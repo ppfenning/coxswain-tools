@@ -1266,7 +1266,8 @@ def _mirror_landed(step: dict) -> str | None:
     if "at" not in step:
         return None
     try:
-        result = store_cli.mark_landed(step["run"], step["phase"], step["task"], step["pr"], step["at"])
+        # The record path is <runs_dir>/<run>/tasks/<phase>/<task>.json.
+        result = store_cli.mark_landed(Path(step["path"]).resolve().parents[3], step["run"], step["phase"], step["task"], step["pr"], step["at"])
     except Exception as exc:
         return f"warning: store mirror of {step['task']} failed ({type(exc).__name__}: {exc}); land not undone"
     if isinstance(result, store_cli.Landed):

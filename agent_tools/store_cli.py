@@ -3,7 +3,8 @@
 The contract, from graphs-store-write-cli. Every command runs as
 `<harness_dir>/.venv/bin/python -m harness.store_cli <command...>` and prints one JSON
 object on stdout. Exit 0 is success, 3 a refused precondition, 2 bad arguments or an
-unreadable store. `--store-url <url>` is optional; this module omits it.
+unreadable store. `--store-url <url>` is optional; this module always passes the store `run_store` resolves for the runs dir,
+so both sides use one store (without it the harness falls back to a `cox.db` in its own checkout).
 
     mark-landed <run_id> <phase> <task> --pr <url> --at <iso>
         exit 0 -> the task record as a JSON object; exit 3 -> the record is not in the store
@@ -21,9 +22,10 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from agent_tools.run_store import _harness_python
+from agent_tools.run_store import _harness_python, _store_url
 
 
 @dataclass(frozen=True)
@@ -70,20 +72,24 @@ LeaseResult = LeaseGranted | LeaseRefused | LeaseError | NotAvailable
 _MODULE = ["-m", "harness.store_cli"]
 
 
-def mark_landed_argv(python: str, run_id: str, phase: str, task: str, pr: str, at: str) -> list[str]:
-    return [python, *_MODULE, "mark-landed", run_id, phase, task, "--pr", pr, "--at", at]
+def _store(store_url: str | None) -> list[str]:
+    return ["--store-url", store_url] if store_url else []
 
 
-def lease_acquire_argv(python: str, name: str, holder: str, ttl: int) -> list[str]:
-    return [python, *_MODULE, "lease", "acquire", name, holder, "--ttl", str(ttl)]
+def mark_landed_argv(python: str, run_id: str, phase: str, task: str, pr: str, at: str, store_url: str | None = None) -> list[str]:
+    return [python, *_MODULE, "mark-landed", run_id, phase, task, "--pr", pr, "--at", at, *_store(store_url)]
 
 
-def lease_renew_argv(python: str, name: str, holder: str, epoch: int, ttl: int) -> list[str]:
-    return [python, *_MODULE, "lease", "renew", name, holder, str(epoch), "--ttl", str(ttl)]
+def lease_acquire_argv(python: str, name: str, holder: str, ttl: int, store_url: str | None = None) -> list[str]:
+    return [python, *_MODULE, "lease", "acquire", name, holder, "--ttl", str(ttl), *_store(store_url)]
 
 
-def lease_release_argv(python: str, name: str, holder: str, epoch: int) -> list[str]:
-    return [python, *_MODULE, "lease", "release", name, holder, str(epoch)]
+def lease_renew_argv(python: str, name: str, holder: str, epoch: int, ttl: int, store_url: str | None = None) -> list[str]:
+    return [python, *_MODULE, "lease", "renew", name, holder, str(epoch), "--ttl", str(ttl), *_store(store_url)]
+
+
+def lease_release_argv(python: str, name: str, holder: str, epoch: int, store_url: str | None = None) -> list[str]:
+    return [python, *_MODULE, "lease", "release", name, holder, str(epoch), *_store(store_url)]
 
 
 def _json_object(stdout: str) -> dict[str, Any] | None:
@@ -128,21 +134,25 @@ def _run(build: Any) -> tuple[int, str] | None:
     return done.returncode, done.stdout or done.stderr
 
 
-def mark_landed(run_id: str, phase: str, task: str, pr: str, at: str) -> MarkLandedResult:
-    ran = _run(lambda python: mark_landed_argv(python, run_id, phase, task, pr, at))
+def mark_landed(runs_dir: Path, run_id: str, phase: str, task: str, pr: str, at: str) -> MarkLandedResult:
+    url = _store_url(Path(runs_dir))
+    ran = _run(lambda python: mark_landed_argv(python, run_id, phase, task, pr, at, url))
     return NotAvailable() if ran is None else parse_mark_landed(*ran)
 
 
-def lease_acquire(name: str, holder: str, ttl: int) -> LeaseResult:
-    ran = _run(lambda python: lease_acquire_argv(python, name, holder, ttl))
+def lease_acquire(runs_dir: Path, name: str, holder: str, ttl: int) -> LeaseResult:
+    url = _store_url(Path(runs_dir))
+    ran = _run(lambda python: lease_acquire_argv(python, name, holder, ttl, url))
     return NotAvailable() if ran is None else parse_lease(*ran)
 
 
-def lease_renew(name: str, holder: str, epoch: int, ttl: int) -> LeaseResult:
-    ran = _run(lambda python: lease_renew_argv(python, name, holder, epoch, ttl))
+def lease_renew(runs_dir: Path, name: str, holder: str, epoch: int, ttl: int) -> LeaseResult:
+    url = _store_url(Path(runs_dir))
+    ran = _run(lambda python: lease_renew_argv(python, name, holder, epoch, ttl, url))
     return NotAvailable() if ran is None else parse_lease(*ran)
 
 
-def lease_release(name: str, holder: str, epoch: int) -> LeaseResult:
-    ran = _run(lambda python: lease_release_argv(python, name, holder, epoch))
+def lease_release(runs_dir: Path, name: str, holder: str, epoch: int) -> LeaseResult:
+    url = _store_url(Path(runs_dir))
+    ran = _run(lambda python: lease_release_argv(python, name, holder, epoch, url))
     return NotAvailable() if ran is None else parse_lease(*ran)
