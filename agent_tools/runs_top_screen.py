@@ -16,7 +16,7 @@ import socket
 import time
 from pathlib import Path
 
-from agent_tools import chair, runs_top
+from agent_tools import chair, run_store, runs_top
 from agent_tools import events as events_module
 from agent_tools.records import ceiling_for, load_trace
 
@@ -24,7 +24,6 @@ __all__ = ["chair_now", "draw", "facts", "first_visible", "loop", "main", "rows_
 
 _STALE_SECONDS = 600
 _TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)$")
-_MANIFEST_NAME = re.compile(r"^[^:]+:(.+)\.json$")
 
 
 def _default_alive(pid: int) -> bool:
@@ -43,9 +42,7 @@ def _read_pid(path: Path):
 
 
 def _phases(root: Path, run: str) -> list[str]:
-    paths = sorted(root.glob(f"{run}:*.json"), key=lambda p: p.stat().st_mtime)
-    names = (_MANIFEST_NAME.match(p.name) for p in paths)
-    return [m.group(1) for m in names if m]
+    return run_store.phase_names(root, run)
 
 
 def _call(path: Path) -> dict | None:
