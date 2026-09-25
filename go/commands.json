@@ -1611,6 +1611,562 @@
           "name": "groups",
           "slash": false,
           "summary": "print the newest plans/intake-groups/<date>.md file, work-shape.md \u00a75"
+        },
+        {
+          "args": [],
+          "defaults": {},
+          "examples": [],
+          "name": "chair",
+          "slash": false,
+          "sub_dest": "chair_cmd",
+          "sub_required": false,
+          "subcommands": [
+            {
+              "args": [
+                {
+                  "flags": [
+                    "--profile"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--label"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--pid"
+                  ],
+                  "kwargs": {
+                    "help": "the durable pid that owns the loop (default: the parent process)",
+                    "type": "int"
+                  }
+                },
+                {
+                  "flags": [
+                    "--steal"
+                  ],
+                  "kwargs": {
+                    "action": "store_true"
+                  }
+                }
+              ],
+              "examples": [],
+              "name": "take",
+              "slash": false,
+              "summary": "take the chair lock if no live chair holds it"
+            },
+            {
+              "args": [
+                {
+                  "flags": [
+                    "--profile"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--label"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--pid"
+                  ],
+                  "kwargs": {
+                    "help": "the durable pid that owns the loop (default: the parent process)",
+                    "type": "int"
+                  }
+                },
+                {
+                  "flags": [
+                    "--run"
+                  ],
+                  "kwargs": {}
+                }
+              ],
+              "examples": [],
+              "name": "beat",
+              "slash": false,
+              "summary": "refresh the chair lock's heartbeat"
+            },
+            {
+              "args": [
+                {
+                  "flags": [
+                    "--profile"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--label"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--pid"
+                  ],
+                  "kwargs": {
+                    "help": "the durable pid that owns the loop (default: the parent process)",
+                    "type": "int"
+                  }
+                }
+              ],
+              "examples": [],
+              "name": "release",
+              "slash": false,
+              "summary": "release the chair lock this session holds"
+            },
+            {
+              "args": [
+                {
+                  "flags": [
+                    "--profile"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--json"
+                  ],
+                  "kwargs": {
+                    "action": "store_true"
+                  }
+                }
+              ],
+              "examples": [],
+              "name": "status",
+              "slash": false,
+              "summary": "the chair lock's holder and computed state"
+            },
+            {
+              "args": [
+                {
+                  "flags": [
+                    "--profile"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--force"
+                  ],
+                  "kwargs": {
+                    "action": "store_true",
+                    "help": "clear the lock even if its recorded pid is live"
+                  }
+                }
+              ],
+              "examples": [],
+              "name": "clear",
+              "slash": false,
+              "summary": "remove the chair lock file, refusing a live holder unless --force"
+            },
+            {
+              "args": [
+                {
+                  "flags": [
+                    "text"
+                  ],
+                  "kwargs": {
+                    "nargs": "?"
+                  }
+                },
+                {
+                  "flags": [
+                    "--profile"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--read"
+                  ],
+                  "kwargs": {
+                    "action": "store_true"
+                  }
+                },
+                {
+                  "flags": [
+                    "--since"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--json"
+                  ],
+                  "kwargs": {
+                    "action": "store_true"
+                  }
+                },
+                {
+                  "flags": [
+                    "--as-leader"
+                  ],
+                  "kwargs": {
+                    "action": "store_true",
+                    "help": "send as the lock's holder; refuses unless this process is the live holder"
+                  }
+                }
+              ],
+              "examples": [],
+              "name": "chat",
+              "slash": false,
+              "summary": "append to or read the leader chat thread (runs/leader.chat.jsonl)"
+            }
+          ],
+          "summary": "the chair lock for the landing loop (runs/chair.json)"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--item"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--project"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--workspace"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--dry-run"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "sync",
+          "slash": false,
+          "summary": "mirror the work store onto the GitHub Projects board"
+        },
+        {
+          "args": [],
+          "defaults": {},
+          "examples": [],
+          "name": "launch",
+          "slash": false,
+          "sub_dest": "graph",
+          "sub_required": true,
+          "subcommands": [
+            {
+              "args": [
+                {
+                  "flags": [
+                    "--profile"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--initiative"
+                  ],
+                  "kwargs": {
+                    "required": true
+                  }
+                },
+                {
+                  "flags": [
+                    "--repo"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--fix-attempts"
+                  ],
+                  "kwargs": {
+                    "default": null,
+                    "type": "int"
+                  }
+                },
+                {
+                  "flags": [
+                    "--dry-run"
+                  ],
+                  "kwargs": {
+                    "action": "store_true"
+                  }
+                },
+                {
+                  "flags": [
+                    "--include-blocked"
+                  ],
+                  "kwargs": {
+                    "action": "store_true",
+                    "help": "launch despite a ready task behind a blocked item (--force does not)"
+                  }
+                },
+                {
+                  "flags": [
+                    "--tier-ceiling"
+                  ],
+                  "kwargs": {
+                    "choices": [
+                      "cheap",
+                      "standard",
+                      "deep"
+                    ]
+                  }
+                },
+                {
+                  "flags": [
+                    "--effort-ceiling"
+                  ],
+                  "kwargs": {
+                    "choices": [
+                      "low",
+                      "high"
+                    ]
+                  }
+                },
+                {
+                  "flags": [
+                    "--force"
+                  ],
+                  "kwargs": {
+                    "action": "store_true",
+                    "help": "launch despite a usage stop or a foreign live leader"
+                  }
+                },
+                {
+                  "flags": [
+                    "--no-claim"
+                  ],
+                  "kwargs": {
+                    "action": "store_true",
+                    "help": "launch without taking an unheld or stale loop"
+                  }
+                },
+                {
+                  "flags": [
+                    "--label"
+                  ],
+                  "kwargs": {}
+                }
+              ],
+              "examples": [],
+              "name": "epic",
+              "slash": false,
+              "summary": "launch the epic graph against a filed initiative"
+            },
+            {
+              "args": [
+                {
+                  "flags": [
+                    "--profile"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--idea"
+                  ],
+                  "kwargs": {
+                    "required": true
+                  }
+                },
+                {
+                  "flags": [
+                    "--initiative-id"
+                  ],
+                  "kwargs": {
+                    "required": true
+                  }
+                },
+                {
+                  "flags": [
+                    "--dry-run"
+                  ],
+                  "kwargs": {
+                    "action": "store_true"
+                  }
+                },
+                {
+                  "flags": [
+                    "--tier-ceiling"
+                  ],
+                  "kwargs": {
+                    "choices": [
+                      "cheap",
+                      "standard",
+                      "deep"
+                    ]
+                  }
+                },
+                {
+                  "flags": [
+                    "--effort-ceiling"
+                  ],
+                  "kwargs": {
+                    "choices": [
+                      "low",
+                      "high"
+                    ]
+                  }
+                },
+                {
+                  "flags": [
+                    "--force"
+                  ],
+                  "kwargs": {
+                    "action": "store_true",
+                    "help": "launch despite a usage stop or a foreign live leader"
+                  }
+                },
+                {
+                  "flags": [
+                    "--no-claim"
+                  ],
+                  "kwargs": {
+                    "action": "store_true",
+                    "help": "launch without taking an unheld or stale loop"
+                  }
+                },
+                {
+                  "flags": [
+                    "--label"
+                  ],
+                  "kwargs": {}
+                }
+              ],
+              "examples": [],
+              "name": "decompose",
+              "slash": false,
+              "summary": "launch the decompose graph against an idea"
+            },
+            {
+              "args": [
+                {
+                  "flags": [
+                    "--profile"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--dry-run"
+                  ],
+                  "kwargs": {
+                    "action": "store_true"
+                  }
+                },
+                {
+                  "flags": [
+                    "--tier-ceiling"
+                  ],
+                  "kwargs": {
+                    "choices": [
+                      "cheap",
+                      "standard",
+                      "deep"
+                    ]
+                  }
+                },
+                {
+                  "flags": [
+                    "--effort-ceiling"
+                  ],
+                  "kwargs": {
+                    "choices": [
+                      "low",
+                      "high"
+                    ]
+                  }
+                },
+                {
+                  "flags": [
+                    "--force"
+                  ],
+                  "kwargs": {
+                    "action": "store_true",
+                    "help": "launch despite a usage stop or a foreign live leader"
+                  }
+                },
+                {
+                  "flags": [
+                    "--no-claim"
+                  ],
+                  "kwargs": {
+                    "action": "store_true",
+                    "help": "launch without taking an unheld or stale loop"
+                  }
+                },
+                {
+                  "flags": [
+                    "--label"
+                  ],
+                  "kwargs": {}
+                }
+              ],
+              "examples": [],
+              "name": "cos",
+              "slash": false,
+              "summary": "launch the cos graph"
+            },
+            {
+              "args": [
+                {
+                  "flags": [
+                    "--idea"
+                  ],
+                  "kwargs": {
+                    "required": true
+                  }
+                },
+                {
+                  "flags": [
+                    "--initiative-id"
+                  ],
+                  "kwargs": {
+                    "required": true
+                  }
+                },
+                {
+                  "flags": [
+                    "--label"
+                  ],
+                  "kwargs": {}
+                },
+                {
+                  "flags": [
+                    "--dry-run"
+                  ],
+                  "kwargs": {
+                    "action": "store_true"
+                  }
+                }
+              ],
+              "examples": [],
+              "name": "sweep",
+              "slash": false,
+              "summary": "launch the sweep graph against an idea"
+            }
+          ],
+          "summary": "run one of the harness's graphs directly"
         }
       ],
       "description": "File work for the harness, and see what is queued or running.",

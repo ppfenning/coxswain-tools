@@ -27,9 +27,13 @@ class Command:
     group: str
     summary: str
     args: tuple[Arg, ...]
-    handler: Callable[[argparse.Namespace], int]
+    handler: Callable[[argparse.Namespace], int] | None
     slash: bool
     examples: tuple[str, ...]
+    subcommands: tuple[Command, ...] = ()
+    sub_dest: str | None = None
+    sub_required: bool = False
+    defaults: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,19 @@ def _bare_group(parser: argparse.ArgumentParser) -> Callable[[argparse.Namespace
         parser.print_help()
         return 2
     return _fn
+
+
+def _add_row(sub: argparse._SubParsersAction, row: Command) -> None:
+    """One subparser for `row`; a row with `subcommands` recurses into its own."""
+    rp = sub.add_parser(row.name, help=row.summary)
+    for arg in row.args:
+        rp.add_argument(*arg.flags, **arg.kwargs)
+    if row.subcommands:
+        rp_sub = rp.add_subparsers(dest=row.sub_dest, required=row.sub_required)
+        for child in row.subcommands:
+            _add_row(rp_sub, child)
+    fn = _bare_group(rp) if row.subcommands and row.handler is None else row.handler
+    rp.set_defaults(fn=fn, **row.defaults)
 
 
 def build_parser(
@@ -77,10 +94,7 @@ def build_parser(
             gp.set_defaults(fn=_bare_group(gp))
             gp_sub = gp.add_subparsers(dest="cmd", required=False)
             for row in rows:
-                rp = gp_sub.add_parser(row.name, help=row.summary)
-                for arg in row.args:
-                    rp.add_argument(*arg.flags, **arg.kwargs)
-                rp.set_defaults(fn=row.handler)
+                _add_row(gp_sub, row)
         else:
             gp.set_defaults(fn=g.fn)
         parsers[g.name] = gp
