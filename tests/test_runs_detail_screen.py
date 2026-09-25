@@ -1,7 +1,7 @@
 import json
 
-from agent_tools import cli, runs_detail
-from agent_tools.runs_detail_screen import facts_for
+from agent_tools import cli, run_store, runs_detail
+from agent_tools.runs_detail_screen import _tail, facts_for
 
 
 def _write(path, text):
@@ -111,3 +111,32 @@ def test_a_trace_line_whose_message_is_a_string_is_skipped_not_raised():
 
     events = [{"message": "resuming"}, {"message": {"content": [{"type": "tool_use", "name": "Read"}]}}, {"message": None}, "junk"]
     assert _tool_names(events) == ["Read"]
+
+
+def _tool_use(name):
+    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name}]}}
+
+
+def test_tail_with_no_trace_files_reads_the_last_stored_calls_events(tmp_path, monkeypatch):
+    first, last = {"id": "c1", "role": "plan"}, {"id": "c2", "role": "build"}
+    monkeypatch.setattr(run_store, "usage", lambda root, run: {"calls": [first, last]})
+    seen = []
+
+    def events(root, run, call):
+        seen.append(call)
+        return [_tool_use(n) for n in ("Read", "Grep", "Edit", "Bash")]
+
+    monkeypatch.setattr(run_store, "call_events", events)
+
+    assert _tail(tmp_path, "r1") == ["Grep", "Edit", "Bash"]
+    assert seen == [last]
+
+
+def test_tail_with_no_trace_files_is_empty_when_the_trace_store_is_unavailable(tmp_path, monkeypatch):
+    def unavailable(root, run, call):
+        raise run_store.TracesUnavailable
+
+    monkeypatch.setattr(run_store, "usage", lambda root, run: {"calls": [{"id": "c1", "role": "build"}]})
+    monkeypatch.setattr(run_store, "call_events", unavailable)
+
+    assert _tail(tmp_path, "r1") == []

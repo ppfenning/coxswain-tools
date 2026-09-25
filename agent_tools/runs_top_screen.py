@@ -63,6 +63,16 @@ def _call(path: Path) -> dict | None:
             "cost_usd": result.get("total_cost_usd", 0.0), "turns": result.get("num_turns", 0)}
 
 
+def calls_from_usage(usage_calls: list[dict]) -> list[dict]:
+    """Stored calls in order as `_call` rows; `attempt` counts earlier calls with the same role."""
+    roles = [str(c.get("role") or "unknown") for c in usage_calls]
+    return [
+        {"node": role, "attempt": 1 + roles[:i].count(role),
+         "cost_usd": c.get("cost_usd", 0.0), "turns": c.get("turns", 0)}
+        for i, (c, role) in enumerate(zip(usage_calls, roles))
+    ]
+
+
 def _read_lines(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
 
@@ -98,9 +108,10 @@ def _fact(root: Path, run: str, alive: bool) -> dict:
     lines = _read_lines(root / f"{run}.log")
     trace_dir = root / f"{run}-trace"
     trace_paths = sorted(trace_dir.glob("*.jsonl"), key=_written_at) if trace_dir.exists() else []
-    names = [p.name for p in trace_paths]
+    stored = [] if trace_paths else calls_from_usage((run_store.usage(root, run) or {}).get("calls") or [])
+    names = [p.name for p in trace_paths] or [f"{c['node']}-{c['attempt']}.jsonl" for c in stored]
     events = events_module.from_log(run, lines) + events_module.from_trace_names(run, names)
-    calls = [c for c in (_call(p) for p in trace_paths) if c is not None]
+    calls = [c for c in (_call(p) for p in trace_paths) if c is not None] or stored
     return {"run": run, "alive": alive, "phases": _phases(root, run), "events": events, "calls": calls,
             "ceiling": _ceiling(root, run), "launched_by": _launched_by(root, run)}
 
