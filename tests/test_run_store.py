@@ -137,6 +137,25 @@ def test_a_set_decision_json_parses():
     assert run_store.call_from_row(ROW | {"decision_json": '{"tier": "cheap"}'})["decision"] == {"tier": "cheap"}
 
 
+def test_detail_json_carries_its_summary_and_commands_run_onto_the_call():
+    detail = {"summary": {"result": "success"}, "commands_run": [{"command": "ls"}], "other": 1}
+    got = run_store.call_from_row(ROW | {"detail_json": json.dumps(detail)})
+    assert got["summary"] == {"result": "success"} and got["commands_run"] == [{"command": "ls"}]
+    assert "other" not in got
+
+
+@pytest.mark.parametrize("detail", [None, "[1, 2]", "not json", "{}"])
+def test_a_row_with_no_usable_detail_json_is_unchanged(detail):
+    assert run_store.call_from_row(ROW | {"detail_json": detail}) == run_store.call_from_row(ROW)
+    assert "summary" not in run_store.call_from_row(ROW | {"detail_json": detail})
+
+
+def test_a_stored_row_carries_its_detail_through_usage(tmp_path):
+    store(tmp_path, ROW | {"detail_json": json.dumps({"summary": {"result": "success"}})})
+    runs_table(tmp_path, run_row("r1"))
+    assert run_store.usage(tmp_path, "r1")["calls"][0]["summary"] == {"result": "success"}
+
+
 @pytest.mark.parametrize(("stored", "expected"), [(1, True), (0, False)])
 def test_ok_becomes_a_bool(stored, expected):
     assert run_store.call_from_row(ROW | {"ok": stored})["ok"] is expected

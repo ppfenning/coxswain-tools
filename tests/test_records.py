@@ -100,3 +100,19 @@ def test_series_wires_chair_counts_from_the_runs_own_log():
     }
     rows = records.series(files)
     assert rows[0]["chair"] == {"taken": 1, "released": 1, "stale": 0}
+
+
+def test_summary_from_call_maps_the_stored_summary_to_the_trace_summary_shape():
+    call = {
+        "turns": 4, "cost_usd": 0.25,
+        "summary": {"result": "success", "is_error": False, "tool_uses": {"Bash": 2, "Read": 1}, "reads": {"a.py": 1}, "whole_file_reads": 1},
+        "commands_run": [{"command": "ls"}, {"command": "x" * 100}],
+    }
+    assert records.summary_from_call(call) == {
+        "turns": 4, "cost_usd": 0.25, "subtype": "success", "is_error": False,
+        "tools": {"Bash": 2, "Read": 1}, "reads": {"a.py": 1}, "whole_file_reads": 1, "commands": ["ls", "x" * 80],
+    }
+
+
+def test_summary_from_call_is_none_without_a_summary():
+    assert records.summary_from_call({"turns": 4, "commands_run": [{"command": "ls"}]}) is None

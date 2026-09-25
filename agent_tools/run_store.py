@@ -67,15 +67,27 @@ def summarize(calls: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _detail_of(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The row's `detail_json` as an object; empty when the column is absent, null, unparseable or not an object."""
+    raw = row["detail_json"] if "detail_json" in row.keys() else None  # noqa: SIM118 -- sqlite3.Row's `in` tests values, not keys
+    try:
+        detail = None if raw is None else json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return detail if isinstance(detail, dict) else {}
+
+
 def call_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    """One `node_calls` row as a usage-file call."""
+    """One `node_calls` row as a usage-file call. `summary` and `commands_run` ride along from `detail_json` when it holds them."""
     decision = row["decision_json"]
+    detail = _detail_of(row)
     return {
         **{k: row[k] for k in _SAME},
         "id": row["call_id"],
         "model": row["model_alias"],
         "ok": bool(row["ok"]),
         "decision": None if decision is None else json.loads(decision),
+        **{k: detail[k] for k in ("summary", "commands_run") if k in detail},
     }
 
 

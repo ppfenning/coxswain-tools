@@ -22,6 +22,7 @@ __all__ = [
     "series_new_lines",
     "series_row",
     "series_totals",
+    "summary_from_call",
     "trace_summary",
     "usage_summary",
 ]
@@ -110,6 +111,23 @@ def trace_summary(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "reads": dict(reads.most_common(10)),
         "whole_file_reads": whole_reads,
         "commands": commands,
+    }
+
+
+def summary_from_call(call: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Pure: a stored call's own `summary` in the `trace_summary` shape; None when the call has none."""
+    summary = call.get("summary")
+    if not isinstance(summary, Mapping):
+        return None
+    return {
+        "turns": call.get("turns"),
+        "cost_usd": call.get("cost_usd"),
+        "subtype": summary.get("result"),
+        "is_error": bool(summary.get("is_error")),
+        "tools": dict(summary.get("tool_uses") or {}),
+        "reads": dict(summary.get("reads") or {}),
+        "whole_file_reads": summary.get("whole_file_reads") or 0,
+        "commands": [str(c.get("command", ""))[:80] for c in call.get("commands_run") or []],
     }
 
 
