@@ -9,6 +9,7 @@ directly; `render_capped` is only the default-text path's cap.
 
 from __future__ import annotations
 
+import sqlite3
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -20,7 +21,9 @@ __all__ = [
     "bounds_report",
     "coverage_report",
     "explain_report",
+    "gates_inputs",
     "render_capped",
+    "render_gates",
     "roles_report",
     "series_report",
     "spend_mix_report",
@@ -284,3 +287,47 @@ def render_capped(rows: Sequence[Mapping[str, Any]], cap_tokens: int = 300) -> s
     while kept and len(render(kept)) // 4 > cap_tokens:
         kept = kept[:-1]
     return render(kept)
+
+
+def _fetch(conn: sqlite3.Connection, sql: str, params: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Rows as dicts through sqlite3.Row, as cli._stats_fetch reads them, set on the cursor so the caller's connection is not changed."""
+    cursor = conn.cursor()
+    cursor.row_factory = sqlite3.Row
+    return [dict(row) for row in cursor.execute(sql, params).fetchall()]
+
+
+_SINCE_JOIN = "{alias} JOIN runs r ON r.run_id = {alias}.run_id WHERE substr(r.started_at, 1, 10) >= ?"
+
+
+def gates_inputs(conn: sqlite3.Connection, since: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(tasks, calls) rows for `gate_rows`. Neither table carries a timestamp, so `since` (YYYY-MM-DD) keeps rows whose run's `started_at` date is on or after it; a row with no run row or no `started_at` is dropped."""
+    if since is None:
+        return _fetch(conn, "SELECT * FROM tasks", ()), _fetch(conn, "SELECT * FROM calls", ())
+    return (
+        _fetch(conn, "SELECT t.* FROM tasks " + _SINCE_JOIN.format(alias="t"), (since,)),
+        _fetch(conn, "SELECT c.* FROM calls " + _SINCE_JOIN.format(alias="c"), (since,)),
+    )
+
+
+def _gate_cell(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, dict):
+        return " ".join(f"{k}:{n}" for k, n in sorted(value.items()))
+    return f"{value:.4f}" if isinstance(value, float) else str(value)
+
+
+GATE_COLUMNS = (
+    ("role", "role"), ("calls", "calls"), ("cost", "cost"), ("cost/task", "cost_per_task"),
+    ("verdict mix", "verdict_mix"), ("changed", "changed"), ("caught", "caught"),
+    ("agreed", "agreed"), ("$/changed", "cost_per_changed"),
+)
+
+
+def render_gates(rows: Sequence[Mapping[str, Any]], verdicts: Sequence[str]) -> str:
+    """Fixed-width table, one line per role, then one verdict line per role; None renders `-`."""
+    cells = [[_gate_cell(row[key]) for _, key in GATE_COLUMNS] for row in rows]
+    heads = [head for head, _ in GATE_COLUMNS]
+    widths = [max([len(h), *(len(c[i]) for c in cells)]) for i, h in enumerate(heads)]
+    table = [" | ".join(v.ljust(w) for v, w in zip(line, widths)).rstrip() for line in [heads, *cells]]
+    return "\n".join([*table, "", *verdicts])

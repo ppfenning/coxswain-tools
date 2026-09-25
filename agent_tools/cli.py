@@ -66,6 +66,7 @@ from agent_tools import (
     sources,
     stats_chair,
     stats_examples,
+    stats_gates,
     stats_ingest,
     stats_lanes,
     stats_query,
@@ -187,6 +188,37 @@ def _stats_roles(a: argparse.Namespace) -> int:
     finally:
         conn.close()
     print(json.dumps(report, indent=2) if a.json else stats_query.render_capped(report))
+    return 0
+
+
+def _canonical_date(text: str) -> bool:
+    """True only for YYYY-MM-DD. fromisoformat also takes `20260901` and `2026-W36-1`, which compare wrong as text in SQL."""
+    try:
+        return datetime.date.fromisoformat(text).isoformat() == text
+    except ValueError:
+        return False
+
+
+def _stats_gates(a: argparse.Namespace) -> int:
+    if a.since is not None and not _canonical_date(a.since):
+        print(f"cox stats gates: --since must be a date as YYYY-MM-DD, got {a.since!r}", file=sys.stderr)
+        return 2
+    hint = f"no gate rows in {a.db}: run cox stats ingest"
+    # stats_schema.connect creates a missing db, so a missing file is checked before the open.
+    if not Path(a.db).exists():
+        print(hint, file=sys.stderr)
+        return 1
+    conn = stats_schema.connect(a.db)
+    try:
+        rows = stats_gates.gate_rows(*stats_query.gates_inputs(conn, a.since))
+        in_db = a.since is not None and not rows and bool(stats_gates.gate_rows(*stats_query.gates_inputs(conn, None)))
+    finally:
+        conn.close()
+    if not rows:
+        print(f"no gate rows on or after {a.since} in {a.db}: widen or drop --since" if in_db else hint, file=sys.stderr)
+        return 1
+    verdicts = [stats_gates.verdict_line(row) for row in rows]
+    print(json.dumps({"rows": rows, "verdicts": verdicts}, indent=2) if a.json else stats_query.render_gates(rows, verdicts))
     return 0
 
 
@@ -3565,7 +3597,7 @@ STATS_GROUP = commands.Group(
     name="stats", help="load the run corpus into the stats store",
     description="Load the run corpus into the stats store.",
     epilog="examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db"
-           "\n  cox stats roles --json\n  cox stats explain build --json\n  cox stats series --json"
+           "\n  cox stats roles --json\n  cox stats gates --since 2026-09-01\n  cox stats explain build --json\n  cox stats series --json"
            "\n  cox stats coverage --json\n  cox stats bounds --json\n  cox stats spend-mix --json"
            "\n  cox stats examples --role handoff --out examples.jsonl"
            "\n  cox stats system-one --role handoff --propose",
@@ -3590,6 +3622,15 @@ STATS_COMMANDS = [
             commands.Arg(("--provider-profile",), {"default": None, "help": "keep only runs on this provider_profile"}),
         ),
         _stats_roles, False, (),
+    ),
+    commands.Command(
+        "gates", "stats", "what each review, validation and plan gate costs and how often it changes the outcome",
+        (
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--since",), {"default": None, "help": "keep only rows dated on or after DATE (YYYY-MM-DD)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _stats_gates, False, (),
     ),
     commands.Command(
         "explain", "stats", "the failure-class breakdown behind one role",
