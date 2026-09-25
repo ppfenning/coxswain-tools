@@ -1,4 +1,4 @@
-usage: cox runs fetch [-h] [--runs-dir RUNS_DIR] [--profile PROFILE] run_id
+usage: cox runs fetch [-h] [--runs-dir RUNS_DIR] [--profile PROFILE] [--all] [run_id]
 
 positional arguments:
   run_id
@@ -8,3 +8,5 @@ options:
   --runs-dir RUNS_DIR  override: resolve the run's records here instead of the profile's
                        workspace_dir
   --profile PROFILE
+  --all                fetch every remote run with no local tasks directory yet; a live run is
+                       skipped

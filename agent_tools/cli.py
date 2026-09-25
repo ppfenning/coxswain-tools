@@ -2925,38 +2925,65 @@ def _remote_fetch_facts(runs_dir: Path, run: str) -> tuple[bool, str | None]:
     return run not in live, ended.get(run)
 
 
+def _fetch_one(runs_dir: Path, hosts, run_id: str) -> tuple[str, list[str], str]:
+    """Edge. (outcome, lines, host name) for one remote run; outcome is fetched, live or failed."""
+    text = _read_text_or_none(remote_lane.remote_record_path(runs_dir, run_id))
+    record = remote_lane.parse_remote_record(text) if text is not None else None
+    if record is None:
+        return "failed", [f"fetch: no {run_id}.remote.json in {runs_dir}; the run was not launched with --on"], ""
+    if isinstance(hosts, lane_hosts.LaneHostError):
+        return "failed", [f"fetch: {hosts.message}"], ""
+    host = lane_hosts.find_lane_host(hosts, record["host"])
+    if host is None:
+        return "failed", [f"fetch: host {record['host']} is no longer in the profile lane_hosts",
+                          f"configured: {', '.join(h.name for h in hosts) or 'none'}"], ""
+    lease_released, ended_at = _remote_fetch_facts(runs_dir, run_id)
+    run, locate = _remote_edge(runs_dir.parent)
+    result = remote_fetch.fetch_run(host, run_id, runs_dir, remote_fetch.task_repos, run, locate,
+                                    lease_released=lease_released, ended_at=ended_at)
+    if isinstance(result, remote_fetch.FetchError):
+        detail = f"{run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message
+        return ("live" if result.step == "refuse" else "failed"), [f"fetch: {result.step}: {detail}"], host.name
+    return "fetched", [f"run {run_id}", f"host {host.name}", "\n".join(f"repo {repo}" for repo in result)], host.name
+
+
+def _runs_fetch_all(runs_dir: Path, hosts) -> int:
+    """Fetches every remote run with no local tasks directory; a live run is skipped, a failed fetch makes the exit 2."""
+    suffix = ".remote.json"
+    remote_runs = [p.name[: -len(suffix)] for p in sorted(runs_dir.glob(f"*{suffix}"))]
+    fetched = {run for run in remote_runs if (runs_dir / run / "tasks").is_dir()}
+    todo = remote_lane.unfetched(remote_runs, fetched)
+    if not todo:
+        print("nothing to fetch")
+        return 0
+    failed = False
+    for run_id in todo:
+        outcome, lines, host = _fetch_one(runs_dir, hosts, run_id)
+        if outcome == "live":
+            print(f"{run_id}: still live on {host}")
+        elif outcome == "fetched":
+            print(f"{run_id}: fetched from {host}")
+        else:
+            failed = True
+            print("\n".join([f"{run_id}: {lines[0]}", *lines[1:]]))
+    return 2 if failed else 0
+
+
 def _runs_fetch(a: argparse.Namespace) -> int:
     """Pulls an ended remote run's records, log and branches to this machine; writes nothing in the store."""
     runs_dir, reason = _runs_dir_for_land(a)
     if runs_dir is None:
         print(f"fetch: {reason}")
         return 2
-    text = _read_text_or_none(remote_lane.remote_record_path(runs_dir, a.run_id))
-    record = remote_lane.parse_remote_record(text) if text is not None else None
-    if record is None:
-        print(f"fetch: no {a.run_id}.remote.json in {runs_dir}; the run was not launched with --on")
+    if bool(a.run_id) == bool(a.all):
+        print("fetch: give one run id, or --all")
         return 2
     hosts = _profile_lane_hosts(_read_text_or_none(_profile_path(a)) or "")
-    if isinstance(hosts, lane_hosts.LaneHostError):
-        print(f"fetch: {hosts.message}")
-        return 2
-    host = lane_hosts.find_lane_host(hosts, record["host"])
-    if host is None:
-        print(f"fetch: host {record['host']} is no longer in the profile lane_hosts")
-        print(f"configured: {', '.join(h.name for h in hosts) or 'none'}")
-        return 2
-    lease_released, ended_at = _remote_fetch_facts(runs_dir, a.run_id)
-    run, locate = _remote_edge(runs_dir.parent)
-    result = remote_fetch.fetch_run(host, a.run_id, runs_dir, remote_fetch.task_repos, run, locate,
-                                    lease_released=lease_released, ended_at=ended_at)
-    if isinstance(result, remote_fetch.FetchError):
-        detail = f"{a.run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message
-        print(f"fetch: {result.step}: {detail}")
-        return 2
-    print(f"run {a.run_id}")
-    print(f"host {host.name}")
-    print("\n".join(f"repo {repo}" for repo in result))
-    return 0
+    if a.all:
+        return _runs_fetch_all(runs_dir, hosts)
+    outcome, lines, _ = _fetch_one(runs_dir, hosts, a.run_id)
+    print("\n".join(lines))
+    return 0 if outcome == "fetched" else 2
 
 
 def _route_lint(a: argparse.Namespace) -> int:
@@ -3800,9 +3827,12 @@ RUNS_COMMANDS = [
     commands.Command(
         "fetch", "runs", "pull an ended remote lane's run directory, log and branches to this machine",
         (
-            commands.Arg(("run_id",)),
             commands.Arg(("--runs-dir",), {"help": "override: resolve the run's records here instead of the profile's workspace_dir"}),
             commands.Arg(("--profile",)),
+            # Not an argparse group: Python 3.14 prints a required group holding a positional as `(--all | run_id)`
+            # where 3.12 prints `[--all] [run_id]`, so the help could not read the same on both. _runs_fetch checks it.
+            commands.Arg(("run_id",), {"nargs": "?"}),
+            commands.Arg(("--all",), {"action": "store_true", "help": "fetch every remote run with no local tasks directory yet; a live run is skipped"}),
         ),
         _runs_fetch, False, (),
     ),
