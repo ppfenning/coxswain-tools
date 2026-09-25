@@ -244,7 +244,7 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
     return [
         {"kind": "pick_branch", "branch": chosen, "commit_subject": subject},
         {"kind": "cherry_pick", "branch": chosen, "commit_subject": subject, "onto": pr_branch, "from": default_branch},
-        {"kind": "checks", "checks": checks_argv(repo_facts or {})},
+        {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": pr_branch},
         {"kind": "push", "branch": pr_branch},
         *presync,
         {"kind": "pr_create", "title": draft.get("title", subject), "body": pr_body(record, issue if mirrored else None),

@@ -13,6 +13,13 @@ _STEP_ORDER = ["pick_branch", "cherry_pick", "checks", "push", "pr_create", "wai
 _ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
 
 
+@pytest.fixture(autouse=True)
+def _own_tempdir(tmp_path, monkeypatch):
+    """Land worktrees live under the temp dir; give each test its own so none sees another's."""
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(cli.tempfile, "tempdir", str(tmp_path / "tmp"))
+
+
 def _record(**overrides):
     base = {
         "run": "epic-x-5",
@@ -436,7 +443,9 @@ def test_execute_cherry_pick_lands_the_one_commit_on_a_fresh_branch(repo):
     })
     assert ok, detail
     assert "pr/seams-task" in cleanup.git_branches(repo)
-    assert (repo / "f").read_text() == "y"
+    assert cli._git_out(repo, "show", "pr/seams-task:f") == "y"
+    assert (repo / "f").read_text() == "x"
+    assert cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main"
 
 
 def test_execute_cherry_pick_resolves_by_commit_range_not_by_subject_text(repo):
@@ -448,7 +457,7 @@ def test_execute_cherry_pick_resolves_by_commit_range_not_by_subject_text(repo):
         "onto": "pr/seams-task", "from": "main",
     })
     assert ok, detail
-    assert (repo / "f").read_text() == "y"
+    assert cli._git_out(repo, "show", "pr/seams-task:f") == "y"
 
 
 def test_execute_cherry_pick_lands_a_child_whose_stacked_parent_already_merged_as_a_squash(repo):
@@ -463,7 +472,18 @@ def test_execute_cherry_pick_lands_a_child_whose_stacked_parent_already_merged_a
         "onto": "pr/child", "from": "main",
     })
     assert ok, detail
-    assert (repo / "g").read_text() == "child"
+    assert cli._git_out(repo, "show", "pr/child:g") == "child"
+
+
+def test_execute_cherry_pick_replaces_a_stale_land_worktree_directory(repo):
+    stale = cli._land_worktree(repo, "pr/seams-task")
+    stale.mkdir(); (stale / "junk").write_text("left by a crashed land")
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
+        "onto": "pr/seams-task", "from": "main",
+    })
+    assert ok, detail
+    assert not (stale / "junk").exists()
 
 
 def test_execute_cherry_pick_conflict_reports_failure_without_raising_and_leaves_the_repo_clean(repo):
@@ -674,7 +694,8 @@ def test_land_plan_checks_step_carries_the_configured_checks():
     repo_facts = {"checks": [{"name": "lint", "cmd": "ruff check ."}, {"name": "tests", "cmd": "pytest -q"}]}
     steps = land.land_plan(_record(), branches, "main", repo_facts)
     checks = next(s for s in steps if s["kind"] == "checks")
-    assert checks == {"kind": "checks", "checks": [("lint", ["ruff", "check", "."]), ("tests", ["pytest", "-q"])]}
+    assert checks == {"kind": "checks", "checks": [("lint", ["ruff", "check", "."]), ("tests", ["pytest", "-q"])],
+                      "worktree_of": "pr/seams-task"}
 
 
 def test_execute_push_reaches_a_real_remote(repo, tmp_path):
@@ -1218,7 +1239,8 @@ def test_execute_reuse_branch_checks_out_the_existing_local_branch(repo):
     sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
     ok, detail = cli._execute_land_step(repo, {"kind": "reuse_branch", "branch": "pr/seams-task", "local": True, "remote": False})
     assert (ok, detail) == (True, "reusing pr/seams-task")
-    assert cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "pr/seams-task"
+    assert cli._git_out(cli._land_worktree(repo, "pr/seams-task"), "rev-parse", "--abbrev-ref", "HEAD") == "pr/seams-task"
+    assert cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main"
 
 
 def _with_origin_holding_the_pr_branch(repo, tmp_path):
@@ -1233,7 +1255,8 @@ def test_execute_reuse_branch_creates_the_local_branch_from_origin_when_only_the
     sp.run(["git", "-C", str(repo), "fetch", "-q", "origin"], check=True, env=_ENV)
     ok, detail = cli._execute_land_step(repo, {"kind": "reuse_branch", "branch": "pr/seams-task", "local": False, "remote": True})
     assert (ok, detail) == (True, "reusing pr/seams-task")
-    assert cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "pr/seams-task"
+    assert cli._git_out(cli._land_worktree(repo, "pr/seams-task"), "rev-parse", "--abbrev-ref", "HEAD") == "pr/seams-task"
+    assert cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main"
 
 
 def test_land_resume_finds_a_remote_only_branch_with_the_cherry_picked_tree(repo, tmp_path, monkeypatch):
@@ -1488,6 +1511,80 @@ def test_a_land_with_no_forge_in_the_profile_fast_forwards_main_and_calls_no_gh(
     assert "pr/seams-task" not in cleanup.git_branches(repo)
 
 
+# --- a task land builds its pr branch in its own worktree; the checkout's HEAD never moves ---
+
+def _head(repo):
+    return cli._git_out(repo, "rev-parse", "--abbrev-ref", "HEAD")
+
+
+def _land_worktrees(repo):
+    return [line for line in cli._git_out(repo, "worktree", "list").splitlines() if "cox-land-" in line]
+
+
+def _land(repo, tmp_path, checks, capsys):
+    """Run a full-gate task land with the local forge; `checks` stands in for `_run_checks`."""
+    profile = tmp_path / "profile.yaml"
+    argv = ["--apply", "--profile", str(profile), "--runs-dir", str(tmp_path / "runs")] if profile.exists() else _forge_land(tmp_path)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cli, "_run_checks", checks)
+        rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--gate", "full", *argv])
+    return rc, capsys.readouterr().out
+
+
+@pytest.mark.parametrize("start", ["main", "side"])
+def test_a_full_task_land_leaves_the_checkouts_head_where_it_was(repo, tmp_path, capsys, start):
+    if start == "side":
+        sp.run(["git", "-C", str(repo), "checkout", "-qb", "side"], check=True, env=_ENV)
+    seen = []
+    rc, out = _land(repo, tmp_path, lambda checks, cwd: (seen.append(cwd) or True, "1 checks passed"), capsys)
+    assert rc == 0, out
+    assert _head(repo) == start
+    assert cli._git_out(repo, "show", "main:f") == "y"
+    assert seen == [cli._land_worktree(repo, "pr/seams-task")]
+    assert _land_worktrees(repo) == [] and "pr/seams-task" not in cleanup.git_branches(repo)
+
+
+def test_a_land_whose_checks_fail_keeps_the_pr_branch_and_leaves_head_and_no_worktree(repo, tmp_path, capsys):
+    rc, out = _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
+    assert rc == 1, out
+    assert _head(repo) == "main"
+    assert "pr/seams-task" in cleanup.git_branches(repo)
+    assert cli._git_out(repo, "show", "pr/seams-task:f") == "y"
+    assert _land_worktrees(repo) == []
+    assert cli._git_out(repo, "show", "main:f") == "x"
+
+
+@pytest.mark.parametrize("start", ["main", "side"])
+def test_a_resumed_land_works_the_same_way(repo, tmp_path, capsys, start):
+    rc, out = _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
+    assert rc == 1, out
+    if start == "side":
+        sp.run(["git", "-C", str(repo), "checkout", "-qb", "side"], check=True, env=_ENV)
+    rc, out = _land(repo, tmp_path, lambda checks, cwd: (True, "1 checks passed"), capsys)
+    assert rc == 0, out
+    assert "reuse_branch: reusing pr/seams-task" in out
+    assert _head(repo) == start
+    assert cli._git_out(repo, "show", "main:f") == "y"
+    assert _land_worktrees(repo) == []
+
+
+def test_a_resumed_land_whose_checks_fail_again_keeps_the_branch_and_head(repo, tmp_path, capsys):
+    _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
+    rc, out = _land(repo, tmp_path, lambda checks, cwd: (False, "tests: boom"), capsys)
+    assert rc == 1, out
+    assert "reuse_branch: reusing pr/seams-task" in out
+    assert _head(repo) == "main"
+    assert "pr/seams-task" in cleanup.git_branches(repo)
+    assert _land_worktrees(repo) == []
+
+
+def test_a_dry_run_land_touches_no_disk_for_the_land_worktree(repo, tmp_path):
+    (tmp_path / "runs/epic-x-5/tasks/seams").mkdir(parents=True)
+    (tmp_path / "runs/epic-x-5/tasks/seams/seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    assert cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")]) == 0
+    assert not cli._land_worktree(repo, "pr/seams-task").exists()
+
+
 def test_a_profile_naming_github_routes_pr_create_to_the_github_forge(repo, tmp_path, capsys, monkeypatch):
     argv = _forge_land(tmp_path, "forge: github\n")
     calls = []
@@ -1584,3 +1681,20 @@ def test_land_phase_record_reads_the_store_manifest_when_no_file_exists(tmp_path
 def test_land_phase_record_names_the_missing_file_when_neither_file_nor_store_has_it(tmp_path):
     record, tasks, paths, searched = cli._land_phase_record(tmp_path, "epic-x-5", "seams")
     assert (record, tasks, paths) == (None, [], {}) and searched == str((tmp_path / "epic-x-5:seams.json").resolve())
+
+
+def test_a_task_lands_checks_find_the_repos_venv_in_the_land_worktree(repo, tmp_path):
+    """The land's default check is `.venv/bin/python -m pytest -q`, relative to where it runs."""
+    bin_dir = repo / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    check = bin_dir / "check"
+    check.write_text(f"#!/bin/sh\npwd > {tmp_path / 'ran-in'}\n", encoding="utf-8")
+    check.chmod(0o755)
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "commit_subject": "Add seams module",
+        "onto": "pr/seams-task", "from": "main",
+    })
+    assert ok, detail
+    ok, detail = cli._execute_land_step(repo, {"kind": "checks", "checks": [("tests", [".venv/bin/check"])], "worktree_of": "pr/seams-task"})
+    assert ok, detail
+    assert (tmp_path / "ran-in").read_text().strip() == str(cli._land_worktree(repo, "pr/seams-task"))
