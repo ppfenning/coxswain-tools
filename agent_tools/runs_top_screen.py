@@ -100,7 +100,17 @@ def _written_at(path: Path) -> tuple[float, str]:
         return 0.0, path.name
 
 
-def _fact(root: Path, run: str, alive: bool) -> dict:
+def _heartbeat_age(lease: tuple[str, str, str] | None, run: str, now: datetime.datetime) -> int | None:
+    """Seconds since the lease heartbeat; None when the lease is absent, held by another run, or unreadable."""
+    if lease is None or lease[0] != run:
+        return None
+    try:
+        return max(int((now - datetime.datetime.fromisoformat(lease[2])).total_seconds()), 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fact(root: Path, run: str, alive: bool, now: datetime.datetime | None = None) -> dict:
     lines = _read_lines(root / f"{run}.log")
     trace_dir = root / f"{run}-trace"
     trace_paths = sorted(trace_dir.glob("*.jsonl"), key=_written_at) if trace_dir.exists() else []
@@ -109,7 +119,8 @@ def _fact(root: Path, run: str, alive: bool) -> dict:
     events = events_module.from_log(run, lines) + events_module.from_trace_names(run, names)
     calls = [c for c in (_call(p) for p in trace_paths) if c is not None] or stored
     return {"run": run, "alive": alive, "phases": _phases(root, run), "events": events, "calls": calls,
-            "ceiling": _ceiling(root, run), "launched_by": _launched_by(root, run)}
+            "ceiling": _ceiling(root, run), "launched_by": _launched_by(root, run),
+            "heartbeat_age": _heartbeat_age(run_store.lease(root, run), run, now or datetime.datetime.now(datetime.UTC))}
 
 
 def facts(runs_dir, now_alive=None) -> list[dict]:
@@ -153,7 +164,8 @@ def chair_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES
 
 def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES) -> list[runs_top.Row]:
     chair_state = chair_now(runs_dir, heartbeat_minutes)
-    return [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], chair_state)
+    return [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], chair_state,
+                          f["heartbeat_age"])
             for f in facts(runs_dir)]
 
 

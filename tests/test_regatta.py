@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from agent_tools.regatta import lane, progress_of, regatta
+from agent_tools.regatta import STATUS_ROLE, lane, progress_of, regatta
 from agent_tools.runs_detail import NODE_ORDER
 
 
@@ -53,6 +53,13 @@ def test_lane_orphaned_boat_carries_alert():
 def test_lane_is_exactly_width_columns():
     line = lane("r1", 0.4, "running", 30, 3)
     assert sum(len(s.text) for s in line) == 30
+
+
+def test_a_stalled_lane_is_warn_and_its_hull_still_animates():
+    assert STATUS_ROLE["stalled"] == "warn"
+    first, second = lane("r1", 0.5, "stalled", 30, 0), lane("r1", 0.5, "stalled", 30, 1)
+    hull = lambda line: next(s for s in line if s.role == "warn")  # noqa: E731
+    assert hull(first).text != hull(second).text
 
 
 def test_regatta_returns_finish_line_plus_one_lane_per_row():

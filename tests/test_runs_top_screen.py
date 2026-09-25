@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import sqlite3
@@ -363,3 +364,19 @@ def test_facts_default_probe_reads_the_lease_not_the_pid(tmp_path):
     leases_table(tmp_path, ("runs:x", "x-4", "2026-09-25T06:00:00Z"), ("runs:y", "y-1", "2999-01-01T00:00:00Z"))
 
     assert {f["run"]: f["alive"] for f in facts(tmp_path)} == {"y-1": True}
+
+
+_NOW = datetime.datetime(2026, 9, 25, 6, 0, 0, tzinfo=datetime.UTC)
+
+
+def test_fact_heartbeat_age_is_now_minus_the_lease_heartbeat_when_this_run_holds_it(tmp_path):
+    leases_table(tmp_path, ("runs:x", "x-3", "2026-09-25T06:00:00Z", "2026-09-25T05:58:30Z"))
+
+    assert _fact(tmp_path, "x-3", True, _NOW)["heartbeat_age"] == 90
+
+
+def test_fact_heartbeat_age_is_none_for_a_lease_held_by_another_run_or_no_store(tmp_path):
+    assert _fact(tmp_path, "x-3", True, _NOW)["heartbeat_age"] is None
+    leases_table(tmp_path, ("runs:x", "x-2", "2026-09-25T06:00:00Z", "2026-09-25T05:58:30Z"))
+
+    assert _fact(tmp_path, "x-3", True, _NOW)["heartbeat_age"] is None
