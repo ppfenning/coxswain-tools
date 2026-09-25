@@ -137,10 +137,14 @@ floating window as the dotfiles' `runs top` chord; right-click opens the HUD.
 Every command that reads a record is pure over parsed data and unit-tested
 against fixtures; every command that writes is dry-run unless `--apply`.
 
-The `route` group reads one profile, `~/.config/coxswain-tools/profile.yaml`:
+The `route` group reads one profile, `~/.config/agent-tools/profile.yaml`:
 `team`, `cartridges_dir`, `skills_roots`, `provider_profile`, `harness_dir`,
 `workspace_dir`, and `assume`, the gate answer detached runs are started
-with. `--profile PATH` overrides the location for one command,
+with. `forge` names how `cox runs land` lands work: `local` (the default,
+plain git: the task commit fast-forwards the default branch after the land's
+own checks pass, then pushes when `origin` exists) or `github` (a pull
+request, its checks, and a squash merge, through `gh`). Other forges register
+by entry point under `coxswain.forges`. `--profile PATH` overrides the location for one command,
 `AGENT_TOOLS_PROFILE` overrides it for a shell, and the default path is read
 when neither is set. Without a profile, `route context` prints one line and
 exits 0; `file`, `launch` and `status` exit 2 and name the path they looked
