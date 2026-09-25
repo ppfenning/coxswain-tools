@@ -86,3 +86,62 @@ def test_push_open_pr_and_wait_checks_succeed_and_run_no_git(tmp_path, monkeypat
 
 def test_find_open_prs_is_empty(tmp_path):
     assert forge_local.find_open_prs(tmp_path, "pr/t") == []
+
+
+def test_merge_fast_forwards_main_from_another_branch_without_moving_head(tmp_path):
+    origin, clone = make_repo(tmp_path, remote=True)
+    git(clone, "checkout", "-b", "elsewhere")
+    tip, head = git(clone, "rev-parse", "pr/t"), git(clone, "rev-parse", "HEAD")
+    ok, detail = forge_local.merge(clone, STEP)
+    assert (ok, detail) == (True, f"merged pr/t into main at {tip[:7]}")
+    assert git(clone, "rev-parse", "main") == git(origin, "rev-parse", "main") == tip
+    assert git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "elsewhere"
+    assert git(clone, "rev-parse", "HEAD") == head
+
+
+def test_merge_on_main_fast_forwards_it_with_no_checkout(tmp_path, monkeypatch):
+    origin, clone = make_repo(tmp_path, remote=True)
+    git(clone, "checkout", "main")
+    tip = git(clone, "rev-parse", "pr/t")
+    calls = []
+    real = subprocess.run
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: calls.append(argv[3:]) or real(argv, **kw))
+    ok, detail = forge_local.merge(clone, STEP)
+    monkeypatch.undo()
+    assert (ok, detail) == (True, f"merged pr/t into main at {tip[:7]}")
+    assert ["merge", "--ff-only", "pr/t"] in calls
+    assert not [c for c in calls if c[:1] in (["checkout"], ["fetch"])]
+    assert git(clone, "rev-parse", "main") == git(origin, "rev-parse", "main") == tip
+    assert git(clone, "symbolic-ref", "--short", "HEAD") == "main"
+    assert git(clone, "branch", "--list", "pr/t") == ""
+
+
+def diverge_main(clone: Path) -> str:
+    git(clone, "checkout", "main")
+    commit(clone, "other")
+    return git(clone, "rev-parse", "main")
+
+
+def test_merge_on_main_refuses_a_non_fast_forward(tmp_path):
+    _, clone = make_repo(tmp_path, remote=True)
+    other = diverge_main(clone)
+    ok, detail = forge_local.merge(clone, STEP)
+    assert ok is False and "Not possible to fast-forward" in detail
+    assert git(clone, "rev-parse", "main") == other
+    assert git(clone, "branch", "--list", "pr/t") != ""
+
+
+def test_merge_from_another_branch_refuses_a_non_fast_forward(tmp_path):
+    _, clone = make_repo(tmp_path, remote=True)
+    other = diverge_main(clone)
+    git(clone, "checkout", "-b", "elsewhere")
+    ok, detail = forge_local.merge(clone, STEP)
+    assert ok is False and detail.startswith("From .") and "[rejected]" in detail and "(non-fast-forward)" in detail
+    assert git(clone, "rev-parse", "main") == other
+    assert git(clone, "symbolic-ref", "--short", "HEAD") == "elsewhere"
+    assert git(clone, "branch", "--list", "pr/t") != ""
+
+
+def test_open_pr_and_wait_checks_accept_and_ignore_the_explicit_refs(tmp_path):
+    assert forge_local.open_pr(tmp_path, "t", "b", head="pr/t", base="main") == (True, "local forge: no pull request")
+    assert forge_local.wait_checks(tmp_path, 1.0, ref="pr/t")[0] is True
