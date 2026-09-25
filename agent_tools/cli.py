@@ -29,6 +29,7 @@ from agent_tools import (
     courier,
     doctor,
     epic,
+    forge,
     forge_github,
     install,
     install_exec,
@@ -858,11 +859,11 @@ def _git_out(repo: Path, *args: str) -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def _open_prs_for(repo: Path, branch: str) -> list[int] | str:
-    return forge_github.find_open_prs(repo, branch)
+def _open_prs_for(repo: Path, branch: str, forge_module=forge_github) -> list[int] | str:
+    return forge_module.find_open_prs(repo, branch)
 
 
-def _land_resume(repo: Path, cherry_pick: dict) -> dict:
+def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> dict:
     """`land.resume_decision` for the `pr/<task>` branch a `cherry_pick` step
     would create. The expected tree is what cherry-picking the one commit onto
     `from` yields, computed by `git merge-tree` without touching the checkout.
@@ -880,7 +881,7 @@ def _land_resume(repo: Path, cherry_pick: dict) -> dict:
     if expected is None:
         return {"kind": "refuse", "reason": f"cannot compute the cherry-picked tree of {cherry_pick['branch']} onto {base}"}
     existing = [t for t in (local, remote) if t is not None]
-    prs = _open_prs_for(repo, branch) if all(t == expected for t in existing) else []
+    prs = _open_prs_for(repo, branch, forge_module) if all(t == expected for t in existing) else []
     if isinstance(prs, str):
         return {"kind": "refuse", "reason": prs}
     decision = land.resume_decision(expected, local, remote, prs)
@@ -981,7 +982,7 @@ def _run_checks(checks: list[tuple[str, list[str]]], cwd: Path) -> tuple[bool, s
     return True, f"{len(checks)} checks passed"
 
 
-def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
+def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tuple[bool, str]:
     kind = step["kind"]
     if kind == "pick_branch":
         return True, f"{step['branch']} ({step['commit_subject']})"
@@ -1022,13 +1023,13 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
                 subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
         return _run_checks(step["checks"], repo)
     if kind == "push":
-        return forge_github.push(repo, step["branch"])
+        return forge_module.push(repo, step["branch"])
     if kind == "pr_create":
-        return forge_github.open_pr(repo, step["title"], step["body"])
+        return forge_module.open_pr(repo, step["title"], step["body"])
     if kind == "wait_checks":
-        return forge_github.wait_checks(repo, float(step.get("timeout_s", 180)))
+        return forge_module.wait_checks(repo, float(step.get("timeout_s", 180)))
     if kind == "merge":
-        return forge_github.merge(repo, step)
+        return forge_module.merge(repo, step)
     if kind == "clean":
         wt = Path(step["worktree_root"]).expanduser() / step["run"] / step["task"]
         if wt.exists():
@@ -1171,6 +1172,17 @@ def _runs_land(a: argparse.Namespace) -> int:
     if not a.apply:
         print(json.dumps(steps, indent=2))
         return 2 if any(s["kind"] == "refuse" for s in steps) else 0
+    profile_text = _read_text_or_none(_profile_path(a))
+    try:
+        forge_choice = forge.forge_name(route.parse_profile(profile_text) if profile_text is not None else {})
+    except route.ProfileError as exc:
+        print(f"land: profile unreadable: {exc}")
+        return 2
+    forge_module = forge.forge_for(forge_choice)
+    if forge_module is None:
+        print(f"land: no forge named {forge_choice} (built in: local, github)")
+        return 2
+    print(f"forge: {forge_choice}")
     if _repo_is_dirty(repo):
         print(f"land: refusing, {repo} is dirty")
         return 2
@@ -1178,7 +1190,7 @@ def _runs_land(a: argparse.Namespace) -> int:
     if cherry_pick is not None:
         # An existing pr/<task> is not necessarily stale or foreign: a retried
         # push can leave a same-tree branch behind, and the rerun should reuse it.
-        decision = _land_resume(repo, cherry_pick)
+        decision = _land_resume(repo, cherry_pick, forge_module)
         if decision["kind"] == "refuse":
             print(f"land: refusing, branch {cherry_pick['onto']} already exists in {repo}: {decision['reason']}")
             return 2
@@ -1187,7 +1199,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         steps = land.resume_steps(steps, decision, cherry_pick["onto"])
         planned = land.resume_steps(planned, decision, cherry_pick["onto"])
     # Steps start here: every return from now on is logged. Earlier returns are not.
-    rc, reached, pr = _land_execute(repo, steps, planned, record, item_path, level, a.no_merge)
+    rc, reached, pr = _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module)
     task = record["task"] if record else None
     _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), a.run_id, task, reached, rc, pr))
     return rc
@@ -1199,7 +1211,7 @@ def _append_land_log(runs_dir: Path, row: dict) -> None:
 
 
 def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
-                  level: str, no_merge: bool) -> tuple[int, list[str], str]:
+                  level: str, no_merge: bool, forge_module=forge_github) -> tuple[int, list[str], str]:
     """Walk `steps`; return the exit code, the step kinds run in order, and the PR url ("" when none opened)."""
     pr = ""
     reached: list[str] = []
@@ -1211,7 +1223,7 @@ def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: di
         if step["kind"] == "note":
             continue
         reached.append(step["kind"])
-        ok, detail = _execute_land_step(repo, step)
+        ok, detail = _execute_land_step(repo, step, forge_module)
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
             steps = land.with_issue(steps, record, _land_item_facts(item_path)[1])
