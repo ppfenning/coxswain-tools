@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent_tools import chair
+from agent_tools import chair, run_store
 from agent_tools.events import Event, poll
 
 __all__ = ["DEFAULT_POLICY", "Notification", "chair_notifications", "fold", "notifications", "notify_argv", "run_loop",
@@ -112,13 +112,7 @@ def _trace_names(root: Path, run: str) -> list[str]:
 
 
 def _usage(root: Path, run: str, already_emitted: bool):
-    path = root / f"{run}.usage.json"
-    if already_emitted or not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
+    return None if already_emitted else run_store.usage(root, run)
 
 
 def _load_states(path: Path) -> tuple[dict[str, dict], bool]:

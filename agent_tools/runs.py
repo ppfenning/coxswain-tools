@@ -5,10 +5,10 @@ filenames, usage json) and hands their bytes to `poll`, which is pure.
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
+from agent_tools import run_store
 from agent_tools.events import poll
 
 __all__ = ["events"]
@@ -42,18 +42,9 @@ def _trace_names(root: Path, run: str) -> list[str]:
 
 
 def _usage(root: Path, run: str, already_emitted: bool):
-    """The usage file's parsed contents, or None if it is absent, already spent,
-    or caught mid-write: a torn write is not yet a usage file, so it is retried
-    on the next pass rather than raised."""
-    if already_emitted:
-        return None
-    path = root / f"{run}.usage.json"
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
+    """The run's usage, or None if it is already spent or has not finished: a torn
+    usage file is not yet usage, so it is retried on the next pass rather than raised."""
+    return None if already_emitted else run_store.usage(root, run)
 
 
 def _done(state: dict) -> bool:
