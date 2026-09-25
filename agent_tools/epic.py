@@ -93,7 +93,7 @@ def run_live(pid: int | None, pidfile: Path | str, log: Path | str | None = None
     pidfile = Path(pidfile)
     row = run_store.lease(pidfile.parent, pidfile.stem)
     if row is not None:
-        holder, expires_at = row
+        holder, expires_at, _heartbeat_at = row
         return holder == pidfile.stem and expires_at > (now or datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
     if pid is None or pid <= 0:
         return False
