@@ -70,7 +70,7 @@ def test_take_refuses_a_stale_lock_without_steal():
 def test_take_with_steal_succeeds_against_a_stale_lock():
     record, reason = chair.take(_STALE_HEARTBEAT_RECORD, "bob", 99, "h2", _NOW, 10, False, steal=True)
     assert reason == ""
-    assert record == {"session": "bob", "pid": 99, "host": "h2", "taken_at": _NOW.isoformat(), "heartbeat_at": _NOW.isoformat(), "runs": []}
+    assert record == {"session": "bob", "pid": 99, "host": "h2", "taken_at": _NOW.isoformat(), "heartbeat_at": _NOW.isoformat(), "runs": [], "claude_session": None}
 
 
 def test_take_refuses_a_crashed_lock_without_steal_and_names_it_crashed():
