@@ -26,7 +26,6 @@ class Row:
     role: str
     ts: datetime.datetime
     model_id: str | None
-    claude_code_version: str | None
     mode: str | None
     answer: str | None
     confidence: float | None
@@ -38,7 +37,6 @@ class Row:
 class Summary:
     role: str
     model_id: str | None
-    claude_code_version: str | None
     first: datetime.datetime
     last: datetime.datetime
     shadow: int
@@ -78,7 +76,6 @@ def _row(call: dict[str, Any]) -> Row | None:
         role=decision.get("role") or call.get("role") or "",
         ts=ts,
         model_id=decision.get("model_id"),
-        claude_code_version=decision.get("claude_code_version"),
         mode=decision.get("system_one_mode"),
         answer=decision.get("system_one_answer"),
         confidence=decision.get("system_one_confidence"),
@@ -93,12 +90,13 @@ def rows_from_usage(usages: list[dict[str, Any]]) -> list[Row]:
     return [r for c in calls if (r := _row(c)) is not None and r.role]
 
 
-def _key(r: Row) -> tuple[str | None, str | None]:
-    return (r.model_id, r.claude_code_version)
+def _key(r: Row) -> str | None:
+    # Only a model change restarts the window: the Claude Code version changes too often to hold a window of 100 rows.
+    return r.model_id
 
 
 def window(rows: list[Row], role: str, since: str | None) -> list[Row]:
-    """The role's decision rows on or after `since`, cut to the trailing run that shares one model_id and claude_code_version."""
+    """The role's decision rows on or after `since`, cut to the trailing run that shares one model_id."""
     mine = sorted(
         (r for r in rows if r.role == role and (since is None or r.ts.date().isoformat() >= since)),
         key=lambda r: r.ts,
@@ -125,7 +123,6 @@ def summarize(role: str, rows: list[Row]) -> Summary | None:
         Summary(
             role=role,
             model_id=shadow[-1].model_id,
-            claude_code_version=shadow[-1].claude_code_version,
             first=shadow[0].ts,
             last=shadow[-1].ts,
             shadow=len(shadow),
@@ -163,7 +160,7 @@ def render_role(s: Summary) -> str:
     label, unmet = verdict(s)
     return "\n".join([
         f"{s.role}: {label}" + (f" ({'; '.join(unmet)})" if unmet else ""),
-        f"  window: {s.first.date().isoformat()} to {s.last.date().isoformat()}, model {s.model_id}, claude_code {s.claude_code_version}",
+        f"  window: {s.first.date().isoformat()} to {s.last.date().isoformat()}, model {s.model_id}",
         f"  shadow rows {s.shadow}, covered {s.covered} ({_pct(s.covered / s.shadow)})",
         f"  agreement among covered {_pct(s.agreement)} ({s.agreed} of {s.covered})",
         f"  disagreements: costly direction {s.costly} ({_pct(s.costly_rate)} of covered), other {s.other}",
@@ -178,7 +175,7 @@ def to_json(ss: list[Summary]) -> dict[str, Any]:
     def one(s: Summary) -> dict[str, Any]:
         label, unmet = verdict(s)
         return {
-            "role": s.role, "model_id": s.model_id, "claude_code_version": s.claude_code_version,
+            "role": s.role, "model_id": s.model_id,
             "first": s.first.isoformat(), "last": s.last.isoformat(), "days": s.days,
             "shadow": s.shadow, "covered": s.covered, "agreed": s.agreed, "agreement": s.agreement,
             "costly": s.costly, "costly_rate": s.costly_rate, "other": s.other,
@@ -199,7 +196,7 @@ Proposal only. Nothing was edited. The maintainer approves and makes the change.
 
 ## Numbers
 
-Window {s.first.date().isoformat()} to {s.last.date().isoformat()} ({s.days:.1f} days), model {s.model_id}, claude_code {s.claude_code_version}. A change of either restarts the count.
+Window {s.first.date().isoformat()} to {s.last.date().isoformat()} ({s.days:.1f} days), model {s.model_id}. A model change restarts the count.
 
 - Shadow rows: {s.shadow} (bar {MIN_ROWS})
 - Covered rows: {s.covered} ({_pct(s.covered / s.shadow)} of shadow)
