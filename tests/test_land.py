@@ -305,8 +305,12 @@ def test_a_skip_note_is_not_a_step_the_gate_reports_as_left_unrun():
     assert land.gate_stop(steps, land.gate_steps(steps, "full"), "full", "") is None
 
 
-def _sync_step():
-    return {"kind": "route_sync", "item": "seams-task", "workspace": "/w"}
+def _sync_step(tmp_path, tracker="github-projects"):
+    """A route_sync step whose own profile and runs dir resolve `tracker`."""
+    runs = tmp_path / "step-runs"; runs.mkdir(exist_ok=True)
+    (runs / "policy.tracker.json").write_text(json.dumps({"tracker": tracker}), encoding="utf-8")
+    return {"kind": "route_sync", "item": "seams-task", "workspace": "/w",
+            "profile": str(tmp_path / "step-profile.yaml"), "runs_dir": str(runs)}
 
 
 @pytest.mark.parametrize("outcome", [1, RuntimeError("boom")])
@@ -319,21 +323,28 @@ def test_execute_route_sync_calls_the_sync_in_process_and_a_failure_never_fails_
             raise outcome
         return outcome
     monkeypatch.setattr(cli, "_route_sync", fake)
-    ok, detail = cli._execute_land_step(tmp_path, _sync_step())
+    ok, detail = cli._execute_land_step(tmp_path, _sync_step(tmp_path))
     assert ok is True and "failed after the merge" in detail
     ns = seen[0]
-    assert (ns.item, ns.workspace, ns.dry_run, ns.project, ns.profile) == ("seams-task", "/w", False, None, None)
+    assert (ns.item, ns.workspace, ns.dry_run, ns.project, ns.profile, ns.runs_dir) == (
+        "seams-task", "/w", False, None, str(tmp_path / "step-profile.yaml"), str(tmp_path / "step-runs"))
 
 
 def test_execute_route_sync_reports_success(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_route_sync", lambda ns: 0)
-    assert cli._execute_land_step(tmp_path, _sync_step()) == (True, "synced seams-task")
+    assert cli._execute_land_step(tmp_path, _sync_step(tmp_path)) == (True, "synced seams-task")
 
 
-def test_land_enrich_gives_route_sync_its_workspace_and_the_items_own_id():
+def test_execute_route_sync_under_tracker_none_reports_a_skip_and_never_calls_the_sync(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_route_sync", lambda ns: pytest.fail("the sync ran under tracker none"))
+    assert cli._execute_land_step(tmp_path, _sync_step(tmp_path, "none")) == (
+        True, "sync of seams-task skipped after the merge: tracker is none")
+
+
+def test_land_enrich_gives_route_sync_its_workspace_the_items_own_id_and_the_lands_profile():
     steps = cli._land_enrich([{"kind": "route_sync", "item": "seams-task"}], path="p", worktree_root="r",
-                             workspace="/w", item_id="SEAM-1")
-    assert steps == [{"kind": "route_sync", "item": "SEAM-1", "workspace": "/w"}]
+                             workspace="/w", item_id="SEAM-1", profile="/p.yaml", runs_dir="/r")
+    assert steps == [{"kind": "route_sync", "item": "SEAM-1", "workspace": "/w", "profile": "/p.yaml", "runs_dir": "/r"}]
 
 
 def test_land_item_facts_reads_id_and_issue_from_the_frontmatter(tmp_path):
@@ -344,12 +355,13 @@ def test_land_item_facts_reads_id_and_issue_from_the_frontmatter(tmp_path):
     assert cli._land_item_facts(None) == (None, None)
 
 
-def test_resolved_tracker_defaults_to_github_projects_and_reads_the_policy_file(tmp_path):
-    assert cli._resolved_tracker(tmp_path) == "github-projects"
+def test_resolved_tracker_reads_the_profile_and_the_policy_file_wins(tmp_path):
+    profile = {"tracker": "github-projects"}
+    assert cli._resolved_tracker(profile, tmp_path) == "github-projects"
     (tmp_path / "policy.tracker.json").write_text('{"tracker": "none"}')
-    assert cli._resolved_tracker(tmp_path) == "none"
+    assert cli._resolved_tracker(profile, tmp_path) == "none"
     (tmp_path / "policy.tracker.json").write_text("{not json")
-    assert cli._resolved_tracker(tmp_path) == "github-projects"
+    assert cli._resolved_tracker(profile, tmp_path) == "github-projects"
 
 
 # --- cli._land_branches: the edge asks git, not prose, about merges ---
@@ -947,6 +959,7 @@ def test_cli_recover_leaves_a_ready_item_ready_when_already_recovered(repo, tmp_
 def _apply_gated(repo, tmp_path, monkeypatch, *gate):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
     ran = []
     monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step, _forge=None: (ran.append(step["kind"]) or True, "https://x/pull/7"))
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs"), *gate])
@@ -974,6 +987,7 @@ def _apply_presynced(repo, tmp_path, monkeypatch, sync_writes_issue):
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     item = tmp_path / "work/x/seams/seams-task.md"; item.parent.mkdir(parents=True)
     item.write_text("---\nid: seams-task\nstate: approved\n---\nBody.\n", encoding="utf-8")
+    (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
     ran = []
 
     def fake(_repo, step, _forge=None):
@@ -1000,7 +1014,7 @@ def test_cli_apply_opens_the_pr_without_closes_when_the_sync_wrote_no_issue(repo
 
 def test_execute_presync_failure_says_the_pr_opens_without_closes_and_never_fails_the_land(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_route_sync", lambda ns: 1)
-    ok, detail = cli._execute_land_step(tmp_path, {**_sync_step(), "before": "pr_create"})
+    ok, detail = cli._execute_land_step(tmp_path, {**_sync_step(tmp_path), "before": "pr_create"})
     assert ok is True and detail == "sync of seams-task failed before the PR (exit 1); the PR opens without Closes"
 
 
@@ -1170,6 +1184,7 @@ def test_resume_steps_swaps_only_the_cherry_pick_and_leaves_a_non_resume_alone()
 def _apply_resume(repo, tmp_path, monkeypatch, prs=()):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
     ran = []
     monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step, _forge=None: (ran.append(step["kind"]) or True, "https://x/pull/7"))
     monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch, _forge=None: list(prs))
@@ -1383,6 +1398,50 @@ def test_a_refused_land_writes_a_row_with_its_exit_code_and_no_merge_and_a_rerun
     assert cli.main(argv) == 2
     assert cli.main(argv) == 2
     assert [(r["exit"], r["steps_reached"], r["pr"]) for r in _land_log(tmp_path)] == [(2, [], None)] * 2
+
+
+def test_a_land_with_no_tracker_configured_plans_no_route_sync(repo, tmp_path, capsys):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n", encoding="utf-8")
+    argv = ["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile)]
+    assert cli.main(argv) == 0
+    assert "route_sync" not in [s["kind"] for s in json.loads(capsys.readouterr().out)]
+    profile.write_text(f"workspace_dir: {tmp_path}\ntracker: github-projects\n", encoding="utf-8")
+    assert cli.main(argv) == 0
+    assert "route_sync" in [s["kind"] for s in json.loads(capsys.readouterr().out)]
+
+
+def test_a_lands_route_sync_step_reads_the_tracker_from_the_lands_own_profile_and_runs_dir(repo, tmp_path, capsys, monkeypatch):
+    runs = tmp_path / "custom-runs"
+    task_dir = runs / "epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\ntracker: github-projects\n", encoding="utf-8")
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path / "no-default-profile.yaml"))
+    assert cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile), "--runs-dir", str(runs),
+                     "--gate", "full"]) == 0
+    out = capsys.readouterr().out
+    step = next(s for s in json.loads(out[out.index("["):]) if s["kind"] == "route_sync" and not s.get("before"))
+    assert (step["profile"], step["runs_dir"]) == (str(profile), str(runs))
+    seen = []
+    monkeypatch.setattr(cli, "_route_sync", lambda ns: seen.append(ns.profile) or 0)
+    assert cli._execute_land_step(repo, step) == (True, "synced seams-task")
+    assert seen == [str(profile)]
+    (runs / "policy.tracker.json").write_text('{"tracker": "none"}', encoding="utf-8")
+    assert cli._execute_land_step(repo, step) == (True, "sync of seams-task skipped after the merge: tracker is none")
+    assert seen == [str(profile)]
+
+
+def test_a_dry_run_land_refuses_an_unreadable_profile_because_the_plan_reads_its_tracker(repo, tmp_path, capsys):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("no_such_key: x\n", encoding="utf-8")
+    argv = ["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile), "--runs-dir", str(tmp_path / "runs")]
+    assert cli.main(argv) == 2
+    assert capsys.readouterr().out.startswith("land: profile unreadable:")
 
 
 def test_a_dry_run_writes_no_land_log(repo, tmp_path):
