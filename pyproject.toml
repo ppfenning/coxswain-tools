@@ -22,8 +22,8 @@ traces = ["zstandard>=0.23"]
 postgres = ["psycopg[binary]>=3.2"]
 # Optional on purpose: pyarrow is a heavy C++ build and the Homebrew formula builds from source, so it is not a base dependency.
 parquet = ["pyarrow"]
-# The Iceberg lake: a SQL catalog on sqlite or Postgres, queried with duckdb. Never a base dependency.
-lake = ["pyiceberg[sql-sqlite,sql-postgres]>=0.9", "duckdb>=1.0"]
+# The Iceberg lake: a SQL catalog on sqlite or Postgres, queried with duckdb; pyiceberg-core does the day partitioning. Never a base dependency.
+lake = ["pyiceberg[sql-sqlite,sql-postgres,pyiceberg-core]>=0.9", "duckdb>=1.0"]
 
 [project.scripts]
 cox = "agent_tools.cli:main"
