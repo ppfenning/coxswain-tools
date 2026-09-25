@@ -1470,6 +1470,40 @@ def test_lint_items_returns_empty_list_for_a_clean_dag():
     assert route.lint_items(items, "acme/widgets", ()) == []
 
 
+def _cross_item(body="", surfaces=()):
+    return [{"task": "t1", "phase": "build", "surfaces": list(surfaces), "body": body}]
+
+
+def test_lint_items_flags_a_file_under_another_repositorys_package():
+    problems = route.lint_items(_cross_item("edit harness/cli.py"), "/home/x/coxswain-tools", ())
+    assert problems == [route.Problem(
+        "t1", "cross_repo", "names harness/cli.py, which lives in coxswain-graphs",
+        "paste the code the build needs into the ticket: a build reads only its own repository",
+    )]
+
+
+def test_lint_items_does_not_flag_a_file_in_its_own_repository():
+    items = _cross_item("edit agent_tools/run_store.py", ["agent_tools/run_store.py"])
+    assert route.lint_items(items, "/home/x/coxswain-tools", ()) == []
+
+
+def test_lint_items_stands_cross_repo_down_for_an_unknown_or_missing_repo():
+    items = _cross_item("edit harness/cli.py")
+    assert route.lint_items(items, "/home/x/widgets", ()) == []
+    assert route.lint_items(items, None, ()) == []
+
+
+def test_lint_items_never_counts_tests_or_docs_as_cross_repo():
+    items = _cross_item("see docs/design/x.md", ["tests/test_x.py"])
+    assert route.lint_items(items, "/home/x/coxswain-tools", ()) == []
+
+
+def test_lint_items_reports_one_cross_repo_problem_for_a_path_named_twice():
+    items = _cross_item("edit `harness/cli.py`, then harness/cli.py again", ["harness/cli.py"])
+    problems = route.lint_items(items, "/home/x/coxswain-tools/", ())
+    assert [p.rule for p in problems] == ["cross_repo"]
+
+
 def _lint_ns(initiative_dir, repo=None):
     return argparse.Namespace(initiative_dir=str(initiative_dir), repo=repo)
 
