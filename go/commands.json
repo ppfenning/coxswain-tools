@@ -1,0 +1,1859 @@
+{
+  "description": "cox \u2014 the coxswain's operator tools (alias: agent-tools, removed next release).",
+  "groups": [
+    {
+      "args": [],
+      "commands": [
+        {
+          "args": [
+            {
+              "flags": [
+                "run_id"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "default": "runs"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "usage",
+          "slash": false,
+          "summary": "usage stats and cost for one run"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "run_id"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "default": "runs"
+              }
+            },
+            {
+              "flags": [
+                "--role"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "-v",
+                "--verbose"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "trace",
+          "slash": false,
+          "summary": "the tool-call trace for one run"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "run_id"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--repo"
+              ],
+              "kwargs": {
+                "required": true
+              }
+            },
+            {
+              "flags": [
+                "--worktree-root"
+              ],
+              "kwargs": {
+                "default": "~/worktrees"
+              }
+            },
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "help": "override: resolve task records here instead of the profile's workspace_dir"
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--apply"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--force"
+              ],
+              "kwargs": {
+                "action": "store_true",
+                "help": "delete every branch regardless of whether its task is on main"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "clean",
+          "slash": false,
+          "summary": "delete a run's worktree and branches locally"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "run_id"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--repo"
+              ],
+              "kwargs": {
+                "required": true
+              }
+            },
+            {
+              "flags": [
+                "--task"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--phase"
+              ],
+              "kwargs": {
+                "help": "land the whole phase off its own epic branch instead of one task"
+              }
+            },
+            {
+              "flags": [
+                "--label"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--force"
+              ],
+              "kwargs": {
+                "action": "store_true",
+                "help": "land despite a foreign live leader"
+              }
+            },
+            {
+              "flags": [
+                "--no-claim"
+              ],
+              "kwargs": {
+                "action": "store_true",
+                "help": "land without taking an unheld or stale loop"
+              }
+            },
+            {
+              "flags": [
+                "--worktree-root"
+              ],
+              "kwargs": {
+                "default": "~/worktrees"
+              }
+            },
+            {
+              "flags": [
+                "--apply"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--no-merge"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "help": "override: resolve task records here instead of the profile's workspace_dir"
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--gate"
+              ],
+              "kwargs": {
+                "choices": [
+                  "ticket",
+                  "phase",
+                  "epic",
+                  "full"
+                ],
+                "help": "override the resolved gate level for this invocation"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "land",
+          "slash": false,
+          "summary": "merge a run's branch into the target repo"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--pr"
+              ],
+              "kwargs": {
+                "help": "https://github.com/<owner>/<repo>/pull/<n>",
+                "required": true
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            }
+          ],
+          "examples": [],
+          "name": "review",
+          "slash": false,
+          "summary": "review a contributor PR with the review graph and post the verdict"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "run_id"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "task_id"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--repo"
+              ],
+              "kwargs": {
+                "required": true
+              }
+            },
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "help": "override: resolve task records here instead of the profile's workspace_dir"
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--dry-run"
+              ],
+              "kwargs": {
+                "action": "store_true",
+                "help": "print the merge that would be made and exit without touching anything"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "recover",
+          "slash": false,
+          "summary": "merge an approved task's commit into its phase branch after an escalated merge"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "default": "runs"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--append"
+              ],
+              "kwargs": {}
+            }
+          ],
+          "examples": [],
+          "name": "series",
+          "slash": false,
+          "summary": "per-run summary rows across a runs directory"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "default": "runs"
+              }
+            },
+            {
+              "flags": [
+                "--follow"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "events",
+          "slash": false,
+          "summary": "poll a run's log for structured events"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "default": "runs"
+              }
+            },
+            {
+              "flags": [
+                "--interval"
+              ],
+              "kwargs": {
+                "default": 3,
+                "type": "float"
+              }
+            },
+            {
+              "flags": [
+                "--once"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "top",
+          "slash": false,
+          "summary": "live table of runs in flight; --once prints it and exits"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "default": "runs"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "bar",
+          "slash": false,
+          "summary": "one Waybar JSON line: runs in flight, cost, class idle|running|attention"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "default": "runs"
+              }
+            },
+            {
+              "flags": [
+                "--once"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--interval"
+              ],
+              "kwargs": {
+                "default": 10,
+                "type": "float"
+              }
+            },
+            {
+              "flags": [
+                "--replay"
+              ],
+              "kwargs": {
+                "action": "store_true",
+                "help": "emit history on first start; default is silent for existing runs when no state file is present"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "notify",
+          "slash": false,
+          "summary": "desktop notifications for exits, quarantines, budget stops and cost"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "run_id"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "default": "runs"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "detail",
+          "slash": false,
+          "summary": "one run's timeline, objection and last tool calls"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "help": "override: resolve task records here instead of the profile's workspace_dir"
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "stranded",
+          "slash": false,
+          "summary": "every approved task record whose work item is not done, with its remedy"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "run_id"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "task_id"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "cause"
+              ],
+              "kwargs": {
+                "choices": [
+                  "ticket",
+                  "code",
+                  "harness",
+                  "unknown"
+                ]
+              }
+            },
+            {
+              "flags": [
+                "--note"
+              ],
+              "kwargs": {
+                "help": "free text kept beside the cause"
+              }
+            },
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "help": "override: resolve task records here instead of the profile's workspace_dir"
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            }
+          ],
+          "examples": [],
+          "name": "cause",
+          "slash": false,
+          "summary": "record why one run's attempt at a task was quarantined"
+        }
+      ],
+      "description": "What a harness run recorded, and cleaning up after it.",
+      "epilog": "examples:\n  cox runs land <run> --repo PATH --apply\n  cox runs recover <run> <task> --repo PATH\n  cox runs usage <run> --json\n  cox runs detail <run> --json",
+      "help": "what a harness run recorded, and cleaning up after it",
+      "name": "runs"
+    },
+    {
+      "args": [],
+      "commands": [
+        {
+          "args": [
+            {
+              "flags": [
+                "ref"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--to"
+              ],
+              "kwargs": {
+                "required": true
+              }
+            },
+            {
+              "flags": [
+                "--note"
+              ],
+              "kwargs": {
+                "required": true
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            }
+          ],
+          "examples": [],
+          "name": "send",
+          "slash": false,
+          "summary": "append a bus entry naming a courier reference"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--label"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            }
+          ],
+          "examples": [],
+          "name": "inbox",
+          "slash": false,
+          "summary": "list this label's unacknowledged bus entries"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "id"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            }
+          ],
+          "examples": [],
+          "name": "ack",
+          "slash": false,
+          "summary": "acknowledge one bus entry by id"
+        }
+      ],
+      "description": "",
+      "epilog": "",
+      "help": "the courier bus: hand a reference to another label",
+      "name": "courier"
+    },
+    {
+      "args": [
+        {
+          "flags": [
+            "--root"
+          ],
+          "kwargs": {}
+        },
+        {
+          "flags": [
+            "--manifest"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "commands": [],
+      "description": "",
+      "epilog": "",
+      "help": "component versions against the manifest",
+      "name": "versions"
+    },
+    {
+      "args": [
+        {
+          "flags": [
+            "--root"
+          ],
+          "kwargs": {
+            "required": true
+          }
+        },
+        {
+          "flags": [
+            "--manifest"
+          ],
+          "kwargs": {}
+        },
+        {
+          "flags": [
+            "--provider"
+          ],
+          "kwargs": {
+            "default": "claude-code"
+          }
+        },
+        {
+          "flags": [
+            "--with"
+          ],
+          "kwargs": {
+            "action": "append",
+            "default": null,
+            "dest": "with_",
+            "metavar": "FLAG"
+          }
+        },
+        {
+          "flags": [
+            "--team"
+          ],
+          "kwargs": {}
+        },
+        {
+          "flags": [
+            "--workspace"
+          ],
+          "kwargs": {}
+        },
+        {
+          "flags": [
+            "--edge"
+          ],
+          "kwargs": {
+            "action": "store_true"
+          }
+        },
+        {
+          "flags": [
+            "--dry-run"
+          ],
+          "kwargs": {
+            "action": "store_true"
+          }
+        }
+      ],
+      "commands": [],
+      "description": "",
+      "epilog": "",
+      "help": "clone/update coxswain components against the manifest",
+      "name": "install"
+    },
+    {
+      "args": [
+        {
+          "flags": [
+            "--root"
+          ],
+          "kwargs": {
+            "required": true
+          }
+        },
+        {
+          "flags": [
+            "--manifest"
+          ],
+          "kwargs": {}
+        },
+        {
+          "flags": [
+            "--provider"
+          ],
+          "kwargs": {
+            "default": "claude-code"
+          }
+        },
+        {
+          "flags": [
+            "--with"
+          ],
+          "kwargs": {
+            "action": "append",
+            "default": null,
+            "dest": "with_",
+            "metavar": "FLAG"
+          }
+        },
+        {
+          "flags": [
+            "--team"
+          ],
+          "kwargs": {}
+        },
+        {
+          "flags": [
+            "--workspace"
+          ],
+          "kwargs": {}
+        },
+        {
+          "flags": [
+            "--to"
+          ],
+          "kwargs": {}
+        },
+        {
+          "flags": [
+            "--dry-run"
+          ],
+          "kwargs": {
+            "action": "store_true"
+          }
+        }
+      ],
+      "commands": [],
+      "description": "",
+      "epilog": "",
+      "help": "fetch and check out newer pinned versions; refuses dirty checkouts",
+      "name": "upgrade"
+    },
+    {
+      "args": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "commands": [],
+      "description": "",
+      "epilog": "",
+      "help": "the live dashboard: runs, leader, backlog",
+      "name": "home"
+    },
+    {
+      "args": [],
+      "commands": [
+        {
+          "args": [
+            {
+              "flags": [
+                "runs_dir"
+              ],
+              "kwargs": {
+                "default": "runs",
+                "nargs": "?"
+              }
+            },
+            {
+              "flags": [
+                "--db"
+              ],
+              "kwargs": {
+                "default": "workspace/stats/stats.db"
+              }
+            },
+            {
+              "flags": [
+                "--work-store-root"
+              ],
+              "kwargs": {
+                "default": "work"
+              }
+            },
+            {
+              "flags": [
+                "--cartridges-repo"
+              ],
+              "kwargs": {
+                "default": null
+              }
+            }
+          ],
+          "examples": [],
+          "name": "ingest",
+          "slash": false,
+          "summary": "load usage, task, node and launch records into stats.db"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--db"
+              ],
+              "kwargs": {
+                "default": "workspace/stats/stats.db"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--cartridge-sha"
+              ],
+              "kwargs": {
+                "default": null,
+                "help": "keep only runs on this cartridge_sha"
+              }
+            },
+            {
+              "flags": [
+                "--provider-profile"
+              ],
+              "kwargs": {
+                "default": null,
+                "help": "keep only runs on this provider_profile"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "roles",
+          "slash": false,
+          "summary": "landed rate, attempts-to-land and $/landed per role and model"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "role"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--db"
+              ],
+              "kwargs": {
+                "default": "workspace/stats/stats.db"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "explain",
+          "slash": false,
+          "summary": "the failure-class breakdown behind one role"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--db"
+              ],
+              "kwargs": {
+                "default": "workspace/stats/stats.db"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--cartridge-sha"
+              ],
+              "kwargs": {
+                "default": null,
+                "help": "keep only runs on this cartridge_sha"
+              }
+            },
+            {
+              "flags": [
+                "--provider-profile"
+              ],
+              "kwargs": {
+                "default": null,
+                "help": "keep only runs on this provider_profile"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "series",
+          "slash": false,
+          "summary": "per-run summary rows read from the stats store"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--db"
+              ],
+              "kwargs": {
+                "default": "workspace/stats/stats.db"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "coverage",
+          "slash": false,
+          "summary": "known/total provenance rows for runs, calls and tasks"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--db"
+              ],
+              "kwargs": {
+                "default": "workspace/stats/stats.db"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--level"
+              ],
+              "kwargs": {
+                "choices": [
+                  "strict",
+                  "moderate",
+                  "liberal"
+                ],
+                "default": null
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {
+                "help": "the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"
+              }
+            },
+            {
+              "flags": [
+                "--write"
+              ],
+              "kwargs": {
+                "default": null,
+                "help": "also write the JSON table to PATH inside the repo checkout"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "bounds",
+          "slash": false,
+          "summary": "n/p50/p95/max and strict/moderate/liberal candidate ceilings per role and model"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--db"
+              ],
+              "kwargs": {
+                "default": "workspace/stats/stats.db"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "spend-mix",
+          "slash": false,
+          "summary": "per-model token counts and cost share by class, plus the build-only split"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "runs_dir"
+              ],
+              "kwargs": {
+                "default": "runs",
+                "nargs": "?"
+              }
+            },
+            {
+              "flags": [
+                "--since"
+              ],
+              "kwargs": {
+                "default": null,
+                "help": "keep only records and transcript lines dated on or after DATE (YYYY-MM-DD)"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--session"
+              ],
+              "kwargs": {
+                "action": "append",
+                "default": null,
+                "help": "a Claude session id to count as chair cost, beside those in chair.json (repeatable)"
+              }
+            },
+            {
+              "flags": [
+                "--work-store-root"
+              ],
+              "kwargs": {
+                "default": "work"
+              }
+            },
+            {
+              "flags": [
+                "--projects-dir"
+              ],
+              "kwargs": {
+                "default": "~/.claude/projects"
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {
+                "help": "the routing profile naming cartridges_dir (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "chair",
+          "slash": false,
+          "summary": "harness PRs and $, chair $ per PR, hand-finished lands and quarantine $ by cause"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "runs_dir"
+              ],
+              "kwargs": {
+                "default": "runs",
+                "nargs": "?"
+              }
+            },
+            {
+              "flags": [
+                "--role"
+              ],
+              "kwargs": {
+                "help": "handoff or review_charter",
+                "required": true
+              }
+            },
+            {
+              "flags": [
+                "--out"
+              ],
+              "kwargs": {
+                "default": null,
+                "help": "write the file to PATH (default: stdout)"
+              }
+            },
+            {
+              "flags": [
+                "--since"
+              ],
+              "kwargs": {
+                "default": null,
+                "help": "keep only records dated on or after DATE (YYYY-MM-DD)"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "examples",
+          "slash": false,
+          "summary": "the local system-one backend's training file (JSON lines) from task records"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "runs_dir"
+              ],
+              "kwargs": {
+                "default": "runs",
+                "nargs": "?"
+              }
+            },
+            {
+              "flags": [
+                "--role"
+              ],
+              "kwargs": {
+                "default": null,
+                "help": "report this role only"
+              }
+            },
+            {
+              "flags": [
+                "--since"
+              ],
+              "kwargs": {
+                "default": null,
+                "help": "keep only rows dated on or after DATE (YYYY-MM-DD)"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--propose"
+              ],
+              "kwargs": {
+                "action": "store_true",
+                "help": "write a graduation proposal for each READY role; never edits a profile"
+              }
+            },
+            {
+              "flags": [
+                "--plans-dir"
+              ],
+              "kwargs": {
+                "default": "plans",
+                "help": "where --propose writes system-one-graduation-<role>-<date>.md"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "system-one",
+          "slash": false,
+          "summary": "shadow-to-on graduation report per role, and a proposal for the maintainer to approve"
+        }
+      ],
+      "description": "Load the run corpus into the stats store.",
+      "epilog": "examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db\n  cox stats roles --json\n  cox stats explain build --json\n  cox stats series --json\n  cox stats coverage --json\n  cox stats bounds --json\n  cox stats spend-mix --json\n  cox stats examples --role handoff --out examples.jsonl\n  cox stats system-one --role handoff --propose",
+      "help": "load the run corpus into the stats store",
+      "name": "stats"
+    },
+    {
+      "args": [],
+      "commands": [
+        {
+          "args": [
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--runs-dir"
+              ],
+              "kwargs": {
+                "default": "runs"
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {
+                "help": "the routing profile naming the window ceiling (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "assess",
+          "slash": false,
+          "summary": "the pacing verdict for the current spend window"
+        }
+      ],
+      "description": "Spend pacing against the ceiling for the current window.",
+      "epilog": "examples:\n  cox usage assess\n  cox usage assess --json --runs-dir runs",
+      "help": "spend pacing against the ceiling for the current window",
+      "name": "usage"
+    },
+    {
+      "args": [],
+      "commands": [
+        {
+          "args": [
+            {
+              "flags": [
+                "dir"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--kind"
+              ],
+              "kwargs": {
+                "default": "plan"
+              }
+            },
+            {
+              "flags": [
+                "--check"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--no-open"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "serve",
+          "slash": false,
+          "summary": "serve a visual plan through the local bridge"
+        }
+      ],
+      "description": "Visual plans through the local bridge.",
+      "epilog": "examples:\n  cox plan serve work/<id> --kind plan\n  cox plan serve work/<id> --check",
+      "help": "visual plans through the local bridge",
+      "name": "plan"
+    },
+    {
+      "args": [],
+      "commands": [
+        {
+          "args": [
+            {
+              "flags": [
+                "pidfile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--log"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--max-seconds"
+              ],
+              "kwargs": {
+                "default": 570,
+                "type": "float"
+              }
+            },
+            {
+              "flags": [
+                "--interval"
+              ],
+              "kwargs": {
+                "default": 20,
+                "type": "float"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "watch",
+          "slash": false,
+          "summary": "poll a detached run's pidfile until it exits"
+        }
+      ],
+      "description": "Watch a detached run.",
+      "epilog": "examples:\n  cox epic watch RUN.pid --log RUN.log\n  cox epic watch RUN.pid --json",
+      "help": "watch a detached run",
+      "name": "epic"
+    },
+    {
+      "args": [],
+      "commands": [
+        {
+          "args": [
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "context",
+          "slash": false,
+          "summary": "the routing profile's resolved context"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "status",
+          "slash": false,
+          "summary": "what is queued or running for this profile"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--repo"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--title"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--body"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--phase"
+              ],
+              "kwargs": {
+                "default": "build"
+              }
+            },
+            {
+              "flags": [
+                "--intake"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--from-intake"
+              ],
+              "kwargs": {
+                "help": "link and file an existing intake file's initiative, then retire it"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "file",
+          "slash": false,
+          "summary": "file a new ticket for the harness"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--source"
+              ],
+              "kwargs": {
+                "default": "github"
+              }
+            },
+            {
+              "flags": [
+                "--dry-run"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "pull",
+          "slash": false,
+          "summary": "file intake tickets from a source, once per link"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "initiative_dir"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--repo"
+              ],
+              "kwargs": {
+                "default": null
+              }
+            }
+          ],
+          "examples": [],
+          "name": "lint",
+          "slash": false,
+          "summary": "static ticket lint over a filed initiative, work-shape.md \u00a73"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            }
+          ],
+          "examples": [],
+          "name": "groups",
+          "slash": false,
+          "summary": "print the newest plans/intake-groups/<date>.md file, work-shape.md \u00a75"
+        }
+      ],
+      "description": "File work for the harness, and see what is queued or running.",
+      "epilog": "examples:\n  cox route launch epic --initiative work/<id> --repo PATH\n  cox route status --profile PATH",
+      "help": "file work for the harness, and see what is queued or running",
+      "name": "route"
+    },
+    {
+      "args": [],
+      "commands": [
+        {
+          "args": [
+            {
+              "flags": [
+                "--role"
+              ],
+              "kwargs": {
+                "required": true
+              }
+            },
+            {
+              "flags": [
+                "--db"
+              ],
+              "kwargs": {
+                "default": "workspace/stats/stats.db"
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {
+                "help": "the routing profile naming the provider profile and the router flag (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "select",
+          "slash": false,
+          "summary": "the effective tier for a role under the profile's router: off|shadow|on flag"
+        }
+      ],
+      "description": "The routing-profile flag and the tier decision it gates.",
+      "epilog": "examples:\n  cox router select --role build\n  cox router select --role build --json",
+      "help": "the routing-profile flag and the tier decision it gates",
+      "name": "router"
+    },
+    {
+      "args": [],
+      "commands": [
+        {
+          "args": [
+            {
+              "flags": [
+                "--db"
+              ],
+              "kwargs": {
+                "default": "workspace/stats/stats.db"
+              }
+            },
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {
+                "help": "the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "propose",
+          "slash": false,
+          "summary": "write each candidate clearing the evidence bar as a new intake file; never edits a provider profile"
+        }
+      ],
+      "description": "Ceiling-change candidates from stats.db, proposed as intake files.",
+      "epilog": "examples:\n  cox steward propose\n  cox steward propose --json",
+      "help": "ceiling-change candidates from stats.db, proposed as intake files",
+      "name": "steward"
+    },
+    {
+      "args": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "commands": [
+        {
+          "args": [
+            {
+              "flags": [
+                "--profile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--repo"
+              ],
+              "kwargs": {
+                "help": "target repo to check for a .agent/cartridge.yaml overlay (default: cwd)"
+              }
+            },
+            {
+              "flags": [
+                "--json"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "doctor",
+          "slash": false,
+          "summary": "check this machine's profile against what it needs"
+        },
+        {
+          "args": [
+            {
+              "flags": [
+                "--root"
+              ],
+              "kwargs": {
+                "required": true
+              }
+            },
+            {
+              "flags": [
+                "--team"
+              ],
+              "kwargs": {
+                "required": true
+              }
+            },
+            {
+              "flags": [
+                "--workspace"
+              ],
+              "kwargs": {
+                "required": true
+              }
+            },
+            {
+              "flags": [
+                "--provider-profile"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--skills-root"
+              ],
+              "kwargs": {}
+            },
+            {
+              "flags": [
+                "--assume"
+              ],
+              "kwargs": {
+                "choices": [
+                  "a",
+                  "r"
+                ],
+                "default": "a"
+              }
+            },
+            {
+              "flags": [
+                "--plugins"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--hook"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--force-profile"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--dry-run"
+              ],
+              "kwargs": {
+                "action": "store_true"
+              }
+            },
+            {
+              "flags": [
+                "--window-ceiling-usd"
+              ],
+              "kwargs": {
+                "default": null,
+                "dest": "window_ceiling_usd",
+                "help": "write spend: window_ceiling_usd into the profile",
+                "type": "float"
+              }
+            },
+            {
+              "flags": [
+                "--weekly-ceiling-usd"
+              ],
+              "kwargs": {
+                "default": null,
+                "dest": "weekly_ceiling_usd",
+                "help": "write spend: weekly_ceiling_usd into the profile",
+                "type": "float"
+              }
+            }
+          ],
+          "examples": [],
+          "name": "install",
+          "slash": false,
+          "summary": "clone components and write a profile for this machine"
+        }
+      ],
+      "description": "Does this machine's profile actually work.",
+      "epilog": "examples:\n  cox setup doctor --profile PATH\n  cox setup install --root PATH --team NAME --workspace PATH",
+      "help": "does this machine's profile actually work",
+      "name": "setup"
+    }
+  ],
+  "prog": "cox"
+}
