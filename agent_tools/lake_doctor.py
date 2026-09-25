@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlparse
 
 from agent_tools.lake_config import LakeConfig, LakeUnavailable, load_catalog, redact
 
-__all__ = ["Check", "run_checks", "verdict"]
+__all__ = ["Check", "run_checks", "sqlite_catalog_path", "verdict"]
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 _SYNC_HINT = "run cox lake sync"
@@ -89,13 +89,26 @@ def _load_tables(catalog: Any, names: Sequence[str], namespace: str, config: Lak
     return loaded, failures
 
 
+def sqlite_catalog_path(uri: str) -> Path | None:
+    """The file a `sqlite:///<path>` URI names; None for any other scheme or an in-memory database."""
+    prefix = "sqlite:///"
+    path = uri[len(prefix) :].split("?", 1)[0] if uri.startswith(prefix) else ""
+    return Path(path) if path and path != ":memory:" else None
+
+
 def run_checks(config: LakeConfig) -> list[Check]:
     """Edge. Every check for `config`; it returns early where nothing further is reachable."""
     try:
+        # Imported before the catalog-file guard: a missing extra must fail, not read as "no catalog yet".
+        from pyiceberg.catalog.sql import SqlCatalog  # noqa: F401
+
         from agent_tools.lake_sync import HISTORY
         from agent_tools.lake_tables import HWM_PROPERTY, NAMESPACE, TABLES
     except ImportError:
         return [Check("lake extra", FAIL, _NEEDS_EXTRA)]
+    file = sqlite_catalog_path(config.catalog_uri)
+    if file is not None and not file.exists():
+        return [Check("catalog", WARN, f"no catalog yet; {_SYNC_HINT}")]
     try:
         catalog = load_catalog(config)
         namespaces = catalog.list_namespaces()
