@@ -4,7 +4,18 @@ import json
 
 import pytest
 
-from agent_tools.stats_chair import chair_cost, quarantine_cost_by_cause, set_attempt_cause
+from agent_tools.stats_chair import (
+    catalog_prices,
+    chair_cost,
+    chair_report,
+    frontmatter_item,
+    hand_finished,
+    lines_since,
+    quarantine_cost_by_cause,
+    render_chair,
+    session_ids,
+    set_attempt_cause,
+)
 
 _PRICES = {"claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_write": 5.0, "cache_read": 0.4}}
 
@@ -88,3 +99,64 @@ def test_set_attempt_cause_keeps_an_existing_note_when_none_is_given():
 ])
 def test_set_attempt_cause_is_none_without_a_mapping_attempt_for_the_run(text):
     assert set_attempt_cause(text, "gate-1", "code", None) is None
+
+
+def test_hand_finished_is_a_landed_task_with_no_merge_row_at_exit_zero():
+    rows = [
+        {"run": "r1", "task": "a", "steps_reached": ["pr", "merge"], "exit": 0},
+        {"run": "r1", "task": "b", "steps_reached": ["pr"], "exit": 1},
+        {"run": "r1", "task": "c", "steps_reached": ["pr", "merge"], "exit": 1},
+    ]
+    assert hand_finished([("r1", "a"), ("r1", "b"), ("r1", "c"), ("r1", "d")], rows) == [("r1", "b"), ("r1", "c"), ("r1", "d")]
+
+
+def test_chair_report_composes_every_fact():
+    landed = [("r1", "a"), ("r1", "b"), ("r1", "c"), ("r1", "d")]
+    rows = [{"run": "r1", "task": t, "steps_reached": ["merge"], "exit": 0} for t in "abc"]
+    calls = [{"task_id": None, "cost_usd": 1.0, "run": "r1"}, {"task_id": "a", "cost_usd": 0.5, "run": "r1"}]
+    items = [{"id": "a", "attempts": [{"run": "r1", "cause": "code"}]}]
+    assert chair_report("2026-09-24", landed, calls, rows, 2.0, items) == {
+        "window": {"since": "2026-09-24"},
+        "harness_prs": 4,
+        "harness_usd": 1.5,
+        "chair_usd": 2.0,
+        "chair_usd_per_pr": 0.5,
+        "hand_finished": {"n": 1, "pct": 25.0},
+        "quarantine_usd": {"ticket": 0.0, "code": 0.5, "harness": 0.0, "unknown": 0.0},
+    }
+
+
+def test_chair_report_with_no_prs_or_no_prices_reports_none():
+    report = chair_report(None, [], [], [], None, [])
+    assert (report["chair_usd_per_pr"], report["hand_finished"]["pct"], report["chair_usd"]) == (None, None, None)
+
+
+def test_render_chair_has_the_harness_pr_row_and_one_quarantine_row_per_cause():
+    lines = render_chair(chair_report(None, [("r1", "a")], [], [], 1.0, [])).splitlines()
+    assert lines[1].startswith("harness PRs")
+    assert [line.split()[2] for line in lines if line.startswith("quarantine $")] == ["ticket", "code", "harness", "unknown"]
+
+
+def test_catalog_prices_reads_models_with_a_price_and_drops_the_rest():
+    catalog = {"models": {"m": {"price": {"input": 1.0}}, "no-price": {"tier": "cheap"}}}
+    assert catalog_prices(catalog) == {"m": {"input": 1.0}}
+    assert catalog_prices(None) == {}
+
+
+def test_lines_since_keeps_lines_dated_on_or_after_the_date():
+    new = _assistant("m", 1, 0, 0, 1)
+    old = new.replace("2026-09-24", "2026-09-01")
+    assert lines_since([old, new, "junk"], "2026-09-24") == [new]
+    assert lines_since([old, new], None) == [old, new]
+
+
+def test_session_ids_merges_chair_json_history_and_extra_without_repeats():
+    record = {"claude_session": "s1", "history": ["s0", {"claude_session": "s1"}]}
+    assert session_ids(record, ["s2", "s0"]) == ["s1", "s0", "s2"]
+    assert session_ids(None, []) == []
+
+
+def test_frontmatter_item_reads_block_attempts_and_defaults_the_id_to_the_stem():
+    text = "---\nstate: done\nattempts:\n  - run: r1\n    cause: code\n---\nbody\n"
+    assert frontmatter_item(text, "t01") == {"state": "done", "attempts": [{"run": "r1", "cause": "code"}], "id": "t01"}
+    assert frontmatter_item("no frontmatter", "t02") == {"id": "t02"}

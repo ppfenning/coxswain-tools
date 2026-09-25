@@ -1,0 +1,18 @@
+usage: cox stats chair [-h] [--since SINCE] [--json] [--session SESSION]
+                       [--work-store-root WORK_STORE_ROOT] [--projects-dir PROJECTS_DIR]
+                       [--profile PROFILE]
+                       [runs_dir]
+
+positional arguments:
+  runs_dir
+
+options:
+  -h, --help            show this help message and exit
+  --since SINCE         keep only records and transcript lines dated on or after DATE (YYYY-MM-DD)
+  --json
+  --session SESSION     a Claude session id to count as chair cost, beside those in chair.json
+                        (repeatable)
+  --work-store-root WORK_STORE_ROOT
+  --projects-dir PROJECTS_DIR
+  --profile PROFILE     the routing profile naming cartridges_dir (default: ~/.config/agent-
+                        tools/profile.yaml or $AGENT_TOOLS_PROFILE)
