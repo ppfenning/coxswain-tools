@@ -7,12 +7,13 @@ import json
 import os
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-__all__ = ["alive", "launched_epoch", "log_ended", "proc_start_epoch", "reused", "run_alive", "run_live", "summarize_log", "watch"]
+__all__ = ["alive", "launched_epoch", "log_ended", "proc_start_epoch", "reused", "run_alive", "run_live", "summarize_log", "wait_lanes", "watch"]
 
-_LINE = re.compile(r"^\s*(quarantined task|quarantined phase|reused|epic |  usage)", re.M)
+_LINE = re.compile(r"^\s*(quarantined task|quarantined phase|approved but not landed|reused|epic |  usage)", re.M)
 
 
 def alive(pid: int) -> bool:
@@ -111,11 +112,23 @@ def summarize_log(text: str) -> dict[str, Any]:
     """Pure: the lines of a run log that state an outcome."""
     lines = [l.strip() for l in text.splitlines() if _LINE.match(l)]
     return {
+        "approved": [l for l in lines if l.startswith("approved but not landed")],
         "quarantined": [l for l in lines if l.startswith("quarantined")],
         "reused": [l for l in lines if l.startswith("reused")],
         "summary": next((l for l in lines if l.startswith("epic ")), None),
         "usage": next((l for l in lines if l.startswith("usage")), None),
     }
+
+
+def wait_lanes(busy: list[str], is_live: Callable[[str], bool], now: Callable[[], float], sleep: Callable[[float], None],
+               max_seconds: float, interval: float) -> tuple[list[str], list[str]]:
+    """Poll `busy` until at least one run is not live or the cap passes. Returns (exited, still_busy); exited is empty on a timeout."""
+    deadline = now() + max_seconds
+    while True:
+        exited = [r for r in busy if not is_live(r)]
+        if exited or now() >= deadline:
+            return exited, [r for r in busy if r not in exited]
+        sleep(interval)
 
 
 def watch(pidfile: Path | str, *, log: Path | str | None = None, max_seconds: float = 570, interval: float = 20) -> dict[str, Any]:
