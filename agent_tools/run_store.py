@@ -1,5 +1,6 @@
 """A run's usage: the `<run_id>.usage.json` file first, the read-only SQLite
-store `cox.db` only once that file is gone. Reads only; never creates,
+store `cox.db` only once that file is gone. `usages` lists every run that way,
+and `run_started` reads a run's `launched_at`. Reads only; never creates,
 migrates or writes the store."""
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-__all__ = ["call_from_row", "connect_readonly", "summarize", "usage"]
+__all__ = ["call_from_row", "connect_readonly", "run_started", "summarize", "usage", "usages"]
 
 STORE_FILENAME = "cox.db"
 
@@ -93,4 +94,51 @@ def usage(runs_dir: Path, run_id: str) -> dict | None:
     if from_file is not None:
         return from_file
     calls = _read_calls(Path(runs_dir), run_id)
-    return {"run_id": run_id, "calls": calls, "summary": summarize(calls)} if calls else None
+    return _store_usage(run_id, calls) if calls else None
+
+
+def _store_usage(run_id: str, calls: list[dict]) -> dict:
+    return {"run_id": run_id, "calls": calls, "summary": summarize(calls)}
+
+
+def _store_runs(runs_dir: Path) -> dict[str, list[dict]]:
+    """Every run with `node_calls` rows, its calls ordered by ts then seq."""
+    conn = connect_readonly(runs_dir)
+    if conn is None:
+        return {}
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM node_calls ORDER BY run_id, ts, seq").fetchall()
+    except sqlite3.DatabaseError:
+        return {}
+    finally:
+        conn.close()
+    by_run: dict[str, list[dict]] = {}
+    for row in rows:
+        by_run.setdefault(row["run_id"], []).append(call_from_row(row))
+    return by_run
+
+
+def usages(runs_dir: Path) -> dict[str, dict]:
+    """Run id to usage: every parsing usage file, then each store run that has no file."""
+    files = {
+        path.name.removesuffix(".usage.json"): body
+        for path in sorted(Path(runs_dir).glob("*.usage.json"))
+        if (body := _read_file(path)) is not None
+    }
+    stored = {rid: _store_usage(rid, calls) for rid, calls in _store_runs(Path(runs_dir)).items() if rid not in files}
+    return {**files, **stored}
+
+
+def run_started(runs_dir: Path, run_id: str) -> str | None:
+    """The `launched_at` of the store's `runs` row, else None."""
+    conn = connect_readonly(Path(runs_dir))
+    if conn is None:
+        return None
+    try:
+        row = conn.execute("SELECT launched_at FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        conn.close()
+    return None if row is None else row[0]
