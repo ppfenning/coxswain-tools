@@ -7,15 +7,24 @@ store."""
 
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-__all__ = ["call_from_row", "connect_readonly", "run_started", "summarize", "usage", "usages"]
+__all__ = [
+    "TracesUnavailable", "call_events", "call_from_row", "connect_readonly", "run_started", "summarize", "usage", "usages",
+]
 
 STORE_FILENAME = "cox.db"
+TRACES_DIRNAME = "traces"
+
+
+class TracesUnavailable(Exception):
+    """The trace store is needed but the optional `zstandard` package is not installed."""
+
 
 # Columns that carry over unchanged from a node_calls row to a usage-file call.
 _SAME = (
@@ -137,6 +146,49 @@ def usages(runs_dir: Path) -> dict[str, dict]:
     }
     stored = {rid: _store_usage(rid, calls) for rid, calls in _store_runs(Path(runs_dir)).items() if rid not in files}
     return {**files, **stored}
+
+
+def _json_objects(lines: Any) -> list[dict]:
+    """The lines that parse as a JSON object, in order; blank, unparseable and non-object lines are dropped."""
+    def parsed(line: str) -> Any:
+        try:
+            return json.loads(line)
+        except ValueError:
+            return None
+
+    return [row for line in lines if line.strip() if isinstance(row := parsed(line), dict)]
+
+
+def _loose_events(path: Path) -> list[dict]:
+    try:
+        return _json_objects(path.read_text(encoding="utf-8", errors="replace").splitlines())
+    except OSError:
+        return []
+
+
+def _store_events(traces: Path, run_id: str, call_id: str) -> list[dict]:
+    """Events of one call from `YYYY/MM/DD/<run_id>.jsonl.zst` day files, ordered by each row's `seq`."""
+    try:
+        import zstandard
+    except ImportError as exc:
+        raise TracesUnavailable("reading traces needs zstandard: install coxswain-tools[traces]") from exc
+
+    def rows(path: Path) -> list[dict]:
+        with path.open("rb") as fh:
+            reader = zstandard.ZstdDecompressor().stream_reader(fh, read_across_frames=True)
+            return _json_objects(list(io.TextIOWrapper(reader, encoding="utf-8")))
+
+    mine = [r for path in sorted(traces.glob(f"*/*/*/{run_id}.jsonl.zst")) for r in rows(path) if r.get("call_id") == call_id]
+    return [r["event"] for r in sorted(mine, key=lambda r: r["seq"])]
+
+
+def call_events(runs_dir: Path, run_id: str, call: Mapping[str, Any]) -> list[dict] | None:
+    """A call's stream events: its loose `trace` file when that exists, else the trace store by `call["id"]`, else None."""
+    loose = call.get("trace")
+    if isinstance(loose, str) and loose and Path(loose).is_file():
+        return _loose_events(Path(loose))
+    traces = Path(runs_dir) / TRACES_DIRNAME
+    return _store_events(traces, run_id, str(call.get("id"))) if traces.is_dir() else None
 
 
 def run_started(runs_dir: Path, run_id: str) -> str | None:

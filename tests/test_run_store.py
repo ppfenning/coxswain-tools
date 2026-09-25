@@ -1,5 +1,7 @@
 import json
 import sqlite3
+import sys
+import types
 
 import pytest
 
@@ -228,3 +230,66 @@ def test_run_started_is_none_for_a_run_the_store_does_not_have(tmp_path):
     runs_table(tmp_path, RUN)
     assert run_store.run_started(tmp_path, "other") is None
     assert run_store.run_started(tmp_path / "missing", "other") is None
+
+
+def day_file(runs_dir, day, run_id, *frames):
+    """Write one zstd file, one frame per append, as graphs does: `traces/YYYY/MM/DD/<run_id>.jsonl.zst`."""
+    import zstandard
+
+    def frame(rows):
+        text = "".join(json.dumps({"run_id": run_id, **r}, sort_keys=True, separators=(",", ":")) + "\n" for r in rows)
+        return zstandard.ZstdCompressor().compress(text.encode())
+
+    path = runs_dir / "traces" / day / f"{run_id}.jsonl.zst"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"".join(frame(rows) for rows in frames))
+
+
+def test_call_events_prefers_the_loose_file_and_skips_a_line_that_is_not_an_object(tmp_path):
+    loose = tmp_path / "r1-trace" / "scope_epic-1.jsonl"
+    loose.parent.mkdir()
+    loose.write_text('{"type":"a"}\nnot json\n[1]\n\n{"type":"b"}\n')
+    (tmp_path / "traces").mkdir()
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1", "trace": str(loose)}) == [{"type": "a"}, {"type": "b"}]
+
+
+def test_call_events_reads_the_store_in_seq_order_across_days_ignoring_other_calls(tmp_path):
+    pytest.importorskip("zstandard")
+
+    def row(call, seq, name):
+        return {"call_id": call, "seq": seq, "event": {"n": name}}
+
+    day_file(tmp_path, "2026/09/24", "r1", [row("c1", 1, "b"), row("c2", 0, "x")], [row("c1", 0, "a")])
+    day_file(tmp_path, "2026/09/25", "r1", [row("c1", 3, "d"), row("c1", 2, "c")])
+    day_file(tmp_path, "2026/09/25", "r2", [row("c1", 0, "other run")])
+    missing = {"id": "c1", "trace": str(tmp_path / "gone.jsonl")}
+    assert run_store.call_events(tmp_path, "r1", missing) == [{"n": "a"}, {"n": "b"}, {"n": "c"}, {"n": "d"}]
+    assert run_store.call_events(tmp_path, "r1", {"id": "c2"}) == [{"n": "x"}]
+
+
+def test_call_events_store_glue_runs_without_zstandard_against_a_stand_in_decompressor(tmp_path, monkeypatch):
+    """Runs where zstandard is absent: the day files hold plain lines and the stand-in passes bytes through."""
+    stand_in = types.SimpleNamespace(
+        ZstdDecompressor=lambda: types.SimpleNamespace(stream_reader=lambda fh, read_across_frames: fh)
+    )
+    monkeypatch.setitem(sys.modules, "zstandard", stand_in)
+    for day, seqs in (("2026/09/24", (1, 0)), ("2026/09/25", (2,))):
+        path = tmp_path / "traces" / day / "r1.jsonl.zst"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rows = [{"run_id": "r1", "call_id": "c1", "seq": s, "event": {"n": s}} for s in seqs]
+        rows.append({"run_id": "r1", "call_id": "c2", "seq": 0, "event": {"n": "other"}})
+        path.write_text("".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows))
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1"}) == [{"n": 0}, {"n": 1}, {"n": 2}]
+
+
+def test_call_events_is_none_with_no_loose_file_and_no_trace_store(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "zstandard", None)
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1", "trace": str(tmp_path / "gone.jsonl")}) is None
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1"}) is None
+
+
+def test_call_events_without_zstandard_raises_naming_the_extra(tmp_path, monkeypatch):
+    (tmp_path / "traces").mkdir()
+    monkeypatch.setitem(sys.modules, "zstandard", None)
+    with pytest.raises(run_store.TracesUnavailable, match=r"coxswain-tools\[traces\]"):
+        run_store.call_events(tmp_path, "r1", {"id": "c1"})
