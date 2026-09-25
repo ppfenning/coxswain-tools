@@ -34,6 +34,7 @@ __all__ = [
     "pull_plan",
     "render_context",
     "render_status",
+    "review_argv",
     "run_entries",
     "slugify",
     "state_problems",
@@ -348,9 +349,10 @@ def intake_file(title: str, body: str, repo: str, date: str, *, source: str = ""
 
 def pull_plan(
     candidates: Sequence, taken_links: frozenset[str], profile_repos: Mapping[str, str], *, date: str, source: str
-) -> tuple[list[dict], list[str]]:
-    """Intake files to write and the refusals; an unmapped repo is refused, never guessed, and a second candidate on one path is refused, never dropped."""
-    fresh = [c for c in candidates if c.link not in taken_links]
+) -> tuple[list[dict], list[str], list[str]]:
+    """Intake files, PR links to review, and refusals; an unmapped repo is refused, never guessed, and a second candidate on one path is refused, never dropped."""
+    reviews = [c.link for c in candidates if c.kind == "pr"]
+    fresh = [c for c in candidates if c.kind != "pr" and c.link not in taken_links]
     unmapped = [_pull_refusal(c, f"repo {c.repo} has no mapping in the profile") for c in fresh if c.repo not in profile_repos]
     mapped = [c for c in fresh if c.repo in profile_repos]
     unnamed = [_pull_refusal(c, "title has no alphanumeric characters to slugify") for c in mapped if not slugify(c.title)]
@@ -367,7 +369,11 @@ def pull_plan(
         if not is_first
     ]
     files = [mapping for (_, mapping), is_first in zip(planned, first) if is_first]
-    return files, unmapped + unnamed + clashes
+    return files, reviews, unmapped + unnamed + clashes
+
+
+def review_argv(link: str, profile: str) -> list[str]:
+    return ["cox", "runs", "review", "--pr", link, "--profile", profile]
 
 
 def _pull_refusal(candidate, reason: str) -> str:
