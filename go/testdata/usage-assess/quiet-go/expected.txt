@@ -1,2 +1,0 @@
-go: spent 14% of ceiling at 100% elapsed; on pace; weekly 4% of weekly ceiling
-exit 0

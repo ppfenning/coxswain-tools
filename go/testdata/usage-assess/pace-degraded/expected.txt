@@ -1,2 +1,0 @@
-go_degraded: spent 60% of ceiling at 100% elapsed; ceilings tier=cheap effort=high; weekly 3% of weekly ceiling
-exit 0
