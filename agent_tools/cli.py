@@ -214,6 +214,71 @@ def _stats_spend_mix(a: argparse.Namespace) -> int:
     return 0
 
 
+def _file_date(p: Path) -> str:
+    return datetime.datetime.fromtimestamp(p.stat().st_mtime, datetime.UTC).date().isoformat()
+
+
+def _in_window(p: Path, since: str | None) -> bool:
+    return since is None or _file_date(p) >= since
+
+
+def _json_or(text: str | None, default):
+    try:
+        return json.loads(text) if text is not None else default
+    except ValueError:
+        return default
+
+
+def _chair_catalog_prices(a: argparse.Namespace) -> dict:
+    """model -> price from `<cartridges_dir>/providers/catalog.yaml`, read as data; {} when the profile or catalog is unreadable."""
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(text) if text is not None else {}
+    except route.ProfileError:
+        profile = {}
+    cartridges_dir = profile.get("cartridges_dir")
+    catalog_text = _read_text_or_none(Path(cartridges_dir).expanduser() / "providers" / "catalog.yaml") if cartridges_dir else None
+    try:
+        return stats_chair.catalog_prices(yaml.safe_load(catalog_text) if catalog_text is not None else None)
+    except yaml.YAMLError:
+        return {}
+
+
+def _chair_transcript_lines(projects_dir: Path, session: str) -> list[str]:
+    """Every line of the session transcript and of its subagent transcripts."""
+    paths = [*projects_dir.glob(f"*/{session}.jsonl"), *projects_dir.glob(f"*/{session}/subagents/agent-*.jsonl")]
+    return [line for p in sorted(paths) for line in (_read_text_or_none(p) or "").splitlines()]
+
+
+def _stats_chair(a: argparse.Namespace) -> int:
+    runs_dir = Path(a.runs_dir)
+    landed_tasks = [
+        (p, run_dir.name, p.stem)
+        for run_dir in sorted(d for d in runs_dir.glob("*") if d.is_dir())
+        for p in sorted(run_dir.glob("tasks/*/*.json"))
+        if _json_or(_read_text_or_none(p), {}).get("landed") is True
+    ]
+    landed = [(run, task) for p, run, task in landed_tasks if _in_window(p, a.since)]
+    usage_calls = [
+        {**call, "run": p.name[: -len(".usage.json")]}
+        for p in sorted(runs_dir.glob("*.usage.json")) if _in_window(p, a.since)
+        for call in (_json_or(_read_text_or_none(p), {}).get("calls") or [])
+    ]
+    land_rows = [r for line in (_read_text_or_none(runs_dir / "land.jsonl") or "").splitlines() if isinstance(r := _json_or(line, None), dict)]
+    prices = _chair_catalog_prices(a)
+    sessions = stats_chair.session_ids(chair.read(runs_dir) if (runs_dir / chair.CHAIR_FILENAME).exists() else None, a.session or [])
+    lines = [line for s in sessions for line in _chair_transcript_lines(Path(a.projects_dir).expanduser(), s)]
+    chair_usd = stats_chair.chair_cost(stats_chair.lines_since(lines, a.since), prices) if prices else None
+    items = [
+        stats_chair.frontmatter_item(text, p.stem)
+        for p in sorted(Path(a.work_store_root).glob("*/*/*.md")) if p.name != "initiative.md"
+        if (text := _read_text_or_none(p)) is not None
+    ]
+    report = stats_chair.chair_report(a.since, landed, usage_calls, land_rows, chair_usd, items)
+    print(json.dumps(report, indent=2) if a.json else stats_chair.render_chair(report))
+    return 0
+
+
 def _bounds_ceiling_for(a: argparse.Namespace):
     """role -> declared ceiling from the resolved provider profile's
     `role_budget_usd` (per-role) falling back to its `budget_usd` (default);
@@ -2990,6 +3055,19 @@ STATS_COMMANDS = [
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
         _stats_spend_mix, False, (),
+    ),
+    commands.Command(
+        "chair", "stats", "harness PRs and $, chair $ per PR, hand-finished lands and quarantine $ by cause",
+        (
+            commands.Arg(("runs_dir",), {"nargs": "?", "default": "runs"}),
+            commands.Arg(("--since",), {"default": None, "help": "keep only records and transcript lines dated on or after DATE (YYYY-MM-DD)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+            commands.Arg(("--session",), {"action": "append", "default": None, "help": "a Claude session id to count as chair cost, beside those in chair.json (repeatable)"}),
+            commands.Arg(("--work-store-root",), {"default": "work"}),
+            commands.Arg(("--projects-dir",), {"default": "~/.claude/projects"}),
+            commands.Arg(("--profile",), {"help": "the routing profile naming cartridges_dir (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+        ),
+        _stats_chair, False, (),
     ),
 ]
 
