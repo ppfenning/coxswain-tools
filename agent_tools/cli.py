@@ -57,6 +57,7 @@ from agent_tools import (
     stats_ingest,
     stats_query,
     stats_schema,
+    stats_system_one,
     steward,
     usage_window,
 )
@@ -293,6 +294,26 @@ def _stats_examples(a: argparse.Namespace) -> int:
     else:
         sys.stdout.write(out)
     print(f"read {len(records)}, written {len(examples)}, skipped {len(records) - len(examples)}", file=sys.stderr)
+    return 0
+
+
+def _stats_system_one(a: argparse.Namespace) -> int:
+    usages = [
+        u for p in sorted(Path(a.runs_dir).glob("*.usage.json"))
+        if isinstance(u := _json_or(_read_text_or_none(p), None), dict)
+    ]
+    found = stats_system_one.summaries(stats_system_one.rows_from_usage(usages), a.since, a.role)
+    print(json.dumps(stats_system_one.to_json(found), indent=2) if a.json else stats_system_one.render_report(found))
+    if a.propose:
+        today = datetime.datetime.now(datetime.UTC).date().isoformat()
+        for s in found:
+            if stats_system_one.verdict(s)[0] != "READY":
+                print(f"skipped {s.role}: not ready", file=sys.stderr)
+                continue
+            out = Path(a.plans_dir) / f"system-one-graduation-{s.role}-{today}.md"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(stats_system_one.render_proposal(s, today), encoding="utf-8")
+            print(f"wrote {out}", file=sys.stderr)
     return 0
 
 
@@ -3005,7 +3026,8 @@ STATS_GROUP = commands.Group(
     epilog="examples:\n  cox stats ingest\n  cox stats ingest runs --db workspace/stats/stats.db"
            "\n  cox stats roles --json\n  cox stats explain build --json\n  cox stats series --json"
            "\n  cox stats coverage --json\n  cox stats bounds --json\n  cox stats spend-mix --json"
-           "\n  cox stats examples --role handoff --out examples.jsonl",
+           "\n  cox stats examples --role handoff --out examples.jsonl"
+           "\n  cox stats system-one --role handoff --propose",
 )
 STATS_COMMANDS = [
     commands.Command(
@@ -3096,6 +3118,18 @@ STATS_COMMANDS = [
             commands.Arg(("--since",), {"default": None, "help": "keep only records dated on or after DATE (YYYY-MM-DD)"}),
         ),
         _stats_examples, False, (),
+    ),
+    commands.Command(
+        "system-one", "stats", "shadow-to-on graduation report per role, and a proposal for Pat",
+        (
+            commands.Arg(("runs_dir",), {"nargs": "?", "default": "runs"}),
+            commands.Arg(("--role",), {"default": None, "help": "report this role only"}),
+            commands.Arg(("--since",), {"default": None, "help": "keep only rows dated on or after DATE (YYYY-MM-DD)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+            commands.Arg(("--propose",), {"action": "store_true", "help": "write a graduation proposal for each READY role; never edits a profile"}),
+            commands.Arg(("--plans-dir",), {"default": "plans", "help": "where --propose writes system-one-graduation-<role>-<date>.md"}),
+        ),
+        _stats_system_one, False, (),
     ),
 ]
 
