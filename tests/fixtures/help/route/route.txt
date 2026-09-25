@@ -11,7 +11,7 @@ positional arguments:
     lint                static ticket lint over a filed initiative, work-shape.md §3
     groups              print the newest plans/intake-groups/<date>.md file, work-shape.md §5
     chair               the chair lock for the landing loop (runs/chair.json)
-    sync                mirror the work store onto the GitHub Projects board
+    sync                mirror the work store onto the profile's tracker
     launch              run one of the harness's graphs directly
 
 options:

@@ -3644,7 +3644,7 @@ ROUTE_COMMANDS = [
         sub_dest="chair_cmd", sub_required=False,
     ),
     commands.Command(
-        "sync", "route", "mirror the work store onto the GitHub Projects board",
+        "sync", "route", "mirror the work store onto the profile's tracker",
         (
             commands.Arg(("--profile",)), commands.Arg(("--item",)), commands.Arg(("--project",)),
             commands.Arg(("--workspace",)), commands.Arg(("--dry-run",), {"action": "store_true"}),
