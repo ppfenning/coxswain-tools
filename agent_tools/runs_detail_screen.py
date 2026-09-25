@@ -6,7 +6,7 @@ import contextlib
 import json
 from pathlib import Path
 
-from agent_tools import runs_top_screen
+from agent_tools import run_store, runs_top_screen
 from agent_tools.records import load_trace
 
 __all__ = ["draw", "facts_for"]
@@ -49,7 +49,16 @@ def _newest_trace(root: Path, run: str) -> Path | None:
 
 def _tail(root: Path, run: str) -> list[str]:
     newest = _newest_trace(root, run)
-    return _tool_names(load_trace(newest))[-3:] if newest else []
+    if newest:
+        return _tool_names(load_trace(newest))[-3:]
+    calls = (run_store.usage(root, run) or {}).get("calls") or []
+    if not calls:
+        return []
+    try:
+        events = run_store.call_events(root, run, calls[-1])
+    except run_store.TracesUnavailable:
+        return []
+    return _tool_names(events or [])[-3:]
 
 
 def facts_for(runs_dir, run: str, now_alive=runs_top_screen._default_alive) -> dict:

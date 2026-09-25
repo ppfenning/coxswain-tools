@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from agent_tools import cli
-from agent_tools.runs_top_screen import draw, facts, first_visible, loop, rows_now
+from agent_tools import cli, run_store
+from agent_tools.runs_top_screen import _fact, calls_from_usage, draw, facts, first_visible, loop, rows_now
 
 
 def _write(path, text):
@@ -30,6 +30,45 @@ def test_facts_reads_one_alive_run_with_calls_and_phases(tmp_path):
     assert f["alive"] is True
     assert f["phases"] == ["build"]
     assert f["calls"] == [{"node": "n1", "attempt": 1, "cost_usd": 0.5, "turns": 4}]
+
+
+def test_calls_from_usage_numbers_attempts_per_role_in_order():
+    stored = [
+        {"role": "plan", "cost_usd": 0.1, "turns": 2},
+        {"role": "build", "cost_usd": 0.2, "turns": 3},
+        {"role": "build", "cost_usd": 0.3, "turns": 4},
+    ]
+
+    assert calls_from_usage(stored) == [
+        {"node": "plan", "attempt": 1, "cost_usd": 0.1, "turns": 2},
+        {"node": "build", "attempt": 1, "cost_usd": 0.2, "turns": 3},
+        {"node": "build", "attempt": 2, "cost_usd": 0.3, "turns": 4},
+    ]
+
+
+def test_fact_with_no_trace_dir_reads_calls_from_the_store(tmp_path, monkeypatch):
+    stored = [{"role": "plan", "cost_usd": 0.1, "turns": 2}, {"role": "build", "cost_usd": 0.2, "turns": 3}]
+    monkeypatch.setattr(run_store, "usage", lambda root, run: {"calls": stored})
+
+    fact = _fact(tmp_path, "r1", False)
+
+    assert fact["calls"] == calls_from_usage(stored)
+    started = [e.detail["node"] for e in fact["events"] if e.kind == "node_started"]
+    assert started == ["plan", "build"]
+
+
+def test_fact_with_trace_files_ignores_the_store(tmp_path, monkeypatch):
+    def boom(root, run):
+        raise AssertionError("the store must not be read when trace files exist")
+
+    monkeypatch.setattr(run_store, "usage", boom)
+    trace = tmp_path / "r1-trace"
+    trace.mkdir()
+    _write(trace / "n1-1.jsonl", json.dumps({"type": "result", "num_turns": 4, "total_cost_usd": 0.5}) + "\n")
+
+    fact = _fact(tmp_path, "r1", True)
+
+    assert fact["calls"] == [{"node": "n1", "attempt": 1, "cost_usd": 0.5, "turns": 4}]
 
 
 def test_facts_lists_store_phases_by_ts_for_a_live_run_with_no_phase_files(tmp_path):
