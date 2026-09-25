@@ -63,16 +63,17 @@ def test_existing_parses_the_two_listings():
     def run(argv, **kw):
         calls.append(argv)
         if argv[:3] == ["gh", "issue", "list"]:
-            return _Result(stdout=json.dumps([{"number": 5, "title": "T", "body": "B"}]))
+            return _Result(stdout=json.dumps([{"number": 5, "title": "T", "body": "B", "state": "OPEN"}]))
         return _Result(stdout=json.dumps({"items": [
             {"id": "PVTI_5", "content": {"number": 5}, "title": "T", "status": "Todo", "state": "Ready", "cost": "$1.00"}
         ]}))
 
     ok, (issues, project_items, item_node_ids) = route_sync_gh.existing(run, ["acme/widgets"], "acme/7")
     assert ok is True
-    assert issues == {"5": {"title": "T", "body": "B"}}
+    assert issues == {"5": {"title": "T", "body": "B", "state": "OPEN"}}
     assert project_items == {"5": {"State": "Ready", "Cost": "$1.00"}}
     assert item_node_ids == {"5": "PVTI_5"}
+    assert "number,title,body,state" in calls[0]
     assert calls[0][:5] == ["gh", "issue", "list", "--repo", "acme/widgets"]
     assert calls[1][:3] == ["gh", "project", "item-list"] and "7" in calls[1]
     assert calls[0][-2:] == ["--limit", "10000"] and calls[1][-2:] == ["--limit", "10000"]
@@ -299,7 +300,7 @@ def test_existing_item_reads_only_that_issue_and_its_project_item():
     ok, (issues, project_items, item_node_ids) = route_sync_gh.existing_item(
         _item_run(calls), "acme/widgets", "5", "acme/7")
     assert ok is True
-    assert issues == {"5": {"title": "T", "body": "B"}}
+    assert issues == {"5": {"title": "T", "body": "B", "state": "OPEN"}}
     assert project_items == {"5": {"State": "Ready", "Cost": "$1.00"}} and item_node_ids == {"5": "PVTI_5"}
     assert calls[0] == ["gh", "issue", "view", "5", "--repo", "acme/widgets", "--json", "number,title,body,state,labels"]
     assert calls[1][:3] == ["gh", "api", "graphql"] and "number=5" in calls[1] and len(calls) == 2
@@ -367,3 +368,145 @@ def test_cli_item_sync_issues_only_the_per_item_gh_calls(tmp_path, monkeypatch):
     assert rc == 0
     assert [c[:3] for c in calls] == [["gh", "issue", "view"], ["gh", "api", "graphql"]]
     assert not any("item-list" in c for c in calls)
+
+
+def test_execute_closes_the_issue_with_gh_issue_close_and_reports_a_failed_close():
+    calls = []
+    steps = [{"kind": "issue_close", "issue": "5"}]
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return _Result(returncode=0)
+
+    item = cli.route_sync.Item("a", "A", "B", "acme/widgets", "done", "", "", 0.0, "", "5")
+    log = route_sync_gh.execute(steps, run, "acme/7", "/tmp/unused", [item])
+    assert log == [("issue_close", True, "")]
+    assert calls == [["gh", "issue", "close", "5", "--repo", "acme/widgets"]]
+    failed = route_sync_gh.execute(steps, lambda argv, **kw: _Result(returncode=1, stderr="nope"), "acme/7", "/tmp/unused", [item])
+    assert failed == [("issue_close", False, "nope")]
+
+
+def _checkout(root):
+    """A directory whose git origin resolves to `acme/widgets`, which is what a work item's repo must be."""
+    _write(root / "checkout" / ".git" / "config", '[remote "origin"]\n\turl = git@github.com:acme/widgets.git\n')
+    return root / "checkout"
+
+
+def test_cli_item_sync_closes_the_open_issue_of_a_done_item(tmp_path, monkeypatch):
+    _write(tmp_path / "work" / "init1" / "initiative.md", f"---\nrepo: {_checkout(tmp_path)}\n---\n")
+    _write(tmp_path / "work" / "init1" / "build" / "t.md",
+           "---\nid: t\ntitle: T\nstate: done\nissue: 5\n---\nB\n")
+    calls = []
+    inner = _item_run(calls)
+
+    def run(argv, **kw):
+        if argv[:3] == ["gh", "auth", "status"]:
+            return _Result()
+        if argv[:3] == ["gh", "project", "view"]:
+            return _Result(stdout=json.dumps({"id": "PVT_1"}))
+        if argv[:3] == ["gh", "project", "field-list"]:
+            names = ("State", "Phase", "Run", "Cost", "Gate")
+            return _Result(stdout=json.dumps({"fields": [
+                {"name": n, "id": f"F_{n}", "options": [{"id": "OPT_done", "name": "Done"}] if n == "State" else []}
+                for n in names]}))
+        if argv[:3] in (["gh", "issue", "view"], ["gh", "api", "graphql"]):
+            return inner(argv, **kw)
+        calls.append(argv)
+        return _Result(stdout="{}")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    rc = cli.main(["route", "sync", "--item", "t", "--project", "acme/7", "--workspace", str(tmp_path)])
+    assert rc == 0
+    assert calls[-1] == ["gh", "issue", "close", "5", "--repo", "acme/widgets"]
+    calls.clear()
+    _write(tmp_path / "work" / "init1" / "build" / "t.md", "---\nid: t\ntitle: T\nstate: done\nissue: 5\n---\nB\n")
+
+    def closed(argv, **kw):
+        out = run(argv, **kw)
+        if argv[:3] == ["gh", "issue", "view"]:
+            return _Result(stdout=json.dumps({"number": 5, "title": "T", "body": "B", "state": "CLOSED",
+                                              "labels": [{"name": "coxswain"}]}))
+        return out
+
+    monkeypatch.setattr(subprocess, "run", closed)
+    cli.main(["route", "sync", "--item", "t", "--project", "acme/7", "--workspace", str(tmp_path)])
+    assert not any(c[:3] == ["gh", "issue", "close"] for c in calls)
+
+
+def _file_profile(tmp_path):
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"team: acme\nworkspace_dir: {ws}\nharness_dir: /opt/h\ncartridges_dir: /opt/c\n"
+                       "provider_profile: /opt/p.yaml\n")
+    return profile, ws
+
+
+def _gh_for_file(calls, create_fails=False):
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[:3] == ["gh", "issue", "create"]:
+            return (_Result(returncode=1, stderr="rate limited") if create_fails
+                    else _Result(stdout="https://github.com/acme/widgets/issues/9"))
+        if argv[:3] == ["gh", "project", "list"]:
+            return _Result(stdout=json.dumps({"projects": [{"title": "Coxswain", "number": 7}]}))
+        if argv[:3] == ["gh", "project", "field-list"]:
+            return _Result(stdout=json.dumps({"fields": [
+                {"name": n, "id": f"F_{n}", "options": [{"id": "O", "name": "Ready"}, {"id": "I", "name": "Intake"}]}
+                for n in ("State", "Phase", "Run", "Cost", "Gate")]}))
+        if argv[:3] == ["gh", "project", "item-add"]:
+            return _Result(stdout=json.dumps({"id": "PVTI_9"}))
+        return _Result(stdout="{}")
+    return run
+
+
+def _creates(calls):
+    return [c for c in calls if c[:3] == ["gh", "issue", "create"]]
+
+
+def test_route_file_creates_the_items_issue_at_birth_and_writes_it_back(tmp_path, monkeypatch, capsys):
+    profile, ws = _file_profile(tmp_path)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", _gh_for_file(calls))
+    rc = cli.main(["route", "file", "--profile", str(profile), "--repo", str(_checkout(tmp_path)), "--title", "Fix the thing"])
+    assert rc == 0
+    assert [c[c.index("--title") + 1] for c in _creates(calls)] == ["Fix the thing"]
+    assert "issue: 9" in (ws / "work" / "fix-the-thing" / "build" / "fix-the-thing.md").read_text()
+    assert "synced fix-the-thing" in capsys.readouterr().out
+
+
+def test_route_file_intake_syncs_the_intake_item_too(tmp_path, monkeypatch):
+    profile, ws = _file_profile(tmp_path)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", _gh_for_file(calls))
+    rc = cli.main(["route", "file", "--profile", str(profile), "--repo", "acme/widgets", "--title", "Fix the thing", "--intake"])
+    assert rc == 0 and len(_creates(calls)) == 1
+    [written] = list((ws / "intake").glob("*.md"))
+    assert "issue: 9" in written.read_text()
+
+
+def test_route_file_from_intake_syncs_only_the_new_work_item(tmp_path, monkeypatch):
+    profile, ws = _file_profile(tmp_path)
+    _write(ws / "intake" / "2026-09-05-fresh.md",
+           f"---\nid: fresh\ntitle: Fresh idea\nrepo: {_checkout(tmp_path)}\n---\nbody text\n")
+    calls = []
+    monkeypatch.setattr(subprocess, "run", _gh_for_file(calls))
+    rc = cli.main(["route", "file", "--profile", str(profile), "--from-intake", str(ws / "intake" / "2026-09-05-fresh.md")])
+    assert rc == 0
+    assert [c[c.index("--title") + 1] for c in _creates(calls)] == ["Fresh idea"]
+    assert "issue: 9" in (ws / "work" / "fresh-idea" / "build" / "fresh-idea.md").read_text()
+    assert not (ws / "intake" / "2026-09-05-fresh.md").exists()
+
+
+def test_route_file_still_writes_the_item_and_says_so_in_one_line_when_the_sync_fails(tmp_path, monkeypatch, capsys):
+    profile, ws = _file_profile(tmp_path)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", _gh_for_file(calls, create_fails=True))
+    rc = cli.main(["route", "file", "--profile", str(profile), "--repo", str(_checkout(tmp_path)), "--title", "Fix the thing"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert (ws / "work" / "fix-the-thing" / "build" / "fix-the-thing.md").exists()
+    failures = [line for line in out.splitlines() if "issue sync failed" in line]
+    assert failures == ["route file: wrote fix-the-thing; issue sync failed (exit 1; issue_create: rate limited); "
+                        "run `route sync --item fix-the-thing`"]
+    assert "issue_create:" not in out.replace(failures[0], "")

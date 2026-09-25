@@ -231,11 +231,14 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
         sync = []
     else:
         sync = [{"kind": "route_sync", "item": task}]
+    # No issue yet: sync before the PR opens so its body can say `Closes #n`.
+    presync = [{"kind": "route_sync", "item": task, "before": "pr_create"}] if mirrored and tracker is not None and issue is None else []
     return [
         {"kind": "pick_branch", "branch": chosen, "commit_subject": subject},
         {"kind": "cherry_pick", "branch": chosen, "commit_subject": subject, "onto": pr_branch, "from": default_branch},
         {"kind": "checks", "checks": checks_argv(repo_facts or {})},
         {"kind": "push", "branch": pr_branch},
+        *presync,
         {"kind": "pr_create", "title": draft.get("title", subject), "body": pr_body(record, issue if mirrored else None)},
         {"kind": "wait_checks"},
         {"kind": "merge", "squash": True, "delete_branch": True},
@@ -243,6 +246,13 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
         {"kind": "mark_done", "task": task},
         *sync,
     ]
+
+
+def with_issue(steps: Sequence[dict[str, Any]], record: dict[str, Any], issue: str | int | None) -> list[dict[str, Any]]:
+    """`steps` with the `pr_create` body rebuilt to carry `Closes #n` for `issue`; unchanged for no issue."""
+    if not issue:
+        return list(steps)
+    return [{**s, "body": pr_body(record, issue)} if s["kind"] == "pr_create" else s for s in steps]
 
 
 def resume_decision(expected_tree: str, local_tree: str | None, remote_tree: str | None,

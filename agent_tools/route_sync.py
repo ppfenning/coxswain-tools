@@ -15,6 +15,11 @@ _STATE_LABEL = {
 
 _LABEL = "coxswain"
 
+# States with no board label whose issue still syncs: `approved` is what an item is when `runs land`
+# syncs it before the PR opens, `dropped` is closed. Any other unlabelled state stays a refusal.
+_ISSUE_ONLY = frozenset({"approved", "dropped"})
+_CLOSING = frozenset({"done", "dropped"})
+
 
 @dataclass(frozen=True)
 class Item:
@@ -74,16 +79,23 @@ def _project_steps(key: str | None, wanted: dict, project_items: dict) -> list[d
     return add_step + set_steps
 
 
+def _close_steps(item: Item, issues: dict) -> list[dict]:
+    """`issue_close` when the item is `done` or `dropped` and its labelled issue on file is open."""
+    stored = issues.get(item.issue) if item.issue else None
+    is_open = stored is not None and str(stored.get("state", "")).upper() == "OPEN"
+    return [{"kind": "issue_close", "issue": item.issue}] if item.state in _CLOSING and is_open else []
+
+
 def _item_steps(item: Item, issues: dict, project_items: dict) -> list[dict]:
     wanted = _fields(item)
-    if wanted is None:
+    if wanted is None and item.state not in _ISSUE_ONLY:
         return [{"kind": "refuse", "item_id": item.id, "detail": f"unknown state: {item.state!r}"}]
     if not item.repo and item.issue is None:
         return [{"kind": "refuse", "item_id": item.id, "detail": "no repository resolves for this item"}]
     issue_steps, key = _issue_steps(item, issues)
-    project_steps = _project_steps(key, wanted, project_items)
+    project_steps = [] if wanted is None else _project_steps(key, wanted, project_items)
     writeback = [{"kind": "writeback", "item_id": item.id, "issue": key}] if item.issue is None else []
-    return issue_steps + project_steps + writeback
+    return issue_steps + project_steps + writeback + _close_steps(item, issues)
 
 
 def plan(items: list[Item], issues: dict, project_items: dict, tracker: str) -> list[dict]:
@@ -104,6 +116,8 @@ def _line(step: dict) -> str:
         return f"project_add {step['issue'] or '(new issue)'}"
     if kind == "project_set":
         return f"project_set {step['issue'] or '(new issue)'} {step['field']}={step['value']}"
+    if kind == "issue_close":
+        return f"issue_close {step['issue']}"
     if kind == "writeback":
         return f"writeback {step['item_id']} -> {step['issue'] or '(new issue)'}"
     return f"refuse {step['item_id']}: {step['detail']}"
