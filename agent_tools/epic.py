@@ -86,11 +86,17 @@ def _mtime(path: Path) -> float | None:
         return None
 
 
-def run_live(pid: int | None, pidfile: Path | str, log: Path | str | None = None) -> bool:
-    """Edge. `run_alive` for the run whose pidfile is `<run>.pid`, reading its `.launched.json` and `.log` beside it; pid <= 0 is never signalled and a pid too large for pid_t reads as dead."""
+def run_live(pid: int | None, pidfile: Path | str, log: Path | str | None = None, now: str | None = None) -> bool:
+    """Edge. The store lease for the run whose pidfile is `<run>.pid` when one exists: live only while this run holds it unexpired. With no lease row, `run_alive` on the pid, reading its `.launched.json` and `.log` beside it; pid <= 0 is never signalled and a pid too large for pid_t reads as dead. `now` is `YYYY-MM-DDTHH:MM:SSZ` UTC."""
+    from agent_tools import run_store  # run_store imports epic at module level
+
+    pidfile = Path(pidfile)
+    row = run_store.lease(pidfile.parent, pidfile.stem)
+    if row is not None:
+        holder, expires_at = row
+        return holder == pidfile.stem and expires_at > (now or datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
     if pid is None or pid <= 0:
         return False
-    pidfile = Path(pidfile)
     logged_at = launched_epoch(_read(pidfile.with_suffix(".launched.json")))
     # the pidfile is written right after the spawn, so its mtime bounds the launch when no launched.json says
     launched_at = logged_at if logged_at is not None else _mtime(pidfile)

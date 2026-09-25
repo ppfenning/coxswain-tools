@@ -525,3 +525,25 @@ def test_usages_equals_the_files_plus_every_store_run_without_a_file(tmp_path):
     rest = {rid: run_store._store_usage(rid, calls) for rid, calls in run_store._store_runs(tmp_path).items() if rid != "r2"}
     assert run_store.usages(tmp_path) == {"r2": body, **rest}
     assert list(run_store.usages(tmp_path)) == ["r2", "r1", "r3"]
+
+
+def leases_table(runs_dir, *rows):
+    """Rows are (name, holder, expires_at)."""
+    conn = sqlite3.connect(runs_dir / "cox.db")
+    conn.execute("CREATE TABLE leases (name TEXT PRIMARY KEY, holder TEXT, epoch INTEGER, heartbeat_at TEXT, expires_at TEXT)")
+    conn.executemany("INSERT INTO leases VALUES (?, ?, 1, '2026-09-25T00:00:00Z', ?)", rows)
+    conn.commit()
+    conn.close()
+
+
+def test_lease_reads_the_prefix_row_for_any_run_of_the_prefix(tmp_path):
+    leases_table(tmp_path, ("runs:x", "x-3", "2026-09-25T06:00:00Z"), ("runs:y", "y-1", "1970-01-01T00:00:00Z"))
+    assert run_store.lease(tmp_path, "x-3") == ("x-3", "2026-09-25T06:00:00Z")
+    assert run_store.lease(tmp_path, "x-4") == ("x-3", "2026-09-25T06:00:00Z")
+    assert run_store.lease(tmp_path, "z-1") is None
+
+
+def test_lease_is_none_with_no_store_or_no_leases_table(tmp_path):
+    assert run_store.lease(tmp_path, "x-3") is None
+    store(tmp_path, ROW)
+    assert run_store.lease(tmp_path, "x-3") is None

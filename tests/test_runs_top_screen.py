@@ -4,6 +4,7 @@ import sqlite3
 import time
 
 import pytest
+from test_run_store import leases_table
 
 from agent_tools import cli, run_store
 from agent_tools.runs_top_screen import _fact, calls_from_usage, draw, facts, first_visible, loop, rows_now
@@ -354,3 +355,11 @@ def test_the_row_names_the_node_written_last_not_the_last_one_alphabetically(tmp
     rows = rows_now(tmp_path)
 
     assert (rows[0].node, rows[0].attempt) == ("build", 4)
+
+
+def test_facts_default_probe_reads_the_lease_not_the_pid(tmp_path):
+    _write(tmp_path / "x-3.pid", str(os.getpid()))
+    _write(tmp_path / "y-1.pid", "999999999")
+    leases_table(tmp_path, ("runs:x", "x-4", "2026-09-25T06:00:00Z"), ("runs:y", "y-1", "2999-01-01T00:00:00Z"))
+
+    assert {f["run"]: f["alive"] for f in facts(tmp_path)} == {"y-1": True}

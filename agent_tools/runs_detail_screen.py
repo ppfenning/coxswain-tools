@@ -61,11 +61,11 @@ def _tail(root: Path, run: str) -> list[str]:
     return _tool_names(events or [])[-3:]
 
 
-def facts_for(runs_dir, run: str, now_alive=runs_top_screen._default_alive) -> dict:
+def facts_for(runs_dir, run: str, now_alive=None) -> dict:
     """`now_alive` is the same pid-probe seam as `runs_top_screen.facts`."""
     root = Path(runs_dir)
     pid = runs_top_screen._read_pid(root / f"{run}.pid")
-    alive = pid is not None and now_alive(pid)
+    alive = pid is not None and runs_top_screen.is_alive(now_alive, pid, root / f"{run}.pid")
     fact = runs_top_screen._fact(root, run, alive)
     return {
         "run": run,

@@ -21,7 +21,7 @@ from typing import Any
 from agent_tools import epic
 
 __all__ = [
-    "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly", "phase_manifests",
+    "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly", "lease", "phase_manifests",
     "phase_names", "run_ids", "run_started", "store_usages", "summarize", "usage", "usages",
 ]
 
@@ -95,6 +95,22 @@ def connect_readonly(runs_dir: Path) -> sqlite3.Connection | None:
     """None when `cox.db` is absent. Opened `mode=ro`, so it can never create the file."""
     path = (Path(runs_dir) / STORE_FILENAME).resolve()
     return sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) if path.exists() else None
+
+
+def lease(runs_dir: Path, run_id: str) -> tuple[str, str] | None:
+    """Edge. The (holder, expires_at) of the store lease for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
+    # mirrors graphs `harness/run_lease.lease_name`: the lease is per prefix, so `x-3` and `x-4` share `runs:x`
+    name = "runs:" + re.sub(r"-\d+$", "", run_id)
+    conn = connect_readonly(runs_dir)
+    if conn is None:
+        return None
+    try:
+        row = conn.execute("SELECT holder, expires_at FROM leases WHERE name = ?", (name,)).fetchone()
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        conn.close()
+    return None if row is None else (row[0], row[1])
 
 
 def run_ids(runs_dir: Path) -> set[str]:
