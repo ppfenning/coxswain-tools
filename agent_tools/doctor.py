@@ -8,7 +8,7 @@ from collections.abc import Mapping
 
 from agent_tools import records, route, schema
 
-__all__ = ["checks", "exit_code", "render"]
+__all__ = ["checks", "exit_code", "parquet_line", "render"]
 
 _MISSING = object()
 _SKIPPED = "skipped: no profile"
@@ -290,6 +290,22 @@ def checks(facts: Mapping) -> list[dict]:
 def exit_code(rows: list[dict]) -> int:
     """0 when every row is ok, else 1."""
     return 0 if all(row["ok"] for row in rows) else 1
+
+
+_PARQUET_FIXES = {
+    "pyarrow missing": "install the parquet extra",
+    # Only reported after pyarrow imported, so installing the extra would change nothing.
+    "root unreachable": "create the traces directory, or correct traces_url in the provider profile",
+}
+
+
+def parquet_line(readable: bool, reason: str) -> str:
+    """The one informational line for Parquet trace reads. Never a row, so it never affects `exit_code`.
+    The fix is chosen by `reason`; an unknown reason is shown with no fix rather than a wrong one."""
+    if readable:
+        return "parquet traces: readable"
+    fix = _PARQUET_FIXES.get(reason)
+    return f"parquet traces: not readable ({reason}); fix: {fix}" if fix else f"parquet traces: not readable ({reason})"
 
 
 def render(rows: list[dict]) -> str:
