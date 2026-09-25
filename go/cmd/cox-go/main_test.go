@@ -39,7 +39,7 @@ func TestUsageAssessPrintsTheExpectedLineAndExitsWithItsCodeForEveryCase(t *test
 	for _, dir := range cases {
 		now, _ := os.ReadFile(filepath.Join(dir, "now"))
 		want, _ := os.ReadFile(filepath.Join(dir, "expected.txt"))
-		env := map[string]string{"COX_NOW": strings.TrimSpace(string(now))}
+		env := map[string]string{"COX_NOW": strings.TrimSpace(string(now)), "COX_NO_CCUSAGE": "1"}
 		args := []string{"--runs-dir", filepath.Join(dir, "runs"), "--profile=" + filepath.Join(dir, "profile.yaml")}
 		stdout, stderr, code := usageAssess(args, func(k string) string { return env[k] }, time.Now)
 		if got := fmt.Sprintf("%sexit %d\n", stdout, code); got != string(want) || stderr != "" {

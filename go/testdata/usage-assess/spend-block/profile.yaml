@@ -1,0 +1,7 @@
+# the real workspace shape: ceilings nested under spend
+team: demo
+forge: github
+spend:
+  window_ceiling_usd: 50   # five-hour block
+  weekly_ceiling_usd: 907
+  node_cap_usd: 5
