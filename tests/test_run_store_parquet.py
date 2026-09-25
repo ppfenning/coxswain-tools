@@ -81,6 +81,28 @@ def test_a_parquet_file_with_no_rows_for_the_call_falls_through_to_zst(tmp_path,
     assert run_store.call_events(tmp_path, "r1", {"id": "c1"}) == [{"n": "zst"}]
 
 
+def test_synthetic_call_id_is_the_run_id_and_the_trace_stem_and_none_without_a_trace():
+    assert run_store.synthetic_call_id("r1", "/x/r1-trace/build-2.jsonl") == "r1-build-2"
+    assert run_store.synthetic_call_id("r1", None) is None
+    assert run_store.synthetic_call_id("r1", "") is None
+
+
+def test_a_call_with_no_id_is_found_under_the_synthetic_id_of_its_trace(tmp_path):
+    write_parquet(tmp_path, [row("r1-build-2", 1, {"n": "b"}), row("r1-build-2", 0, {"n": "a"}), row("c2", 0, {"n": "x"})])
+    assert run_store.call_events(tmp_path, "r1", {"trace": "/x/r1-trace/build-2.jsonl"}) == [{"n": "a"}, {"n": "b"}]
+
+
+def test_a_call_whose_own_id_matches_wins_over_the_synthetic_id(tmp_path):
+    write_parquet(tmp_path, [row("c1", 0, {"n": "own"}), row("r1-build-2", 0, {"n": "synthetic"})])
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1", "trace": "/x/r1-trace/build-2.jsonl"}) == [{"n": "own"}]
+
+
+def test_a_synthetic_id_with_no_rows_leaves_the_fall_through_to_zst(tmp_path, monkeypatch):
+    write_parquet(tmp_path, [row("c2", 0, {"n": "other"})])
+    stand_in_zst(tmp_path, monkeypatch, [{"call_id": "c1", "seq": 0, "event": {"n": "zst"}}])
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1", "trace": "/x/r1-trace/build-2.jsonl"}) == [{"n": "zst"}]
+
+
 def test_with_no_parquet_file_call_events_falls_through_to_the_zst_file(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "pyarrow", None)
     stand_in_zst(tmp_path, monkeypatch, [{"call_id": "c1", "seq": 1, "event": {"n": "b"}}, {"call_id": "c1", "seq": 0, "event": {"n": "a"}}])
