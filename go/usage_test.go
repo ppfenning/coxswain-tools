@@ -1,9 +1,11 @@
 package coxgo
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -257,5 +259,19 @@ func TestAssessWordsAWindowThatIsPacedTooEarlyToJudge(t *testing.T) {
 	want := "spent 24% of ceiling at 6% elapsed; pace not judged before 10% elapsed; weekly 51% of weekly ceiling"
 	if verdict != "go" || reason != want {
 		t.Fatalf("got %s: %s", verdict, reason)
+	}
+}
+
+func TestProfileKeysAreThePythonKnownKeys(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "profile-keys.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+	if got := slices.Sorted(slices.Values(profileKeys)); !slices.Equal(got, want) {
+		t.Errorf("profileKeys = %v, want %v (route._KNOWN_KEYS)", got, want)
 	}
 }
