@@ -168,6 +168,10 @@ def test_store_usages_since_drops_a_run_that_ended_before_it(runs_dir):
     assert list(run_store.store_usages(runs_dir, since=SINCE)) == ["r1"]
 
 
+def test_run_spans_keeps_the_runs_ended_since(runs_dir):
+    assert run_store.run_spans(runs_dir, SINCE) == [("r1", "2026-09-25T04:00:00+00:00", R1_ENDED)]
+
+
 def test_a_runs_dir_with_no_store_gives_none_and_creates_nothing(sqlite_dir):
     assert run_store.connect_readonly(sqlite_dir) is None
     assert not (sqlite_dir / "cox.db").exists()
