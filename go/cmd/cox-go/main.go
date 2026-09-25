@@ -38,6 +38,8 @@ func route(table coxgo.Table, args []string, columns int) (stdout, stderr string
 		help, err = coxgo.GroupHelp(table, args[0], width)
 	case len(args) == 3 && isHelp(args[2]):
 		help, err = coxgo.CommandHelp(table, args[0], args[1], width)
+	case len(args) == 4 && isHelp(args[3]):
+		help, err = coxgo.SubcommandHelp(table, args[0], args[1], args[2], width)
 	default:
 		return fmt.Sprintf("cox-go: %d groups; nothing is ported yet\n", len(table.Groups)), "", 2
 	}
