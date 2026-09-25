@@ -132,6 +132,64 @@ floating window as the dotfiles' `runs top` chord; right-click opens the HUD.
 }
 ```
 
+## Reading a shared store
+
+Commands that read run records read them from one store. Cox finds the store
+URL the way graphs does. It reads the routing profile named by
+`AGENT_TOOLS_PROFILE`, or `~/.config/agent-tools/profile.yaml` when that
+variable is unset. It follows that profile's `provider_profile` key to the
+provider profile, and takes the `storage_url` key from there. When the key is
+absent or empty, the store is SQLite at `runs_dir/cox.db`. The lookup is
+`resolve_store_url` in `agent_tools/store_url.py`, and it returns the full URL.
+
+A Postgres URL needs the extra. Install it with:
+
+```bash
+pip install 'coxswain-tools[postgres]'
+```
+
+Without it, a Postgres URL fails with a message that names this extra. Cox only
+reads a Postgres store. It opens the connection read-only and never writes to
+it, and a SQLite store that does not exist yet is not created.
+
+The notes below cover `route status`, `usage assess` and the `stats` group.
+
+`cox route status` keeps its layout and its JSON shape. The rows still come from
+the pidfiles and logs in the local runs directory, so it lists the runs this
+machine started. What changes is freshness. A run's heartbeat is read from its
+row in the store lease table, so it follows the heartbeat that whichever
+machine holds the lease last wrote. Each run with a pidfile costs one query, so
+each one pays a network round trip.
+
+`cox usage assess` keeps its verdict line and its JSON shape. Its ceilings still
+come from `window_ceiling_usd` and `weekly_ceiling_usd` in the profile. Spend is
+the union of the local `*.usage.json` files and every ended store run that has
+no local file. On a shared store the window therefore adds runs from every
+machine to the runs this machine recorded. Each read of the store pays a
+network round trip, so a call is slower than against a local file.
+
+The `stats` commands differ one from another.
+
+- `stats ingest` and `stats system-one` read run usage from local usage files
+  and the store. Their results add runs from every machine, and each store read
+  pays a network round trip. `stats ingest` still writes the derived tables to
+  the local SQLite file named by `--db`.
+- `stats chair` takes only its usage calls from the store. Its landed tasks,
+  `land.jsonl`, chair file, session transcripts and work items are local files,
+  so those parts still cover this machine alone.
+- `stats lanes` is not ready for a Postgres store. Its query in `run_spans`
+  uses SQLite placeholders and catches only SQLite errors, so on a Postgres URL
+  expect it to fail rather than show lanes from every machine.
+- `stats roles`, `stats coverage`, `stats explain`, `stats series`,
+  `stats spend-mix` and `stats bounds` read only the `--db` file. Their output
+  does not change, and it is as fresh as the last ingest.
+- `stats examples` reads the task records under the local runs directory. Its
+  output does not change and covers this machine alone.
+
+The Postgres test cases in `tests/test_run_store_backends.py` run only when
+`COX_TEST_POSTGRES_URL` is set to a database where the test may create a
+schema. Without it they are skipped and only the SQLite cases run.
+
 ## Maintainers
 
 `cox dev` moved: run `uv run --frozen python -m devtools <command> ...` from the coxswain checkout (from 0.15.0); `cox dev` and `cox release` print that pointer and exit 2.
