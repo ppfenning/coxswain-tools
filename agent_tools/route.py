@@ -479,6 +479,16 @@ class Problem(NamedTuple):
 # misses a real out-of-repo path inside a code span.
 _UNSAFE_PATH = re.compile(r"(?:^|[\s\x60\x28\x27\x22])(/[\w./-]+|workspace/[\w./-]*|~/[\w./-]*)")
 _DISALLOWED_COMMANDS = ("cox", "uv", "gh", "git push", "ruff")
+# Top-level directories a real absolute path starts with (Linux FHS, macOS, Nix), as graphs' ticket_lint
+# `_FS_ROOTS`: a rooted token whose first segment is none of these (`/v1/chat/completions`) is a route, not a file.
+_FS_ROOTS = frozenset({
+    "bin", "boot", "etc", "home", "lib", "lib64", "media", "mnt", "nix", "opt", "private", "proc", "root", "run",
+    "sbin", "snap", "srv", "sys", "tmp", "Users", "usr", "var", "Volumes",
+})
+
+
+def _is_route(path: str) -> bool:
+    return path.startswith("/") and path.split("/")[1] not in _FS_ROOTS
 
 
 def _inside_repo(path: str, repo: str) -> bool:
@@ -502,7 +512,7 @@ def _item_problems(item: dict, repo: str | None, grants) -> list:
         Problem(task, "reach", f"{p!r} is outside {repo!r}",
                 "move the artifact into the repository or drop the reference")
         for p in _UNSAFE_PATH.findall(text)
-        if not _inside_repo(p, repo)
+        if not _inside_repo(p, repo) and not _is_route(p)
     ] if repo else []
     grant = [
         Problem(task, "grant", f"command {cmd!r} is not in this role's grant",

@@ -1386,6 +1386,11 @@ def test_lint_items_flags_a_reach_violation_inside_a_backtick_span():
     ]
 
 
+def test_lint_items_treats_a_url_route_as_notation_not_reach():
+    items = [{"task": "t1", "phase": "build", "surfaces": [], "body": "POST `/v1/chat/completions` on the local server"}]
+    assert [p for p in route.lint_items(items, "acme/widgets", ()) if p.rule == "reach"] == []
+
+
 def test_lint_items_stands_the_reach_rule_down_when_repo_is_unresolved():
     # 2026-09-09 revise: no repo to check against means no reach findings,
     # not a reach finding on every path.
