@@ -1,0 +1,96 @@
+"""A run's usage: the `<run_id>.usage.json` file first, the read-only SQLite
+store `cox.db` only once that file is gone. Reads only; never creates,
+migrates or writes the store."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+__all__ = ["call_from_row", "connect_readonly", "summarize", "usage"]
+
+STORE_FILENAME = "cox.db"
+
+# Columns that carry over unchanged from a node_calls row to a usage-file call.
+_SAME = (
+    "role", "task_id", "tier", "cost_usd", "ceiling_usd", "ceiling_source", "turns", "duration_ms",
+    "input_tokens", "cache_read_tokens", "cache_creation_tokens", "input_total", "output_tokens", "ts",
+)
+
+
+def summarize(calls: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Pure: totals and a per-model breakdown over the recorded calls."""
+    fields = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")
+
+    def total(call: Mapping[str, Any]) -> int:
+        # Older records carried only a summed `input_tokens`; newer ones split it.
+        return int(call.get("input_total") if call.get("input_total") is not None else call.get("input_tokens") or 0)
+
+    by_model: dict[str, dict[str, Any]] = {}
+    for call in calls:
+        row = by_model.setdefault(str(call.get("model")), {"calls": 0, "cost_usd": 0.0, "input_total": 0, **dict.fromkeys(fields, 0)})
+        row["calls"] += 1
+        row["cost_usd"] = round(row["cost_usd"] + float(call.get("cost_usd") or 0.0), 4)
+        row["input_total"] += total(call)
+        for f in fields:
+            row[f] += int(call.get(f) or 0)
+    return {
+        "calls": len(calls),
+        "cost_usd": round(sum(float(c.get("cost_usd") or 0.0) for c in calls), 4),
+        "turns": sum(int(c.get("turns") or 0) for c in calls),
+        "input_total": sum(total(c) for c in calls),
+        **{f: sum(int(c.get(f) or 0) for c in calls) for f in fields},
+        "by_model": by_model,
+    }
+
+
+def call_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One `node_calls` row as a usage-file call."""
+    decision = row["decision_json"]
+    return {
+        **{k: row[k] for k in _SAME},
+        "id": row["call_id"],
+        "model": row["model_alias"],
+        "ok": bool(row["ok"]),
+        "decision": None if decision is None else json.loads(decision),
+    }
+
+
+def connect_readonly(runs_dir: Path) -> sqlite3.Connection | None:
+    """None when `cox.db` is absent. Opened `mode=ro`, so it can never create the file."""
+    path = (Path(runs_dir) / STORE_FILENAME).resolve()
+    return sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) if path.exists() else None
+
+
+def _read_file(path: Path) -> dict | None:
+    try:
+        loaded = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _read_calls(runs_dir: Path, run_id: str) -> list[dict]:
+    conn = connect_readonly(runs_dir)
+    if conn is None:
+        return []
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM node_calls WHERE run_id = ? ORDER BY ts, seq", (run_id,)).fetchall()
+    except sqlite3.DatabaseError:
+        return []
+    finally:
+        conn.close()
+    return [call_from_row(r) for r in rows]
+
+
+def usage(runs_dir: Path, run_id: str) -> dict | None:
+    """The usage file unchanged when it parses as an object, else the store's rows, else None."""
+    from_file = _read_file(Path(runs_dir) / f"{run_id}.usage.json")
+    if from_file is not None:
+        return from_file
+    calls = _read_calls(Path(runs_dir), run_id)
+    return {"run_id": run_id, "calls": calls, "summary": summarize(calls)} if calls else None
