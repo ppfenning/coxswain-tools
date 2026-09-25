@@ -13,6 +13,33 @@ jobs:
         run: python3 .github/check_clean.py
       - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
         run: pip install ruff==0.16.6 && ruff check .
+  extras:
+    # The lake, Parquet and Postgres tests import-skip in `test`, which installs only `dev`.
+    # This job installs the extras and a Postgres 16, so those tests run.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      COX_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[dev,postgres,parquet,lake]"
+      # Fails here, with the import error, rather than as a pytest run that skipped them all.
+      - run: python -c "import psycopg, pyarrow, pyiceberg, duckdb"
+      - run: pytest -q -rs
   readme-commands:
     # README.md's Commands block is rendered from this repo's command table by the umbrella's
     # devtools, and the umbrella's CI checks it against this repo's main. Check it here too,
