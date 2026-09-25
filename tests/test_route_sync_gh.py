@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -555,6 +556,30 @@ def test_a_call_with_a_composite_task_id_or_none_is_no_tasks_cost(tmp_path):
     _write(tmp_path / "runs" / "run1.usage.json", json.dumps({"calls": [
         {"task_id": "run1:build:tA", "cost_usd": 2.0}, {"cost_usd": 50.0}, {"task_id": "tA", "cost_usd": "x"}]}))
     assert _by_id(tmp_path)["tA"].cost_usd == 0.0
+
+
+def test_a_store_only_run_costs_its_task_from_the_run_store(tmp_path):
+    _two_task_store(tmp_path)
+    (tmp_path / "runs").mkdir()
+    conn = sqlite3.connect(tmp_path / "runs" / "cox.db")
+    conn.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, launched_at TEXT, ended_at TEXT)")
+    conn.execute(
+        "CREATE TABLE node_calls (call_id TEXT, run_id TEXT, seq INTEGER, task_id TEXT, cost_usd REAL, ts TEXT, "
+        "model_alias TEXT, ok BOOL, decision_json TEXT, role TEXT, tier TEXT, ceiling_usd REAL, ceiling_source TEXT, "
+        "turns INTEGER, duration_ms INTEGER, input_tokens INTEGER, cache_read_tokens INTEGER, "
+        "cache_creation_tokens INTEGER, input_total INTEGER, output_tokens INTEGER)"
+    )
+    conn.execute("INSERT INTO runs VALUES ('run1', '2026-09-25T04:00:00+00:00', '2026-09-25T05:00:00+00:00')")
+    conn.executemany(
+        "INSERT INTO node_calls (call_id, run_id, seq, task_id, cost_usd, ts, ok) VALUES (?, 'run1', ?, ?, ?, ?, 1)",
+        [("c1", 1, "tA", 0.5, "2026-09-25T04:10:00+00:00"), ("c2", 2, "tB", 4.0, "2026-09-25T04:20:00+00:00"),
+         ("c3", 3, None, 100.0, "2026-09-25T04:30:00+00:00")],
+    )
+    conn.commit()
+    conn.close()
+    assert not list((tmp_path / "runs").glob("*.usage.json"))
+    items = _by_id(tmp_path)
+    assert (items["tA"].cost_usd, items["tB"].cost_usd) == (0.5, 4.0)
 
 
 def test_an_unreadable_usage_file_costs_a_task_nothing(tmp_path):

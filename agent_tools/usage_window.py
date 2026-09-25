@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from agent_tools import run_store
 from agent_tools.pacing import Policy, Window
 
 __all__ = [
@@ -116,18 +117,36 @@ def _usage_started(usage: Mapping[str, Any], mtime: datetime) -> datetime:
         return mtime
 
 
+def _store_started(runs_dir: Path, run_id: str) -> datetime | None:
+    """The store run's `launched_at` as a datetime; None when absent or unparseable."""
+    launched_at = run_store.run_started(runs_dir, run_id)
+    try:
+        return datetime.fromisoformat(launched_at) if launched_at else None
+    except ValueError:
+        return None
+
+
 def _read_usage_files(runs_dir: Path | str, now: datetime) -> list[tuple[datetime, dict[str, Any]]]:
-    """Every `*.usage.json` under `runs_dir` as `(started, parsed)` pairs; a
-    file that fails to parse is skipped, not raised."""
+    """Every run's usage as `(started, parsed)` pairs. A run with a `*.usage.json` starts
+    where the file says, and a file that fails to parse is skipped, not raised. A
+    store-only run starts at its `launched_at` and is skipped without one."""
+    root = Path(runs_dir)
     usage_files: list[tuple[datetime, dict[str, Any]]] = []
-    for path in Path(runs_dir).glob("*.usage.json"):
+    file_runs: set[str] = set()
+    for path in root.glob("*.usage.json"):
         try:
             usage = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=now.tzinfo)
         usage_files.append((_usage_started(usage, mtime), usage))
-    return usage_files
+        file_runs.add(path.name.removesuffix(".usage.json"))
+    store_only = [
+        (started, usage)
+        for run_id, usage in run_store.usages(root).items()
+        if run_id not in file_runs and (started := _store_started(root, run_id)) is not None
+    ]
+    return usage_files + store_only
 
 
 def gather(
