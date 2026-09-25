@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import chair, cleanup, cli, land
+from agent_tools import chair, cleanup, cli, forge_github, land
 
 _STEP_ORDER = ["pick_branch", "cherry_pick", "checks", "push", "pr_create", "wait_checks", "merge", "clean", "mark_done"]
 _ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
@@ -882,7 +882,7 @@ def _apply_gated(repo, tmp_path, monkeypatch, *gate):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     ran = []
-    monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step: (ran.append(step["kind"]) or True, "https://x/pull/7"))
+    monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step, _forge=None: (ran.append(step["kind"]) or True, "https://x/pull/7"))
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs"), *gate])
     return rc, ran
 
@@ -910,7 +910,7 @@ def _apply_presynced(repo, tmp_path, monkeypatch, sync_writes_issue):
     item.write_text("---\nid: seams-task\nstate: approved\n---\nBody.\n", encoding="utf-8")
     ran = []
 
-    def fake(_repo, step):
+    def fake(_repo, step, _forge=None):
         ran.append(step)
         if step["kind"] == "route_sync" and step.get("before") and sync_writes_issue:
             item.write_text("---\nid: seams-task\nstate: approved\nissue: 9\n---\nBody.\n", encoding="utf-8")
@@ -1105,8 +1105,8 @@ def _apply_resume(repo, tmp_path, monkeypatch, prs=()):
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     ran = []
-    monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step: (ran.append(step["kind"]) or True, "https://x/pull/7"))
-    monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch: list(prs))
+    monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step, _forge=None: (ran.append(step["kind"]) or True, "https://x/pull/7"))
+    monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch, _forge=None: list(prs))
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs"), "--gate", "full"])
     return rc, ran
 
@@ -1157,7 +1157,7 @@ def test_execute_reuse_branch_creates_the_local_branch_from_origin_when_only_the
 
 def test_land_resume_finds_a_remote_only_branch_with_the_cherry_picked_tree(repo, tmp_path, monkeypatch):
     _with_origin_holding_the_pr_branch(repo, tmp_path)
-    monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch: [])
+    monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch, _forge=None: [])
     assert cli._land_resume(repo, _CHERRY) == {"kind": "resume", "local": False, "remote": True}
 
 
@@ -1324,3 +1324,77 @@ def test_a_dry_run_writes_no_land_log(repo, tmp_path):
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     assert cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")]) == 0
     assert not (tmp_path / "runs/land.jsonl").exists()
+
+
+# --- the profile's forge chooses where the land's push, PR, checks and merge go ---
+
+def _forge_land(tmp_path, forge_line=""):
+    """An approved task record and open work item under `tmp_path`, plus a profile; returns the land argv."""
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "none"}', encoding="utf-8")
+    item = tmp_path / "work/x/seams/seams-task.md"; item.parent.mkdir(parents=True)
+    item.write_text("---\nid: seams-task\nstate: approved\n---\nBody.\n", encoding="utf-8")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n{forge_line}", encoding="utf-8")
+    return ["--apply", "--profile", str(profile), "--runs-dir", str(tmp_path / "runs")]
+
+
+def test_a_land_with_no_forge_in_the_profile_fast_forwards_main_and_calls_no_gh(repo, tmp_path, capsys, monkeypatch):
+    argv = _forge_land(tmp_path)
+    real_run = cli.subprocess.run
+
+    def no_gh(cmd, *a, **kw):
+        assert cmd[:1] != ["gh"], cmd
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(cli.subprocess, "run", no_gh)
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--gate", "full", *argv])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "forge: local" in out.splitlines()
+    assert cli._git_out(repo, "log", "-1", "--format=%s", "main") == "Add seams module"
+    assert cli._git_out(repo, "show", "main:f") == "y"
+    assert "pr/seams-task" not in cleanup.git_branches(repo)
+
+
+def test_a_profile_naming_github_routes_pr_create_to_the_github_forge(repo, tmp_path, capsys, monkeypatch):
+    argv = _forge_land(tmp_path, "forge: github\n")
+    calls = []
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    monkeypatch.setattr(forge_github, "find_open_prs", lambda repo, branch: [])
+    monkeypatch.setattr(forge_github, "push", lambda repo, branch: (calls.append("push") or True, branch))
+    monkeypatch.setattr(forge_github, "open_pr", lambda repo, title, body: (calls.append("open_pr") or True, "https://x/pull/7"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), *argv])
+    out = capsys.readouterr().out
+    assert rc == 3, out
+    assert calls == ["push", "open_pr"]
+    assert "forge: github" in out.splitlines()
+    assert "pr_create: https://x/pull/7" in out
+
+
+def test_a_profile_naming_an_unknown_forge_refuses_with_exit_2(repo, tmp_path, capsys):
+    argv = _forge_land(tmp_path, "forge: nope\n")
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), *argv])
+    assert rc == 2
+    assert capsys.readouterr().out.splitlines()[-1] == "land: no forge named nope (built in: local, github)"
+    assert "pr/seams-task" not in cleanup.git_branches(repo)
+
+
+def test_the_ticket_plans_merge_step_carries_what_the_local_forge_reads():
+    steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Add seams module"]}, "trunk")
+    assert next(s for s in steps if s["kind"] == "merge") == {
+        "kind": "merge", "squash": True, "delete_branch": True,
+        "branch": "pr/seams-task", "default_branch": "trunk", "subject": "Add seams module",
+    }
+
+
+def test_the_phase_plans_merge_step_carries_what_the_local_forge_reads():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    steps = land.land_plan(phase_record, {}, "trunk", items=[{"id": "seams-task", "status": "done"}],
+                           task_records=[_record(status="done")])
+    assert next(s for s in steps if s["kind"] == "merge") == {
+        "kind": "merge", "squash": True, "delete_branch": True,
+        "branch": "epic/x/seams", "default_branch": "trunk", "subject": "epic x: seams",
+    }

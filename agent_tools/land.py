@@ -151,7 +151,7 @@ def phase_pr_body(phase_record: dict[str, Any], task_records: list[dict[str, Any
 
 
 def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
-                repo_facts: dict[str, Any] | None) -> list[dict[str, Any]]:
+                repo_facts: dict[str, Any] | None, default_branch: str = "main") -> list[dict[str, Any]]:
     """§1's phase step list, or a one-step `refuse` from `phase_landable`. The
     `checks` step names the phase `branch` instead of running in place; the
     edge builds a throwaway worktree from it rather than switching the
@@ -168,7 +168,8 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         {"kind": "push", "branch": phase_branch},
         {"kind": "pr_create", "title": f"epic {initiative}: {phase}", "body": phase_pr_body(phase_record, task_records)},
         {"kind": "wait_checks"},
-        {"kind": "merge", "squash": True, "delete_branch": True},
+        {"kind": "merge", "squash": True, "delete_branch": True, "branch": phase_branch,
+         "default_branch": default_branch, "subject": f"epic {initiative}: {phase}"},
         {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "tasks": landed_tasks},
         *[{"kind": "mark_done", "task": t} for t in landed_tasks],
     ]
@@ -206,7 +207,7 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
     closing `route_sync`, and `issue` adds `Closes #n` to the PR body; `none`
     plans neither and says so in a note."""
     if items is not None:
-        return _phase_plan(record, items, task_records or [], repo_facts)
+        return _phase_plan(record, items, task_records or [], repo_facts, default_branch)
     if _proposal(record, "draft_pr_create") is None:
         return [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
     refusal = _approved(record)
@@ -247,7 +248,8 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
         *presync,
         {"kind": "pr_create", "title": draft.get("title", subject), "body": pr_body(record, issue if mirrored else None)},
         {"kind": "wait_checks"},
-        {"kind": "merge", "squash": True, "delete_branch": True},
+        {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch,
+         "default_branch": default_branch, "subject": subject},
         {"kind": "clean", "run": run, "task": task, "branch": scratch_branch},
         {"kind": "mark_done", "task": task},
         *sync,
