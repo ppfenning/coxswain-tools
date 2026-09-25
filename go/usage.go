@@ -319,6 +319,65 @@ func CcusageBlocks(getenv func(string) string) []byte {
 	return out
 }
 
+// ccusageCacheFile and ccusageCacheTTL are usage_window._CCUSAGE_CACHE_FILE and its 60 s window.
+const (
+	ccusageCacheFile = ".ccusage-block.json"
+	ccusageCacheTTL  = 60 * time.Second
+)
+
+func isObject(b []byte) bool {
+	var m map[string]json.RawMessage
+	return json.Unmarshal(b, &m) == nil && m != nil
+}
+
+type cacheFile struct {
+	At     string          `json:"at"`
+	Blocks json.RawMessage `json:"blocks"`
+}
+
+// cacheFresh is usage_window._cached_blocks: the blocks of a cache file whose `at` carries an
+// offset and lies in [now-60s, now]. A naive or future `at`, or a non-object `blocks`, is absent.
+func cacheFresh(file []byte, now time.Time) ([]byte, bool) {
+	var c cacheFile
+	if json.Unmarshal(file, &c) != nil {
+		return nil, false
+	}
+	at, err := time.Parse(time.RFC3339Nano, c.At)
+	if age := now.Sub(at); err != nil || age < 0 || age >= ccusageCacheTTL || !isObject(c.Blocks) {
+		return nil, false
+	}
+	return c.Blocks, true
+}
+
+// cacheEntry is the file Python's datetime.fromisoformat reads: `at` with a numeric offset.
+func cacheEntry(blocks []byte, now time.Time) ([]byte, bool) {
+	if !isObject(blocks) {
+		return nil, false
+	}
+	out, err := json.Marshal(cacheFile{At: now.Format("2006-01-02T15:04:05.000000-07:00"), Blocks: blocks})
+	return out, err == nil
+}
+
+// CachedBlocks is the ccusage edge behind the one-minute cache shared with Python. COX_NO_CCUSAGE=1
+// gives nil and touches no file. Only a run whose output is a JSON object is written, and a failed
+// write is ignored.
+func CachedBlocks(runsDir string, now time.Time, getenv func(string) string, run func() []byte) []byte {
+	if getenv("COX_NO_CCUSAGE") == "1" {
+		return nil
+	}
+	path := filepath.Join(runsDir, ccusageCacheFile)
+	if file, err := os.ReadFile(path); err == nil {
+		if blocks, ok := cacheFresh(file, now); ok {
+			return blocks
+		}
+	}
+	out := run()
+	if entry, ok := cacheEntry(out, now); ok {
+		_ = os.WriteFile(path, entry, 0o644)
+	}
+	return out
+}
+
 func pct(x float64) string { return fmt.Sprintf("%.0f%%", x*100) }
 
 func measured(w Window) bool { return w.Ceiling != nil && *w.Ceiling > 0 }
