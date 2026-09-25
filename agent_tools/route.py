@@ -65,6 +65,7 @@ _KNOWN_KEYS = {
     "router",
     "sources",
     "repo_map",
+    "forge",
 }
 
 _JSON_KEYS = {"sources", "repo_map"}

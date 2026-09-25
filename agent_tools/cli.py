@@ -16,7 +16,6 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-import time
 import tomllib
 import uuid
 from pathlib import Path
@@ -30,6 +29,7 @@ from agent_tools import (
     courier,
     doctor,
     epic,
+    forge_github,
     install,
     install_exec,
     land,
@@ -853,19 +853,7 @@ def _git_out(repo: Path, *args: str) -> str | None:
 
 
 def _open_prs_for(repo: Path, branch: str) -> list[int] | str:
-    """Numbers of the open PRs whose head is `branch`, or the reason they
-    could not be listed."""
-    try:
-        r = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number"],
-                           cwd=repo, capture_output=True, text=True)
-    except OSError as exc:
-        return f"could not list open pull requests for {branch}: {exc}"
-    if r.returncode != 0:
-        return f"could not list open pull requests for {branch}: {(r.stderr or r.stdout).strip()}"
-    try:
-        return [int(p["number"]) for p in json.loads(r.stdout or "[]")]
-    except (ValueError, KeyError, TypeError):
-        return f"could not read the open pull requests for {branch}: {r.stdout.strip()}"
+    return forge_github.find_open_prs(repo, branch)
 
 
 def _land_resume(repo: Path, cherry_pick: dict) -> dict:
@@ -1028,16 +1016,13 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
                 subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
         return _run_checks(step["checks"], repo)
     if kind == "push":
-        r = subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", step["branch"]], capture_output=True, text=True)
-        return r.returncode == 0, (step["branch"] if r.returncode == 0 else r.stderr.strip() or r.stdout.strip())
+        return forge_github.push(repo, step["branch"])
     if kind == "pr_create":
-        r = subprocess.run(["gh", "pr", "create", "--title", step["title"], "--body", step["body"]], cwd=repo, capture_output=True, text=True)
-        return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
+        return forge_github.open_pr(repo, step["title"], step["body"])
     if kind == "wait_checks":
-        return _wait_checks(repo, float(step.get("timeout_s", 180)))
+        return forge_github.wait_checks(repo, float(step.get("timeout_s", 180)))
     if kind == "merge":
-        r = subprocess.run(["gh", "pr", "merge", "--squash", "--delete-branch"], cwd=repo, capture_output=True, text=True)
-        return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
+        return forge_github.merge(repo, step)
     if kind == "clean":
         wt = Path(step["worktree_root"]).expanduser() / step["run"] / step["task"]
         if wt.exists():
@@ -1114,55 +1099,8 @@ def _close_approved_item(item_path: str | None) -> None:
         print(message)
 
 
-def _await_checks(poll, timeout_s: float = 180.0, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
-    """`poll() -> (returncode, output)` until green or failed. No check yet means not yet: retry every 15s for `timeout_s`."""
-    started, waiting = now(), False
-    while True:
-        rc, output = poll()
-        decision = land.wait_decision(rc, output, now() - started, timeout_s)
-        if decision == "retry":
-            if not waiting:
-                print(f"{output.strip()}; polling every 15s until they finish" if land.is_pending(rc)
-                      else f"no checks reported yet, waiting up to {timeout_s:.0f}s for the first one to appear")
-            waiting = True
-            sleep(15)
-        elif decision == "timeout":
-            return False, f"no checks reported within {timeout_s:.0f}s"
-        else:
-            return decision == "green", "green" if decision == "green" else output.strip()
-
-
-def _read_checks(repo: Path):
-    """`(True, (check_runs, status))` for HEAD's REST check bodies, or `(False, detail)` on a failed or unparseable call."""
-    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True)
-    if head.returncode != 0:
-        return False, head.stderr.strip() or "git rev-parse HEAD failed"
-    argvs = land.rest_checks_argvs(head.stdout.strip())
-    bodies = []
-    for argv, key in zip(argvs, ("check_runs", "statuses")):
-        r = subprocess.run(argv, cwd=repo, capture_output=True, text=True)
-        body = land.merge_pages(r.stdout or "", key) if r.returncode == 0 else None
-        if body is None:
-            return False, (r.stderr or r.stdout or "").strip() or f"unreadable output from {argv[-1]}"
-        bodies.append(body)
-    return True, tuple(bodies)
-
-
-def _wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
-    # Edge bend (A2): a count of consecutive unreadable polls, reset by any readable one.
-    errors = 0
-
-    def poll() -> tuple[int, str]:
-        nonlocal errors
-        ok, value = _read_checks(repo)
-        errors = 0 if ok else errors + 1
-        if ok:
-            return land.check_poll_result(*value)
-        result = land.unreadable_poll(errors, value)
-        if land.is_pending(result[0]):
-            sleep(land.poll_backoff_s(errors))  # on top of the 15s between polls: a rate limit needs room
-        return result
-    return _await_checks(poll, timeout_s, sleep, now)
+_await_checks = land.await_checks
+_wait_checks = forge_github.wait_checks
 
 
 def _repo_is_dirty(repo: Path) -> bool:
