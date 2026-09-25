@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -829,6 +830,31 @@ def test_launch_writes_launched_json_naming_the_lock_holder(tmp_path, capsys):
     launched_path = ws / "runs" / "fix-thing-1.launched.json"
     assert _wait_for(launched_path)
     assert json.loads(launched_path.read_text())["launched_by"] == "alice"
+
+
+def test_launch_does_not_reuse_a_run_id_present_only_in_the_store(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    idea = ws / "intake" / "idea.md"
+    idea.write_text("---\nid: fix-thing\ntitle: Fix thing\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    conn = sqlite3.connect(ws / "runs" / "cox.db")
+    conn.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO runs (run_id) VALUES ('fix-thing-1')")
+    conn.commit()
+    conn.close()
+
+    rc = main([
+        "route", "launch", "decompose", "--no-claim",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "fix-thing",
+    ])
+    assert rc == 0
+    assert _wait_for(ws / "runs" / "fix-thing-2.launched.json")
+    assert not (ws / "runs" / "fix-thing-1.launched.json").exists()
 
 
 def test_launch_with_no_claim_writes_launched_json_with_no_launched_by_key(tmp_path, capsys):

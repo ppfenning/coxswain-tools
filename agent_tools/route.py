@@ -182,8 +182,11 @@ def slugify(title: str) -> str:
 
 
 def next_run_id(existing_names, prefix: str) -> str:
-    """Return `<prefix>-<n>` for the smallest n not already used by a name
-    in existing_names with that prefix.
+    """Return `<prefix>-<n>` for one past the highest n used by a name in
+    existing_names with that prefix, or `<prefix>-1` when there is none.
+
+    It never fills a gap: a gap may be a run whose files were archived while
+    its store rows remain, and reusing that id would collide with the rows.
 
     Spec §4/§5 fill `existing_names` from a real `runs_dir` listing, whose
     entries are `<run-id>.log` and `<run-id>.pid`, not bare ids — so the
@@ -197,10 +200,7 @@ def next_run_id(existing_names, prefix: str) -> str:
         match = pattern.match(name)
         if match:
             taken.add(int(match.group(1)))
-    n = 1
-    while n in taken:
-        n += 1
-    return f"{prefix}-{n}"
+    return f"{prefix}-{max(taken, default=0) + 1}"
 
 
 class _Raw(str):

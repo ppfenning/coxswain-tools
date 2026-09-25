@@ -141,9 +141,13 @@ def test_surface_candidates_keeps_only_backticked_tokens_that_look_like_paths():
     ]
 
 
-def test_next_run_id_returns_first_free_id_for_prefix():
-    existing = ["myinit-1", "myinit-2", "otherinit-1", "myinit-4"]
-    assert route.next_run_id(existing, "myinit") == "myinit-3"
+def test_next_run_id_returns_one_past_the_highest_and_never_fills_a_gap():
+    assert route.next_run_id(["myinit-1", "myinit-2", "otherinit-1"], "myinit") == "myinit-3"
+    assert route.next_run_id(["myinit-1", "myinit-3", "otherinit-9"], "myinit") == "myinit-4"
+
+
+def test_next_run_id_counts_a_bare_store_id_without_an_extension():
+    assert route.next_run_id(["myinit-1.log", "myinit-7"], "myinit") == "myinit-8"
 
 
 def test_next_run_id_starts_at_one_when_none_exist():
