@@ -69,10 +69,10 @@ from agent_tools import runs as runs_module
 
 def _runs_usage(a: argparse.Namespace) -> int:
     runs_dir = Path(a.runs_dir)
-    path = runs_dir / f"{a.run_id}.usage.json"
     header = None
-    if path.exists():
-        s = records.usage_summary(records.load_usage(path))
+    usage = run_store.usage(runs_dir, a.run_id)
+    if usage is not None:
+        s = records.usage_summary(usage)
     else:
         pid_text = _read_text_or_none(runs_dir / f"{a.run_id}.pid")
         pid = route.parse_pid(pid_text) if pid_text is not None else None

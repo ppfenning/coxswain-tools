@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from conftest import strip_ansi
+from test_run_store import ROW, run_row, runs_table, store
 
 from agent_tools import cli as cli_module
 from agent_tools import epic
@@ -190,6 +191,16 @@ def test_runs_usage_with_a_usage_file_present_is_unchanged(tmp_path, capsys):
     assert rc == 0
     assert "r2: 1 calls, 4 turns, $2.00" in out
     assert "live (pid" not in out
+
+
+def test_runs_usage_with_no_usage_file_reads_an_ended_run_from_the_store(tmp_path, capsys):
+    store(tmp_path, {**ROW, "run_id": "r3", "role": "build", "model_alias": "opus", "cost_usd": 2.0, "turns": 4})
+    runs_table(tmp_path, run_row("r3"))
+    rc = cli_module._runs_usage(argparse.Namespace(runs_dir=str(tmp_path), run_id="r3", json=False))
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "r3: 1 calls, 4 turns, $2.00" in out
+    assert "no usage record" not in out
 
 
 def test_cox_and_agent_tools_scripts_resolve_to_the_same_callable():
