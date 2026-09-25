@@ -1524,3 +1524,25 @@ def test_an_unreadable_listing_entry_is_named_and_the_rest_are_filed(tmp_path, m
     assert main(["route", "pull", "--profile", str(profile)]) == 2
     assert "skipping unreadable listing entry broken: KeyError" in capsys.readouterr().out
     assert len(list((ws / "intake").glob("*.md"))) == 1
+
+
+def test_pull_unwraps_an_adapter_listing_and_hands_token_env_to_a_mark_that_asks(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from agent_tools import sources
+
+    log = tmp_path / "marks.log"
+    wrapped = lambda _config, repo: ["echo", json.dumps({"data": [_issue("https://x/1")] if repo == "a/b" else []})]  # noqa: E731
+    mark = lambda ref, rel, token_env: [sys.executable, "-c", _APPEND_ARGS, str(log), ref.link, rel, token_env]  # noqa: E731
+    fake = SimpleNamespace(**{
+        **vars(sources.FakeAdapter([_issue("https://x/1")])),
+        "list_argv": wrapped, "unwrap": lambda payload, _repo: payload["data"],
+        "MARK_NEEDS_TOKEN_ENV": True, "mark_argv": mark,
+    })
+    monkeypatch.setattr(sources, "adapter_for", lambda _name: fake)
+    profile, ws = _write_file_profile(tmp_path)
+    with profile.open("a") as f:
+        f.write('sources: {"github": {"repos": ["a/b"], "token_env": "ACME_TOKEN"}}\nrepo_map: {"a/b": "tools"}\n')
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    [written] = (ws / "intake").glob("*.md")
+    assert log.read_text() == f"https://x/1 intake/{written.name} ACME_TOKEN\n"

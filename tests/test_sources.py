@@ -62,3 +62,13 @@ def test_fake_adapter_mark_argv_is_a_plain_list():
 
 def test_fake_adapter_satisfies_the_source_adapter_protocol():
     assert isinstance(sources.FakeAdapter([]), sources.SourceAdapter)
+
+
+def test_adapter_for_loads_an_adapter_another_installed_package_registers(monkeypatch):
+    from types import SimpleNamespace
+
+    adapter = SimpleNamespace(name="acme adapter")
+    registered = [SimpleNamespace(name="acme", load=lambda: adapter)]
+    monkeypatch.setattr(sources.importlib.metadata, "entry_points", lambda group: registered if group == "coxswain.sources" else [])
+    assert sources.adapter_for("acme") is adapter
+    assert sources.adapter_for("other") is None
