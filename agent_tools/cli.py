@@ -2595,7 +2595,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
     if a.graph == "epic":
         # Only --include-blocked lifts this guard; --force never does.
-        initiative_id = Path(a.initiative).name
+        initiative_id = Path(a.initiative).expanduser().name
         held = route.launch_blockers([
             item for item in _work_items(runs_dir.parent) if item["initiative"] == initiative_id
         ])
@@ -2633,7 +2633,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     if a.graph == "epic":
-        initiative_dir = Path(a.initiative)
+        initiative_dir = Path(a.initiative).expanduser()
         initiative_md = initiative_dir / "initiative.md"
         text = _read_text_or_none(initiative_md)
         if text is None:
@@ -2667,7 +2667,7 @@ def _route_launch(a: argparse.Namespace) -> int:
                 print(taken)
                 return 2
             run_id = a.run_id
-        needs = {"initiative": a.initiative, "repo": repo}
+        needs = {"initiative": str(initiative_dir), "repo": repo}
         if a.fix_attempts is not None:
             needs["fix_attempts"] = a.fix_attempts
         env_repo = repo
