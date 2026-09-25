@@ -246,3 +246,61 @@ def test_run_live_falls_back_to_the_pid_when_the_store_has_no_row_for_the_run(tm
     leases_table(tmp_path, ("runs:y", "y-1", "2026-09-25T06:00:00Z"))
     assert epic.run_live(os.getpid(), tmp_path / "x-3.pid", now=NOW)
     assert not epic.run_live(DEAD_PID, tmp_path / "x-3.pid", now=NOW)
+
+
+def test_summarize_log_returns_the_approved_but_not_landed_lines():
+    s = epic.summarize_log("  approved but not landed: t1 (run-2)\nepic run-2: done\n")
+    assert s["approved"] == ["approved but not landed: t1 (run-2)"] and s["summary"] == "epic run-2: done"
+
+
+def _lanes(tmp_path, monkeypatch, live_calls):
+    """Two pidfiles; `live_calls` maps a run to how many probes it answers live before it reads dead."""
+    for run in live_calls:
+        (tmp_path / f"{run}.pid").write_text("1")
+    (tmp_path / "b.log").write_text("approved but not landed: t9\nepic b: done\n")
+    seen = dict.fromkeys(live_calls, 0)
+
+    def fake(pid, pidfile, log=None, now=None):
+        seen[pidfile.stem] += 1
+        return seen[pidfile.stem] <= live_calls[pidfile.stem]
+
+    monkeypatch.setattr(epic, "run_live", fake)
+    monkeypatch.setattr(cli_module.time, "sleep", lambda _s: None)
+
+
+def test_runs_wait_prints_the_run_that_exited_with_its_approved_line(tmp_path, monkeypatch, capsys):
+    _lanes(tmp_path, monkeypatch, {"a": 99, "b": 2})
+    assert main(["runs", "wait", "--runs-dir", str(tmp_path), "--interval", "0"]) == 0
+    out = capsys.readouterr().out
+    assert "exited b at " in out and "approved but not landed: t9" in out and "exited a" not in out
+
+
+def test_runs_wait_json_lists_the_exited_and_the_still_busy(tmp_path, monkeypatch, capsys):
+    _lanes(tmp_path, monkeypatch, {"a": 99, "b": 2})
+    assert main(["runs", "wait", "--runs-dir", str(tmp_path), "--interval", "0", "--json"]) == 0
+    got = json.loads(capsys.readouterr().out)
+    assert got["busy"] == ["a"] and got["exited"][0]["run"] == "b" and got["exited"][0]["approved"] == ["approved but not landed: t9"]
+
+
+def test_runs_wait_with_nothing_busy_exits_2(tmp_path, monkeypatch, capsys):
+    _lanes(tmp_path, monkeypatch, {"a": 0, "b": 0})
+    assert main(["runs", "wait", "--runs-dir", str(tmp_path)]) == 2
+    assert capsys.readouterr().out.strip() == "all lanes clear"
+
+
+def test_runs_wait_times_out_with_exit_3(tmp_path, monkeypatch, capsys):
+    _lanes(tmp_path, monkeypatch, {"a": 99, "b": 99})
+    assert main(["runs", "wait", "--runs-dir", str(tmp_path), "--max-seconds", "0"]) == 3
+    assert capsys.readouterr().out.strip() == "still busy: a b"
+
+
+def test_wait_lanes_sleeps_the_interval_between_polls_on_a_fake_clock():
+    clock, slept = [0.0], []
+    polls = iter([True, True, False])
+
+    def sleep(s):
+        slept.append(s)
+        clock[0] += s
+
+    assert epic.wait_lanes(["r"], lambda _r: next(polls), lambda: clock[0], sleep, 100, 15) == (["r"], [])
+    assert slept == [15, 15]
