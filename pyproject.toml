@@ -20,6 +20,8 @@ dev = ["pytest", "ruff==0.16.6", "zstandard>=0.23"]
 traces = ["zstandard>=0.23"]
 # Reads a Postgres run store; the name matches the extra graphs uses.
 postgres = ["psycopg[binary]>=3.2"]
+# Optional on purpose: pyarrow is a heavy C++ build and the Homebrew formula builds from source, so it is not a base dependency.
+parquet = ["pyarrow"]
 
 [project.scripts]
 cox = "agent_tools.cli:main"
