@@ -905,6 +905,29 @@ def _land_record(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | 
     return record, str(path), 1
 
 
+def _choose_record(stored: dict | None, filed: dict | None) -> tuple[dict | None, str | None]:
+    """The store record wins over the file record; the label is `store` or `file`, None when neither exists."""
+    if stored is not None:
+        return stored, "store"
+    if filed is not None:
+        return filed, "file"
+    return None, None
+
+
+def _land_load(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | None, str, int, str | None]:
+    """Edge: `(record, where, count, source)`, the store first and the file when the store says None.
+
+    The store is asked only when exactly one file names the task, whose parent dir is the phase and stem the task.
+    """
+    filed, where, count = _land_record(runs_dir, run_id, task)
+    path = Path(where)
+    stored = run_store.task_record(runs_dir, run_id, path.parent.name, path.stem) if count == 1 else None
+    if stored is not None:
+        stored = {"run": run_id, "task": path.stem, "phase": path.parent.name, **stored}
+    record, source = _choose_record(stored, filed)
+    return record, where, count, source
+
+
 def _initiative_of(work_root: Path, task_id: str) -> str | None:
     """The one initiative whose `work/<initiative>/<phase>/*.md` holds an item
     with this id (`id` falls back to the file stem, as `route.work_item` does),
@@ -1359,10 +1382,11 @@ def _runs_land(a: argparse.Namespace) -> int:
                                     items=items, task_records=task_records)
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths)
     else:
-        record, searched, count = _land_record(runs_dir, a.run_id, a.task)
+        record, searched, count, source = _land_load(runs_dir, a.run_id, a.task)
         if record is None:
             print(f"land: looked in {searched}, found {count} task records, expected 1")
             return 2
+        print(f"land: record from {source}", file=sys.stderr)
         branches = _land_branches(repo, record, default_branch)
         item_path = (str(runs_dir.parent / "work" / record["initiative"] / record["phase"] / f"{record['task']}.md")
                      if record.get("initiative") else None)
