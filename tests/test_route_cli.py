@@ -26,6 +26,12 @@ def _unmeasured_window(*_a, **_k) -> Window:
 
 
 @pytest.fixture(autouse=True)
+def _no_gh_sync_on_file(monkeypatch):
+    """`route file` syncs each item it writes; nothing in this file may reach a real `gh`."""
+    monkeypatch.setattr("agent_tools.cli._sync_filed_items", lambda *_a, **_k: None)
+
+
+@pytest.fixture(autouse=True)
 def _stub_usage_gather(monkeypatch):
     """Every route context/launch test in this file crosses `_usage_assessment`;
     stub the gatherer to an unmeasured window so no test shells out to `npx

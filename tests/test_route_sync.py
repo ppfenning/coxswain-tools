@@ -73,6 +73,34 @@ def test_an_unknown_state_plans_a_single_refuse_step():
     assert steps == [{"kind": "refuse", "item_id": "item-1", "detail": "unknown state: 'blocked'"}]
 
 
+def _closes(item, state):
+    steps = plan([item], issues={"5": {"title": "Fix the thing", "body": "Some body.", "state": state}},
+                 project_items={}, tracker="github-projects")
+    return [s for s in steps if s["kind"] == "issue_close"], steps
+
+
+def test_a_done_or_dropped_item_with_an_open_issue_plans_a_close_after_its_other_steps():
+    for state in ("done", "dropped"):
+        closes, steps = _closes(_item(state=state, issue="5"), "OPEN")
+        assert closes == [{"kind": "issue_close", "issue": "5"}] and steps[-1] == closes[0]
+    assert render(closes) == ["issue_close 5"]
+
+
+def test_no_close_for_a_closed_issue_a_live_item_or_an_item_with_no_issue():
+    assert _closes(_item(state="done", issue="5"), "CLOSED")[0] == []
+    assert _closes(_item(state="ready", issue="5"), "OPEN")[0] == []
+    assert plan([_item(state="done")], issues={}, project_items={}, tracker="github-projects")[-1]["kind"] == "writeback"
+    unlabelled = plan([_item(state="done", issue="5")], issues={}, project_items={}, tracker="github-projects")
+    assert "issue_close" not in [s["kind"] for s in unlabelled]
+
+
+def test_a_dropped_item_plans_only_its_issue_steps_and_an_approved_item_creates_its_issue():
+    dropped, steps = _closes(_item(state="dropped", issue="5"), "OPEN")
+    assert [s["kind"] for s in steps] == ["issue_close"]
+    approved = plan([_item(state="approved")], issues={}, project_items={}, tracker="github-projects")
+    assert [s["kind"] for s in approved] == ["issue_create", "writeback"]
+
+
 def test_tracker_none_plans_nothing():
     item = _item()
     assert plan([item], issues={}, project_items={}, tracker="none") == []

@@ -128,11 +128,12 @@ def existing(run, repo_names: list[str], project: str | None):
     issues: dict[str, dict] = {}
     for repo in repo_names:
         result = run(["gh", "issue", "list", "--repo", repo, "--label", _LABEL, "--state", "all",
-                      "--json", "number,title,body", "--limit", _LIMIT], capture_output=True, text=True)
+                      "--json", "number,title,body,state", "--limit", _LIMIT], capture_output=True, text=True)
         if result.returncode != 0:
             return False, result.stderr.strip() or result.stdout.strip()
         for row in json.loads(result.stdout or "[]"):
-            issues[str(row["number"])] = {"title": row.get("title", ""), "body": row.get("body", "")}
+            issues[str(row["number"])] = {"title": row.get("title", ""), "body": row.get("body", ""),
+                                          "state": row.get("state", "")}
     project_items: dict[str, dict] = {}
     item_node_ids: dict[str, str] = {}
     if project is not None:
@@ -193,7 +194,7 @@ def existing_item(run, repo: str, issue: str | None, project: str | None):
     row = json.loads(view.stdout or "{}")
     if _LABEL not in [label.get("name") for label in row.get("labels") or []]:
         return True, ({}, {}, {})
-    issues = {issue: {"title": row.get("title", ""), "body": row.get("body", "")}}
+    issues = {issue: {"title": row.get("title", ""), "body": row.get("body", ""), "state": row.get("state", "")}}
     if project is None:
         return True, (issues, {}, {})
     owner, _, name = repo.partition("/")
@@ -301,6 +302,10 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
         repo = _step_repo(step["issue"], ctx)
         result = run(["gh", "issue", "edit", step["issue"], "--repo", repo, "--title", step["title"],
                       "--body", step["body"]], capture_output=True, text=True)
+        return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
+    if kind == "issue_close":
+        result = run(["gh", "issue", "close", step["issue"], "--repo", _step_repo(step["issue"], ctx)],
+                     capture_output=True, text=True)
         return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
     if kind == "project_add":
         issue = _resolved_issue(step, ctx)
