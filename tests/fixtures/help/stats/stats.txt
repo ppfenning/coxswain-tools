@@ -1,11 +1,11 @@
 usage: cox stats [-h]
-                 {ingest,roles,explain,series,coverage,bounds,spend-mix,chair,examples,system-one}
+                 {ingest,roles,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes}
                  ...
 
 Load the run corpus into the stats store.
 
 positional arguments:
-  {ingest,roles,explain,series,coverage,bounds,spend-mix,chair,examples,system-one}
+  {ingest,roles,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes}
     ingest              load usage, task, node and launch records into stats.db
     roles               landed rate, attempts-to-land and $/landed per role and model
     explain             the failure-class breakdown behind one role
@@ -20,6 +20,8 @@ positional arguments:
                         records
     system-one          shadow-to-on graduation report per role, and a proposal for the maintainer
                         to approve
+    lanes               per hour, the average and peak busy lanes and the idle minutes, from the
+                        store's run spans
 
 options:
   -h, --help            show this help message and exit

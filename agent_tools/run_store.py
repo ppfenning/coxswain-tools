@@ -22,7 +22,7 @@ from agent_tools import epic
 
 __all__ = [
     "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly", "lease", "phase_manifests",
-    "phase_names", "run_ids", "run_started", "store_usages", "summarize", "usage", "usages",
+    "phase_names", "run_ids", "run_spans", "run_started", "store_usages", "summarize", "usage", "usages",
 ]
 
 STORE_FILENAME = "cox.db"
@@ -124,6 +124,24 @@ def run_ids(runs_dir: Path) -> set[str]:
         return set()
     finally:
         conn.close()
+
+
+def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
+    """Edge. (run_id, launched_at, ended_at) of runs still open or ended at or after `since`, by launch time; empty with no store or an unreadable one."""
+    conn = connect_readonly(runs_dir)
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT run_id, launched_at, ended_at FROM runs "
+            "WHERE launched_at IS NOT NULL AND (ended_at IS NULL OR ended_at >= ?) ORDER BY launched_at",
+            (since,),
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        return []
+    finally:
+        conn.close()
+    return [(r[0], r[1], r[2]) for r in rows]
 
 
 def _read_file(path: Path) -> dict | None:

@@ -61,6 +61,7 @@ from agent_tools import (
     stats_chair,
     stats_examples,
     stats_ingest,
+    stats_lanes,
     stats_query,
     stats_schema,
     stats_system_one,
@@ -223,6 +224,21 @@ def _stats_spend_mix(a: argparse.Namespace) -> int:
     finally:
         conn.close()
     print(json.dumps(report, indent=2) if a.json else stats_query.render_capped(report))
+    return 0
+
+
+def _stats_lanes(a: argparse.Namespace) -> int:
+    if a.hours < 1:
+        print("--hours must be at least 1", file=sys.stderr)
+        return 2
+    now = datetime.datetime.now(datetime.UTC)
+    spans = run_store.run_spans(Path(a.runs_dir), stats_lanes.window_start(now, a.hours).isoformat())
+    rows = stats_lanes.lanes_by_hour(spans, now, a.hours)
+    if a.json:
+        print(json.dumps({"rows": rows, "totals": stats_lanes.totals(rows)}, indent=2))
+    else:
+        print(stats_lanes.render_table(rows, None))
+        print(stats_lanes.render_totals(rows))
     return 0
 
 
@@ -3458,6 +3474,15 @@ STATS_COMMANDS = [
             commands.Arg(("--plans-dir",), {"default": "plans", "help": "where --propose writes system-one-graduation-<role>-<date>.md"}),
         ),
         _stats_system_one, False, (),
+    ),
+    commands.Command(
+        "lanes", "stats", "per hour, the average and peak busy lanes and the idle minutes, from the store's run spans",
+        (
+            commands.Arg(("--runs-dir",), {"default": "runs"}),
+            commands.Arg(("--hours",), {"type": int, "default": 24, "help": "how many clock hours back to report"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _stats_lanes, False, (),
     ),
 ]
 
