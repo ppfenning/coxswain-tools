@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import os
 import sqlite3
@@ -562,3 +563,63 @@ def test_lease_reads_the_leases_table_once_per_window(tmp_path, monkeypatch):
     assert run_store.lease(tmp_path, "x-4") == ("x-3", "2026-09-25T12:02:00Z", "2026-09-25T12:00:00Z")
     assert run_store.lease(tmp_path, "y-1") is None
     assert len(opens) == 1
+
+
+NOW = "2026-09-25T12:00:00Z"
+LIVE = "2026-09-25T12:02:00Z"
+
+
+def lane_run(run_id, launched_at):
+    return {"run_id": run_id, "launched_at": launched_at}
+
+
+def lane_store(runs_dir, runs, leases, host_column=False):
+    runs_table(runs_dir, *runs)
+    if host_column:
+        conn = sqlite3.connect(runs_dir / "cox.db")
+        conn.execute("ALTER TABLE runs ADD COLUMN host TEXT")
+        conn.execute("UPDATE runs SET host = ?", ("h",))
+        conn.commit()
+        conn.close()
+    leases_table(runs_dir, *leases)
+
+
+def test_a_live_lease_joins_to_the_newest_of_two_run_rows_of_its_prefix(tmp_path):
+    lane_store(
+        tmp_path,
+        [lane_run("x-3", "2026-09-25T09:00:00Z"), lane_run("x-4", "2026-09-25T10:00:00Z"), lane_run("x-y-1", "2026-09-25T11:00:00Z")],
+        [("runs:x", "x-4", LIVE, "2026-09-25T11:59:50Z")],
+    )
+    lane = run_store.Lane("x-4", None, "2026-09-25T10:00:00Z", "2026-09-25T11:59:50Z")
+    assert run_store.live_lanes(tmp_path, NOW) == [lane]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        lane.run = "x-5"
+
+
+def test_an_expired_lease_is_dropped(tmp_path):
+    lane_store(tmp_path, [lane_run("x-3", "2026-09-25T09:00:00Z")], [("runs:x", "x-3", NOW)])
+    assert run_store.live_lanes(tmp_path, NOW) == []
+
+
+def test_a_store_without_a_host_column_gives_host_none(tmp_path):
+    lane_store(tmp_path, [lane_run("x-3", "2026-09-25T09:00:00Z")], [("runs:x", "x-3", LIVE)])
+    assert [lane.host for lane in run_store.live_lanes(tmp_path, NOW)] == [None]
+
+
+def test_a_store_with_a_host_column_gives_the_host(tmp_path):
+    lane_store(tmp_path, [lane_run("x-3", "2026-09-25T09:00:00Z")], [("runs:x", "x-3", LIVE)], host_column=True)
+    assert [lane.host for lane in run_store.live_lanes(tmp_path, NOW)] == ["h"]
+
+
+def test_a_live_lease_with_no_run_row_of_its_prefix_is_skipped(tmp_path):
+    lane_store(tmp_path, [lane_run("y-1", "2026-09-25T09:00:00Z")], [("runs:x", "x-3", LIVE)])
+    assert run_store.live_lanes(tmp_path, NOW) == []
+
+
+def test_live_lanes_is_empty_with_no_store(tmp_path):
+    assert run_store.live_lanes(tmp_path, NOW) == []
+
+
+def test_remote_lanes_drops_a_local_run_and_keeps_the_rest_in_order():
+    a, b, c = (run_store.Lane(run, None, "t", "t") for run in ("a-1", "b-1", "c-1"))
+    assert run_store.remote_lanes([a, b, c], {"b-1"}) == [a, c]
