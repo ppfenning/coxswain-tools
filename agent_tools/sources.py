@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -59,11 +60,18 @@ def intake_links(files: Mapping[str, str]) -> frozenset[str]:
     return frozenset(link for link in links if link is not None)
 
 
+# Adapters that name a vendor live outside this repository and register here by name (Pat, 2026-09-25).
+ENTRY_POINT_GROUP = "coxswain.sources"
+
+
 def adapter_for(name: str):
+    """The built-in `agent_tools.source_<name>`, else the adapter an installed package registers under `coxswain.sources`; None for neither."""
     try:
         return importlib.import_module(f"agent_tools.source_{name}")
     except ImportError:
-        return None
+        pass
+    registered = [ep for ep in importlib.metadata.entry_points(group=ENTRY_POINT_GROUP) if ep.name == name]
+    return registered[0].load() if registered else None
 
 
 def FakeAdapter(listing: Sequence[Mapping]) -> SimpleNamespace:
