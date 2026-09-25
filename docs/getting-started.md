@@ -71,6 +71,7 @@ provider_profile: <checkout root>/agent-cartridges/providers/claude-code.yaml
 harness_dir: <checkout root>/agent-graphs
 workspace_dir: <checkout root>/workspace
 assume: a
+forge: local
 ```
 
 `cartridges_dir` is where the TEAM's cartridge lives (the workspace's
@@ -78,7 +79,12 @@ assume: a
 `skills_roots` and `provider_profile` point into that checkout. `assume` is
 the gate answer detached runs start with (`a` approves what the gate would
 ask, `r` refuses); it defaults to `a` when the key is absent and is passed
-through unchanged to the harness.
+through unchanged to the harness. `forge` is how `cox runs land` lands a
+task: `local` (the default when the key is absent) needs only git: the task's
+commit fast-forwards the default branch once the land's own checks pass, and is
+pushed when the repository has an `origin`. `github` opens a pull request,
+waits for its checks and squash-merges it through `gh`; `cox setup doctor`
+checks `gh auth status` only for that forge.
 
 `--profile PATH` overrides the profile location for one command;
 `AGENT_TOOLS_PROFILE` overrides it for a shell.
