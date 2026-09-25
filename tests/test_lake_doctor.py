@@ -1,5 +1,7 @@
 import shutil
 import sqlite3
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +11,7 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("pyiceberg_core")
 
 from agent_tools.lake_config import LakeConfig, load_catalog
-from agent_tools.lake_doctor import Check, _fail, _table_checks, run_checks, verdict
+from agent_tools.lake_doctor import Check, _fail, _table_checks, run_checks, sqlite_catalog_path, verdict
 from agent_tools.lake_sync import HISTORY, sync
 from agent_tools.lake_tables import TABLES, ensure_tables
 
@@ -92,7 +94,25 @@ def test_fail_redacts_the_url_an_error_quotes(config):
     assert "hunter2" not in check.detail and "u:***@db" in check.detail
 
 
+def test_sqlite_catalog_path_names_the_file_of_a_sqlite_uri_and_nothing_for_other_schemes():
+    assert sqlite_catalog_path("sqlite:////tmp/x/cat.db") == Path("/tmp/x/cat.db")
+    assert sqlite_catalog_path("postgresql://u:p@db:5432/x") is None
+
+
+def test_a_missing_sqlite_catalog_warns_and_is_not_created(config, tmp_path):
+    assert run_checks(config) == [Check("catalog", "warn", "no catalog yet; run cox lake sync")]
+    assert not (tmp_path / "cat.db").exists()
+
+
+def test_a_missing_extra_with_no_catalog_file_fails_on_the_extra(config, tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "pyiceberg.catalog.sql", None)
+    checks = run_checks(config)
+    assert [(c.name, c.status) for c in checks] == [("lake extra", "fail")] and "coxswain-tools[lake]" in checks[0].detail
+    assert not (tmp_path / "cat.db").exists()
+
+
 def test_an_empty_catalog_warns_on_the_namespace(config):
+    load_catalog(config)
     checks = by_name(run_checks(config))
     assert checks["catalog"].status == "ok"
     assert checks["namespace coxswain"].status == "warn" and "cox lake sync" in checks["namespace coxswain"].detail
