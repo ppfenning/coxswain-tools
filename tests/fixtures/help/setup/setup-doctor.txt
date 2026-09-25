@@ -1,7 +1,8 @@
-usage: cox setup doctor [-h] [--profile PROFILE] [--repo REPO] [--json]
+usage: cox setup doctor [-h] [--profile PROFILE] [--repo REPO] [--json] [--host HOST]
 
 options:
   -h, --help         show this help message and exit
   --profile PROFILE
   --repo REPO        target repo to check for a .agent/cartridge.yaml overlay (default: cwd)
   --json
+  --host HOST        run the doctor on this lane host from lane_hosts; --json is ignored
