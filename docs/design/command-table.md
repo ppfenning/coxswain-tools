@@ -1,5 +1,7 @@
 # The command table
 
+> The `cox dev` code this describes (release, release-check, commands render) moved to the coxswain repository's unshipped `devtools/` package; from 0.15.0 it runs as `uv run --frozen python -m devtools <command>` from the coxswain checkout.
+
 `agent_tools/cli.py`'s `build_parser` hand-builds argparse: 60 `add_parser(`
 calls across `runs`, `stats`, `usage`, `epic`, `plan`, `route`, `courier`,
 `install`/`upgrade`/`versions`, `dev`, `release`, `home`, `setup`. Each

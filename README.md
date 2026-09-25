@@ -82,10 +82,6 @@ cox router select --role ROLE [--db DB] [--profile PROFILE] [--json]   the effec
 cox steward propose [--db DB] [--profile PROFILE] [--json]   write each candidate clearing the evidence bar as a new intake file; never edits a provider profile
 cox setup doctor [--profile PROFILE] [--repo REPO] [--json]   check this machine's profile against what it needs
 cox setup install --root ROOT --team TEAM --workspace WORKSPACE [--provider-profile PROVIDER_PROFILE] [--skills-root SKILLS_ROOT] [--assume a|r] [--plugins] [--hook] [--force-profile] [--dry-run] [--window-ceiling-usd WINDOW_CEILING_USD] [--weekly-ceiling-usd WEEKLY_CEILING_USD]   clone components and write a profile for this machine
-cox dev release VERSION [--manifest MANIFEST] [--dry-run] [--root ROOT] [--checkout NAME=PATH] [--umbrella UMBRELLA] [--allow-doc-drift REASON]   the lockstep tag/bump-manifest/notes plan across coxswain's manifest, or (without --dry-run) tags and pushes every component
-cox dev release-check [--manifest MANIFEST] [--root ROOT] [--json] [--checkout NAME=PATH]   gather facts and print drifts between the CLI, the manifest, the docs and the release notes
-cox dev backfill-github-releases --root ROOT [--dry-run]   walk the umbrella's past docs/releases/<version>.md files oldest-first, creating or editing the GitHub Release for every tagged repo missing or drifted from one
-cox dev commands render [--target all|pages|readme] [--pages-dir PAGES_DIR] [--readme README]   write the plugin's slash-command pages and the README's Commands section from the command table
 ```
 <!-- commands:end -->
 
@@ -119,14 +115,7 @@ floating window as the dotfiles' `runs top` chord; right-click opens the HUD.
 
 ## Maintainers
 
-`cox dev` holds commands a maintainer of the coxswain repositories runs; nothing
-here is needed to use Coxswain. `cox release` is a one-release alias that prints
-`moved: use cox dev release` and exits 2.
-
-```
-cox dev release VERSION [--dry-run] [--manifest PATH] [--root DIR] [--checkout NAME=PATH] [--umbrella PATH]   the lockstep plan: tag every component, bump the manifest (skipped on a first cut of the declared version), notes, tag_self; exit 2 on refuse (bad semver, an existing tag, a lesser version, or a checkout that is not a ppfenning/coxswain remote); without --dry-run, executes only a first-cut plan — tags and pushes every component and the umbrella in turn, refusing before tagging anything if a checkout is dirty, off its default branch, the release note is missing, or the plan still carries a bump_manifest step (bump and commit the manifest by hand first). A `lockstep = false` component with commits past its pinned tag rejoins this release (tagged at VERSION, same as a lockstep component) instead of getting a plain `pinned` step; an unchanged one stays pinned.
-cox dev release-check [--json] [--root R] [--manifest PATH]   runs the registered docs checks over facts named by the manifest and prints their drifts; reports rather than blocks (exit 0), says how many checks ran, and refuses (exit 2) only when it cannot read the manifest
-```
+`cox dev` moved: run `uv run --frozen python -m devtools <command> ...` from the coxswain checkout (from 0.15.0); `cox dev` and `cox release` print that pointer and exit 2.
 
 Every command that reads a record is pure over parsed data and unit-tested
 against fixtures; every command that writes is dry-run unless `--apply`.
