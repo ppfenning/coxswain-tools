@@ -79,6 +79,7 @@ from agent_tools import (
     stats_system_one,
     stats_tiers_cmd,
     steward,
+    store_cli,
     store_dialect,
     store_url,
     tracker,
@@ -1230,6 +1231,9 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         record_path = Path(step["path"])
         record = json.loads(record_path.read_text(encoding="utf-8"))
         record_path.write_text(json.dumps({**record, "landed": True}, indent=2), encoding="utf-8")
+        line = _mirror_landed(step)
+        if line:
+            print(line)
         _close_approved_item(step.get("item"), merged=True)
         return True, f"{step['task']} marked landed at {record_path}"
     if kind == "route_sync":
@@ -1247,6 +1251,31 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             return True, f"sync of {step['item']} failed {when} ({type(exc).__name__}: {exc}); {tail}"
         return True, f"synced {step['item']}" if rc == 0 else f"sync of {step['item']} failed {when} (exit {rc}); {tail}"
     return False, f"unknown step {kind!r}"
+
+
+def _mark_done_facts(step: dict, pr: str, at: str) -> dict:
+    """`step` with the store facts `mark_done` mirrors: run and phase from the
+    `runs/<run>/tasks/<phase>/<task>.json` path, the PR url, and the caller's ISO time."""
+    path = Path(step["path"])
+    return {**step, "run": path.parents[2].name, "phase": path.parent.name, "pr": pr, "at": at}
+
+
+def _mirror_landed(step: dict) -> str | None:
+    """The line to print for the store mirror of a landed record, None when it took.
+    A step with no `at` was not given the store facts and is not mirrored. Never raises."""
+    if "at" not in step:
+        return None
+    try:
+        result = store_cli.mark_landed(step["run"], step["phase"], step["task"], step["pr"], step["at"])
+    except Exception as exc:
+        return f"warning: store mirror of {step['task']} failed ({type(exc).__name__}: {exc}); land not undone"
+    if isinstance(result, store_cli.Landed):
+        return None
+    if isinstance(result, store_cli.NotInStore):
+        return f"store mirror of {step['task']} skipped: the record predates the mirror"
+    if isinstance(result, store_cli.Failed):
+        return f"warning: store mirror of {step['task']} failed (exit {result.code}: {result.detail}); land not undone"
+    return f"warning: store mirror of {step['task']} skipped: harness not available; land not undone"
 
 
 def _land_item_facts(item_path: str | None) -> tuple[str | None, str | None]:
@@ -1521,6 +1550,8 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             # gh and git cannot delete a branch a worktree still holds.
             for branch in built:
                 _remove_land_worktree(repo, branch)
+        if step["kind"] == "mark_done":
+            step = _mark_done_facts(step, pr, datetime.datetime.now(datetime.UTC).isoformat())
         ok, detail = _execute_land_step(repo, step, forge_module)
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
