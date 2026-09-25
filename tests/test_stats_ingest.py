@@ -1129,3 +1129,174 @@ def test_ingest_report_provider_profile_sha_counts_sum_to_runs_ingested(tmp_path
     conn.close()
     assert rows["run1"] == sha
     assert rows["run2"] is None
+
+
+def _facts(record):
+    return stats_ingest.gate_facts(record)
+
+
+def test_gate_facts_reads_the_handoff_complete_bool_as_yes_or_no():
+    assert _facts({"handoff": {"complete": True}})["handoff_verdict"] == "yes"
+    assert _facts({"handoff": {"complete": False}})["handoff_verdict"] == "no"
+
+
+def test_gate_facts_leaves_the_handoff_verdict_none_for_a_non_bool_complete():
+    assert _facts({"handoff": {"complete": "maybe"}})["handoff_verdict"] is None
+
+
+def test_gate_facts_reads_only_complete_for_the_handoff_never_a_verdict_key():
+    assert _facts({"handoff": {"verdict": "complete", "complete": False}})["handoff_verdict"] == "no"
+    assert _facts({"handoff": {"verdict": "complete"}})["handoff_verdict"] is None
+
+
+def test_gate_facts_reads_the_charter_review_verdict():
+    assert _facts({"review": {"verdict": "revise"}})["charter_verdict"] == "revise"
+
+
+def test_gate_facts_reads_the_adversary_verdict():
+    assert _facts({"adversary": {"verdict": "approve"}})["adversary_verdict"] == "approve"
+
+
+def test_gate_facts_leaves_the_adversary_verdict_none_for_a_findings_list():
+    assert _facts({"adversary": [{"why_wrong": "missed the edge case"}]})["adversary_verdict"] is None
+
+
+def test_gate_facts_reads_arbiter_verdict_and_sided_with_from_an_arbitration_dict():
+    facts = _facts({"arbitration": {"verdict": "revise", "sided_with": "adversary"}})
+    assert (facts["arbiter_verdict"], facts["arbiter_sided_with"], facts["arbiter_state"]) == ("revise", "adversary", "ruled")
+
+
+def test_gate_facts_gives_no_ruled_state_for_an_arbitration_dict_with_no_verdict():
+    facts = _facts({"arbitration": {"reasoning": "the fix broke the build"}})
+    assert (facts["arbiter_verdict"], facts["arbiter_state"]) == (None, None)
+
+
+def test_gate_facts_gives_none_for_all_three_arbiter_facts_with_no_arbitration_section():
+    facts = _facts({"ticket": "t1"})
+    assert (facts["arbiter_verdict"], facts["arbiter_sided_with"], facts["arbiter_state"]) == (None, None, None)
+
+
+def test_gate_facts_stores_the_arbiter_skip_line_as_a_skipped_state():
+    facts = _facts({"arbitration": "arbiter: skipped (both approved)"})
+    assert (facts["arbiter_verdict"], facts["arbiter_sided_with"], facts["arbiter_state"]) == (None, None, "skipped")
+
+
+def test_gate_facts_reads_a_stop_reason_string_as_stopped_and_an_explicit_null_as_not_stopped():
+    for reason in ("attempts_exhausted", "budget"):
+        facts = _facts({"fix_loop": {"attempts": 3, "stopped": reason}})
+        assert (facts["fix_loop_attempts"], facts["fix_loop_stopped"]) == (3, 1)
+    facts = _facts({"fix_loop": {"attempts": 1, "stopped": None}})
+    assert (facts["fix_loop_attempts"], facts["fix_loop_stopped"]) == (1, 0)
+
+
+def test_gate_facts_leaves_stopped_none_when_the_fix_loop_dict_has_no_stopped_key_or_an_empty_reason():
+    assert _facts({"fix_loop": {"attempts": 2}})["fix_loop_stopped"] is None
+    assert _facts({"fix_loop": {"attempts": 2, "stopped": ""}})["fix_loop_stopped"] is None
+
+
+def test_gate_facts_attempts_agree_with_the_join_identitys_count_wherever_the_record_states_one():
+    for fix_loop in ({"attempts": 4}, [{"round": 1}, {"round": 2}]):
+        record = {"fix_loop": fix_loop}
+        assert _facts(record)["fix_loop_attempts"] == stats_ingest._fix_loop_attempts(record)
+    assert _facts({"fix_loop": {"stopped": None}})["fix_loop_attempts"] is None
+
+
+def test_gate_facts_counts_a_fix_loop_list_of_rounds_as_attempts_with_no_stopped_flag():
+    facts = _facts({"fix_loop": [{"round": 1}, {"round": 2}]})
+    assert (facts["fix_loop_attempts"], facts["fix_loop_stopped"]) == (2, None)
+
+
+def test_gate_facts_leaves_fix_loop_none_when_absent_or_an_empty_list():
+    for record in ({}, {"fix_loop": []}):
+        facts = _facts(record)
+        assert (facts["fix_loop_attempts"], facts["fix_loop_stopped"]) == (None, None)
+
+
+def test_gate_facts_reads_the_plan_gate_verdict_from_a_dict_or_a_bare_string():
+    assert _facts({"plan_gate": {"verdict": "pass"}})["plan_gate_verdict"] == "pass"
+    assert _facts({"plan_gate": "pass"})["plan_gate_verdict"] == "pass"
+    assert _facts({"plan_gate": ""})["plan_gate_verdict"] is None
+
+
+def test_gate_facts_of_an_empty_record_is_nine_nones():
+    facts = _facts({})
+    assert len(facts) == 9
+    assert set(facts.values()) == {None}
+
+
+def test_a_since_date_filter_joins_tasks_to_runs_started_at(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(
+        runs_dir, "run1",
+        tasks=[("p1", "t1", {"ticket": "t1"})],
+        usage={"summary": {"started_at": "2026-09-20T00:00:00Z"}, "calls": []},
+    )
+    db_path = tmp_path / "stats.db"
+    stats_ingest.ingest(runs_dir, db_path)
+    conn = connect(db_path)
+    rows = conn.execute(
+        "SELECT t.task_id FROM tasks t JOIN runs r ON r.run_id = t.run_id WHERE r.started_at >= '2026-09-01'"
+    ).fetchall()
+    conn.close()
+    assert rows == [("run1:p1:t1",)]
+
+
+def test_a_fresh_ingest_stamps_schema_version_2(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(runs_dir, "run1", tasks=[("p1", "t1", {})])
+    db_path = tmp_path / "stats.db"
+    stats_ingest.ingest(runs_dir, db_path)
+    conn = connect(db_path)
+    assert conn.execute("SELECT schema_version FROM runs").fetchone() == (2,)
+    conn.close()
+
+
+_GATE_RECORD = {
+    "ticket": "t1",
+    "review": {"verdict": "approve"},
+    "arbitration": "arbiter: skipped (both approved)",
+    "fix_loop": {"attempts": 2, "stopped": "attempts_exhausted"},
+}
+
+
+def test_an_old_schema_db_is_upgraded_then_filled_by_a_second_ingest_run(tmp_path):
+    db_path = tmp_path / "stats.db"
+    old = sqlite3.connect(str(db_path))
+    old.execute("CREATE TABLE tasks (run_id TEXT, task_id TEXT, ticket TEXT, outcome TEXT)")
+    old.execute("INSERT INTO tasks VALUES ('run1', 'run1:p1:t1', 't1', 'unknown')")
+    old.commit()
+    old.close()
+
+    conn = connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+    stale = conn.execute("SELECT charter_verdict, arbiter_state, fix_loop_attempts FROM tasks").fetchall()
+    conn.close()
+    assert {
+        "handoff_verdict", "charter_verdict", "adversary_verdict", "arbiter_verdict", "arbiter_sided_with",
+        "arbiter_state", "fix_loop_attempts", "fix_loop_stopped", "plan_gate_verdict",
+    } <= columns
+    assert stale == [(None, None, None)]
+
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(runs_dir, "run1", tasks=[("p1", "t1", _GATE_RECORD)])
+    stats_ingest.ingest(runs_dir, db_path)
+    conn = connect(db_path)
+    filled = conn.execute("SELECT charter_verdict, arbiter_state, fix_loop_attempts, fix_loop_stopped FROM tasks").fetchall()
+    conn.close()
+    assert filled == [("approve", "skipped", 2, 1)]
+
+
+def test_a_rerun_over_the_same_gate_records_creates_no_duplicate_task_rows(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(runs_dir, "run1", tasks=[("p1", "t1", _GATE_RECORD)])
+    db_path = tmp_path / "stats.db"
+    stats_ingest.ingest(runs_dir, db_path)
+    stats_ingest.ingest(runs_dir, db_path)
+    conn = connect(db_path)
+    rows = conn.execute("SELECT charter_verdict, arbiter_state FROM tasks").fetchall()
+    conn.close()
+    assert rows == [("approve", "skipped")]

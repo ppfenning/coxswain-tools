@@ -100,7 +100,20 @@ def test_tasks_columns_match_spec_names_verbatim():
         "cost_usd",
         "reason",
         "outcome_kind",
+        "handoff_verdict",
+        "charter_verdict",
+        "adversary_verdict",
+        "arbiter_verdict",
+        "arbiter_sided_with",
+        "arbiter_state",
+        "fix_loop_attempts",
+        "fix_loop_stopped",
+        "plan_gate_verdict",
     ]
+
+
+def test_the_gate_fact_columns_are_nullable_with_no_default():
+    assert all(c.default is None and not c.not_null for c in TASKS_COLUMNS[-9:])
 
 
 def test_outcomes_enum_is_the_closed_set():
