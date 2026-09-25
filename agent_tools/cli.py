@@ -294,18 +294,24 @@ def _stats_chair(a: argparse.Namespace) -> int:
 
 
 def _stats_examples(a: argparse.Namespace) -> int:
-    if a.role not in stats_examples.BUILDERS:
-        print(f"unknown role {a.role!r}: choose one of {', '.join(stats_examples.BUILDERS)}", file=sys.stderr)
-        return 2
+    roles = list(dict.fromkeys(a.role))
+    for role in roles:
+        if role not in stats_examples.BUILDERS:
+            print(f"unknown role {role!r}: choose one of {', '.join(stats_examples.BUILDERS)}", file=sys.stderr)
+            return 2
     texts = [_read_text_or_none(p) for p in sorted(Path(a.runs_dir).glob("*/tasks/*/*.json"))]
     records = [stats_examples.parse_record(t) if t is not None else None for t in texts]
-    examples = stats_examples.build_examples(records, a.role, a.since)
-    out = stats_examples.format_lines(examples)
+    built = [(role, stats_examples.build_examples(records, role, a.since)) for role in roles]
+    out = "".join(stats_examples.format_lines(examples) for _, examples in built)
     if a.out:
         Path(a.out).write_text(out, encoding="utf-8")
     else:
         sys.stdout.write(out)
-    print(f"read {len(records)}, written {len(examples)}, skipped {len(records) - len(examples)}", file=sys.stderr)
+    counts = [f"written {len(ex)}, skipped {len(records) - len(ex)}" for _, ex in built]
+    if len(built) == 1:
+        print(f"read {len(records)}, {counts[0]}", file=sys.stderr)
+    else:
+        print(f"read {len(records)}; " + "; ".join(f"{r}: {c}" for (r, _), c in zip(built, counts)), file=sys.stderr)
     return 0
 
 
@@ -3191,7 +3197,7 @@ STATS_COMMANDS = [
         "examples", "stats", "the local system-one backend's training file (JSON lines) from task records",
         (
             commands.Arg(("runs_dir",), {"nargs": "?", "default": "runs"}),
-            commands.Arg(("--role",), {"required": True, "help": "handoff or review_charter"}),
+            commands.Arg(("--role",), {"action": "append", "required": True, "help": "handoff or review_charter; repeat for several"}),
             commands.Arg(("--out",), {"default": None, "help": "write the file to PATH (default: stdout)"}),
             commands.Arg(("--since",), {"default": None, "help": "keep only records dated on or after DATE (YYYY-MM-DD)"}),
         ),
