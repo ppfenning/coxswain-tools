@@ -8,8 +8,6 @@ from pyiceberg.transforms import DayTransform
 
 from agent_tools.lake_tables import HWM_PROPERTY, NAMESPACE, TABLES, ensure_tables
 
-HISTORY = ("runs", "phases", "node_calls", "gate_decisions", "ledger")
-
 
 @pytest.fixture
 def catalog(tmp_path):
@@ -35,14 +33,43 @@ def test_a_second_call_changes_no_snapshot_or_schema(catalog):
     assert _state(catalog) == before
 
 
-@pytest.mark.parametrize("name", HISTORY)
-def test_a_history_table_has_one_day_partition_on_its_high_water_column(catalog, name):
+@pytest.mark.parametrize(
+    ("name", "partition_column"),
+    [("runs", "launched_at"), ("phases", "ts"), ("node_calls", "ts"), ("ledger", "ts")],
+)
+def test_a_partitioned_table_has_one_day_partition_on_its_timestamp(catalog, name, partition_column):
     ensure_tables(catalog)
     table = catalog.load_table(f"{NAMESPACE}.{name}")
     (field,) = table.spec().fields
     assert isinstance(field.transform, DayTransform)
-    assert table.schema().find_field(field.source_id).name == TABLES[name].hwm_column
+    assert table.schema().find_field(field.source_id).name == partition_column
     assert str(table.schema().find_field(field.source_id).field_type) == "timestamptz"
+
+
+def test_the_runs_mark_is_ended_at_though_it_is_partitioned_by_launched_at():
+    assert TABLES["runs"].hwm_column == "ended_at"
+    assert TABLES["runs"].spec.fields[0].name == "launched_at_day"
+
+
+def test_gate_decisions_is_unpartitioned_with_no_high_water_column(catalog):
+    ensure_tables(catalog)
+    assert catalog.load_table(f"{NAMESPACE}.gate_decisions").spec().fields == ()
+    assert TABLES["gate_decisions"].hwm_column is None
+
+
+def test_gate_decisions_and_ledger_carry_the_store_columns():
+    assert [f.name for f in TABLES["gate_decisions"].schema.fields] == [
+        "run_id", "phase_id", "seq", "kind", "target", "decision", "risk", "outcome",
+        "applied", "edited", "epoch", "detail_json",
+    ]
+    assert [f.name for f in TABLES["ledger"].schema.fields] == [
+        "row_hash", "run_id", "ts", "principal", "kind", "risk", "outcome",
+        "cartridge_sha", "provider_profile", "schema_tag", "epoch", "row_json",
+    ]
+
+
+def test_the_traces_seq_is_int32():
+    assert str(TABLES["traces"].schema.find_field("seq").field_type) == "int"
 
 
 def test_the_traces_table_is_unpartitioned(catalog):
