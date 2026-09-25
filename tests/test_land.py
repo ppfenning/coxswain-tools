@@ -1287,3 +1287,40 @@ def test_wait_checks_reads_the_sha_of_the_repos_own_head_and_runs_gh_there(monke
     assert cli._wait_checks(tmp_path, 180.0, sleep=lambda s: None) == (True, "green")
     assert head != main and len(gh_calls) == 2
     assert all(head in argv[-1] and main not in argv[-1] and cwd == tmp_path for argv, cwd in gh_calls)
+
+
+# --- land.jsonl: one row per applied land that reached its steps ---
+
+def test_land_log_row_is_the_six_keys_and_an_empty_pr_is_null():
+    row = land.land_log_row("2026-09-24T10:00:00+00:00", "epic-x-5", "seams-task", ["push", "merge"], 0, "https://x/pull/7")
+    assert row == {"ts": "2026-09-24T10:00:00+00:00", "run": "epic-x-5", "task": "seams-task",
+                   "steps_reached": ["push", "merge"], "exit": 0, "pr": "https://x/pull/7"}
+    assert land.land_log_row("t", "r", None, [], 2, "")["pr"] is None
+
+
+def _land_log(tmp_path):
+    return [json.loads(line) for line in (tmp_path / "runs/land.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_a_successful_land_writes_one_row_reaching_merge_with_exit_0(repo, tmp_path, monkeypatch):
+    rc, ran = _apply_gated(repo, tmp_path, monkeypatch, "--gate", "full")
+    (row,) = _land_log(tmp_path)
+    assert rc == 0
+    assert row["steps_reached"] == ran and "merge" in row["steps_reached"]
+    assert (row["exit"], row["run"], row["task"], row["pr"]) == (0, "epic-x-5", "seams-task", "https://x/pull/7")
+
+
+def test_a_refused_land_writes_a_row_with_its_exit_code_and_no_merge_and_a_rerun_appends(repo, tmp_path):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record(proposals=[])), encoding="utf-8")
+    argv = ["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")]
+    assert cli.main(argv) == 2
+    assert cli.main(argv) == 2
+    assert [(r["exit"], r["steps_reached"], r["pr"]) for r in _land_log(tmp_path)] == [(2, [], None)] * 2
+
+
+def test_a_dry_run_writes_no_land_log(repo, tmp_path):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    assert cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")]) == 0
+    assert not (tmp_path / "runs/land.jsonl").exists()
