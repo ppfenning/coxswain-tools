@@ -4,8 +4,10 @@ returns plain values."""
 
 from __future__ import annotations
 
+import json
 import os
 import re
+from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
 from agent_tools.pacing import Assessment
@@ -29,6 +31,7 @@ __all__ = [
     "parse_frontmatter",
     "parse_pid",
     "parse_profile",
+    "pull_plan",
     "render_context",
     "render_status",
     "run_entries",
@@ -59,7 +62,11 @@ _KNOWN_KEYS = {
     "workspace_dir",
     "assume",
     "router",
+    "sources",
+    "repo_map",
 }
+
+_JSON_KEYS = {"sources", "repo_map"}
 
 _SPEND_KEYS = {"window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd"}
 
@@ -123,7 +130,12 @@ def parse_profile(text: str) -> dict:
             continue
         if key not in _KNOWN_KEYS:
             raise ProfileError(f"line {lineno}: {raw_line}")
-        if value.startswith("[") and value.endswith("]"):
+        if key in _JSON_KEYS:
+            try:
+                result[key] = json.loads(value)
+            except json.JSONDecodeError:
+                raise ProfileError(f"line {lineno}: {raw_line}") from None
+        elif value.startswith("[") and value.endswith("]"):
             inner = value[1:-1].strip()
             items = [item.strip() for item in inner.split(",")] if inner else []
             result[key] = items
@@ -321,16 +333,45 @@ def initiative_text(id: str, title: str, repo: str, intake: str, body: str) -> s
     return _frontmatter([("id", id), ("title", title), ("repo", repo), ("intake", intake)], body)
 
 
-def intake_file(title: str, body: str, repo: str, date: str) -> dict:
+def intake_file(title: str, body: str, repo: str, date: str, *, source: str = "", link: str = "") -> dict:
     """Content for `route file --intake` (spec §3):
     `intake/<date>-<slug>.md`, same frontmatter shape as the initiative
     file. `date` arrives as a string (e.g. `2026-09-03`) so this stays
-    pure — no clock reads here.
+    pure — no clock reads here. A pulled file also carries `source` and `link`.
     """
     slug = _slug_or_raise(title)
     text = body if body else title
-    file_text = _frontmatter([("id", slug), ("title", title), ("repo", repo)], text)
+    origin = [("source", source), ("link", link)] if link else []
+    file_text = _frontmatter([("id", slug), ("title", title), ("repo", repo), *origin], text)
     return {f"intake/{date}-{slug}.md": file_text}
+
+
+def pull_plan(
+    candidates: Sequence, taken_links: frozenset[str], profile_repos: Mapping[str, str], *, date: str, source: str
+) -> tuple[list[dict], list[str]]:
+    """Intake files to write and the refusals; an unmapped repo is refused, never guessed, and a second candidate on one path is refused, never dropped."""
+    fresh = [c for c in candidates if c.link not in taken_links]
+    unmapped = [_pull_refusal(c, f"repo {c.repo} has no mapping in the profile") for c in fresh if c.repo not in profile_repos]
+    mapped = [c for c in fresh if c.repo in profile_repos]
+    unnamed = [_pull_refusal(c, "title has no alphanumeric characters to slugify") for c in mapped if not slugify(c.title)]
+    planned = [
+        (c, intake_file(c.title, c.body, profile_repos[c.repo], date, source=source, link=c.link))
+        for c in mapped
+        if slugify(c.title)
+    ]
+    paths = [next(iter(mapping)) for _, mapping in planned]
+    first = [paths.index(path) == i for i, path in enumerate(paths)]
+    clashes = [
+        _pull_refusal(c, f"{path} is already planned for another candidate")
+        for (c, _), path, is_first in zip(planned, paths, first)
+        if not is_first
+    ]
+    files = [mapping for (_, mapping), is_first in zip(planned, first) if is_first]
+    return files, unmapped + unnamed + clashes
+
+
+def _pull_refusal(candidate, reason: str) -> str:
+    return f"routing: refusing {candidate.title!r} ({candidate.link}): {reason}"
 
 
 def link_intake(initiative_text: str, intake_text: str, intake_path: str, initiative_id: str) -> tuple[str, str]:

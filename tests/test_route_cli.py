@@ -1397,3 +1397,99 @@ def test_route_groups_with_no_groups_prints_no_groups_filed(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert out == "no groups filed\n"
+
+
+def _pull_setup(tmp_path, monkeypatch, listing, *, extra=(), mark_argv=None):
+    from types import SimpleNamespace
+
+    from agent_tools import sources
+
+    def list_argv(_config, repo):
+        return ["echo", json.dumps([raw for raw in listing if raw["repo"] == repo] + list(extra if repo == "a/b" else ()))]
+
+    fake = SimpleNamespace(**vars(sources.FakeAdapter(listing)), list_argv=list_argv)
+    fake.mark_argv = mark_argv or fake.mark_argv
+    monkeypatch.setattr(sources, "adapter_for", lambda _name: fake)
+    profile, ws = _write_file_profile(tmp_path)
+    with profile.open("a") as f:
+        f.write('sources: {"github": {"repos": ["a/b", "x/y"]}}\nrepo_map: {"a/b": "tools"}\n')
+    return profile, ws
+
+
+def _issue(link, repo="a/b"):
+    return {"title": "Fix it", "body": "b", "repo": repo, "link": link}
+
+
+def test_pull_with_no_candidates_writes_nothing_and_says_so(tmp_path, monkeypatch, capsys):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [])
+    rc = main(["route", "pull", "--profile", str(profile)])
+    assert rc == 0
+    assert capsys.readouterr().out == "routing: pull wrote nothing: no eligible candidates\n"
+    assert not (ws / "intake").exists()
+
+
+def test_a_second_pull_over_the_same_link_writes_nothing(tmp_path, monkeypatch, capsys):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1")])
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    [written] = (ws / "intake").glob("*.md")
+    assert 'link: "https://x/1"' in written.read_text(encoding="utf-8")
+    capsys.readouterr()
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    assert capsys.readouterr().out == "routing: pull wrote nothing: no eligible candidates\n"
+    assert list((ws / "intake").glob("*.md")) == [written]
+
+
+def test_pull_refuses_an_unmapped_repo_by_name_and_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/2", repo="x/y")])
+    rc = main(["route", "pull", "--profile", str(profile), "--dry-run"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "'Fix it' (https://x/2): repo x/y has no mapping in the profile" in out
+    assert not (ws / "intake").exists()
+
+
+def test_a_pull_after_the_intake_file_is_decomposed_writes_nothing(tmp_path, monkeypatch, capsys):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1")])
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    [written] = (ws / "intake").glob("*.md")
+    assert main(["route", "file", "--profile", str(profile), "--from-intake", str(written)]) == 0
+    assert list((ws / "intake").glob("*.md")) == []
+    capsys.readouterr()
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    assert capsys.readouterr().out == "routing: pull wrote nothing: no eligible candidates\n"
+    assert list((ws / "intake").glob("*.md")) == []
+
+
+_APPEND_ARGS = "import sys; open(sys.argv[1], 'a').write(' '.join(sys.argv[2:]) + chr(10))"
+
+
+def test_pull_marks_each_written_file_and_a_failed_mark_exits_2_naming_the_link(tmp_path, monkeypatch, capsys):
+    log = tmp_path / "marks.log"
+    mark = lambda ref, rel: [sys.executable, "-c", _APPEND_ARGS, str(log), ref.link, rel]  # noqa: E731
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1")], mark_argv=mark)
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    [written] = (ws / "intake").glob("*.md")
+    assert log.read_text() == f"https://x/1 intake/{written.name}\n"
+
+    failing = tmp_path / "failing"
+    failing.mkdir()
+    fail = lambda _ref, _rel: [sys.executable, "-c", "raise SystemExit(3)"]  # noqa: E731
+    profile, ws = _pull_setup(failing, monkeypatch, [_issue("https://x/9")], mark_argv=fail)
+    capsys.readouterr()
+    assert main(["route", "pull", "--profile", str(profile)]) == 2
+    assert "marking https://x/9 failed (exit 3)" in capsys.readouterr().out
+
+
+def test_two_issues_on_one_path_file_the_first_and_refuse_the_second_by_link(tmp_path, monkeypatch, capsys):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1"), _issue("https://x/2")])
+    assert main(["route", "pull", "--profile", str(profile)]) == 2
+    assert "'Fix it' (https://x/2): intake/" in capsys.readouterr().out
+    [written] = (ws / "intake").glob("*.md")
+    assert 'link: "https://x/1"' in written.read_text(encoding="utf-8")
+
+
+def test_an_unreadable_listing_entry_is_named_and_the_rest_are_filed(tmp_path, monkeypatch, capsys):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1")], extra=[{"title": "broken"}])
+    assert main(["route", "pull", "--profile", str(profile)]) == 2
+    assert "skipping unreadable listing entry broken: KeyError" in capsys.readouterr().out
+    assert len(list((ws / "intake").glob("*.md"))) == 1
