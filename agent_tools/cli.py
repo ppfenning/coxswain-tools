@@ -1098,14 +1098,31 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(f"land: resuming on existing branch {cherry_pick['onto']}")
         steps = land.resume_steps(steps, decision, cherry_pick["onto"])
         planned = land.resume_steps(planned, decision, cherry_pick["onto"])
+    # Steps start here: every return from now on is logged. Earlier returns are not.
+    rc, reached, pr = _land_execute(repo, steps, planned, record, item_path, level, a.no_merge)
+    task = record["task"] if record else None
+    _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), a.run_id, task, reached, rc, pr))
+    return rc
+
+
+def _append_land_log(runs_dir: Path, row: dict) -> None:
+    with (runs_dir / "land.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+
+
+def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
+                  level: str, no_merge: bool) -> tuple[int, list[str], str]:
+    """Walk `steps`; return the exit code, the step kinds run in order, and the PR url ("" when none opened)."""
     pr = ""
+    reached: list[str] = []
     for i in range(len(steps)):
         step = steps[i]
         if step["kind"] == "refuse":
             print(f"refused: {step['reason']}")
-            return 2
+            return 2, reached, pr
         if step["kind"] == "note":
             continue
+        reached.append(step["kind"])
         ok, detail = _execute_land_step(repo, step)
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
@@ -1116,19 +1133,19 @@ def _runs_land(a: argparse.Namespace) -> int:
             # not an ordinary failure, and it fires before `push` so a check
             # that never ran leaves no pushed branch behind.
             print(detail)
-            return 2
+            return 2, reached, pr
         print(f"{step['kind']}: {detail}")
         if not ok:
             remaining = [s["kind"] for s in steps[i + 1:]]
             print("stopped; remaining: " + ", ".join(remaining))
-            return 1
-        if step["kind"] == "wait_checks" and a.no_merge:
+            return 1, reached, pr
+        if step["kind"] == "wait_checks" and no_merge:
             print("stopping after wait_checks (--no-merge)")
-            return 0
+            return 0, reached, pr
     stop = land.gate_stop(planned, steps, level, pr)
     if stop:
         print(stop)
-    return 3 if stop else 0
+    return (3 if stop else 0), reached, pr
 
 
 def _runs_recover(a: argparse.Namespace) -> int:

@@ -36,6 +36,7 @@ __all__ = [
     "gate_stop",
     "is_pending",
     "issue_closes",
+    "land_log_row",
     "land_plan",
     "merge_pages",
     "phase_landable",
@@ -440,6 +441,11 @@ def pr_body(record: dict[str, Any], issue: str | int | None = None) -> str:
         lines.append(f"Cost: ${cost:.2f}")
     closes = issue_closes(issue)
     return "\n".join(lines + ["", closes] if closes else lines)
+
+
+def land_log_row(ts: str, run: str, task: str | None, steps_reached: Sequence[str], exit_code: int, pr: str | None) -> dict[str, Any]:
+    """One `land.jsonl` line: step kinds in the order they ran, and an empty `pr` is `None`."""
+    return {"ts": ts, "run": run, "task": task, "steps_reached": list(steps_reached), "exit": exit_code, "pr": pr or None}
 
 
 def approve_to_done(text: str) -> tuple[str | None, str | None]:
