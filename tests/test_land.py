@@ -725,12 +725,46 @@ def test_execute_mark_done_leaves_a_done_item_untouched(tmp_path):
 
 
 def test_execute_mark_done_leaves_a_non_approved_item_untouched_and_prints_it(tmp_path, capsys):
-    text = "---\nid: seams-task\nstate: ready\n---\n\nBody text.\n"
+    text = "---\nid: seams-task\nstate: blocked\n---\n\nBody text.\n"
     item_path, step = _mark_done_step(tmp_path, text)
     ok, detail = cli._execute_land_step(tmp_path, step)
     assert ok, detail
     assert item_path.read_text() == text
-    assert "ready" in capsys.readouterr().out
+    assert "blocked" in capsys.readouterr().out
+
+
+def test_execute_mark_done_moves_a_ready_item_to_done_and_prints_the_note(tmp_path, capsys):
+    item_path, step = _mark_done_step(tmp_path, "---\nid: seams-task\nstate: ready\n---\n\nBody text.\n")
+    ok, detail = cli._execute_land_step(tmp_path, step)
+    assert ok, detail
+    assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody text.\n"
+    assert "merged, so done" in capsys.readouterr().out
+
+
+_READY = "---\nid: t\nstate: ready\n---\n\nBody.\n"
+
+
+def test_approve_to_done_moves_ready_to_done_with_a_note_when_merged():
+    assert land.approve_to_done(_READY, merged=True) == (
+        "---\nid: t\nstate: done\n---\n\nBody.\n",
+        "land: work item was ready (its run also quarantined); merged, so done",
+    )
+
+
+def test_approve_to_done_refuses_ready_when_not_merged():
+    assert land.approve_to_done(_READY) == (None, "land: work item state is 'ready', not moving to done")
+
+
+def test_approve_to_done_refuses_blocked_even_when_merged():
+    text = "---\nid: t\nstate: blocked\n---\n\nBody.\n"
+    assert land.approve_to_done(text, merged=True) == (None, "land: work item state is 'blocked', not moving to done")
+
+
+def test_approve_to_done_moves_approved_to_done_without_a_note():
+    text = "---\nid: t\nstate: approved\n---\n\nBody.\n"
+    done = "---\nid: t\nstate: done\n---\n\nBody.\n"
+    assert land.approve_to_done(text) == (done, None)
+    assert land.approve_to_done(text, merged=True) == (done, None)
 
 
 # --- cli end to end: dry-run default, and the dirty-checkout refusal ---
@@ -891,6 +925,22 @@ def test_cli_recover_closes_an_approved_item_even_when_already_recovered(repo, t
     assert rc == 0, out
     assert "already contains the commit" in out
     assert item_path.read_text() == "---\nid: seams-task\nstate: done\n---\n\nBody.\n"
+
+
+def test_cli_recover_leaves_a_ready_item_ready_when_already_recovered(repo, tmp_path, capsys):
+    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    item_path = item_dir / "seams-task.md"
+    original = "---\nid: seams-task\nstate: ready\n---\n\nBody.\n"
+    item_path.write_text(original, encoding="utf-8")
+    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "already contains the commit" in out
+    assert "not moving to done" in out
+    assert item_path.read_text() == original
 
 
 def _apply_gated(repo, tmp_path, monkeypatch, *gate):

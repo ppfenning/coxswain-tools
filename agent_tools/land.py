@@ -473,14 +473,19 @@ def land_log_row(ts: str, run: str, task: str | None, steps_reached: Sequence[st
     return {"ts": ts, "run": run, "task": task, "steps_reached": list(steps_reached), "exit": exit_code, "pr": pr or None}
 
 
-def approve_to_done(text: str) -> tuple[str | None, str | None]:
+_READY_MERGED_NOTE = "land: work item was ready (its run also quarantined); merged, so done"
+
+
+def approve_to_done(text: str, *, merged: bool = False) -> tuple[str | None, str | None]:
     """The work item's frontmatter `state: approved` line rewritten to
     `state: done`, with every other byte of `text` untouched, paired with
     `None`; or `None` paired with `None` when the state is already `done`
     (nothing to do); or `None` paired with a one-line message naming the
     state when it is anything else — land never moves an unapproved item.
     Only the `---`-delimited header is searched for `state:`, so a body line
-    that happens to start with `state:` is never mistaken for the field."""
+    that happens to start with `state:` is never mistaken for the field.
+    With `merged` True a `ready` item also moves to `done`, paired with a
+    one-line note: its run quarantined after approval, and the merge landed it."""
     if not text.startswith("---\n"):
         return None, "land: work item has no state field"
     close = text.find("\n---\n", 4)
@@ -492,6 +497,8 @@ def approve_to_done(text: str) -> tuple[str | None, str | None]:
         state = stripped[len("state:"):].strip()
         if state == "done":
             return None, None
+        if state == "ready" and merged:
+            return text.replace(line, line.replace("ready", "done", 1), 1), _READY_MERGED_NOTE
         if state != "approved":
             return None, f"land: work item state is {state!r}, not moving to done"
         return text.replace(line, line.replace("approved", "done", 1), 1), None
