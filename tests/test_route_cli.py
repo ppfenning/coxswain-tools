@@ -283,12 +283,30 @@ def test_status_json_with_an_intake_dir_carries_runs_and_intake_groups(tmp_path,
     }
 
 
-def test_status_text_with_profile_lists_alive_dead_and_no_pidfile_runs(tmp_path, capsys):
+def test_status_text_hides_the_old_no_pidfile_run_and_says_so(tmp_path, capsys):
     profile, ws = _write_runs_workspace(tmp_path)
     rc = main(["route", "status", "--profile", str(profile)])
     out = capsys.readouterr().out
     assert rc == 0
+    assert out == route.render_status(_expected_status_rows(ws)[:2], gate_level="ticket", hidden=1) + "\n"
+    assert out.splitlines()[2] == "(1 older runs hidden; --all shows every run)"
+
+
+def test_status_text_all_lists_alive_dead_and_no_pidfile_runs(tmp_path, capsys):
+    profile, ws = _write_runs_workspace(tmp_path)
+    rc = main(["route", "status", "--profile", str(profile), "--all"])
+    out = capsys.readouterr().out
+    assert rc == 0
     assert out == route.render_status(_expected_status_rows(ws), gate_level="ticket") + "\n"
+    assert "hidden" not in out
+
+
+def test_status_json_returns_every_row_without_all(tmp_path, capsys):
+    profile, ws = _write_runs_workspace(tmp_path)
+    rc = main(["route", "status", "--profile", str(profile), "--json"])
+    rows = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert [r["id"] for r in rows] == ["run1", "run2", "run3"]
 
 
 def test_status_json_treats_pid_zero_as_not_alive_and_survives_an_oversized_pidfile(tmp_path, capsys):
