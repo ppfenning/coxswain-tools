@@ -37,6 +37,7 @@ from agent_tools import (
     epic,
     forge,
     forge_github,
+    generate,
     install,
     install_exec,
     lake_config,
@@ -1022,6 +1023,11 @@ def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> di
     expected = merged.splitlines()[0] if merged else None
     if expected is None:
         return {"kind": "refuse", "reason": f"cannot compute the cherry-picked tree of {cherry_pick['branch']} onto {base}"}
+    if _git_out(repo, "cat-file", "-e", f"{expected}:.agent-generate") is not None:
+        # The pushed tree is the one after generation and the amend, not the bare cherry-pick.
+        expected, why = _generated_tree(repo, branch, base, shas[0], cherry_pick.get("umbrella"))
+        if expected is None:
+            return {"kind": "refuse", "reason": f"cannot compute the generated tree of {cherry_pick['branch']} onto {base}: {why}"}
     existing = [t for t in (local, remote) if t is not None]
     prs = _open_prs_for(repo, branch, forge_module) if all(t == expected for t in existing) else []
     if isinstance(prs, str):
@@ -1037,7 +1043,7 @@ def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> di
 def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None,
                   item_path: str | None = None, workspace: str | None = None,
                   item_id: str | None = None, profile: str | None = None,
-                  runs_dir: str | None = None) -> list[dict]:
+                  runs_dir: str | None = None, umbrella: str | None = None) -> list[dict]:
     """Steps enriched with what only the edge knows: each `mark_done`'s own
     record file path (`task_paths` maps task name to path in phase mode), and
     the configured worktree root for `clean`/`clean_phase`. `item_path` (task
@@ -1047,8 +1053,11 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
     created at execution time, inside `_execute_land_step`, under `--apply`.
     A `route_sync` step gets the `workspace` to sync, the item's own `id`
     (`item_id`, else the task name the plan used), and the land's `profile`
-    and `runs_dir`, so the step reads the tracker from where the plan did."""
+    and `runs_dir`, so the step reads the tracker from where the plan did.
+    A `cherry_pick` step gets the profile's `umbrella_dir` as `umbrella` when set, for `.agent-generate`."""
     def enrich(step: dict) -> dict:
+        if step["kind"] == "cherry_pick" and umbrella is not None:
+            return {**step, "umbrella": umbrella}
         if step["kind"] == "route_sync":
             return {**step, "item": item_id or step["item"], "workspace": workspace,
                     "profile": profile, "runs_dir": runs_dir}
@@ -1140,6 +1149,68 @@ def _link_venv(repo: Path, wt: Path) -> None:
         (wt / ".venv").symlink_to(venv, target_is_directory=True)
 
 
+_GENERATE_FAILED = "generate failed: "
+
+
+def _generate_and_amend(wt: Path, umbrella: str | None, echo: Callable[[str], None] = print) -> tuple[bool, str]:
+    """Run the worktree's `.agent-generate`, then fold any change it made into the one commit.
+
+    `(True, "")` when the file is absent or nothing changed; `(False, output)` on the first non-zero exit."""
+    spec = wt / ".agent-generate"
+    if not spec.is_file():
+        return True, ""
+    plan = generate.plan_commands(generate.parse_generate_file(spec.read_text(encoding="utf-8")), umbrella)
+    for _, note in plan:
+        if note is not None:
+            echo(f"land: {note}")
+    env = {**os.environ, **generate.build_env(str(wt), umbrella)}
+    for command in (c for c, note in plan if note is None):
+        r = subprocess.run(command, shell=True, cwd=wt, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if r.returncode != 0:
+            return False, f"{_GENERATE_FAILED}{command!r} exited {r.returncode}: {r.stdout.strip()}"
+    # `_link_venv`'s `.venv` is a symlink, which a `.venv/` ignore rule does not match: keep it out of the commit.
+    outside_venv = ["--", ".", ":(exclude).venv"]
+    if not _git_out(wt, "status", "--porcelain", *outside_venv):
+        return True, ""
+    staged = subprocess.run(["git", "-C", str(wt), "add", "-A", *outside_venv], capture_output=True, text=True)
+    changed = (_git_out(wt, "diff", "--cached", "--name-only") or "").split()
+    amend = subprocess.run(["git", "-C", str(wt), "commit", "--amend", "--no-edit"], capture_output=True, text=True)
+    failed = next((r for r in (staged, amend) if r.returncode != 0), None)
+    if failed is not None:
+        return False, f"{_GENERATE_FAILED}{failed.stderr.strip() or failed.stdout.strip()}"
+    echo(f"land: regenerated {' '.join(changed)}")
+    return True, ""
+
+
+def _cherry_pick_generated(wt: Path, sha: str, umbrella: str | None, echo: Callable[[str], None] = print) -> tuple[bool, str]:
+    """Cherry-pick `sha` into `wt`, then regenerate and amend. The real land and the resume check both
+    build the pushed tree here, so the tree the resume check expects cannot drift from the tree pushed."""
+    cp = subprocess.run(["git", "-C", str(wt), "cherry-pick", sha], capture_output=True, text=True)
+    if cp.returncode != 0:
+        subprocess.run(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
+        return False, cp.stderr.strip() or cp.stdout.strip()
+    return _generate_and_amend(wt, umbrella, echo)
+
+
+def _generated_tree(repo: Path, branch: str, base: str, sha: str, umbrella: str | None) -> tuple[str | None, str]:
+    """The tree `_cherry_pick_generated` of `sha` onto `base` yields, or `(None, why)` when it cannot be built.
+
+    Built at `branch`'s own land worktree path, so `COX_WORKTREE` matches the real land's. The generator runs
+    again on a rerun, as it does on any land that is not resumed: it must be deterministic and idempotent,
+    and its writes outside the worktree (the umbrella) repeat."""
+    scratch = _land_worktree(repo, branch)
+    _remove_land_worktree(repo, branch)
+    try:
+        add = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(scratch), base], capture_output=True, text=True)
+        if add.returncode != 0:
+            return None, add.stderr.strip() or add.stdout.strip()
+        _link_venv(repo, scratch)
+        ok, detail = _cherry_pick_generated(scratch, sha, umbrella, echo=lambda _: None)
+        return (_git_out(scratch, "rev-parse", "HEAD^{tree}"), "") if ok else (None, detail)
+    finally:
+        _remove_land_worktree(repo, branch)
+
+
 def _remove_land_worktree(repo: Path, branch: str) -> None:
     """Drop `branch`'s land worktree and its registration; the branch itself stays."""
     wt = _land_worktree(repo, branch)
@@ -1171,11 +1242,13 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         shas = [s for s in rev.stdout.split() if s]
         if rev.returncode != 0 or len(shas) != 1:
             return False, f"expected exactly one commit ahead of {step['from']} on {step['branch']}, found {len(shas)}"
-        cp = subprocess.run(["git", "-C", str(wt), "cherry-pick", shas[0]], capture_output=True, text=True)
-        if cp.returncode != 0:
-            subprocess.run(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
-            return False, cp.stderr.strip() or cp.stdout.strip()
-        return True, f"cherry-picked {shas[0][:8]} onto {step['onto']}"
+        ok, detail = _cherry_pick_generated(wt, shas[0], step.get("umbrella"))
+        if not ok and detail.startswith(_GENERATE_FAILED):
+            # Keep the worktree, detached, for inspection; free the branch so a rerun starts fresh
+            # instead of finding a pr branch that holds the un-generated tree and refusing on it.
+            subprocess.run(["git", "-C", str(wt), "checkout", "-q", "--detach"], capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
+        return (True, f"cherry-picked {shas[0][:8]} onto {step['onto']}") if ok else (False, detail)
     if kind == "reuse_branch":
         wt = _land_worktree(repo, step["branch"])
         _remove_land_worktree(repo, step["branch"])
@@ -1421,7 +1494,8 @@ def _runs_land(a: argparse.Namespace) -> int:
             return 2
         plan_steps = land.land_plan({**phase_record, "initiative": initiative}, {}, default_branch, repo_facts,
                                     items=items, task_records=task_records)
-        steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths)
+        steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths,
+                              umbrella=profile.get("umbrella_dir"))
     else:
         record, searched, count, source = _land_load(runs_dir, a.run_id, a.task)
         if record is None:
@@ -1436,7 +1510,7 @@ def _runs_land(a: argparse.Namespace) -> int:
                                     tracker=_resolved_tracker(profile, runs_dir), issue=issue)
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, item_path=item_path,
                               workspace=str(runs_dir.parent), item_id=item_id,
-                              profile=str(_profile_path(a)), runs_dir=str(runs_dir))
+                              profile=str(_profile_path(a)), runs_dir=str(runs_dir), umbrella=profile.get("umbrella_dir"))
     level = a.gate or _resolved_gate_level(runs_dir)
     if a.gate:
         print(f"land: --gate {level} overrides the resolved level")
@@ -1565,6 +1639,10 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print(detail)
             return 2, reached, pr
         print(f"{step['kind']}: {detail}")
+        if not ok and step["kind"] == "cherry_pick" and detail.startswith(_GENERATE_FAILED):
+            # `_execute_land_step` detached it and deleted its branch; the next land's cherry_pick removes it.
+            built.remove(step["onto"])
+            print(f"land: worktree left at {_land_worktree(repo, step['onto'])} for inspection")
         if not ok:
             remaining = [s["kind"] for s in steps[i + 1:]]
             print("stopped; remaining: " + ", ".join(remaining))

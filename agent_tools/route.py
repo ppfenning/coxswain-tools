@@ -68,6 +68,7 @@ _KNOWN_KEYS = {
     "repo_map",
     "forge",
     "tracker",
+    "umbrella_dir",
 }
 
 _JSON_KEYS = {"sources", "repo_map"}
