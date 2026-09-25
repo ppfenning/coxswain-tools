@@ -34,3 +34,21 @@ def test_a_type_float_kwarg_becomes_the_string_float_and_handler_and_fn_are_drop
     cmd = doc["groups"][0]["commands"][0]
     assert cmd["args"] == [{"flags": ["--n"], "kwargs": {"type": "float", "default": 1.5}}]
     assert "handler" not in cmd and "fn" not in doc["groups"][0]
+    assert not {"subcommands", "sub_dest", "sub_required", "defaults"} & cmd.keys()
+
+
+def test_a_nested_row_carries_its_subcommands_and_dispatch_keys_recursively() -> None:
+    child = commands.Command(
+        "epic", "g", "c", (commands.Arg(("--n",), {"type": int}),), lambda _a: 0, False, (),
+        defaults={"graph": "epic"},
+    )
+    row = commands.Command(
+        "launch", "g", "s", (), None, False, (),
+        subcommands=(child,), sub_dest="graph", sub_required=True,
+    )
+    group = commands.Group(name="g", help="h", description="d", epilog="e")
+    cmd = command_table_json.table_json([(group, [row])], "cox", "desc")["groups"][0]["commands"][0]
+    assert (cmd["sub_dest"], cmd["sub_required"], cmd["defaults"]) == ("graph", True, {})
+    (sub,) = cmd["subcommands"]
+    assert sub["args"] == [{"flags": ["--n"], "kwargs": {"type": "int"}}]
+    assert "subcommands" not in sub

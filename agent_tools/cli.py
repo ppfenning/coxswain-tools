@@ -3337,45 +3337,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("route")
-    route_p = commands.build_parser(rows, [group], sub)["route"]
-    r = _leaf_subparsers(route_p)
-    ld = r.add_parser("chair", help="the chair lock for the landing loop (runs/chair.json)")
-    ld.set_defaults(fn=_bare_group(ld))
-    lds = ld.add_subparsers(dest="chair_cmd", required=False)
-    lt = lds.add_parser("take", help="take the chair lock if no live chair holds it")
-    lt.add_argument("--profile"); lt.add_argument("--label"); lt.add_argument("--pid", type=int, help="the durable pid that owns the loop (default: the parent process)"); lt.add_argument("--steal", action="store_true"); lt.set_defaults(fn=_route_chair_take)
-    lb = lds.add_parser("beat", help="refresh the chair lock's heartbeat")
-    lb.add_argument("--profile"); lb.add_argument("--label"); lb.add_argument("--pid", type=int, help="the durable pid that owns the loop (default: the parent process)"); lb.add_argument("--run"); lb.set_defaults(fn=_route_chair_beat)
-    lr = lds.add_parser("release", help="release the chair lock this session holds")
-    lr.add_argument("--profile"); lr.add_argument("--label"); lr.add_argument("--pid", type=int, help="the durable pid that owns the loop (default: the parent process)"); lr.set_defaults(fn=_route_chair_release)
-    lst = lds.add_parser("status", help="the chair lock's holder and computed state")
-    lst.add_argument("--profile"); lst.add_argument("--json", action="store_true"); lst.set_defaults(fn=_route_chair_status)
-    lcl = lds.add_parser("clear", help="remove the chair lock file, refusing a live holder unless --force")
-    lcl.add_argument("--profile"); lcl.add_argument("--force", action="store_true", help="clear the lock even if its recorded pid is live"); lcl.set_defaults(fn=_route_chair_clear)
-    lch = lds.add_parser("chat", help="append to or read the leader chat thread (runs/leader.chat.jsonl)")
-    lch.add_argument("text", nargs="?"); lch.add_argument("--profile"); lch.add_argument("--read", action="store_true")
-    lch.add_argument("--since"); lch.add_argument("--json", action="store_true")
-    lch.add_argument("--as-leader", action="store_true", help="send as the lock's holder; refuses unless this process is the live holder")
-    lch.set_defaults(fn=_route_chair_chat)
-    sy = r.add_parser("sync", help="mirror the work store onto the GitHub Projects board")
-    sy.add_argument("--profile"); sy.add_argument("--item"); sy.add_argument("--project"); sy.add_argument("--workspace"); sy.add_argument("--dry-run", action="store_true")
-    sy.set_defaults(fn=_route_sync)
-    lc = r.add_parser("launch", help="run one of the harness's graphs directly").add_subparsers(dest="graph", required=True)
-    ep = lc.add_parser("epic", help="launch the epic graph against a filed initiative"); ep.add_argument("--profile"); ep.add_argument("--initiative", required=True); ep.add_argument("--repo")
-    ep.add_argument("--fix-attempts", type=int, default=None); ep.add_argument("--dry-run", action="store_true"); ep.set_defaults(fn=_route_launch, graph="epic")
-    de = lc.add_parser("decompose", help="launch the decompose graph against an idea"); de.add_argument("--profile"); de.add_argument("--idea", required=True); de.add_argument("--initiative-id", required=True)
-    de.add_argument("--dry-run", action="store_true"); de.set_defaults(fn=_route_launch, graph="decompose")
-    co = lc.add_parser("cos", help="launch the cos graph"); co.add_argument("--profile"); co.add_argument("--dry-run", action="store_true")
-    co.set_defaults(fn=_route_launch, graph="cos")
-    sw = lc.add_parser("sweep", help="launch the sweep graph against an idea"); sw.add_argument("--idea", required=True); sw.add_argument("--initiative-id", required=True)
-    sw.add_argument("--label"); sw.add_argument("--dry-run", action="store_true"); sw.set_defaults(fn=_route_launch_sweep)
-    ep.add_argument("--include-blocked", action="store_true", help="launch despite a ready task behind a blocked item (--force does not)")
-    for _launch_parser in (ep, de, co):
-        _launch_parser.add_argument("--tier-ceiling", choices=("cheap", "standard", "deep"))
-        _launch_parser.add_argument("--effort-ceiling", choices=("low", "high"))
-        _launch_parser.add_argument("--force", action="store_true", help="launch despite a usage stop or a foreign live leader")
-        _launch_parser.add_argument("--no-claim", action="store_true", help="launch without taking an unheld or stale loop")
-        _launch_parser.add_argument("--label")
+    commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("courier")
     commands.build_parser(rows, [group], sub)
@@ -3549,6 +3511,14 @@ ROUTE_GROUP = commands.Group(
     description="File work for the harness, and see what is queued or running.",
     epilog="examples:\n  cox route launch epic --initiative work/<id> --repo PATH\n  cox route status --profile PATH",
 )
+_CHAIR_PID_ARG = commands.Arg(("--pid",), {"type": int, "help": "the durable pid that owns the loop (default: the parent process)"})
+_LAUNCH_SHARED_ARGS = (
+    commands.Arg(("--tier-ceiling",), {"choices": ("cheap", "standard", "deep")}),
+    commands.Arg(("--effort-ceiling",), {"choices": ("low", "high")}),
+    commands.Arg(("--force",), {"action": "store_true", "help": "launch despite a usage stop or a foreign live leader"}),
+    commands.Arg(("--no-claim",), {"action": "store_true", "help": "launch without taking an unheld or stale loop"}),
+    commands.Arg(("--label",)),
+)
 ROUTE_COMMANDS = [
     commands.Command(
         "context", "route", "the routing profile's resolved context",
@@ -3589,6 +3559,109 @@ ROUTE_COMMANDS = [
         "groups", "route", "print the newest plans/intake-groups/<date>.md file, work-shape.md §5",
         (commands.Arg(("--profile",)),),
         _route_groups, False, (),
+    ),
+    commands.Command(
+        "chair", "route", "the chair lock for the landing loop (runs/chair.json)", (), None, False, (),
+        subcommands=(
+            commands.Command(
+                "take", "route", "take the chair lock if no live chair holds it",
+                (
+                    commands.Arg(("--profile",)), commands.Arg(("--label",)), _CHAIR_PID_ARG,
+                    commands.Arg(("--steal",), {"action": "store_true"}),
+                ),
+                _route_chair_take, False, (),
+            ),
+            commands.Command(
+                "beat", "route", "refresh the chair lock's heartbeat",
+                (
+                    commands.Arg(("--profile",)), commands.Arg(("--label",)), _CHAIR_PID_ARG,
+                    commands.Arg(("--run",)),
+                ),
+                _route_chair_beat, False, (),
+            ),
+            commands.Command(
+                "release", "route", "release the chair lock this session holds",
+                (commands.Arg(("--profile",)), commands.Arg(("--label",)), _CHAIR_PID_ARG),
+                _route_chair_release, False, (),
+            ),
+            commands.Command(
+                "status", "route", "the chair lock's holder and computed state",
+                (commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"})),
+                _route_chair_status, False, (),
+            ),
+            commands.Command(
+                "clear", "route", "remove the chair lock file, refusing a live holder unless --force",
+                (
+                    commands.Arg(("--profile",)),
+                    commands.Arg(("--force",), {"action": "store_true", "help": "clear the lock even if its recorded pid is live"}),
+                ),
+                _route_chair_clear, False, (),
+            ),
+            commands.Command(
+                "chat", "route", "append to or read the leader chat thread (runs/leader.chat.jsonl)",
+                (
+                    commands.Arg(("text",), {"nargs": "?"}), commands.Arg(("--profile",)),
+                    commands.Arg(("--read",), {"action": "store_true"}),
+                    commands.Arg(("--since",)), commands.Arg(("--json",), {"action": "store_true"}),
+                    commands.Arg(("--as-leader",), {"action": "store_true", "help": "send as the lock's holder; refuses unless this process is the live holder"}),
+                ),
+                _route_chair_chat, False, (),
+            ),
+        ),
+        sub_dest="chair_cmd", sub_required=False,
+    ),
+    commands.Command(
+        "sync", "route", "mirror the work store onto the GitHub Projects board",
+        (
+            commands.Arg(("--profile",)), commands.Arg(("--item",)), commands.Arg(("--project",)),
+            commands.Arg(("--workspace",)), commands.Arg(("--dry-run",), {"action": "store_true"}),
+        ),
+        _route_sync, False, (),
+    ),
+    commands.Command(
+        "launch", "route", "run one of the harness's graphs directly", (), None, False, (),
+        subcommands=(
+            commands.Command(
+                "epic", "route", "launch the epic graph against a filed initiative",
+                (
+                    commands.Arg(("--profile",)), commands.Arg(("--initiative",), {"required": True}),
+                    commands.Arg(("--repo",)),
+                    commands.Arg(("--fix-attempts",), {"type": int, "default": None}),
+                    commands.Arg(("--dry-run",), {"action": "store_true"}),
+                    commands.Arg(("--include-blocked",), {"action": "store_true", "help": "launch despite a ready task behind a blocked item (--force does not)"}),
+                    *_LAUNCH_SHARED_ARGS,
+                ),
+                _route_launch, False, (), defaults={"graph": "epic"},
+            ),
+            commands.Command(
+                "decompose", "route", "launch the decompose graph against an idea",
+                (
+                    commands.Arg(("--profile",)), commands.Arg(("--idea",), {"required": True}),
+                    commands.Arg(("--initiative-id",), {"required": True}),
+                    commands.Arg(("--dry-run",), {"action": "store_true"}),
+                    *_LAUNCH_SHARED_ARGS,
+                ),
+                _route_launch, False, (), defaults={"graph": "decompose"},
+            ),
+            commands.Command(
+                "cos", "route", "launch the cos graph",
+                (
+                    commands.Arg(("--profile",)), commands.Arg(("--dry-run",), {"action": "store_true"}),
+                    *_LAUNCH_SHARED_ARGS,
+                ),
+                _route_launch, False, (), defaults={"graph": "cos"},
+            ),
+            commands.Command(
+                "sweep", "route", "launch the sweep graph against an idea",
+                (
+                    commands.Arg(("--idea",), {"required": True}),
+                    commands.Arg(("--initiative-id",), {"required": True}),
+                    commands.Arg(("--label",)), commands.Arg(("--dry-run",), {"action": "store_true"}),
+                ),
+                _route_launch_sweep, False, (),
+            ),
+        ),
+        sub_dest="graph", sub_required=True,
     ),
 ]
 
@@ -3681,14 +3754,6 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (STEWARD_GROUP, STEWARD_COMMANDS),
     (SETUP_GROUP, SETUP_COMMANDS),
 ]
-
-
-def _leaf_subparsers(parser: argparse.ArgumentParser) -> argparse._SubParsersAction:
-    """The `dest="cmd"` subparsers action `commands.build_parser` already
-    attached to `parser`, so a group's own further-nested subcommands
-    (route's `chair`, `launch`) attach to that one action instead of a
-    second `add_subparsers` call argparse would refuse."""
-    return next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
 
 
 def _table_entry(name: str) -> tuple[commands.Group, list[commands.Command]]:
