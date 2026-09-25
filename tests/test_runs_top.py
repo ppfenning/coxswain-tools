@@ -1,5 +1,5 @@
 from agent_tools.events import Event
-from agent_tools.runs_top import STALL_S, Row, _status, column_widths, highlight, render, row, tail_lines
+from agent_tools.runs_top import STALL_S, Row, _status, column_widths, highlight, remote_row, render, row, tail_lines
 
 
 def test_the_last_node_started_and_verdict_win():
@@ -169,3 +169,30 @@ def test_exited_wins_over_stalled_for_a_dead_run():
 def test_row_carries_heartbeat_age_and_a_stale_one_reads_stalled():
     r = row("r1", True, [], [], [], heartbeat_age=120)
     assert (r.status, r.heartbeat_age) == ("stalled", 120)
+
+
+def test_a_row_is_local_by_default():
+    r = row("r1", True, [], [], [])
+    assert (r.host, r.remote) == (None, False)
+
+
+def test_remote_row_reads_running_at_89_seconds_and_stalled_at_90():
+    assert remote_row("x-1", "h1", 89).status == "running"
+    assert remote_row("x-1", "h1", 90).status == "stalled"
+    assert remote_row("x-1", "h1", None).status == "running"
+
+
+def test_remote_row_is_alive_and_empty_of_local_facts():
+    r = remote_row("x-1", "h1", 5)
+    assert (r.alive, r.remote, r.host, r.phase, r.node, r.turns, r.cost_usd, r.verdict) == (True, True, "h1", "", "", 0, 0.0, "")
+
+
+def test_render_names_the_host_in_a_remote_run_cell_and_keeps_the_columns():
+    local = render([row("a-1", True, [], [], [])], 200)
+    remote = render([remote_row("x-1", "h1", 5)], 200)
+    assert remote[0].split() == local[0].split()
+    assert remote[1].startswith("x-1 (on h1)")
+
+
+def test_render_says_another_machine_when_the_host_is_unknown():
+    assert render([remote_row("x-1", None, 5)], 200)[1].startswith("x-1 (on another machine)")

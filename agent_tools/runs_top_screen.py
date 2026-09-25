@@ -162,11 +162,30 @@ def chair_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES
     return {"holder": record.get("session", ""), "state": state, "minutes_ago": _minutes_ago(record.get("heartbeat_at"), now)}
 
 
-def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES) -> list[runs_top.Row]:
+def _lane_age(heartbeat_at: str, now: datetime.datetime) -> int | None:
+    """Seconds since a lane's heartbeat; None when the timestamp is unreadable."""
+    try:
+        return max(int((now - datetime.datetime.fromisoformat(heartbeat_at)).total_seconds()), 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _remote_rows(root: Path, lanes: list[run_store.Lane], now: datetime.datetime) -> list[runs_top.Row]:
+    """Edge. One row per live lane no local pidfile names. Reads no log, trace or lease of that run: its files are on the other machine."""
+    remote = run_store.remote_lanes(lanes, {p.stem for p in root.glob("*.pid")})
+    return [runs_top.remote_row(lane.run, lane.host, _lane_age(lane.heartbeat_at, now)) for lane in remote]
+
+
+def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES,
+             now: datetime.datetime | None = None) -> list[runs_top.Row]:
+    now = now or datetime.datetime.now(datetime.UTC)
+    root = Path(runs_dir)
     chair_state = chair_now(runs_dir, heartbeat_minutes)
-    return [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], chair_state,
+    local = [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], chair_state,
                           f["heartbeat_age"])
-            for f in facts(runs_dir)]
+             for f in facts(runs_dir)]
+    lanes = run_store.live_lanes(root, now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    return [*local, *_remote_rows(root, lanes, now)]
 
 
 def _has_colors() -> bool:
@@ -306,7 +325,8 @@ def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=None,
         cursor = min(cursor, len(ordered) - 1) if ordered else 0
         expanded = expanded if any(r.run == expanded for r in ordered) else None
         height, width = stdscr.getmaxyx()
-        detail_lines = _accordion_detail(runs_dir, expanded, width, now_alive) if expanded is not None else ()
+        is_remote = any(r.run == expanded and r.remote for r in ordered)  # its files are on another machine
+        detail_lines = _accordion_detail(runs_dir, expanded, width, now_alive) if expanded is not None and not is_remote else ()
         if ordered:
             cursor_line, total_lines = _scroll_facts(ordered, expanded, len(detail_lines), cursor,
                                                        chair_state is not runs_top.UNSET)

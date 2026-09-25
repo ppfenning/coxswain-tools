@@ -5,7 +5,7 @@ import sqlite3
 import time
 
 import pytest
-from test_run_store import leases_table
+from test_run_store import lane_run, lane_store, leases_table
 
 from agent_tools import cli, run_store
 from agent_tools.runs_top_screen import _fact, calls_from_usage, draw, facts, first_visible, loop, rows_now
@@ -380,3 +380,51 @@ def test_fact_heartbeat_age_is_none_for_a_lease_held_by_another_run_or_no_store(
     leases_table(tmp_path, ("runs:x", "x-2", "2026-09-25T06:00:00Z", "2026-09-25T05:58:30Z"))
 
     assert _fact(tmp_path, "x-3", True, _NOW)["heartbeat_age"] is None
+
+
+_LIVE = "2026-09-25T06:02:00Z"
+
+
+def _remote_store(runs_dir, beat, host_column=True):
+    lane_store(runs_dir, [lane_run("x-3", "2026-09-25T05:00:00Z")], [("runs:x", "x-3", _LIVE, beat)], host_column=host_column)
+
+
+def test_a_remote_lane_appears_with_remote_true_and_its_host(tmp_path):
+    _remote_store(tmp_path, "2026-09-25T05:59:50Z")
+
+    rows = rows_now(tmp_path, now=_NOW)
+
+    assert [(r.run, r.remote, r.host, r.alive, r.status, r.heartbeat_age) for r in rows] == [("x-3", True, "h", True, "running", 10)]
+    assert (rows[0].phase, rows[0].node, rows[0].turns, rows[0].cost_usd, rows[0].verdict) == ("", "", 0, 0.0, "")
+
+
+def test_a_stalled_remote_lane_at_90_seconds_reads_stalled(tmp_path):
+    _remote_store(tmp_path, "2026-09-25T05:58:30Z")
+
+    assert [r.status for r in rows_now(tmp_path, now=_NOW)] == ["stalled"]
+
+
+def test_a_remote_lane_with_no_host_column_has_host_none(tmp_path):
+    _remote_store(tmp_path, "2026-09-25T05:59:50Z", host_column=False)
+
+    assert [(r.remote, r.host) for r in rows_now(tmp_path, now=_NOW)] == [(True, None)]
+
+
+def test_a_lane_whose_run_has_a_local_pidfile_appears_once_as_local(tmp_path):
+    _remote_store(tmp_path, "2026-09-25T05:59:50Z")
+    _write(tmp_path / "x-3.pid", str(os.getpid()))
+    _write(tmp_path / "x-3.log", "")
+
+    rows = rows_now(tmp_path, now=_NOW)
+
+    assert [(r.run, r.remote, r.host) for r in rows] == [("x-3", False, None)]
+
+
+def test_with_no_live_leases_the_rows_equal_the_local_only_rows(tmp_path):
+    _write(tmp_path / "r1.pid", str(os.getpid()))
+    _write(tmp_path / "r1.log", "")
+    local_only = rows_now(tmp_path, now=_NOW)
+    lane_store(tmp_path, [lane_run("x-3", "2026-09-25T05:00:00Z")], [("runs:x", "x-3", "2026-09-25T05:00:00Z")], host_column=True)
+
+    assert local_only
+    assert rows_now(tmp_path, now=_NOW) == local_only
