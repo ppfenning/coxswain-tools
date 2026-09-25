@@ -165,7 +165,8 @@ def test_claim_with_no_lease_held_acquires_and_stores_the_epoch(tmp_path, monkey
 
     assert chair.acquire_lease(tmp_path, "chair-test", 1, "h") == ""
 
-    assert argvs[0][-6:] == ["lease", "acquire", "chair", _HOLDER, "--ttl", "600"]
+    assert argvs[0][-8:-2] == ["lease", "acquire", "chair", _HOLDER, "--ttl", "600"]
+    assert argvs[0][-2] == "--store-url"
     assert json.loads((tmp_path / chair.LEASE_FILENAME).read_text()) == {"holder": _HOLDER, "epoch": 7}
 
 
@@ -211,7 +212,7 @@ def test_beat_renews_the_stored_lease_with_its_epoch(tmp_path, monkeypatch):
 
     assert chair.renew_lease(tmp_path, "chair-test", 1, "h") == ""
 
-    assert argvs[0][-7:] == ["lease", "renew", "chair", _HOLDER, "7", "--ttl", "600"]
+    assert argvs[0][-9:-2] == ["lease", "renew", "chair", _HOLDER, "7", "--ttl", "600"]
     assert json.loads((tmp_path / chair.LEASE_FILENAME).read_text())["epoch"] == 8
 
 
@@ -222,10 +223,14 @@ def test_beat_with_a_lost_lease_returns_the_refusal(tmp_path, monkeypatch):
     assert chair.renew_lease(tmp_path, "chair-test", 1, "h") == "chair: held by other@h:9 (store lease)"
 
 
-def test_beat_without_a_stored_lease_never_spawns(tmp_path, monkeypatch):
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no sidecar, so nothing may spawn"))
+def test_beat_without_a_stored_lease_acquires_it(tmp_path, monkeypatch):
+    """A chair taken before the store lease existed picks the lease up on its next beat."""
+    argvs = _harness(monkeypatch, 0, json.dumps({"ok": True, "epoch": 1, "holder": _HOLDER}))
 
     assert chair.renew_lease(tmp_path, "chair-test", 1, "h") == ""
+
+    assert argvs[0][-8:-2] == ["lease", "acquire", "chair", _HOLDER, "--ttl", "600"]
+    assert json.loads((tmp_path / chair.LEASE_FILENAME).read_text())["epoch"] == 1
 
 
 def test_beat_loop_stops_at_once_when_the_lease_is_lost(tmp_path, monkeypatch, capsys):
@@ -245,7 +250,7 @@ def test_release_releases_the_stored_lease_and_removes_the_sidecar(tmp_path, mon
 
     chair.release_lease(tmp_path, "chair-test", 1, "h")
 
-    assert argvs[0][-5:] == ["lease", "release", "chair", _HOLDER, "7"]
+    assert argvs[0][-7:-2] == ["lease", "release", "chair", _HOLDER, "7"]
     assert not (tmp_path / chair.LEASE_FILENAME).exists()
 
 

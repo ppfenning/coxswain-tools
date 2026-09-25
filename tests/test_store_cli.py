@@ -58,7 +58,7 @@ def test_lease_exit_2_is_an_error():
     assert store_cli.parse_lease(2, "unreadable store") == LeaseError("exit 2: unreadable store")
 
 
-def test_edge_runs_subprocess_and_returns_a_value_without_raising(monkeypatch):
+def test_edge_runs_subprocess_and_returns_a_value_without_raising(monkeypatch, tmp_path):
     seen = []
 
     def fake_run(argv, **kwargs):
@@ -67,15 +67,16 @@ def test_edge_runs_subprocess_and_returns_a_value_without_raising(monkeypatch):
 
     monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(PY))
     monkeypatch.setattr(store_cli.subprocess, "run", fake_run)
-    assert store_cli.lease_acquire("chair", "me", 60) == LeaseRefused(7, "other")
-    assert seen == [[*HEAD, "lease", "acquire", "chair", "me", "--ttl", "60"]]
+    assert store_cli.lease_acquire(tmp_path, "chair", "me", 60) == LeaseRefused(7, "other")
+    # The store tools resolves for the runs dir goes along, so the harness never falls back to a store of its own.
+    assert seen == [[*HEAD, "lease", "acquire", "chair", "me", "--ttl", "60", "--store-url", store_cli._store_url(tmp_path)]]
 
 
-def test_a_missing_harness_is_not_available_and_runs_nothing(monkeypatch):
+def test_a_missing_harness_is_not_available_and_runs_nothing(monkeypatch, tmp_path):
     def boom(*args, **kwargs):
         raise AssertionError("subprocess.run must not be called")
 
     monkeypatch.setattr(store_cli, "_harness_python", lambda: None)
     monkeypatch.setattr(store_cli.subprocess, "run", boom)
-    assert store_cli.mark_landed("r", "p", "t", "u", "a") == NotAvailable()
-    assert store_cli.lease_release("chair", "me", 1) == NotAvailable()
+    assert store_cli.mark_landed(tmp_path, "r", "p", "t", "u", "a") == NotAvailable()
+    assert store_cli.lease_release(tmp_path, "chair", "me", 1) == NotAvailable()
