@@ -25,6 +25,9 @@ print("fakeprovider 1.0.0")
 """
 
 
+_GIT = '#!/bin/sh\necho "git version 2.45.0"\n'
+
+
 def _write_executable(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -46,6 +49,7 @@ def _good_setup(tmp_path, monkeypatch):
     _write_executable(harness_dir / ".venv" / "bin" / "python", _STUB.format(python=sys.executable))
     bin_dir = tmp_path / "bin"
     _write_executable(bin_dir / "fakeprovider", _PROVIDER.format(python=sys.executable))
+    _write_executable(bin_dir / "git", _GIT)
     monkeypatch.setenv("PATH", str(bin_dir))
 
     profile = tmp_path / "profile.yaml"
@@ -94,6 +98,25 @@ def test_a_deleted_profile_fails_and_skips_dependent_rows(tmp_path, monkeypatch,
     assert rc == 1
     assert "profile" in out and "FAIL" in out
     assert "skipped: no profile" in out
+
+
+def test_with_no_profile_git_and_the_local_forge_are_still_gathered_and_the_next_step_prints(tmp_path, monkeypatch, capsys):
+    _good_setup(tmp_path, monkeypatch)
+    rc = main(["setup", "doctor", "--profile", str(tmp_path / "absent.yaml")])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "git version 2.45.0" in out
+    assert "local: plain git, no pull-request host" in out
+    assert out.splitlines()[-1].startswith("next: run `cox setup`")
+
+
+def test_a_machine_without_git_fails_the_git_row(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    (tmp_path / "bin" / "git").unlink()
+    rc = main(["setup", "doctor", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "missing: install git" in out
 
 
 def test_a_removed_configured_path_is_named(tmp_path, monkeypatch, capsys):
@@ -367,6 +390,7 @@ def test_schema_row_reads_cartridges_from_the_checkout_above_provider_profile(tm
     (harness_dir / "harness" / "__init__.py").write_text('CORE_SCHEMA = "1.0"\n')
     bin_dir = tmp_path / "bin"
     _write_executable(bin_dir / "fakeprovider", _PROVIDER.format(python=sys.executable))
+    _write_executable(bin_dir / "git", _GIT)
     monkeypatch.setenv("PATH", str(bin_dir))
 
     profile = tmp_path / "profile.yaml"
