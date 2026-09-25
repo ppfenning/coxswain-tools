@@ -3767,10 +3767,64 @@ def _lake_sync(a: argparse.Namespace) -> int:
     return 0
 
 
+def _lake_config_for(a: argparse.Namespace) -> tuple[lake_config.LakeConfig | None, str | None]:
+    """Edge. (lake config, problem) for a read command; the same resolution `cox lake sync` uses."""
+    provider, problem = _lake_provider(a)
+    if problem:
+        return None, f"lake: {problem}"
+    return lake_config.resolve_lake(provider, Path(a.runs_dir).resolve()), None
+
+
+def _lake_extra_missing(a: argparse.Namespace, err: ImportError) -> int:
+    # pyiceberg or a module the lake also needs, such as duckdb or pyarrow, did not import.
+    return _lake_refuse(a, f"the Iceberg lake needs the optional extra `lake`; {err.name or err} is missing: "
+                           "pip install 'coxswain-tools[lake]'")
+
+
+def _lake_query(a: argparse.Namespace) -> int:
+    """Edge. Run DuckDB SQL over the lake tables and print the rows as a table, or as JSON with `--json`."""
+    config, problem = _lake_config_for(a)
+    if config is None:
+        return _lake_refuse(a, problem or "lake: no config")
+    try:
+        import duckdb
+
+        from agent_tools import lake_query
+
+        columns, rows = lake_query.query(lake_config.load_catalog(config), a.sql)
+    except lake_config.LakeUnavailable as err:
+        return _lake_refuse(a, str(err))
+    except ImportError as err:
+        return _lake_extra_missing(a, err)
+    except duckdb.Error as err:
+        return _lake_refuse(a, str(err))
+    print(json.dumps(lake_query.rows_to_json(columns, rows), indent=2) if a.json else lake_query.render_table(columns, rows))
+    return 0
+
+
+def _lake_doctor(a: argparse.Namespace) -> int:
+    """Edge. One line per lake check; exit 1 when the verdict is fail."""
+    config, problem = _lake_config_for(a)
+    if config is None:
+        return _lake_refuse(a, problem or "lake: no config")
+    try:
+        from agent_tools import lake_doctor
+    except ImportError as err:
+        return _lake_extra_missing(a, err)
+    checks = lake_doctor.run_checks(config)
+    verdict = lake_doctor.verdict(checks)
+    if a.json:
+        print(json.dumps({"verdict": verdict, "checks": [{"name": c.name, "status": c.status, "detail": c.detail} for c in checks]}, indent=2))
+    else:
+        print("\n".join([*(f"{c.status} {c.name}: {c.detail}" for c in checks), f"verdict: {verdict}"]))
+    return 1 if verdict == lake_doctor.FAIL else 0
+
+
 LAKE_GROUP = commands.Group(
-    name="lake", help="the Iceberg lake: sync the run store and traces into it",
-    description="The Iceberg lake: sync the run store and traces into it. Needs the optional extra `lake`.",
-    epilog="examples:\n  cox lake sync\n  cox lake sync --dry-run --json",
+    name="lake", help="the Iceberg lake: sync the run store and traces into it, query it, check it",
+    description="The Iceberg lake: sync the run store and traces into it, query it with SQL, and check it. Needs the optional extra `lake`.",
+    epilog="examples:\n  cox lake sync\n  cox lake sync --dry-run --json\n"
+           "  cox lake query \"SELECT count(*) AS n FROM runs\"\n  cox lake doctor",
 )
 LAKE_COMMANDS = [
     commands.Command(
@@ -3782,6 +3836,25 @@ LAKE_COMMANDS = [
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
         _lake_sync, False, (),
+    ),
+    commands.Command(
+        "query", "lake", "run DuckDB SQL over the lake tables (runs, phases, ...) and print the rows",
+        (
+            commands.Arg(("sql",), {"help": "the SQL to run; a lake table is named by its bare name, such as runs"}),
+            commands.Arg(("--runs-dir",), {"default": "runs"}),
+            commands.Arg(("--profile",), {"help": "the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _lake_query, False, (),
+    ),
+    commands.Command(
+        "doctor", "lake", "check the lake: catalog, namespace, warehouse and each table; exits 1 on a failed check",
+        (
+            commands.Arg(("--runs-dir",), {"default": "runs"}),
+            commands.Arg(("--profile",), {"help": "the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _lake_doctor, False, (),
     ),
 ]
 

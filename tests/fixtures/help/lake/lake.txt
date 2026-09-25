@@ -1,14 +1,20 @@
-usage: cox lake [-h] {sync} ...
+usage: cox lake [-h] {sync,query,doctor} ...
 
-The Iceberg lake: sync the run store and traces into it. Needs the optional extra `lake`.
+The Iceberg lake: sync the run store and traces into it, query it with SQL, and check it. Needs the optional extra `lake`.
 
 positional arguments:
-  {sync}
-    sync      append new run-store rows and register new trace files; --dry-run writes nothing
+  {sync,query,doctor}
+    sync               append new run-store rows and register new trace files; --dry-run writes
+                       nothing
+    query              run DuckDB SQL over the lake tables (runs, phases, ...) and print the rows
+    doctor             check the lake: catalog, namespace, warehouse and each table; exits 1 on a
+                       failed check
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help           show this help message and exit
 
 examples:
   cox lake sync
   cox lake sync --dry-run --json
+  cox lake query "SELECT count(*) AS n FROM runs"
+  cox lake doctor
