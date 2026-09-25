@@ -1474,6 +1474,15 @@
               "kwargs": {
                 "action": "store_true"
               }
+            },
+            {
+              "flags": [
+                "--all"
+              ],
+              "kwargs": {
+                "action": "store_true",
+                "help": "every run, not only live and recent ones"
+              }
             }
           ],
           "examples": [],

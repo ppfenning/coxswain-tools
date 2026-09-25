@@ -1515,7 +1515,8 @@ def _route_status(a: argparse.Namespace) -> int:
                 doc = {"runs": rows, "intake": groups, "problems": problems}
             print(json.dumps(doc, indent=2))
         else:
-            print(route.render_status(rows, groups, problems, gate_level=_resolved_gate_level(ws / "runs")))
+            shown, hidden = (rows, 0) if a.all else route.recent_rows(rows, datetime.datetime.now(datetime.UTC))
+            print(route.render_status(shown, groups, problems, gate_level=_resolved_gate_level(ws / "runs"), hidden=hidden))
     except Exception as exc:
         print(f"routing: status unavailable ({type(exc).__name__}: {exc})")
     return 0
@@ -3523,7 +3524,10 @@ ROUTE_COMMANDS = [
     ),
     commands.Command(
         "status", "route", "what is queued or running for this profile",
-        (commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"})),
+        (
+            commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"}),
+            commands.Arg(("--all",), {"action": "store_true", "help": "every run, not only live and recent ones"}),
+        ),
         _route_status, False, (),
     ),
     commands.Command(
@@ -3760,7 +3764,7 @@ def _bare_launcher_split(args: list[str]):
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
     if not args and not sys.stdout.isatty():
-        return _route_status(argparse.Namespace(profile=None, json=False))
+        return _route_status(argparse.Namespace(profile=None, json=False, all=False))
     split = _bare_launcher_split(args)
     head, tail = split if split is not None else (args, [])
     a = build_parser().parse_args(head)

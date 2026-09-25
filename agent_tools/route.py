@@ -4,6 +4,7 @@ returns plain values."""
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -768,6 +769,26 @@ def status_rows(entries) -> list:
     return rows
 
 
+def recent_rows(rows: list, now: datetime.datetime, hours: int = 24) -> tuple[list, int]:
+    """Rows that are alive or started within `hours` of `now`, and the count hidden.
+    A dead row whose `started` is missing or unparseable counts as old; a naive `started` is UTC."""
+    cutoff = now - datetime.timedelta(hours=hours)
+    kept = [row for row in rows if _alive(row) or _started_since(row.get("started"), cutoff)]
+    return kept, len(rows) - len(kept)
+
+
+def _alive(row: dict) -> bool:
+    return bool(row.get("alive")) or row.get("state") == "alive"
+
+
+def _started_since(started, cutoff: datetime.datetime) -> bool:
+    try:
+        when = datetime.datetime.fromisoformat(started)
+    except (TypeError, ValueError):
+        return False
+    return (when if when.tzinfo else when.replace(tzinfo=datetime.UTC)) >= cutoff
+
+
 def _status_line(row: dict) -> str:
     head = (
         f"{row['id']}: {row['state']}"
@@ -787,7 +808,7 @@ def _intake_group_line(name: str, entries: list) -> str:
 
 
 def render_status(rows: list, groups: dict | None = None, problems: list | None = None,
-                  gate_level: str | None = None) -> str:
+                  gate_level: str | None = None, hidden: int = 0) -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
@@ -796,9 +817,11 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     are appended only when the row carries them, so a quiet run stays
     one line. `groups`, an `intake_groups` result, appends one line per
     group when given, and nothing when `None`. `problems`, `state_problems`'
-    output, appends one line per entry last.
+    output, appends one line per entry last. `hidden`, when positive, adds
+    one line after the rows saying that many older runs were left out.
     """
     lines = [_status_line(row) for row in rows]
+    lines += [f"({hidden} older runs hidden; --all shows every run)"] if hidden > 0 else []
     if groups is not None:
         lines += [_intake_group_line(name, groups[name]) for name in ("queued", "decomposed", "landed")]
     lines += [f"problem: {p}" for p in problems or []]
