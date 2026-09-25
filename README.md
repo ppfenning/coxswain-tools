@@ -137,7 +137,7 @@ floating window as the dotfiles' `runs top` chord; right-click opens the HUD.
 Every command that reads a record is pure over parsed data and unit-tested
 against fixtures; every command that writes is dry-run unless `--apply`.
 
-The `route` group reads one profile, `~/.config/agent-tools/profile.yaml`:
+The `route` group reads one profile, `~/.config/agent-tools/profile.yaml` (the directory keeps the deprecated agent-tools name):
 `team`, `cartridges_dir`, `skills_roots`, `provider_profile`, `harness_dir`,
 `workspace_dir`, and `assume`, the gate answer detached runs are started
 with. `forge` names how `cox runs land` lands work: `local` (the default,
