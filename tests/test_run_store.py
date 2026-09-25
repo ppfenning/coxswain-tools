@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import sys
 import types
@@ -393,11 +394,41 @@ def test_the_store_answers_when_no_file_exists_ordered_by_row_ts(tmp_path):
     assert [m["run_id"] for m in got] == ["r1:z-early", "r1:a-late"]
 
 
-def test_the_store_is_ignored_for_a_run_that_has_not_ended_or_has_no_runs_row(tmp_path):
+def test_the_store_answers_for_a_run_that_has_not_ended_and_for_one_with_no_runs_row(tmp_path):
     runs_table(tmp_path, run_row("r1", ended_at=None))
     phases_table(tmp_path, with_record("r1", "plan", "2026-09-25T04:40:00+00:00"), with_record("r2", "plan", "2026-09-25T04:40:00+00:00"))
-    assert run_store.phase_manifests(tmp_path, "r1") == []
-    assert run_store.phase_manifests(tmp_path, "r2") == []
+    assert run_store.phase_manifests(tmp_path, "r1") == [manifest("r1", "plan")]
+    assert [m["run_id"] for m in run_store.phase_manifests(tmp_path, "r2")] == ["r2:plan"]
+
+
+def test_phase_names_come_from_files_oldest_mtime_first(tmp_path):
+    for phase, mtime in (("a-new", 2000), ("z-old", 1000)):
+        path = tmp_path / f"r1:{phase}.json"
+        path.write_text("{}")
+        os.utime(path, (mtime, mtime))
+    (tmp_path / "r2:other.json").write_text("{}")
+    assert run_store.phase_names(tmp_path, "r1") == ["z-old", "a-new"]
+
+
+def test_phase_names_come_from_store_rows_by_ts_for_a_run_with_no_ended_at(tmp_path):
+    runs_table(tmp_path, run_row("r1", ended_at=None))
+    phases_table(
+        tmp_path,
+        phase_row("r1", "a-late", "2026-09-25T04:50:00+00:00"),
+        phase_row("r1", "z-early", "2026-09-25T04:40:00+00:00"),
+        phase_row("r2", "other", "2026-09-25T04:30:00+00:00"),
+    )
+    assert run_store.phase_names(tmp_path, "r1") == ["z-early", "a-late"]
+
+
+def test_phase_names_files_win_over_the_store(tmp_path):
+    (tmp_path / "r1:file-phase.json").write_text("{}")
+    phases_table(tmp_path, phase_row("r1", "store-phase", "2026-09-25T04:40:00+00:00"))
+    assert run_store.phase_names(tmp_path, "r1") == ["file-phase"]
+
+
+def test_phase_names_with_neither_files_nor_store_is_empty(tmp_path):
+    assert run_store.phase_names(tmp_path, "r1") == []
 
 
 def test_a_phase_row_without_manifest_record_is_skipped(tmp_path):
@@ -425,6 +456,7 @@ def test_all_phase_manifests_lists_file_runs_and_store_only_runs_once_each(tmp_p
         with_record("r3", "build", "2026-09-25T04:42:00+00:00"),
     )
     got = run_store.all_phase_manifests(tmp_path)
-    assert sorted(got) == ["r1", "r2"]
+    assert sorted(got) == ["r1", "r2", "r3"]
     assert [m["run_id"] for m in got["r1"]] == ["r1:plan"]
     assert [m["run_id"] for m in got["r2"]] == ["r2:build"]
+    assert [m["run_id"] for m in got["r3"]] == ["r3:build"]
