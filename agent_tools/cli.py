@@ -733,20 +733,46 @@ def _runs_cause(a: argparse.Namespace) -> int:
     return 0
 
 
-def _runs_trace(a: argparse.Namespace) -> int:
-    d = Path(a.runs_dir) / f"{a.run_id}-trace"
-    files = sorted(d.glob(f"{a.role}-*.jsonl" if a.role else "*.jsonl"), key=lambda p: (p.stem.rsplit("-", 1)[0], int(p.stem.rsplit("-", 1)[1])))
+def _stored_trace_calls(calls: list[dict], role: str | None) -> list[tuple[str, dict]]:
+    """Usage calls as (`<role>-<n>`, call), numbered per role in usage order before `role` filters, sorted like the loose files."""
+    named = [
+        (f"{c.get('role')}-{1 + sum(1 for p in calls[:i] if p.get('role') == c.get('role'))}", c)
+        for i, c in enumerate(calls)
+    ]
+    kept = [(node, c) for node, c in named if role is None or c.get("role") == role]
+    return sorted(kept, key=lambda t: (t[0].rsplit("-", 1)[0], int(t[0].rsplit("-", 1)[1])))
+
+
+def _print_trace(a: argparse.Namespace, nodes: list[tuple[str, dict]]) -> int:
+    """Print the -v detail per node, then the table. `nodes` is (node name, `records.trace_summary` result)."""
     rows = []
-    for f in files:
-        s = records.trace_summary(records.load_trace(f))
-        rows.append({"node": f.stem, "turns": s["turns"] or 0, "cost_usd": float(s["cost_usd"] or 0), "result": s["subtype"] or "?",
+    for node, s in nodes:
+        rows.append({"node": node, "turns": s["turns"] or 0, "cost_usd": float(s["cost_usd"] or 0), "result": s["subtype"] or "?",
                      "bash": s["tools"].get("Bash", 0), "reads": sum(s["reads"].values()), "whole": s["whole_file_reads"]})
         if a.verbose:
-            print(f"== {f.stem}: tools={s['tools']} reads={s['reads']} whole_file_reads={s['whole_file_reads']}")
+            print(f"== {node}: tools={s['tools']} reads={s['reads']} whole_file_reads={s['whole_file_reads']}")
             for c in s["commands"][:12]:
                 print("   $", c)
     print(records.format_table(rows, ["node", "turns", "cost_usd", "result", "bash", "reads", "whole"]))
     return 0
+
+
+def _runs_trace(a: argparse.Namespace) -> int:
+    d = Path(a.runs_dir) / f"{a.run_id}-trace"
+    if d.is_dir():
+        files = sorted(d.glob(f"{a.role}-*.jsonl" if a.role else "*.jsonl"), key=lambda p: (p.stem.rsplit("-", 1)[0], int(p.stem.rsplit("-", 1)[1])))
+        return _print_trace(a, [(f.stem, records.trace_summary(records.load_trace(f))) for f in files])
+    # The loose files are gone once a finished run is compacted: read its calls from the usage record and the trace store.
+    usage = run_store.usage(Path(a.runs_dir), a.run_id)
+    if not usage or not usage.get("calls"):
+        print(f"no trace for {a.run_id} in {a.runs_dir}")
+        return 2
+    try:
+        events = [(node, run_store.call_events(Path(a.runs_dir), a.run_id, c)) for node, c in _stored_trace_calls(list(usage["calls"]), a.role)]
+    except run_store.TracesUnavailable as exc:
+        print(exc)
+        return 2
+    return _print_trace(a, [(node, records.trace_summary(ev)) for node, ev in events if ev is not None])
 
 
 def _runs_clean(a: argparse.Namespace) -> int:
