@@ -1970,18 +1970,19 @@ def _run_argv(argv: list[str]) -> tuple[int, str, str]:
 
 
 def _fetch_listing(adapter, config) -> list | None:
-    """The raw listing across `config.repos`; `None` after printing when a fetch fails. An adapter with no `list_argv` lists nothing."""
-    list_argv = getattr(adapter, "list_argv", None)
+    """The raw listing across `config.repos`; `None` after printing when a fetch fails. An adapter with no `list_argv` lists nothing; `pr_list_argv` adds its PRs."""
+    builders = [b for b in (getattr(adapter, "list_argv", None), getattr(adapter, "pr_list_argv", None)) if b]
     listing: list = []
-    for repo in config.repos if list_argv else ():
-        rc, out, err = _run_argv(list_argv(config, repo))
-        try:
-            listing.extend(json.loads(out or "[]") if rc == 0 else ())
-        except json.JSONDecodeError as exc:
-            rc, err = 1, f"listing is not JSON: {exc}"
-        if rc != 0:
-            print(f"routing: listing {repo} failed: {err}")
-            return None
+    for repo in config.repos:
+        for build in builders:
+            rc, out, err = _run_argv(build(config, repo))
+            try:
+                listing.extend(json.loads(out or "[]") if rc == 0 else ())
+            except json.JSONDecodeError as exc:
+                rc, err = 1, f"listing is not JSON: {exc}"
+            if rc != 0:
+                print(f"routing: listing {repo} failed: {err}")
+                return None
     return listing
 
 
@@ -2018,6 +2019,21 @@ def _pull_one(adapter, mapping: dict, found: dict, ws: Path, dry_run: bool) -> b
     return rc != 0
 
 
+def _review_one(adapter, origin, profile: str, dry_run: bool) -> bool:
+    """Review one PR under the pull's profile, then mark it so the next pull skips it; True after printing why when either step failed."""
+    if dry_run:
+        print(f"would review {origin.link}")
+        return False
+    rc, _, err = _run_argv(route.review_argv(origin.link, profile))
+    if rc != 0:
+        print(f"routing: review of {origin.link} failed (exit {rc}): {err}")
+        return True
+    rc, _, err = _run_argv(adapter.mark_argv(sources.Ref(origin.link, origin.repo, "pr"), ""))
+    if rc != 0:
+        print(f"routing: reviewed {origin.link}; marking it failed (exit {rc}): {err}")
+    return rc != 0
+
+
 def _route_pull(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
@@ -2037,15 +2053,16 @@ def _route_pull(a: argparse.Namespace) -> int:
     found, unreadable = _pull_candidates(adapter, config, listing)
     taken = frozenset(link for link in found if adapter.taken(link, links))
     date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-    plan, refusals = route.pull_plan(
+    plan, reviews, refusals = route.pull_plan(
         tuple(found.values()), taken, profile.get("repo_map", {}), date=date, source=a.source
     )
     problems = [*unreadable, *refusals]
     for line in problems:
         print(line)
-    if not plan:
+    if not plan and not reviews:
         print("routing: pull wrote nothing: no eligible candidates")
     failed = [_pull_one(adapter, mapping, found, ws, a.dry_run) for mapping in plan]
+    failed += [_review_one(adapter, found[link], str(_profile_path(a)), a.dry_run) for link in reviews]
     return 2 if problems or any(failed) else 0
 
 

@@ -4,15 +4,18 @@ import importlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from agent_tools import route
+
+Kind = Literal["issue", "pr"]
 
 
 @dataclass(frozen=True)
 class Ref:
     link: str
     repo: str
+    kind: Kind = "issue"
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,7 @@ class Candidate:
     body: str
     repo: str
     link: str
+    kind: Kind = "issue"
 
 
 @dataclass(frozen=True)

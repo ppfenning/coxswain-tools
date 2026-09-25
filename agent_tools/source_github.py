@@ -3,14 +3,21 @@ from __future__ import annotations
 import shlex
 from collections.abc import Mapping, Sequence
 
-from agent_tools.sources import Candidate, Ref, SourceConfig
+from agent_tools.sources import Candidate, Kind, Ref, SourceConfig
 
 INTAKE_LABEL = "intake"
+REVIEW_LABEL = "review"
+REVIEW_TAKEN_LABEL = "review:taken"
 TAKEN_LABEL = "intake:taken"
 
 
 def _repo(raw: Mapping) -> str:
-    return raw["repository"]["nameWithOwner"]
+    """`gh pr list` has no `repository` field, so a PR's repo comes from its url."""
+    return raw["repository"]["nameWithOwner"] if "repository" in raw else "/".join(raw["url"].split("/")[3:5])
+
+
+def _kind(raw: Mapping) -> Kind:
+    return "pr" if "/pull/" in raw["url"] else "issue"
 
 
 def _labels(raw: Mapping) -> frozenset[str]:
@@ -25,18 +32,21 @@ def _wanted_label(config: SourceConfig) -> str:
     return config.filter.removeprefix("label:") if config.filter else INTAKE_LABEL
 
 
+def _label_for(config: SourceConfig, kind: Kind) -> str:
+    return REVIEW_LABEL if kind == "pr" else _wanted_label(config)
+
+
 def candidates(config: SourceConfig, listing: Sequence[Mapping]) -> tuple[Ref, ...]:
-    label = _wanted_label(config)
     return tuple(
-        Ref(link=raw["url"], repo=_repo(raw))
+        Ref(link=raw["url"], repo=_repo(raw), kind=_kind(raw))
         for raw in listing
-        if label in _labels(raw) and _repo(raw) in config.repos
+        if _label_for(config, _kind(raw)) in _labels(raw) and _repo(raw) in config.repos
     )
 
 
 def read(raw: Mapping) -> Candidate:
     return Candidate(
-        title=raw["title"], body=raw["body"], repo=_repo(raw), link=raw["url"]
+        title=raw["title"], body=raw["body"], repo=_repo(raw), link=raw["url"], kind=_kind(raw)
     )
 
 
@@ -59,8 +69,19 @@ def list_argv(config: SourceConfig, repo: str) -> list[str]:
     ]
 
 
+def pr_list_argv(config: SourceConfig, repo: str) -> list[str]:
+    return ["gh", "pr", "list", "--repo", repo, "--state", "open", "--label", REVIEW_LABEL, "--json", "number,title,body,labels,url"]
+
+
+def _pr_mark_argv(ref: Ref) -> list[str]:
+    edit = ["gh", "pr", "edit", _issue_number(ref.link), "--repo", ref.repo]
+    return [*edit, "--remove-label", REVIEW_LABEL, "--add-label", REVIEW_TAKEN_LABEL]
+
+
 def mark_argv(ref: Ref, intake_path: str) -> list[str]:
     """One argv per the protocol; `sh -c` chains the label swap and the comment."""
+    if ref.kind == "pr":
+        return _pr_mark_argv(ref)
     number = shlex.quote(_issue_number(ref.link))
     repo = shlex.quote(ref.repo)
     edit = (

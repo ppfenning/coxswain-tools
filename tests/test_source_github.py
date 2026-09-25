@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from agent_tools import source_github
 from agent_tools.sources import Candidate, Ref, SourceConfig
 
@@ -36,6 +39,9 @@ RAW_ISSUE_TRIAGE = {
     "url": "https://github.com/acme/widgets/issues/15",
     "repository": {"nameWithOwner": "acme/widgets"},
 }
+
+PR_LISTING = json.loads((Path(__file__).parent / "fixtures" / "gh" / "pr-list.json").read_text(encoding="utf-8"))
+RAW_PR, RAW_PR_NO_LABEL = PR_LISTING
 
 
 def test_candidates_returns_only_the_intake_labelled_issue():
@@ -92,6 +98,35 @@ def test_list_argv_builds_the_gh_issue_list_command():
 def test_list_argv_honors_the_configured_filter_label():
     config = SourceConfig(repos=("acme/widgets",), filter="label:triage", token_env="GH_TOKEN")
     assert source_github.list_argv(config, "acme/widgets")[5:7] == ["--label", "triage"]
+
+
+def test_candidates_lists_a_review_labelled_pr_as_kind_pr_beside_an_intake_issue():
+    config = SourceConfig(repos=("acme/widgets",), filter="label:intake", token_env="GH_TOKEN")
+    listing = [RAW_ISSUE, *PR_LISTING]
+    assert source_github.candidates(config, listing) == (
+        Ref(link="https://github.com/acme/widgets/issues/12", repo="acme/widgets", kind="issue"),
+        Ref(link="https://github.com/acme/widgets/pull/21", repo="acme/widgets", kind="pr"),
+    )
+
+
+def test_candidates_drops_a_pr_whose_url_names_no_owner_and_repo():
+    config = SourceConfig(repos=("acme/widgets",), filter="label:intake", token_env="GH_TOKEN")
+    assert source_github.candidates(config, [{**RAW_PR, "url": "https://github.com/pull/21"}]) == ()
+
+
+def test_mark_argv_swaps_a_reviewed_pr_label_to_review_taken():
+    ref = Ref(link="https://github.com/acme/widgets/pull/21", repo="acme/widgets", kind="pr")
+    assert source_github.mark_argv(ref, "") == [
+        "gh", "pr", "edit", "21", "--repo", "acme/widgets", "--remove-label", "review", "--add-label", "review:taken",
+    ]
+
+
+def test_pr_list_argv_builds_the_gh_pr_list_command_for_the_review_label():
+    config = SourceConfig(repos=("acme/widgets",), filter="label:intake", token_env="GH_TOKEN")
+    assert source_github.pr_list_argv(config, "acme/widgets") == [
+        "gh", "pr", "list", "--repo", "acme/widgets", "--state", "open",
+        "--label", "review", "--json", "number,title,body,labels,url",
+    ]
 
 
 def test_mark_argv_returns_one_argv_that_swaps_the_label_then_comments():
