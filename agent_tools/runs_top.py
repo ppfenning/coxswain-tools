@@ -19,6 +19,7 @@ _COLUMNS = ("PHASE", "NODE", "ATT", "TURNS", "COST", "VERDICT", "STATUS", "CEIL"
 _HEADERS = ("RUN", *_COLUMNS)
 _RIGHT = {"ATT", "TURNS", "COST"}
 _NO_RUNS = "all lanes clear"
+STALL_S = 90  # a live run whose lease heartbeat is this many seconds old reads as stalled
 
 UNSET = object()  # `render`'s "no chair argument given" default, distinct from a real `None` (no lock file).
 
@@ -36,9 +37,10 @@ class Row:
     status: str
     ceiling: str = ""
     launched_by: str = ""
+    heartbeat_age: int | None = None
 
 
-def _status(events: list[Event], alive: bool, orphaned: bool = False) -> str:
+def _status(events: list[Event], alive: bool, orphaned: bool = False, heartbeat_age: int | None = None) -> str:
     if any(e.kind == "task_quarantined" for e in events):
         return "quarantined"
     if any(e.kind == "budget_stop" for e in events):
@@ -47,6 +49,8 @@ def _status(events: list[Event], alive: bool, orphaned: bool = False) -> str:
         return "exited"
     if orphaned:
         return "orphaned"
+    if heartbeat_age is not None and heartbeat_age >= STALL_S:
+        return "stalled"
     return "running"
 
 
@@ -68,7 +72,7 @@ def _orphaned(alive: bool, launched_by: str, chair: dict | None) -> bool:
 
 
 def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: list[dict], ceiling: dict | None = None,
-        launched_by: str = "", chair: dict | None = None) -> Row:
+        launched_by: str = "", chair: dict | None = None, heartbeat_age: int | None = None) -> Row:
     """Pure: the one row a run's events and finished calls make."""
     starts = [e for e in events if e.kind == "node_started"]
     verdicts = [e for e in events if e.kind == "verdict"]
@@ -84,9 +88,10 @@ def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: li
         turns=sum(c["turns"] for c in calls),
         cost_usd=sum(c["cost_usd"] for c in calls),
         verdict=verdict,
-        status=_status(events, alive, _orphaned(alive, launched_by, chair)),
+        status=_status(events, alive, _orphaned(alive, launched_by, chair), heartbeat_age),
         ceiling=_ceiling_label(ceiling),
         launched_by=launched_by,
+        heartbeat_age=heartbeat_age,
     )
 
 

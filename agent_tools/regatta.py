@@ -14,6 +14,7 @@ STATUS_ROLE = {
     "orphaned": "alert",
     "quarantined": "alert",
     "budget": "warn",
+    "stalled": "warn",
     "exited": "dim",
 }
 
