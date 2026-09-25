@@ -1,6 +1,7 @@
-usage: cox route status [-h] [--profile PROFILE] [--json]
+usage: cox route status [-h] [--profile PROFILE] [--json] [--all]
 
 options:
   -h, --help         show this help message and exit
   --profile PROFILE
   --json
+  --all              every run, not only live and recent ones

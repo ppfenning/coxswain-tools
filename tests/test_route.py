@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import json
 
 import pytest
@@ -1175,6 +1176,33 @@ def test_render_status_joins_multiple_rows_with_one_newline_each():
          "quarantined": [], "reused": [], "summary": None, "usage": None},
     ]
     assert route.render_status(rows) == "a: no pidfile\nb: exited (pid 7, started t)"
+
+
+_NOW = datetime.datetime(2026, 9, 25, 12, 0, tzinfo=datetime.UTC)
+
+
+def _row(run_id: str, state: str, started: str | None) -> dict:
+    return {"id": run_id, "state": state, "started": started}
+
+
+def test_recent_rows_hides_and_counts_an_old_dead_row():
+    rows = [_row("old", "exited", "2026-09-24T11:59:00+00:00")]
+    assert route.recent_rows(rows, _NOW) == ([], 1)
+
+
+def test_recent_rows_keeps_a_live_row_however_old():
+    rows = [_row("live", "alive", "2026-08-01T00:00:00+00:00")]
+    assert route.recent_rows(rows, _NOW) == (rows, 0)
+
+
+def test_recent_rows_keeps_a_recent_dead_row():
+    rows = [_row("new", "exited", "2026-09-25T00:00:00+00:00")]
+    assert route.recent_rows(rows, _NOW) == (rows, 0)
+
+
+def test_recent_rows_counts_a_dead_row_with_no_started_as_old():
+    rows = [_row("none", "no pidfile", None), _row("bad", "exited", "garbage")]
+    assert route.recent_rows(rows, _NOW) == ([], 2)
 
 
 def test_status_entries_keeps_a_pid_bearing_run_untouched_when_it_has_no_log():
