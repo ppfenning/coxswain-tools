@@ -12,6 +12,7 @@ so both sides use one store (without it the harness falls back to a `cox.db` in 
     lease renew   <name> <holder> <epoch> --ttl <seconds>
     lease release <name> <holder> <epoch>
         exit 0 -> {"ok": true, "epoch": <int>, "holder": "<holder>"}
+        exit 0 -> {"ok": true, "epoch": null, "holder": null} when a release finds no holder
         exit 3 -> {"ok": false, "epoch": <int or null>, "holder": "<current holder or null>"}
 
 Exit 3 is a result, not an error. The lease name is the caller's value.
@@ -57,6 +58,11 @@ class LeaseRefused:
 
 
 @dataclass(frozen=True)
+class LeaseReleased:
+    pass
+
+
+@dataclass(frozen=True)
 class LeaseError:
     detail: str
 
@@ -67,7 +73,7 @@ class NotAvailable:
 
 
 MarkLandedResult = Landed | NotInStore | Failed | NotAvailable
-LeaseResult = LeaseGranted | LeaseRefused | LeaseError | NotAvailable
+LeaseResult = LeaseGranted | LeaseReleased | LeaseRefused | LeaseError | NotAvailable
 
 _MODULE = ["-m", "harness.store_cli"]
 
@@ -110,13 +116,15 @@ def parse_mark_landed(code: int, stdout: str) -> Landed | NotInStore | Failed:
     return Failed(code, stdout.strip() or "no JSON object on stdout")
 
 
-def parse_lease(code: int, stdout: str) -> LeaseGranted | LeaseRefused | LeaseError:
-    """Exit 0 is granted, exit 3 is refused (epoch and holder may be None), exit 2 and the rest are errors."""
+def parse_lease(code: int, stdout: str) -> LeaseGranted | LeaseReleased | LeaseRefused | LeaseError:
+    """Exit 0 is granted, or released when epoch and holder are both present and null; exit 3 is refused; the rest are errors."""
     body = _json_object(stdout)
     if body is None:
         return LeaseError(f"exit {code}: {stdout.strip() or 'no JSON object on stdout'}")
     if code == 0 and body.get("ok") is True and isinstance(body.get("epoch"), int) and isinstance(body.get("holder"), str):
         return LeaseGranted(body["epoch"], body["holder"])
+    if code == 0 and body.get("ok") is True and all(k in body and body[k] is None for k in ("epoch", "holder")):
+        return LeaseReleased()
     if code == 3:
         return LeaseRefused(body.get("epoch"), body.get("holder"))
     return LeaseError(f"exit {code}: {stdout.strip()}")
