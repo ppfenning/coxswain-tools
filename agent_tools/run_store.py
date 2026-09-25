@@ -35,7 +35,7 @@ except ImportError:
     _DB_ERRORS = (sqlite3.DatabaseError,)
 
 __all__ = [
-    "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly",
+    "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "call_events", "call_from_row", "connect_readonly",
     "harness_python", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
     "run_started", "store_usages", "summarize", "usage", "usages",
 ]
@@ -271,6 +271,34 @@ def run_ids(runs_dir: Path) -> set[str]:
         return {row["run_id"] for row in conn.execute("SELECT run_id FROM runs")}
     except _DB_ERRORS:
         return set()
+    finally:
+        conn.close()
+
+
+def _attempts_columns(conn: Any, token: str) -> set[str]:
+    """Edge. The column names of `attempts`, asked of the backend: a failed SELECT would abort a Postgres transaction."""
+    if token == placeholder("postgres://"):
+        sql = "SELECT column_name AS name FROM information_schema.columns WHERE table_name = {p} AND table_schema = current_schema()"
+        return {r["name"] for r in conn.execute(_sql(sql, token), ("attempts",)).fetchall()}
+    return {r["name"] for r in conn.execute("PRAGMA table_info(attempts)").fetchall()}
+
+
+def attempt_causes(runs_dir: Path, since: str) -> list[dict[str, Any]]:
+    """Edge. Each attempt's kind, cause, cause_why, reason and ts at or after `since`, oldest first; empty with no store or an unreadable one.
+
+    `ts` is ISO text, so a `YYYY-MM-DD` `since` compares correctly as text. A store below schema 5 has no `cause`
+    or `cause_why` column: both read as None."""
+    opened = _open(runs_dir)
+    if opened is None:
+        return []
+    conn, p = opened
+    try:
+        cols = "cause, cause_why" if "cause" in _attempts_columns(conn, p) else "NULL AS cause, NULL AS cause_why"
+        sql = _sql(f"SELECT kind, {cols}, reason, ts FROM attempts WHERE ts >= {{p}} ORDER BY ts", p)
+        keys = ("kind", "cause", "cause_why", "reason", "ts")
+        return [{k: r[k] for k in keys} for r in conn.execute(sql, (since,)).fetchall()]
+    except _DB_ERRORS:
+        return []
     finally:
         conn.close()
 
