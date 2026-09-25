@@ -29,12 +29,21 @@ def _arg_json(arg: commands.Arg) -> dict:
 
 
 def _command_json(row: commands.Command) -> dict:
-    return {
+    base = {
         "name": row.name,
         "summary": row.summary,
         "slash": row.slash,
         "examples": list(row.examples),
         "args": [_arg_json(a) for a in row.args],
+    }
+    if not row.subcommands:
+        return base
+    return {
+        **base,
+        "subcommands": [_command_json(c) for c in row.subcommands],
+        "sub_dest": row.sub_dest,
+        "sub_required": row.sub_required,
+        "defaults": dict(row.defaults),
     }
 
 

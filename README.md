@@ -84,6 +84,17 @@ cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [
 cox route pull [--profile PROFILE] [--source SOURCE] [--dry-run]   file intake tickets from a source, once per link
 cox route lint INITIATIVE_DIR [--repo REPO]   static ticket lint over a filed initiative, work-shape.md §3
 cox route groups [--profile PROFILE]   print the newest plans/intake-groups/<date>.md file, work-shape.md §5
+cox route chair take [--profile PROFILE] [--label LABEL] [--pid PID] [--steal]   take the chair lock if no live chair holds it
+cox route chair beat [--profile PROFILE] [--label LABEL] [--pid PID] [--run RUN]   refresh the chair lock's heartbeat
+cox route chair release [--profile PROFILE] [--label LABEL] [--pid PID]   release the chair lock this session holds
+cox route chair status [--profile PROFILE] [--json]   the chair lock's holder and computed state
+cox route chair clear [--profile PROFILE] [--force]   remove the chair lock file, refusing a live holder unless --force
+cox route chair chat [TEXT] [--profile PROFILE] [--read] [--since SINCE] [--json] [--as-leader]   append to or read the leader chat thread (runs/leader.chat.jsonl)
+cox route sync [--profile PROFILE] [--item ITEM] [--project PROJECT] [--workspace WORKSPACE] [--dry-run]   mirror the work store onto the GitHub Projects board
+cox route launch epic [--profile PROFILE] --initiative INITIATIVE [--repo REPO] [--fix-attempts FIX_ATTEMPTS] [--dry-run] [--include-blocked] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the epic graph against a filed initiative
+cox route launch decompose [--profile PROFILE] --idea IDEA --initiative-id INITIATIVE_ID [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the decompose graph against an idea
+cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the cos graph
+cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
 cox router select --role ROLE [--db DB] [--profile PROFILE] [--json]   the effective tier for a role under the profile's router: off|shadow|on flag
 cox steward propose [--db DB] [--profile PROFILE] [--json]   write each candidate clearing the evidence bar as a new intake file; never edits a provider profile
 cox setup doctor [--profile PROFILE] [--repo REPO] [--json]   check this machine's profile against what it needs
