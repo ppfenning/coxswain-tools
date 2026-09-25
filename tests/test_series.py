@@ -1,5 +1,7 @@
 import json
 
+from test_run_store import ROW, phases_table, run_row, runs_table, store, with_record
+
 from agent_tools import records
 from agent_tools.cli import main
 
@@ -223,3 +225,17 @@ def test_series_row_gives_the_same_figures_from_calls_only_and_from_a_precompute
     assert row_calls["cost_usd"] == row_summary["cost_usd"] == 2.0
     assert row_calls["turns"] == row_summary["turns"] == 10
     assert row_calls["cache_share"] == row_summary["cache_share"] == 0.25
+
+
+def test_cli_runs_series_json_lists_a_store_only_run_with_its_cost_and_phases(tmp_path, capsys):
+    store(tmp_path, ROW)
+    runs_table(tmp_path, run_row("r1"))
+    phases_table(tmp_path, with_record("r1", "build", "2026-09-25T04:40:00+00:00"))
+    rc = main(["runs", "series", "--runs-dir", str(tmp_path), "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert [r["run"] for r in doc["rows"]] == ["r1"]
+    row = doc["rows"][0]
+    assert row["cost_usd"] == round(ROW["cost_usd"], 4)
+    assert (row["cartridge_sha"], row["provider_profile"]) == ("abc123", "default")
+    assert not list(tmp_path.glob("*.json"))
