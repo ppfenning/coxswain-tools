@@ -3,6 +3,8 @@ import re
 from agent_tools import doctor
 
 _CHECK_ORDER = (
+    "git",
+    "forge",
     "profile",
     "profile paths",
     "harness venv",
@@ -19,6 +21,9 @@ _CHECK_ORDER = (
 
 def _good_facts():
     return {
+        "git_version": "git version 2.45.0",
+        "forge": "local",
+        "forge_found": True,
         "profile_path": "/profiles/a.yaml",
         "profile_text": "team: pat\ncartridges_dir: /c\nskills_roots: [/s1]\nprovider_profile: /p.yaml\nharness_dir: /h\nworkspace_dir: /w\n",
         "paths_exist": {"/c": True, "/s1": True, "/p.yaml": True, "/h": True, "/w": True},
@@ -246,7 +251,7 @@ def test_render_lists_every_row_in_order_with_its_own_check_label():
     data_lines = lines[1 : 1 + len(rows)]
     labels = [re.split(r"\s{2,}", line.strip())[0] for line in data_lines]
     assert labels == list(_CHECK_ORDER)
-    assert lines[-1] == "doctor: 11 ok, 0 failing"
+    assert lines[-1] == "doctor: 13 ok, 0 failing"
 
 
 def test_render_marks_a_failing_row_as_fail_and_counts_it():
@@ -255,7 +260,7 @@ def test_render_marks_a_failing_row_as_fail_and_counts_it():
     rows = doctor.checks(facts)
     text = doctor.render(rows)
     assert "FAIL" in text
-    assert "doctor: 10 ok, 1 failing" in text
+    assert "doctor: 12 ok, 1 failing" in text
 
 
 def test_empty_facts_dict_yields_all_rows_not_checked_and_exit_one():
@@ -301,3 +306,48 @@ def test_an_installed_disabled_seat_fails_the_cast_row_naming_it():
     facts["cast_seats"] = {"reviewer": {"enabled": False, "installed": True}}
     rows = _rows_by_check(doctor.checks(facts))
     assert rows["cast"] == {"check": "cast", "ok": False, "detail": "present: reviewer"}
+
+
+def test_a_missing_git_fails_the_git_row_and_names_git():
+    facts = _good_facts()
+    facts["git_version"] = None
+    row = _rows_by_check(doctor.checks(facts))["git"]
+    assert row["ok"] is False
+    assert row["detail"].startswith("missing: install git")
+
+
+def test_a_git_version_line_passes_the_git_row_and_is_the_detail():
+    row = _rows_by_check(doctor.checks(_good_facts()))["git"]
+    assert row == {"check": "git", "ok": True, "detail": "git version 2.45.0"}
+
+
+def test_the_local_forge_passes_with_no_gh_fact():
+    row = _rows_by_check(doctor.checks(_good_facts()))["forge"]
+    assert row == {"check": "forge", "ok": True, "detail": "local: plain git, no pull-request host"}
+
+
+def test_the_github_forge_without_gh_auth_fails_naming_gh_auth_login():
+    facts = _good_facts() | {"forge": "github", "gh_auth": False}
+    row = _rows_by_check(doctor.checks(facts))["forge"]
+    assert row["ok"] is False
+    assert "gh auth login" in row["detail"]
+
+
+def test_the_github_forge_with_gh_auth_passes():
+    facts = _good_facts() | {"forge": "github", "gh_auth": True}
+    assert _rows_by_check(doctor.checks(facts))["forge"] == {"check": "forge", "ok": True, "detail": "github: gh authenticated"}
+
+
+def test_an_unknown_forge_fails_naming_it():
+    facts = _good_facts() | {"forge": "gitlab", "forge_found": False}
+    row = _rows_by_check(doctor.checks(facts))["forge"]
+    assert row == {"check": "forge", "ok": False, "detail": "no forge named gitlab installed"}
+
+
+def test_render_adds_the_next_step_line_only_for_a_missing_profile():
+    next_line = "next: run `cox setup` to write a profile, or `cox install` to fetch every component"
+    missing = _good_facts() | {"profile_text": None}
+    assert doctor.render(doctor.checks(missing)).splitlines()[-1] == next_line
+    unparseable = _good_facts() | {"profile_text": "- not a mapping\n"}
+    assert next_line not in doctor.render(doctor.checks(unparseable))
+    assert next_line not in doctor.render(doctor.checks(_good_facts() | {"git_version": None}))

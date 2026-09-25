@@ -2509,17 +2509,36 @@ def _workspace_facts(workspace_dir: str) -> dict:
     return {"workspace_dirs": {name: (ws / name).exists() for name in ("work", "runs", "intake")}}
 
 
+def _git_and_forge_facts(profile: dict) -> dict:
+    """`git_version`, the profile's forge name, whether that forge is installed,
+    and `gh_auth` only for the github forge. Gathered with or without a profile."""
+    try:
+        done = subprocess.run(["git", "--version"], capture_output=True, text=True)
+        git_version = done.stdout.strip() if done.returncode == 0 else None
+    except OSError:
+        git_version = None
+    name = forge.forge_name(profile)
+    facts = {"git_version": git_version or None, "forge": name, "forge_found": forge.forge_for(name) is not None}
+    if name == "github":
+        try:
+            facts["gh_auth"] = route_sync_gh.auth_ok(subprocess.run)
+        except OSError:
+            facts["gh_auth"] = False
+    return facts
+
+
 def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     """Gathers exactly the Facts keys `doctor.checks` reads; never refuses on
     a missing or unparseable profile, since reporting that is the doctor's
     job (unlike `_resolve_profile_or_refuse`, which is for `file`/`launch`)."""
     text = _read_text_or_none(profile_path)
     facts: dict = {"profile_path": str(profile_path), "profile_text": text}
-    if text is None:
-        return facts
     try:
-        profile = route.parse_profile(text)
+        profile = route.parse_profile(text) if text is not None else None
     except route.ProfileError:
+        profile = None
+    facts.update(_git_and_forge_facts(profile or {}))
+    if profile is None:
         return facts
     singles = [profile.get(k, "") for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir")]
     roots = list(profile.get("skills_roots") or [])
@@ -2766,11 +2785,14 @@ def _install_execute(steps: list, manifest: dict, options: dict, root: Path) -> 
     return 0 if all(result["exit"] in (0, None) for result in results) else 2
 
 
+_NO_MANIFEST = "refusing: no manifest at {}; run `cox install` to fetch the components, or pass --manifest"
+
+
 def _install(a: argparse.Namespace) -> int:
     manifest_path = Path(a.manifest) if a.manifest else Path(a.root) / "coxswain" / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
-        print(f"refusing: no manifest at {manifest_path}")
+        print(_NO_MANIFEST.format(manifest_path))
         return 2
     root = Path(a.root)
     channel = "edge" if a.edge else "release"
@@ -2797,7 +2819,7 @@ def _upgrade(a: argparse.Namespace) -> int:
     manifest_path = Path(a.manifest) if a.manifest else Path(a.root) / "coxswain" / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
-        print(f"refusing: no manifest at {manifest_path}")
+        print(_NO_MANIFEST.format(manifest_path))
         return 2
     manifest = _manifest_at_version(manifest, a.to)
     root = Path(a.root)
@@ -2835,7 +2857,7 @@ def _versions(a: argparse.Namespace) -> int:
     manifest_path = Path(a.manifest) if a.manifest else Path(a.root or ".") / "coxswain" / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
-        print(f"refusing: no manifest at {manifest_path}")
+        print(_NO_MANIFEST.format(manifest_path))
         return 2
     root = Path(a.root) if a.root else manifest_path.resolve().parent.parent
     facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
