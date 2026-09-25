@@ -2023,6 +2023,10 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         if new_record is None:
             print(reason)
             return 2
+        refusal = chair.acquire_lease(runs_dir, session, pid, host)
+        if refusal:
+            print(refusal)
+            return 2
         chair.write(runs_dir, new_record)
     print(f"chair taken: {new_record['session']} (pid {new_record['pid']}) on {new_record['host']}")
     return 0
@@ -2044,6 +2048,10 @@ def _route_chair_beat(a: argparse.Namespace) -> int:
         new_record, reason = chair.beat(record, session, pid, host, datetime.datetime.now(datetime.UTC), run_id=a.run, claude_session=chair.claude_session_from_env(os.environ))
         if new_record is None:
             print(reason)
+            return 2
+        lost = chair.renew_lease(runs_dir, session, pid, host)
+        if lost:
+            print(lost)
             return 2
         chair.write(runs_dir, new_record)
     print(f"chair heartbeat: {new_record['session']}")
@@ -2067,6 +2075,7 @@ def _route_chair_release(a: argparse.Namespace) -> int:
         if reason:
             print(reason)
             return 2
+        chair.release_lease(runs_dir, session, pid, host)
         chair.write(runs_dir, None)
     print(f"chair released: {record['session']}")
     return 0
