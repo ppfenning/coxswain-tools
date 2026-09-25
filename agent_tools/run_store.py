@@ -1,7 +1,8 @@
 """A run's usage: the `<run_id>.usage.json` file first, the read-only SQLite
-store `cox.db` only once that file is gone, and only for a run whose `runs` row
-has an `ended_at`. Calls alone do not mean the run is done: graphs writes each
-call as it finishes. `usages` lists every run that way, and `run_started`
+store `cox.db` only once that file is gone, and only for an ended run. A run has
+ended when its `runs` row has an `ended_at`, or when it has no live pid: a
+killed run never stamps `ended_at`. Calls alone do not mean the run is done:
+graphs writes each call as it finishes. `usages` lists every run that way, and `run_started`
 reads a run's `launched_at`. `phase_manifests` follows the same order for a
 run's `<run_id>:<phase>.json` files, then the `manifest_record` on the store's
 phase rows. Reads only; never creates, migrates or writes the
@@ -15,6 +16,8 @@ import sqlite3
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+from agent_tools import epic
 
 __all__ = [
     "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly", "phase_manifests",
@@ -88,6 +91,18 @@ def _read_file(path: Path) -> dict | None:
     return loaded if isinstance(loaded, dict) else None
 
 
+def _run_ended(runs_dir: Path, run_id: str, ended_at: Any) -> bool:
+    """Edge. True when `ended_at` is set, or `<run_id>.pid` is missing, unreadable, not an int, or not a live run."""
+    if ended_at is not None:
+        return True
+    pidfile = Path(runs_dir) / f"{run_id}.pid"
+    try:
+        pid = int(pidfile.read_text().strip())
+    except (OSError, ValueError):
+        return True
+    return not epic.run_live(pid, pidfile)
+
+
 def _read_calls(runs_dir: Path, run_id: str) -> list[dict]:
     conn = connect_readonly(runs_dir)
     if conn is None:
@@ -95,19 +110,21 @@ def _read_calls(runs_dir: Path, run_id: str) -> list[dict]:
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
-            "SELECT n.* FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
-            "WHERE n.run_id = ? AND r.ended_at IS NOT NULL ORDER BY n.ts, n.seq",
+            "SELECT n.*, r.ended_at AS run_ended_at FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
+            "WHERE n.run_id = ? ORDER BY n.ts, n.seq",
             (run_id,),
         ).fetchall()
     except sqlite3.DatabaseError:
         return []
     finally:
         conn.close()
+    if not rows or not _run_ended(runs_dir, run_id, rows[0]["run_ended_at"]):
+        return []
     return [call_from_row(r) for r in rows]
 
 
 def usage(runs_dir: Path, run_id: str) -> dict | None:
-    """The usage file unchanged when it parses as an object, else the store's rows for an ended run, else None."""
+    """The usage file unchanged when it parses as an object, else the store's rows for an ended run (`ended_at` set, or no live pid), else None."""
     from_file = _read_file(Path(runs_dir) / f"{run_id}.usage.json")
     if from_file is not None:
         return from_file
@@ -120,28 +137,32 @@ def _store_usage(run_id: str, calls: list[dict]) -> dict:
 
 
 def _store_runs(runs_dir: Path) -> dict[str, list[dict]]:
-    """Every run with `node_calls` rows and an ended `runs` row, its calls ordered by ts then seq."""
+    """Every run with `node_calls` rows and a `runs` row that has ended (`ended_at` set, or no live pid), its calls ordered by ts then seq."""
     conn = connect_readonly(runs_dir)
     if conn is None:
         return {}
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
-            "SELECT n.* FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
-            "WHERE r.ended_at IS NOT NULL ORDER BY n.run_id, n.ts, n.seq"
+            "SELECT n.*, r.ended_at AS run_ended_at FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
+            "ORDER BY n.run_id, n.ts, n.seq"
         ).fetchall()
     except sqlite3.DatabaseError:
         return {}
     finally:
         conn.close()
-    by_run: dict[str, list[dict]] = {}
+    grouped: dict[str, list[sqlite3.Row]] = {}
     for row in rows:
-        by_run.setdefault(row["run_id"], []).append(call_from_row(row))
-    return by_run
+        grouped.setdefault(row["run_id"], []).append(row)
+    return {
+        rid: [call_from_row(r) for r in group]
+        for rid, group in grouped.items()
+        if _run_ended(runs_dir, rid, group[0]["run_ended_at"])
+    }
 
 
 def usages(runs_dir: Path) -> dict[str, dict]:
-    """Run id to usage: every parsing usage file, then each ended store run that has no file."""
+    """Run id to usage: every parsing usage file, then each ended store run (`ended_at` set, or no live pid) that has no file."""
     files = {
         path.name.removesuffix(".usage.json"): body
         for path in sorted(Path(runs_dir).glob("*.usage.json"))
