@@ -39,6 +39,7 @@ from agent_tools import (
     plan,
     provenance,
     records,
+    review_pr,
     route,
     route_sync,
     route_sync_gh,
@@ -963,7 +964,7 @@ def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
-_LAUNCH_ERROR = "refuse checks: "  # a missing executable, marked so the edge refuses (exit 2) not just stops (exit 1)
+_LAUNCH_ERROR = land.LAUNCH_ERROR
 
 
 def _run_checks(checks: list[tuple[str, list[str]]], cwd: Path) -> tuple[bool, str]:
@@ -1160,6 +1161,15 @@ def _wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monoto
 def _repo_is_dirty(repo: Path) -> bool:
     status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True)
     return bool(status.stdout.strip())
+
+
+def _runs_review(a: argparse.Namespace) -> int:
+    profile, rc = _resolve_profile_or_refuse(a)
+    if rc is not None:
+        return rc
+    runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
+    run_id = route.next_run_id([p.name for p in runs_dir.iterdir()] if runs_dir.is_dir() else [], "review")
+    return review_pr.run_review(a.pr, profile, run_id, lambda argv: subprocess.run(argv, capture_output=True, text=True))
 
 
 def _runs_land(a: argparse.Namespace) -> int:
@@ -2991,6 +3001,11 @@ RUNS_COMMANDS = [
             commands.Arg(("--gate",), {"choices": ["ticket", "phase", "epic", "full"], "help": "override the resolved gate level for this invocation"}),
         ),
         _runs_land, False, (),
+    ),
+    commands.Command(
+        "review", "runs", "review a contributor PR with the review graph and post the verdict",
+        (commands.Arg(("--pr",), {"required": True, "help": "https://github.com/<owner>/<repo>/pull/<n>"}), commands.Arg(("--profile",))),
+        _runs_review, False, (),
     ),
     commands.Command(
         "recover", "runs", "merge an approved task's commit into its phase branch after an escalated merge",
