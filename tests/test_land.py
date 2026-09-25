@@ -250,10 +250,30 @@ def test_issue_closes_is_none_for_no_issue_or_an_unparseable_one(issue):
     assert land.issue_closes(issue) is None
 
 
+_PRESYNCED = _STEP_ORDER[:4] + ["route_sync"] + _STEP_ORDER[4:]
+
+
 def test_the_plan_carries_route_sync_after_mark_done():
-    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects")
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects", issue="7")
     assert [s["kind"] for s in steps] == _STEP_ORDER + ["route_sync"]
     assert steps[-1] == {"kind": "route_sync", "item": "seams-task"}
+
+
+def test_an_item_with_no_issue_is_synced_before_the_pr_opens_and_one_with_an_issue_is_not():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects")
+    assert [s["kind"] for s in steps] == _PRESYNCED + ["route_sync"]
+    assert steps[4] == {"kind": "route_sync", "item": "seams-task", "before": "pr_create"}
+    assert steps[-1] == {"kind": "route_sync", "item": "seams-task"}
+    assert [s["kind"] for s in land.land_plan(_record(), _ONE_COMMIT, "main", tracker="none")] == _STEP_ORDER + ["note"]
+
+
+def test_with_issue_rebuilds_only_the_pr_body_and_leaves_no_issue_alone():
+    steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects")
+    assert "Closes" not in _pr_body_of(steps)
+    closed = land.with_issue(steps, _record(), "9")
+    assert _pr_body_of(closed).endswith("\n\nCloses #9")
+    assert [s for s in closed if s["kind"] != "pr_create"] == [s for s in steps if s["kind"] != "pr_create"]
+    assert land.with_issue(steps, _record(), None) == steps
 
 
 def test_the_pr_body_closes_the_issue_and_never_emits_an_owner():
@@ -879,8 +899,43 @@ def test_cli_apply_at_phase_level_prints_the_truncation_line_and_exits_3(repo, t
 def test_cli_apply_at_full_level_merges_and_exits_0(repo, tmp_path, capsys, monkeypatch):
     rc, ran = _apply_gated(repo, tmp_path, monkeypatch, "--gate", "full")
     assert rc == 0
-    assert ran == _STEP_ORDER + ["route_sync"]
+    assert ran == _PRESYNCED + ["route_sync"]
     assert "left open" not in capsys.readouterr().out
+
+
+def _apply_presynced(repo, tmp_path, monkeypatch, sync_writes_issue):
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    item = tmp_path / "work/x/seams/seams-task.md"; item.parent.mkdir(parents=True)
+    item.write_text("---\nid: seams-task\nstate: approved\n---\nBody.\n", encoding="utf-8")
+    ran = []
+
+    def fake(_repo, step):
+        ran.append(step)
+        if step["kind"] == "route_sync" and step.get("before") and sync_writes_issue:
+            item.write_text("---\nid: seams-task\nstate: approved\nissue: 9\n---\nBody.\n", encoding="utf-8")
+        return True, "https://x/pull/7"
+    monkeypatch.setattr(cli, "_execute_land_step", fake)
+    cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    return ran
+
+
+def test_cli_apply_syncs_before_the_pr_and_the_body_carries_the_new_issue(repo, tmp_path, monkeypatch):
+    ran = _apply_presynced(repo, tmp_path, monkeypatch, sync_writes_issue=True)
+    assert [s["kind"] for s in ran][3:6] == ["push", "route_sync", "pr_create"]
+    assert ran[4]["workspace"] == str(tmp_path) and ran[4]["item"] == "seams-task"
+    assert ran[5]["body"].endswith("\n\nCloses #9")
+
+
+def test_cli_apply_opens_the_pr_without_closes_when_the_sync_wrote_no_issue(repo, tmp_path, monkeypatch):
+    ran = _apply_presynced(repo, tmp_path, monkeypatch, sync_writes_issue=False)
+    assert ran[-1]["kind"] == "pr_create" and "Closes" not in ran[-1]["body"]
+
+
+def test_execute_presync_failure_says_the_pr_opens_without_closes_and_never_fails_the_land(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_route_sync", lambda ns: 1)
+    ok, detail = cli._execute_land_step(tmp_path, {**_sync_step(), "before": "pr_create"})
+    assert ok is True and detail == "sync of seams-task failed before the PR (exit 1); the PR opens without Closes"
 
 
 def test_cli_apply_with_no_policy_stops_at_ticket_after_pr_create(repo, tmp_path, monkeypatch):
@@ -1060,7 +1115,7 @@ def test_cli_apply_resumes_on_a_local_pr_branch_with_the_cherry_picked_tree(repo
     sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
     rc, ran = _apply_resume(repo, tmp_path, monkeypatch)
     assert rc == 0, capsys.readouterr().out
-    assert ran[:9] == [k if k != "cherry_pick" else "reuse_branch" for k in _STEP_ORDER]
+    assert ran[:10] == [k if k != "cherry_pick" else "reuse_branch" for k in _PRESYNCED]
 
 
 def test_cli_apply_refuses_a_matching_pr_branch_that_has_an_open_pr(repo, tmp_path, capsys, monkeypatch):

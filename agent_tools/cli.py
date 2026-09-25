@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import datetime
 import importlib.metadata
+import io
 import json
 import os
 import re
@@ -928,13 +930,16 @@ def _execute_land_step(repo: Path, step: dict) -> tuple[bool, str]:
         _close_approved_item(step.get("item"))
         return True, f"{step['task']} marked landed at {record_path}"
     if kind == "route_sync":
-        # The PR is already merged: a failed sync is reported, never a failed land.
+        # A failed sync is reported, never a failed land: after the merge nothing is undone,
+        # before the PR it opens without `Closes`.
+        when = "before the PR" if step.get("before") else "after the merge"
+        tail = "the PR opens without Closes" if step.get("before") else "land not undone"
         sync = argparse.Namespace(item=step["item"], workspace=step["workspace"], dry_run=False, project=None, profile=None)
         try:
             rc = _route_sync(sync)
         except Exception as exc:
-            return True, f"sync of {step['item']} failed after the merge ({type(exc).__name__}: {exc}); land not undone"
-        return True, f"synced {step['item']}" if rc == 0 else f"sync of {step['item']} failed after the merge (exit {rc}); land not undone"
+            return True, f"sync of {step['item']} failed {when} ({type(exc).__name__}: {exc}); {tail}"
+        return True, f"synced {step['item']}" if rc == 0 else f"sync of {step['item']} failed {when} (exit {rc}); {tail}"
     return False, f"unknown step {kind!r}"
 
 
@@ -1047,6 +1052,7 @@ def _runs_land(a: argparse.Namespace) -> int:
     default_branch = "main"
     repo_facts = {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists()}
     phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, a.run_id))
+    record, item_path = None, None
     if phase:
         phase_record, task_records, task_paths, searched = _land_phase_record(runs_dir, a.run_id, phase)
         if phase_record is None:
@@ -1097,13 +1103,17 @@ def _runs_land(a: argparse.Namespace) -> int:
         steps = land.resume_steps(steps, decision, cherry_pick["onto"])
         planned = land.resume_steps(planned, decision, cherry_pick["onto"])
     pr = ""
-    for i, step in enumerate(steps):
+    for i in range(len(steps)):
+        step = steps[i]
         if step["kind"] == "refuse":
             print(f"refused: {step['reason']}")
             return 2
         if step["kind"] == "note":
             continue
         ok, detail = _execute_land_step(repo, step)
+        if step.get("before") == "pr_create":
+            # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
+            steps = land.with_issue(steps, record, _land_item_facts(item_path)[1])
         pr = detail if step["kind"] == "pr_create" and ok else pr
         if step["kind"] == "checks" and not ok and detail.startswith(_LAUNCH_ERROR):
             # A check whose executable `subprocess` can't find is a refusal,
@@ -1702,6 +1712,27 @@ def _write_mapping(mapping: dict, ws: Path):
     return None
 
 
+def _sync_filed_items(mapping: dict, ws: Path, a: argparse.Namespace) -> None:
+    """Run the per-item sync for each intake or work item `mapping` wrote, so its issue exists from birth.
+    A failed sync (gh down, rate-limited) never fails the file: one line names the item and the way back."""
+    rels = [rel for rel in mapping
+            if (len(Path(rel).parts) == 2 and Path(rel).parts[0] == "intake")
+            or (len(Path(rel).parts) == 4 and Path(rel).parts[0] == "work")]
+    for rel in rels:
+        item_id = route.parse_frontmatter(mapping[rel])[0].get("id") or Path(rel).stem
+        sync = argparse.Namespace(item=item_id, workspace=str(ws), dry_run=False, project=None, profile=a.profile)
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                rc = _route_sync(sync)
+        except Exception as exc:
+            rc, out = 1, io.StringIO(f"{type(exc).__name__}: {exc}")
+        lines = out.getvalue().strip().splitlines()
+        reason = f"; {lines[-1]}" if rc != 0 and lines else ""
+        print(f"synced {item_id}" if rc == 0
+              else f"route file: wrote {item_id}; issue sync failed (exit {rc}{reason}); run `route sync --item {item_id}`")
+
+
 def _route_file_from_intake(a: argparse.Namespace, ws: Path, profile: dict) -> int:
     intake_path = Path(a.from_intake)
     if intake_path.parent.resolve() != (ws / "intake").resolve():
@@ -1739,6 +1770,7 @@ def _route_file_from_intake(a: argparse.Namespace, ws: Path, profile: dict) -> i
         return 2
     intake_path.unlink()
     print(f"removed: {intake_path}")
+    _sync_filed_items(mapping, ws, a)
     return 0
 
 
@@ -1774,6 +1806,7 @@ def _route_file(a: argparse.Namespace) -> int:
     if refusal:
         print(refusal)
         return 2
+    _sync_filed_items(mapping, ws, a)
     return 0
 
 
