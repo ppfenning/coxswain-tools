@@ -460,3 +460,38 @@ def test_all_phase_manifests_lists_file_runs_and_store_only_runs_once_each(tmp_p
     assert [m["run_id"] for m in got["r1"]] == ["r1:plan"]
     assert [m["run_id"] for m in got["r2"]] == ["r2:build"]
     assert [m["run_id"] for m in got["r3"]] == ["r3:build"]
+
+
+def _three_runs(tmp_path):
+    store(tmp_path, ROW, {**ROW, "call_id": "c2", "run_id": "r2"}, {**ROW, "call_id": "c3", "run_id": "r3"})
+    runs_table(
+        tmp_path,
+        run_row("r1", "2026-09-01T00:00:00+00:00"),
+        run_row("r2", "2026-09-20T00:00:00+00:00"),
+        run_row("r3", None),
+    )
+
+
+def test_store_usages_never_checks_an_excluded_run(tmp_path, monkeypatch):
+    _three_runs(tmp_path)
+    seen = []
+    real = run_store._run_ended
+    monkeypatch.setattr(run_store, "_run_ended", lambda d, rid, ended: seen.append(rid) or real(d, rid, ended))
+    got = run_store.store_usages(tmp_path, exclude={"r1", "r3"})
+    assert list(got) == ["r2"]
+    assert seen == ["r2"]
+
+
+def test_store_usages_since_drops_a_run_that_ended_before_it_and_keeps_the_rest(tmp_path):
+    _three_runs(tmp_path)
+    assert list(run_store.store_usages(tmp_path)) == ["r1", "r2", "r3"]
+    assert list(run_store.store_usages(tmp_path, since="2026-09-10T00:00:00+00:00")) == ["r2", "r3"]
+
+
+def test_usages_equals_the_files_plus_every_store_run_without_a_file(tmp_path):
+    _three_runs(tmp_path)
+    body = {"run_id": "r2", "calls": [], "summary": {"calls": 99}}
+    (tmp_path / "r2.usage.json").write_text(json.dumps(body))
+    rest = {rid: run_store._store_usage(rid, calls) for rid, calls in run_store._store_runs(tmp_path).items() if rid != "r2"}
+    assert run_store.usages(tmp_path) == {"r2": body, **rest}
+    assert list(run_store.usages(tmp_path)) == ["r2", "r1", "r3"]
