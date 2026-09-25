@@ -3,15 +3,16 @@ store `cox.db` only once that file is gone, and only for an ended run. A run has
 ended when its `runs` row has an `ended_at`, or when it has no live pid: a
 killed run never stamps `ended_at`. Calls alone do not mean the run is done:
 graphs writes each call as it finishes. `usages` lists every run that way, and `run_started`
-reads a run's `launched_at`. `phase_manifests` follows the same order for a
-run's `<run_id>:<phase>.json` files, then the `manifest_record` on the store's
-phase rows. Reads only; never creates, migrates or writes the
-store."""
+reads a run's `launched_at`. `phase_manifests` reads a run's
+`<run_id>:<phase>.json` files first, then the `manifest_record` on the store's
+phase rows, ended run or not: a recorded phase is final. Reads only; never
+creates, migrates or writes the store."""
 
 from __future__ import annotations
 
 import io
 import json
+import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -21,10 +22,11 @@ from agent_tools import epic
 
 __all__ = [
     "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly", "phase_manifests",
-    "run_started", "summarize", "usage", "usages",
+    "phase_names", "run_started", "summarize", "usage", "usages",
 ]
 
 STORE_FILENAME = "cox.db"
+_PHASE_FILE = re.compile(r"^[^:]+:(.+)\.json$")
 TRACES_DIRNAME = "traces"
 
 
@@ -196,14 +198,13 @@ def _manifest_record(record_json: Any) -> dict | None:
 
 
 def _store_manifests(runs_dir: Path) -> dict[str, list[dict]]:
-    """Run id to the `manifest_record` of each of its `phases` rows, for ended runs only, ordered by the row's ts."""
+    """Run id to the `manifest_record` of each of its `phases` rows, ended run or not, ordered by the row's ts."""
     conn = connect_readonly(runs_dir)
     if conn is None:
         return {}
     try:
         rows = conn.execute(
-            "SELECT p.run_id, p.record_json FROM phases p JOIN runs r ON r.run_id = p.run_id "
-            "WHERE r.ended_at IS NOT NULL ORDER BY p.run_id, p.ts"
+            "SELECT run_id, record_json FROM phases ORDER BY run_id, ts"
         ).fetchall()
     except sqlite3.DatabaseError:
         return {}
@@ -217,16 +218,36 @@ def _store_manifests(runs_dir: Path) -> dict[str, list[dict]]:
 
 
 def phase_manifests(runs_dir: Path, run_id: str) -> list[dict]:
-    """The run's manifest files when any parse, else the `manifest_record` of its ended store phases, else []."""
+    """The run's manifest files when any parse, else the `manifest_record` of its store phases, else []."""
     from_files = _manifest_files(Path(runs_dir)).get(run_id)
     return from_files or _store_manifests(Path(runs_dir)).get(run_id, [])
 
 
 def all_phase_manifests(runs_dir: Path) -> dict[str, list[dict]]:
-    """Run id to phase manifests: every run with manifest files, then each ended store run that has none."""
+    """Run id to phase manifests: every run with manifest files, then each store run that has none."""
     files = _manifest_files(Path(runs_dir))
     stored = {rid: ms for rid, ms in _store_manifests(Path(runs_dir)).items() if rid not in files}
     return {**files, **stored}
+
+
+def _store_phase_names(runs_dir: Path, run_id: str) -> list[str]:
+    conn = connect_readonly(runs_dir)
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute("SELECT phase_id FROM phases WHERE run_id = ? ORDER BY ts", (run_id,)).fetchall()
+    except sqlite3.DatabaseError:
+        return []
+    finally:
+        conn.close()
+    return [phase_id for (phase_id,) in rows]
+
+
+def phase_names(runs_dir: Path, run_id: str) -> list[str]:
+    """Phase names of the run's manifest files, oldest mtime first; else its store phases by ts, ended run or not."""
+    paths = sorted(Path(runs_dir).glob(f"{run_id}:*.json"), key=lambda p: p.stat().st_mtime)
+    matches = (_PHASE_FILE.match(p.name) for p in paths)
+    return [m.group(1) for m in matches if m] or _store_phase_names(Path(runs_dir), run_id)
 
 
 def _json_objects(lines: Any) -> list[dict]:

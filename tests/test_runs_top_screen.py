@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import time
 
 import pytest
@@ -29,6 +30,23 @@ def test_facts_reads_one_alive_run_with_calls_and_phases(tmp_path):
     assert f["alive"] is True
     assert f["phases"] == ["build"]
     assert f["calls"] == [{"node": "n1", "attempt": 1, "cost_usd": 0.5, "turns": 4}]
+
+
+def test_facts_lists_store_phases_by_ts_for_a_live_run_with_no_phase_files(tmp_path):
+    _write(tmp_path / "r1.pid", "123")
+    _write(tmp_path / "r1.log", "n1 verdict: land\n")
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("CREATE TABLE phases (run_id TEXT, phase_id TEXT, ts TEXT, record_json TEXT)")
+    conn.executemany(
+        "INSERT INTO phases (run_id, phase_id, ts) VALUES (?, ?, ?)",
+        [("r1", "a-late", "2026-09-25T04:50:00+00:00"), ("r1", "z-early", "2026-09-25T04:40:00+00:00")],
+    )
+    conn.commit()
+    conn.close()
+
+    result = facts(tmp_path, now_alive=lambda pid: pid == 123)
+
+    assert result[0]["phases"] == ["z-early", "a-late"]
 
 
 def test_rows_now_maps_facts_through_runs_top_row(tmp_path):
