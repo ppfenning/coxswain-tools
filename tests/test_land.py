@@ -1104,3 +1104,131 @@ def test_land_resume_finds_a_remote_only_branch_with_the_cherry_picked_tree(repo
     _with_origin_holding_the_pr_branch(repo, tmp_path)
     monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch: [])
     assert cli._land_resume(repo, _CHERRY) == {"kind": "resume", "local": False, "remote": True}
+
+
+def _run_row(name, status="completed", conclusion="success"):
+    return {"name": name, "status": status, "conclusion": conclusion}
+
+
+def test_rest_checks_argvs_are_paginated_gh_api_calls_for_check_runs_and_status():
+    runs, status = land.rest_checks_argvs("abc123")
+    assert runs == ["gh", "api", "--paginate", "repos/{owner}/{repo}/commits/abc123/check-runs?per_page=100"]
+    assert status == ["gh", "api", "--paginate", "repos/{owner}/{repo}/commits/abc123/status?per_page=100"]
+
+
+def test_merge_pages_joins_back_to_back_pages_and_refuses_garbage():
+    text = '{"total_count": 3, "check_runs": [1, 2]}\n{"total_count": 3, "check_runs": [3]}'
+    assert land.merge_pages(text, "check_runs") == {"total_count": 3, "check_runs": [1, 2, 3]}
+    assert land.merge_pages("", "check_runs") is None
+    assert land.merge_pages('{"check_runs": []} not json', "check_runs") is None
+
+
+def test_check_poll_result_maps_green_failed_pending_and_empty():
+    green_status = {"state": "success", "statuses": [{"context": "ci", "state": "success"}]}
+    assert land.check_poll_result({"check_runs": [_run_row("a"), _run_row("b", conclusion="skipped")]}, green_status) == (0, "")
+    mixed = {"check_runs": [_run_row("a", conclusion="failure"), _run_row("b", "in_progress", None)]}
+    assert land.check_poll_result(mixed, {"statuses": []}) == (1, "failing checks: a")
+    assert land.check_poll_result({"check_runs": []}, {"statuses": [{"context": "ci", "state": "error"}]}) == (1, "failing checks: ci")
+    queued = {"check_runs": [_run_row("a", "queued", None)]}
+    assert land.check_poll_result(queued, {"state": "pending", "statuses": []}) == (land.PENDING_RC, "checks pending: a")
+    assert land.check_poll_result({"check_runs": []}, {"state": "pending", "statuses": []}) == (1, "no checks reported")
+
+
+def test_check_poll_result_is_never_green_when_fewer_rows_than_total_count_were_read():
+    hundred_green = {"total_count": 101, "check_runs": [_run_row(f"r{i}") for i in range(100)]}
+    assert land.check_poll_result(hundred_green, {"statuses": []}) == (land.PENDING_RC, "checks pending: 100 of 101 check runs read")
+    statuses = {"total_count": 2, "state": "success", "statuses": [{"context": "ci", "state": "success"}]}
+    assert land.check_poll_result({"check_runs": []}, statuses)[0] == land.PENDING_RC
+    combined_failure = {"total_count": 101, "state": "failure", "statuses": [{"context": "ci", "state": "success"}]}
+    assert land.check_poll_result({"check_runs": []}, combined_failure) == (1, "failing checks: combined status")
+
+
+def test_wait_decision_retries_pending_by_returncode_alone_and_reads_no_phrase():
+    assert land.wait_decision(land.PENDING_RC, "", 5, 180) == "retry"
+    assert land.wait_decision(land.PENDING_RC, "", 999999, 180) == "retry"
+    assert land.wait_decision(1, "failing checks: a", 5, 300) == "failed"
+    assert land.wait_decision(1, "1 failing, 1 successful, and 1 pending checks", 5, 300) == "failed"
+    assert land.wait_decision(8, "checks pending: a", 5, 300) == "failed"
+
+
+def test_unreadable_poll_retries_below_the_limit_and_fails_at_it():
+    assert land.unreadable_poll(1, "HTTP 502")[0] == land.PENDING_RC
+    assert land.unreadable_poll(land.POLL_ERROR_LIMIT, "HTTP 502") == (1, "checks unreadable 5 polls in a row: HTTP 502")
+
+
+def test_poll_backoff_doubles_from_thirty_seconds_and_caps():
+    assert [land.poll_backoff_s(n) for n in (1, 2, 3, 4, 5)] == [30.0, 60.0, 120.0, 240.0, 240.0]
+
+
+def _rest_run(calls, check_runs_answers):
+    answers = iter(check_runs_answers)
+
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[0] == "git":
+            return sp.CompletedProcess(argv, 0, "abc123\n", "")
+        if "/check-runs" not in argv[-1]:
+            return sp.CompletedProcess(argv, 0, json.dumps({"total_count": 0, "statuses": []}), "")
+        answer = next(answers)
+        return answer if isinstance(answer, sp.CompletedProcess) else sp.CompletedProcess(argv, 0, json.dumps(answer), "")
+    return run
+
+
+_GREEN = {"total_count": 1, "check_runs": [_run_row("a")]}
+_RATE_LIMITED = sp.CompletedProcess([], 1, "", "HTTP 403: secondary rate limit")
+
+
+@pytest.mark.parametrize("answers, expected", [
+    ([_GREEN], (True, "green")),
+    ([{"total_count": 1, "check_runs": [_run_row("a", conclusion="failure")]}], (False, "failing checks: a")),
+    ([{"total_count": 1, "check_runs": [_run_row("a", "queued", None)]}, _GREEN], (True, "green")),
+    ([_RATE_LIMITED, _RATE_LIMITED, _GREEN], (True, "green")),
+    ([_RATE_LIMITED] * 5, (False, "checks unreadable 5 polls in a row: HTTP 403: secondary rate limit")),
+])
+def test_wait_checks_polls_rest_and_never_gh_pr_checks(monkeypatch, tmp_path, answers, expected):
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run", _rest_run(calls, answers))
+    assert cli._wait_checks(tmp_path, 180.0, sleep=lambda s: None) == expected
+    assert any(c[:3] == ["gh", "api", "--paginate"] and "/check-runs" in c[-1] for c in calls)
+    assert not any(c[:3] == ["gh", "pr", "checks"] for c in calls)
+
+
+def test_wait_checks_waits_out_a_long_pending_run_as_gh_watch_did(monkeypatch, tmp_path):
+    t = [0.0]
+    queued = {"total_count": 1, "check_runs": [_run_row("a", "queued", None)]}
+    monkeypatch.setattr(cli.subprocess, "run", _rest_run([], [queued] * 500 + [_GREEN]))
+    result = cli._wait_checks(tmp_path, 180.0, sleep=lambda s: t.__setitem__(0, t[0] + s), now=lambda: t[0])
+    assert result == (True, "green") and t[0] == 500 * 15
+
+
+def test_wait_checks_backs_off_after_each_unreadable_poll_before_failing(monkeypatch, tmp_path):
+    slept = []
+    monkeypatch.setattr(cli.subprocess, "run", _rest_run([], [_RATE_LIMITED] * 5))
+    ok, _ = cli._wait_checks(tmp_path, 180.0, sleep=slept.append)
+    assert ok is False
+    assert slept == [30.0, 15, 60.0, 15, 120.0, 15, 240.0, 15]
+
+
+def test_wait_checks_reads_the_sha_of_the_repos_own_head_and_runs_gh_there(monkeypatch, tmp_path):
+    real_run = sp.run
+    for args in (["init", "-q", "-b", "main"], ["config", "user.email", "a@b.c"], ["config", "user.name", "n"],
+                 ["commit", "--allow-empty", "-qm", "one"], ["checkout", "-qb", "pr-branch"],
+                 ["commit", "--allow-empty", "-qm", "two"]):
+        real_run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+    def sha(ref):
+        return real_run(["git", "-C", str(tmp_path), "rev-parse", ref], capture_output=True, text=True).stdout.strip()
+
+    head, main = sha("HEAD"), sha("main")
+    gh_calls = []
+
+    def run(argv, **kw):
+        if argv[0] == "git":
+            return real_run(argv, **kw)
+        gh_calls.append((argv, kw.get("cwd")))
+        body = _GREEN if "/check-runs" in argv[-1] else {"total_count": 0, "statuses": []}
+        return sp.CompletedProcess(argv, 0, json.dumps(body), "")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    assert cli._wait_checks(tmp_path, 180.0, sleep=lambda s: None) == (True, "green")
+    assert head != main and len(gh_calls) == 2
+    assert all(head in argv[-1] and main not in argv[-1] and cwd == tmp_path for argv, cwd in gh_calls)

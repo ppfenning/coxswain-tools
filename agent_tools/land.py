@@ -20,6 +20,7 @@ the record and the branches with `git log`, then walks the plan through
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 from collections.abc import Sequence
@@ -29,16 +30,22 @@ from typing import Any
 __all__ = [
     "approve_to_done",
     "arbitration_verdict",
+    "check_poll_result",
     "checks_argv",
     "gate_steps",
     "gate_stop",
+    "is_pending",
     "issue_closes",
     "land_plan",
+    "merge_pages",
     "phase_landable",
     "phase_pr_body",
+    "poll_backoff_s",
     "pr_body",
     "recover_plan",
     "recover_record",
+    "rest_checks_argvs",
+    "unreadable_poll",
     "wait_decision",
 ]
 
@@ -311,15 +318,85 @@ def recover_plan(record: dict[str, Any], branches: dict[str, list[str]]) -> list
 
 
 _NO_CHECKS = "no checks reported"
+# The REST poll's own "still running" marker: a returncode `gh` and `git` never exit with (EX_TEMPFAIL),
+# so `gh pr checks` output from the release flow cannot read as pending, and no phrase is matched.
+PENDING_RC = 75
+POLL_ERROR_LIMIT = 5
+_FAILED_CONCLUSIONS = frozenset({"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"})
+
+
+def is_pending(returncode: int) -> bool:
+    return returncode == PENDING_RC
 
 
 def wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: float) -> str:
-    """`green`, `failed`, `retry` or `timeout`: a branch whose checks have not registered yet is retried until `timeout_s`."""
+    """`green`, `failed`, `retry` or `timeout`. No check registered yet retries until `timeout_s`; checks registered and still running retry with no bound, as `gh pr checks --watch` waited."""
     if returncode == 0:
         return "green"
+    if is_pending(returncode):
+        return "retry"
     if _NO_CHECKS in output.lower():
         return "retry" if elapsed_s < timeout_s else "timeout"
     return "failed"
+
+
+def rest_checks_argvs(sha: str) -> tuple[list[str], list[str]]:
+    """`gh api --paginate` argvs for a commit's check runs and legacy statuses. REST, so off the GraphQL budget; `gh` fills `{owner}/{repo}` from the cwd's remote."""
+    base = f"repos/{{owner}}/{{repo}}/commits/{sha}"
+    return (["gh", "api", "--paginate", f"{base}/check-runs?per_page=100"],
+            ["gh", "api", "--paginate", f"{base}/status?per_page=100"])
+
+
+def _json_objects(text: str) -> list[dict[str, Any]] | None:
+    rest = text.lstrip()
+    if not rest:
+        return []
+    try:
+        obj, end = json.JSONDecoder().raw_decode(rest)
+    except ValueError:
+        return None
+    tail = _json_objects(rest[end:])
+    return [obj, *tail] if tail is not None and isinstance(obj, dict) else None
+
+
+def merge_pages(text: str, key: str) -> dict[str, Any] | None:
+    """One body from `gh api --paginate` output, which is the pages' JSON objects back to back: the first page with every page's `key` rows. `None` when unparseable or empty."""
+    pages = _json_objects(text)
+    if not pages:
+        return None
+    return {**pages[0], key: [row for page in pages for row in page.get(key) or []]}
+
+
+def check_poll_result(check_runs: dict[str, Any], status: dict[str, Any]) -> tuple[int, str]:
+    """The `(returncode, output)` pair `wait_decision` reads, from the two REST bodies. A failure beats pending, as `--fail-fast` did. Fewer rows than `total_count` is pending, never green."""
+    runs = [(r.get("name", ""), r.get("status"), r.get("conclusion")) for r in check_runs.get("check_runs") or []]
+    statuses = [(s.get("context", ""), s.get("state")) for s in status.get("statuses") or []]
+    runs_total, statuses_total = check_runs.get("total_count") or 0, status.get("total_count") or 0
+    combined_failed = ["combined status"] if status.get("state") in ("failure", "error") else []
+    failed = [n for n, _, c in runs if c in _FAILED_CONCLUSIONS] + (
+        [n for n, st in statuses if st in ("failure", "error")] or combined_failed)
+    unread = ([f"{len(runs)} of {runs_total} check runs read"] if len(runs) < runs_total else []) + (
+        [f"{len(statuses)} of {statuses_total} statuses read"] if len(statuses) < statuses_total else [])
+    pending = [n for n, st, _ in runs if st != "completed"] + [n for n, st in statuses if st == "pending"] + unread
+    if failed:
+        return 1, f"failing checks: {', '.join(failed)}"
+    if pending:
+        return PENDING_RC, f"checks pending: {', '.join(pending)}"
+    if not runs and not statuses:
+        return 1, _NO_CHECKS
+    return 0, ""
+
+
+def poll_backoff_s(errors: int) -> float:
+    """Extra seconds to wait after `errors` unreadable polls in a row: 30, 60, 120, 240, capped at 240."""
+    return float(min(15 * 2**errors, 240))
+
+
+def unreadable_poll(errors: int, detail: str) -> tuple[int, str]:
+    """A poll whose `gh api` or `git` call failed, `errors` times in a row: pending below `POLL_ERROR_LIMIT`, so one 502 or rate-limit reply does not fail a land; failed at the limit."""
+    if errors < POLL_ERROR_LIMIT:
+        return PENDING_RC, f"checks unreadable, retrying ({errors}/{POLL_ERROR_LIMIT}): {detail}"
+    return 1, f"checks unreadable {errors} polls in a row: {detail}"
 
 
 def issue_closes(issue: str | int | None) -> str | None:

@@ -267,3 +267,103 @@ def test_a_failed_set_after_create_still_records_the_issue_and_an_empty_value_cl
     assert calls[-2][-1] == "--clear"
     assert "issue: 9" in (tmp_path / "intake" / "i1.md").read_text()
 
+
+_ITEM_RESPONSE = {"data": {"repository": {"issue": {"projectItems": {"nodes": [
+    {"id": "PVTI_other", "project": {"number": 3, "owner": {"login": "acme"}},
+     "fieldValues": {"nodes": [{"name": "Done", "field": {"name": "State"}}]}},
+    {"id": "PVTI_5", "project": {"number": 7, "owner": {"login": "Acme"}},
+     "fieldValues": {"nodes": [{}, {"name": "Ready", "field": {"name": "State"}},
+                               {"text": "$1.00", "field": {"name": "Cost"}},
+                               {"text": "x", "field": {"name": "Unrelated"}}]}},
+]}}}}}
+
+
+def test_project_item_from_response_keeps_only_the_matching_projects_item():
+    assert route_sync_gh.project_item_from_response(_ITEM_RESPONSE, "acme/7") == (
+        {"State": "Ready", "Cost": "$1.00"}, "PVTI_5")
+    assert route_sync_gh.project_item_from_response(_ITEM_RESPONSE, "acme/9") == ({}, "")
+
+
+def _item_run(calls, labels=("coxswain",)):
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[:3] == ["gh", "issue", "view"]:
+            return _Result(stdout=json.dumps({"number": 5, "title": "T", "body": "B", "state": "OPEN",
+                                              "labels": [{"name": n} for n in labels]}))
+        return _Result(stdout=json.dumps(_ITEM_RESPONSE))
+    return run
+
+
+def test_existing_item_reads_only_that_issue_and_its_project_item():
+    calls = []
+    ok, (issues, project_items, item_node_ids) = route_sync_gh.existing_item(
+        _item_run(calls), "acme/widgets", "5", "acme/7")
+    assert ok is True
+    assert issues == {"5": {"title": "T", "body": "B"}}
+    assert project_items == {"5": {"State": "Ready", "Cost": "$1.00"}} and item_node_ids == {"5": "PVTI_5"}
+    assert calls[0] == ["gh", "issue", "view", "5", "--repo", "acme/widgets", "--json", "number,title,body,state,labels"]
+    assert calls[1][:3] == ["gh", "api", "graphql"] and "number=5" in calls[1] and len(calls) == 2
+
+
+def test_existing_item_without_a_project_skips_the_project_read():
+    calls = []
+    ok, (issues, project_items, _) = route_sync_gh.existing_item(_item_run(calls), "acme/widgets", "5", None)
+    assert ok is True and list(issues) == ["5"] and project_items == {} and len(calls) == 1
+
+
+def test_existing_item_makes_no_call_for_an_item_with_no_issue_yet():
+    calls = []
+    assert route_sync_gh.existing_item(_item_run(calls), "acme/widgets", None, "acme/7") == (True, ({}, {}, {}))
+    assert calls == []
+
+
+def test_existing_item_treats_an_unlabelled_issue_as_absent_and_reports_a_failed_call():
+    calls = []
+    assert route_sync_gh.existing_item(_item_run(calls, labels=()), "acme/widgets", "5", "acme/7") == (True, ({}, {}, {}))
+    assert len(calls) == 1
+    ok, detail = route_sync_gh.existing_item(lambda argv, **kw: _Result(returncode=1, stderr="rate limited"),
+                                             "acme/widgets", "5", "acme/7")
+    assert (ok, detail) == (False, "rate limited")
+
+
+def test_existing_item_fails_loudly_when_graphql_answers_with_errors():
+    def run(argv, **kw):
+        if argv[:3] == ["gh", "issue", "view"]:
+            return _Result(stdout=json.dumps({"number": 5, "title": "T", "body": "B", "labels": [{"name": "coxswain"}]}))
+        return _Result(stdout=json.dumps({"errors": [{"message": "Field 'x' doesn't exist"}]}))
+
+    assert route_sync_gh.existing_item(run, "acme/widgets", "5", "acme/7") == (False, "Field 'x' doesn't exist")
+
+
+def test_cli_item_sync_refuses_an_unknown_or_shared_id_without_listing_anything(tmp_path, monkeypatch, capsys):
+    _write(tmp_path / "intake" / "a.md", "---\nid: a\ntitle: A\nrepo: acme/widgets\nissue: 5\n---\nB\n")
+    _write(tmp_path / "intake" / "a2.md", "---\nid: shared\ntitle: A\nrepo: acme/widgets\nissue: 5\n---\nB\n")
+    _write(tmp_path / "work" / "init1" / "build" / "t.md", "---\nid: shared\ntitle: T\nstate: ready\n---\nB\n")
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return _Result(returncode=0, stdout="[]")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    for wanted, count in (("typo", 0), ("shared", 2)):
+        rc = cli.main(["route", "sync", "--item", wanted, "--project", "acme/7", "--workspace", str(tmp_path)])
+        assert rc == 2
+        assert f"matches {count} work-store items, expected exactly one" in capsys.readouterr().out
+    assert calls == [["gh", "auth", "status"]] * 2
+
+
+def test_cli_item_sync_issues_only_the_per_item_gh_calls(tmp_path, monkeypatch):
+    _write(tmp_path / "intake" / "a.md", "---\nid: a\ntitle: A\nrepo: acme/widgets\nissue: 5\n---\nB\n")
+    _write(tmp_path / "intake" / "b.md", "---\nid: b\ntitle: B\nrepo: acme/other\nissue: 6\n---\nB\n")
+    calls = []
+    inner = _item_run(calls)
+
+    def run(argv, **kw):
+        return _Result(returncode=0) if argv[:3] == ["gh", "auth", "status"] else inner(argv, **kw)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    rc = cli.main(["route", "sync", "--dry-run", "--item", "a", "--project", "acme/7", "--workspace", str(tmp_path)])
+    assert rc == 0
+    assert [c[:3] for c in calls] == [["gh", "issue", "view"], ["gh", "api", "graphql"]]
+    assert not any("item-list" in c for c in calls)

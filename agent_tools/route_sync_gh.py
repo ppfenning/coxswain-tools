@@ -15,7 +15,8 @@ from pathlib import Path
 from agent_tools import epic, records, route, route_sync
 
 __all__ = [
-    "auth_ok", "create_project", "execute", "existing", "find_project", "items_from_store",
+    "auth_ok", "create_project", "execute", "existing", "existing_item", "find_project", "items_from_store",
+    "project_item_from_response",
 ]
 
 _LABEL = "coxswain"
@@ -150,6 +151,64 @@ def existing(run, repo_names: list[str], project: str | None):
             if row.get("id"):
                 item_node_ids[key] = row["id"]
     return True, (issues, project_items, item_node_ids)
+
+
+# `gh issue view --json projectItems` carries only the project title and Status, not the
+# State/Phase/Run/Cost/Gate values `plan` compares, so the item's own row is one GraphQL read.
+_ITEM_QUERY = (
+    "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){"
+    "issue(number:$number){projectItems(first:20){nodes{id project{number owner{"
+    "... on Organization{login} ... on User{login}}} fieldValues(first:30){nodes{"
+    "... on ProjectV2ItemFieldTextValue{text field{... on ProjectV2FieldCommon{name}}} "
+    "... on ProjectV2ItemFieldSingleSelectValue{name field{... on ProjectV2FieldCommon{name}}}}}}}}}}"
+)
+
+
+def project_item_from_response(data: dict, project: str) -> tuple[dict, str]:
+    """`(fields, node_id)` of the issue's item in `project` (`owner/number`), or `({}, "")`.
+    Fields are keyed by the titles in `_FIELD_TITLES`."""
+    owner, _, number = project.partition("/")
+    issue = ((data.get("data") or {}).get("repository") or {}).get("issue") or {}
+    for node in (issue.get("projectItems") or {}).get("nodes") or []:
+        meta = node.get("project") or {}
+        if str(meta.get("number")) != number or (meta.get("owner") or {}).get("login", "").lower() != owner.lower():
+            continue
+        values = [v for v in (node.get("fieldValues") or {}).get("nodes") or [] if v]
+        fields = {_FIELD_TITLES[title.lower()]: v.get("text", v.get("name", ""))
+                  for v in values if (title := (v.get("field") or {}).get("name", "")).lower() in _FIELD_TITLES}
+        return fields, node.get("id", "")
+    return {}, ""
+
+
+def existing_item(run, repo: str, issue: str | None, project: str | None):
+    """`existing`'s result shape for the one issue `repo#issue`: one `gh issue view`, plus one
+    GraphQL read of its project item when `project` is set. Never lists issues or the project.
+    An item with no issue yet, or an issue without the label, reads as absent."""
+    if not issue or not repo:
+        return True, ({}, {}, {})
+    view = run(["gh", "issue", "view", issue, "--repo", repo, "--json", "number,title,body,state,labels"],
+               capture_output=True, text=True)
+    if view.returncode != 0:
+        return False, view.stderr.strip() or view.stdout.strip()
+    row = json.loads(view.stdout or "{}")
+    if _LABEL not in [label.get("name") for label in row.get("labels") or []]:
+        return True, ({}, {}, {})
+    issues = {issue: {"title": row.get("title", ""), "body": row.get("body", "")}}
+    if project is None:
+        return True, (issues, {}, {})
+    owner, _, name = repo.partition("/")
+    item = run(["gh", "api", "graphql", "-f", f"query={_ITEM_QUERY}", "-f", f"owner={owner}",
+                "-f", f"name={name}", "-F", f"number={issue}"], capture_output=True, text=True)
+    if item.returncode != 0:
+        return False, item.stderr.strip() or item.stdout.strip()
+    data = json.loads(item.stdout or "{}")
+    # A query the schema rejects can still exit 0 with only `errors`; that must fail loudly, not read as "no item".
+    if data.get("errors") or "data" not in data:
+        return False, "; ".join(e.get("message", "") for e in data.get("errors") or []) or "graphql: no data"
+    fields, node_id = project_item_from_response(data, project)
+    if not node_id:
+        return True, (issues, {}, {})
+    return True, (issues, {issue: fields}, {issue: node_id})
 
 
 def find_project(run, owner: str, name: str = "Coxswain"):
