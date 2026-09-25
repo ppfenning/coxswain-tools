@@ -67,10 +67,10 @@ def test_doctor_json_carries_the_verdict_and_the_checks(lake_env, capsys) -> Non
 
 
 @needs_lake
-def test_doctor_on_an_empty_catalog_prints_the_sync_hint(lake_env, capsys) -> None:
+def test_doctor_before_any_sync_prints_the_sync_hint(lake_env, capsys) -> None:
     rc, out = _run(_argv(lake_env, "doctor"), capsys)
     assert rc == 0
-    assert "warn namespace coxswain: not found; run cox lake sync" in out
+    assert "warn catalog: no catalog yet; run cox lake sync" in out
 
 
 @needs_lake
