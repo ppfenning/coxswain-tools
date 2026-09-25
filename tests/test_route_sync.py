@@ -130,3 +130,41 @@ def test_an_empty_field_with_no_value_on_the_board_plans_no_set():
     steps = plan([_item(phase="", gate="")], issues={}, project_items={}, tracker="github-projects")
     assert [s["field"] for s in steps if s["kind"] == "project_set"] == ["State", "Run", "Cost"]
 
+
+def _links(steps):
+    return [s for s in steps if s["kind"] == "sub_issue_link"]
+
+
+def test_a_task_under_a_planned_initiative_links_last_and_the_initiative_is_created_first():
+    initiative = _item(id="initiative:i1", run="", phase="", gate="", initiative=True)
+    task = _item(id="t1", parent="initiative:i1")
+    steps = plan([initiative, task], issues={}, project_items={}, tracker="github-projects")
+    assert steps[0]["kind"] == "issue_create" and steps[0]["item_id"] == "initiative:i1"
+    assert steps[-1] == {"kind": "sub_issue_link", "repo": "acme/widgets", "parent_item": "initiative:i1",
+                         "parent_issue": None, "child_item": "t1", "child_issue": None}
+    assert len(_links(steps)) == 1
+    assert render(_links(steps)) == ["sub_issue_link (new issue) under initiative:i1"]
+
+
+def test_a_task_links_under_a_parent_issue_on_file_when_the_parent_is_not_in_the_plan():
+    task = _item(id="t1", parent="initiative:i1", parent_issue="10", issue="11")
+    steps = plan([task], issues={"11": {"title": task.title, "body": task.body}}, project_items={},
+                 tracker="github-projects")
+    assert [(s["parent_issue"], s["child_issue"]) for s in _links(steps)] == [("10", "11")]
+
+
+def test_no_link_for_an_item_with_no_parent_or_a_parent_with_no_issue_anywhere():
+    assert _links(plan([_item()], issues={}, project_items={}, tracker="github-projects")) == []
+    orphan = _item(parent="initiative:i1")
+    assert _links(plan([orphan], issues={}, project_items={}, tracker="github-projects")) == []
+
+
+def test_a_done_initiative_sets_its_board_state_but_its_open_issue_is_not_closed():
+    issues = {"5": {"title": "Fix the thing", "body": "Some body.", "state": "OPEN"}}
+    initiative = _item(id="initiative:i1", issue="5", state="done", initiative=True)
+    steps = plan([initiative], issues=issues, project_items={}, tracker="github-projects")
+    assert [s["value"] for s in steps if s["kind"] == "project_set" and s["field"] == "State"] == ["Done"]
+    assert not any(s["kind"] == "issue_close" for s in steps)
+    task = _item(id="t1", issue="5", state="done")
+    assert any(s["kind"] == "issue_close" for s in plan([task], issues=issues, project_items={}, tracker="github-projects"))
+

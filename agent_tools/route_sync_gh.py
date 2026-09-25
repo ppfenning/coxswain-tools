@@ -12,7 +12,7 @@ import json
 import re
 from pathlib import Path
 
-from agent_tools import epic, records, route, route_sync
+from agent_tools import epic, route, route_sync
 
 __all__ = [
     "auth_ok", "create_project", "execute", "existing", "existing_item", "find_project", "items_from_store",
@@ -26,6 +26,11 @@ _STATE_MUTATION = (
     "updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,"
     "fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}"
 )
+_SUB_ISSUE_MUTATION = (
+    "mutation($parent:ID!,$child:ID!){addSubIssue(input:{issueId:$parent,subIssueId:$child})"
+    "{issue{id}}}"
+)
+_PARENT_QUERY = "query($id:ID!){node(id:$id){... on Issue{parent{id}}}}"
 
 
 def auth_ok(run) -> bool:
@@ -68,22 +73,71 @@ def _pid_alive(root: Path, run_id: str) -> bool:
     return text.isdigit() and epic.run_live(int(text), pid_path)
 
 
-def _run_cost(root: Path, run_id: str) -> float:
-    usage_path = root / "runs" / f"{run_id}.usage.json"
-    if not usage_path.is_file():
-        return 0.0
+# Real formats, measured by the chair on 2026-09-24 (a build cannot read the workspace).
+# One call from `runs/<run>.usage.json` `calls[]`:
+#     {"role": "scope_epic", "task_id": null, "cost_usd": 0.053325, "model": "haiku", "tier": "cheap"}
+# The distinct task_ids in one run were [null, "model-router-capability-classes-cartridges-decide-class-ceiling"].
+# So `task_id` is exactly the work item's id, or null for a run-level node. A null-task call
+# belongs to no task: it is never spread across tasks and never added to a card's Cost.
+# One task record, at
+#     runs/tools-reads-capability-class-names-in-profile-1/tasks/build/tools-reads-capability-class-names-in-profile.json
+# whose keys include
+#     {"ticket": "tools-reads-capability-class-names-in-profile", "run_id":
+#      "tools-reads-capability-class-names-in-profile-1:build:tools-reads-capability-class-names-in-profile",
+#      "phase": "build", "initiative": "tools-reads-capability-class-names-in-profile", "landed": true}
+# So the file stem is the item id, the run is the top directory name (`run_id` is a composite and is
+# never parsed), and `landed: true` marks the landing run. Both joins are exact equality.
+
+
+def _json_object(path: Path) -> dict:
+    """The file's JSON object, or `{}` when it is unreadable or not an object."""
     try:
-        usage = records.load_usage(usage_path)
-    except json.JSONDecodeError:
-        return 0.0
-    return records.usage_summary(usage).get("cost_usd", 0.0)
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _cost_by_task(calls: list) -> dict[str, float]:
+    """`{item id: cost_usd}` summed over the calls that name that task. Never a run's total."""
+    costs: dict[str, float] = {}
+    for call in calls:
+        task, cost = call.get("task_id"), call.get("cost_usd")
+        if isinstance(task, str) and isinstance(cost, (int, float)):
+            costs[task] = costs.get(task, 0.0) + cost
+    return costs
+
+
+def _task_costs(root: Path) -> dict[str, float]:
+    """Each task's own spend across every run's usage file."""
+    usages = [_json_object(p).get("calls") for p in sorted(root.glob("runs/*.usage.json"))]
+    return _cost_by_task([c for calls in usages if isinstance(calls, list) for c in calls if isinstance(c, dict)])
+
+
+def _landing_runs(root: Path) -> dict[str, str]:
+    """`{item id: run}` for the latest run whose task record has `landed: true`."""
+    return {p.stem: p.parent.parent.parent.name for p in sorted(root.glob("runs/*/tasks/*/*.json"))
+            if _json_object(p).get("landed") is True}
+
+
+def _initiative_id(initiative: str) -> str:
+    """The initiative card's id; a `route file` initiative shares its directory name with its only task."""
+    return f"initiative:{initiative}"
+
+
+def _initiative_issue(root: Path, initiative: str) -> str | None:
+    meta = root / "work" / initiative / "initiative.md"
+    issue = route.parse_frontmatter(meta.read_text())[0].get("issue") if meta.is_file() else None
+    return str(issue) if issue else None
 
 
 def _item(fields: dict, body: str, stem: str, *, state: str, phase: str, run_id: str,
-          cost: float, gate: str, repo: str) -> route_sync.Item:
+          cost: float, gate: str, repo: str, parent: str | None = None,
+          parent_issue: str | None = None, initiative: bool = False) -> route_sync.Item:
     return route_sync.Item(
         id=fields.get("id", stem), title=fields.get("title", stem), body=body, repo=repo,
         state=state, phase=phase, run=run_id, cost_usd=cost, gate=gate, issue=fields.get("issue"),
+        parent=parent, parent_issue=parent_issue, initiative=initiative,
     )
 
 
@@ -93,26 +147,48 @@ def _intake_item(path: Path) -> route_sync.Item:
                  gate="", repo=_repo_of(fields.get("repo", "")))
 
 
-def _work_item(root: Path, path: Path) -> route_sync.Item:
+def _work_item(root: Path, path: Path, landing: dict[str, str], costs: dict[str, float]) -> route_sync.Item:
     fields, body = route.parse_frontmatter(path.read_text())
     initiative, phase_dir, stem = path.parts[-3], path.parts[-2], path.stem
+    item_id = fields.get("id", stem)
     attempts = fields.get("attempts") or []
-    run_id = attempts[-1] if attempts else ""
-    in_flight = bool(run_id) and _pid_alive(root, run_id)
-    cost = round(sum(_run_cost(root, a) for a in attempts), 4)
+    in_flight = bool(attempts) and _pid_alive(root, attempts[-1])
     state = "in_flight" if in_flight else fields.get("state", "todo")
+    has_parent = (root / "work" / initiative / "initiative.md").is_file()
     return _item(fields, body, stem, state=state, phase=fields.get("phase", phase_dir),
-                 run_id=run_id, cost=cost, gate=fields.get("gate", ""),
-                 repo=_initiative_repo(root, initiative))
+                 run_id=landing.get(item_id) or (attempts[-1] if attempts else ""),
+                 cost=round(costs.get(item_id, 0.0), 4), gate=fields.get("gate", ""),
+                 repo=_initiative_repo(root, initiative),
+                 parent=_initiative_id(initiative) if has_parent else None,
+                 parent_issue=_initiative_issue(root, initiative))
+
+
+def _initiative_state(task_states: list[str]) -> str:
+    """`done` only when there is a task and every task is done."""
+    if task_states and all(s == "done" for s in task_states):
+        return "done"
+    return "in_flight" if "in_flight" in task_states else "ready"
+
+
+def _initiative_item(root: Path, path: Path, tasks: list[route_sync.Item]) -> route_sync.Item:
+    fields, body = route.parse_frontmatter(path.read_text())
+    initiative = path.parent.name
+    return _item({**fields, "id": _initiative_id(initiative)}, body, initiative,
+                 state=_initiative_state([t.state for t in tasks]), phase="", run_id="", cost=0.0, gate="",
+                 repo=_initiative_repo(root, initiative), initiative=True)
 
 
 def items_from_store(workspace) -> list[route_sync.Item]:
-    """Every `intake/*.md` and `work/*/*/*.md` item, as a `route_sync.Item`."""
+    """Every `intake/*.md`, `work/*/initiative.md` and `work/*/*/*.md` item, as a
+    `route_sync.Item`. An initiative is listed before its tasks."""
     root = Path(workspace)
     intake_dir = root / "intake"
     intake = [_intake_item(p) for p in sorted(intake_dir.glob("*.md"))] if intake_dir.is_dir() else []
-    work = [_work_item(root, p) for p in sorted(root.glob("work/*/*/*.md"))]
-    return intake + work
+    landing, costs = _landing_runs(root), _task_costs(root)
+    work = [_work_item(root, p, landing, costs) for p in sorted(root.glob("work/*/*/*.md"))]
+    initiatives = [_initiative_item(root, p, [t for t in work if t.parent == _initiative_id(p.parent.name)])
+                   for p in sorted(root.glob("work/*/initiative.md"))]
+    return intake + initiatives + work
 
 
 # `gh` returns 30 rows unless told otherwise; a missed row is replanned as new on every sync.
@@ -238,10 +314,11 @@ def create_project(run, owner: str, name: str = "Coxswain"):
 
 def _find_item_file(root: Path, item_id: str):
     candidates = list((root / "intake").glob("*.md")) if (root / "intake").is_dir() else []
-    candidates += list(root.glob("work/*/*/*.md"))
+    candidates += list(root.glob("work/*/*/*.md")) + list(root.glob("work/*/initiative.md"))
     for path in candidates:
         fields, _ = route.parse_frontmatter(path.read_text())
-        if fields.get("id", path.stem) == item_id:
+        own_id = _initiative_id(path.parent.name) if path.name == "initiative.md" else fields.get("id", path.stem)
+        if own_id == item_id:
             return path
     return None
 
@@ -281,6 +358,54 @@ def _step_repo(issue, ctx: dict) -> str:
     return ctx["repo_by_issue"].get(issue, "")
 
 
+def _issue_node_id(run, repo: str, issue: str) -> tuple[bool, str]:
+    result = run(["gh", "api", f"repos/{repo}/issues/{issue}", "--jq", ".node_id"],
+                 capture_output=True, text=True)
+    if result.returncode != 0:
+        return False, result.stderr.strip() or result.stdout.strip()
+    node_id = result.stdout.strip()
+    return (True, node_id) if node_id else (False, f"no node id for issue {issue}")
+
+
+def _graphql(run, query: str, **variables: str) -> tuple[bool, dict | str]:
+    """`(True, data)` or `(False, detail)`; a response carrying `errors` is a failure."""
+    argv = ["gh", "api", "graphql", "-f", f"query={query}"]
+    result = run(argv + [a for k, v in variables.items() for a in ("-f", f"{k}={v}")],
+                 capture_output=True, text=True)
+    if result.returncode != 0:
+        return False, result.stderr.strip() or result.stdout.strip()
+    try:
+        body = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return False, f"graphql: unreadable response {result.stdout.strip()!r}"
+    if body.get("errors"):
+        return False, "; ".join(e.get("message", "") for e in body["errors"])
+    return True, body.get("data") or {}
+
+
+def _link_sub_issue(step: dict, run, ctx: dict) -> tuple[bool, str]:
+    """`addSubIssue` of the child's issue under the initiative's, skipped when the
+    child already has that parent so a rerun is a no-op."""
+    parent = step["parent_issue"] or ctx["issue_by_item"].get(step["parent_item"])
+    child = _resolved_issue({"issue": step["child_issue"]}, ctx)
+    if not parent or not child:
+        return False, f"no issue known for {step['child_item'] if parent else step['parent_item']}"
+    repo = step["repo"] or _step_repo(child, ctx)
+    ok, parent_node = _issue_node_id(run, repo, parent)
+    if not ok:
+        return False, parent_node
+    ok, child_node = _issue_node_id(run, repo, child)
+    if not ok:
+        return False, child_node
+    ok, data = _graphql(run, _PARENT_QUERY, id=child_node)
+    if not ok:
+        return False, data
+    if ((data.get("node") or {}).get("parent") or {}).get("id") == parent_node:
+        return True, f"{child} already under {parent}"
+    ok, data = _graphql(run, _SUB_ISSUE_MUTATION, parent=parent_node, child=child_node)
+    return (True, f"{child} under {parent}") if ok else (False, data)
+
+
 def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
     """One step through `gh`, `(ok, detail)` — `land.py`'s own edge shape."""
     kind = step["kind"]
@@ -295,6 +420,7 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
         if not issue:
             return False, "gh issue create returned no issue url"
         ctx["just_created"] = {"issue": issue, "repo": step["repo"]}
+        ctx["issue_by_item"][step["item_id"]] = issue
         # Recorded at once, so a later failed step cannot leave the issue unknown and a rerun duplicate it.
         _writeback(ctx["root"], step["item_id"], issue)
         return True, issue
@@ -341,6 +467,8 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
                           ctx["project_node_id"], "--field-id", field_id, *value],
                          capture_output=True, text=True)
         return result.returncode == 0, (result.stdout.strip() or result.stderr.strip())
+    if kind == "sub_issue_link":
+        return _link_sub_issue(step, run, ctx)
     if kind == "writeback":
         issue = _resolved_issue(step, ctx)
         if not issue:
@@ -394,6 +522,7 @@ def execute(steps: list[dict], run, project: str, workspace, items=(), item_node
         "root": Path(workspace),
         "repo_by_issue": {item.issue: item.repo for item in items if item.issue},
         "item_ids": dict(item_node_ids or {}),
+        "issue_by_item": {item.id: item.issue for item in items if item.issue},
         "just_created": None,
         "project_node_id": project_node_id,
         "field_ids": field_ids,

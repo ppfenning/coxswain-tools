@@ -33,6 +33,9 @@ class Item:
     cost_usd: float
     gate: str
     issue: str | None
+    parent: str | None = None
+    parent_issue: str | None = None
+    initiative: bool = False
 
 
 def _fields(item: Item) -> dict | None:
@@ -80,13 +83,26 @@ def _project_steps(key: str | None, wanted: dict, project_items: dict) -> list[d
 
 
 def _close_steps(item: Item, issues: dict) -> list[dict]:
-    """`issue_close` when the item is `done` or `dropped` and its labelled issue on file is open."""
+    """`issue_close` when the item is `done` or `dropped` and its labelled issue on file is open.
+    An initiative card reads Done on the board, but closing its issue is not this sync's call."""
+    if item.initiative:
+        return []
     stored = issues.get(item.issue) if item.issue else None
     is_open = stored is not None and str(stored.get("state", "")).upper() == "OPEN"
     return [{"kind": "issue_close", "issue": item.issue}] if item.state in _CLOSING and is_open else []
 
 
-def _item_steps(item: Item, issues: dict, project_items: dict) -> list[dict]:
+def _link_steps(item: Item, key: str | None, planned_ids: frozenset) -> list[dict]:
+    """`sub_issue_link` of the item's issue under its initiative's issue, when that
+    issue is on file or the initiative is planned in this same run. A `None` issue
+    is filled in by the edge once `issue_create` has run."""
+    if item.parent is None or not (item.parent_issue or item.parent in planned_ids):
+        return []
+    return [{"kind": "sub_issue_link", "repo": item.repo, "parent_item": item.parent,
+             "parent_issue": item.parent_issue, "child_item": item.id, "child_issue": key}]
+
+
+def _item_steps(item: Item, issues: dict, project_items: dict, planned_ids: frozenset) -> list[dict]:
     wanted = _fields(item)
     if wanted is None and item.state not in _ISSUE_ONLY:
         return [{"kind": "refuse", "item_id": item.id, "detail": f"unknown state: {item.state!r}"}]
@@ -95,7 +111,7 @@ def _item_steps(item: Item, issues: dict, project_items: dict) -> list[dict]:
     issue_steps, key = _issue_steps(item, issues)
     project_steps = [] if wanted is None else _project_steps(key, wanted, project_items)
     writeback = [{"kind": "writeback", "item_id": item.id, "issue": key}] if item.issue is None else []
-    return issue_steps + project_steps + writeback + _close_steps(item, issues)
+    return issue_steps + project_steps + writeback + _link_steps(item, key, planned_ids) + _close_steps(item, issues)
 
 
 def plan(items: list[Item], issues: dict, project_items: dict, tracker: str) -> list[dict]:
@@ -103,7 +119,8 @@ def plan(items: list[Item], issues: dict, project_items: dict, tracker: str) -> 
     so the edge runs them top to bottom. Empty unless tracker is `github-projects`."""
     if tracker != "github-projects":
         return []
-    return [step for item in items for step in _item_steps(item, issues, project_items)]
+    planned_ids = frozenset(item.id for item in items)
+    return [step for item in items for step in _item_steps(item, issues, project_items, planned_ids)]
 
 
 def _line(step: dict) -> str:
@@ -118,6 +135,8 @@ def _line(step: dict) -> str:
         return f"project_set {step['issue'] or '(new issue)'} {step['field']}={step['value']}"
     if kind == "issue_close":
         return f"issue_close {step['issue']}"
+    if kind == "sub_issue_link":
+        return f"sub_issue_link {step['child_issue'] or '(new issue)'} under {step['parent_item']}"
     if kind == "writeback":
         return f"writeback {step['item_id']} -> {step['issue'] or '(new issue)'}"
     return f"refuse {step['item_id']}: {step['detail']}"
