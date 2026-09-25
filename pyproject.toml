@@ -11,10 +11,12 @@ description = "The coxswain's operator tools behind the `cox` command; `agent-to
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
-dependencies = ["pyyaml>=6"]
+# zstandard reads the trace store; since the 0.17 cutover a run's traces live only there.
+dependencies = ["pyyaml>=6", "zstandard>=0.23"]
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff==0.16.6", "zstandard>=0.23"]
+# Kept so `coxswain-tools[traces]` still installs; zstandard is now a base dependency.
 traces = ["zstandard>=0.23"]
 
 [project.scripts]
