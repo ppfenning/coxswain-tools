@@ -22,7 +22,7 @@ from agent_tools import epic
 
 __all__ = [
     "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly", "phase_manifests",
-    "phase_names", "run_started", "store_usages", "summarize", "usage", "usages",
+    "phase_names", "run_ids", "run_started", "store_usages", "summarize", "usage", "usages",
 ]
 
 STORE_FILENAME = "cox.db"
@@ -83,6 +83,19 @@ def connect_readonly(runs_dir: Path) -> sqlite3.Connection | None:
     """None when `cox.db` is absent. Opened `mode=ro`, so it can never create the file."""
     path = (Path(runs_dir) / STORE_FILENAME).resolve()
     return sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) if path.exists() else None
+
+
+def run_ids(runs_dir: Path) -> set[str]:
+    """Edge. Every `run_id` in the store's `runs` table; empty with no store or an unreadable one."""
+    conn = connect_readonly(runs_dir)
+    if conn is None:
+        return set()
+    try:
+        return {row[0] for row in conn.execute("SELECT run_id FROM runs")}
+    except sqlite3.DatabaseError:
+        return set()
+    finally:
+        conn.close()
 
 
 def _read_file(path: Path) -> dict | None:
