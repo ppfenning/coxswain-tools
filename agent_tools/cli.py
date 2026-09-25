@@ -771,12 +771,20 @@ def _runs_trace(a: argparse.Namespace) -> int:
     if not usage or not usage.get("calls"):
         print(f"no trace for {a.run_id} in {a.runs_dir}")
         return 2
-    try:
-        events = [(node, run_store.call_events(Path(a.runs_dir), a.run_id, c)) for node, c in _stored_trace_calls(list(usage["calls"]), a.role)]
-    except run_store.TracesUnavailable as exc:
-        print(exc)
-        return 2
-    return _print_trace(a, [(node, records.trace_summary(ev)) for node, ev in events if ev is not None])
+    nodes: list[tuple[str, dict]] = []
+    for node, call in _stored_trace_calls(list(usage["calls"]), a.role):
+        stored = records.summary_from_call(call)
+        if stored is not None:
+            nodes.append((node, stored))
+            continue
+        try:
+            ev = run_store.call_events(Path(a.runs_dir), a.run_id, call)
+        except run_store.TracesUnavailable as exc:
+            print(exc)
+            return 2
+        if ev is not None:
+            nodes.append((node, records.trace_summary(ev)))
+    return _print_trace(a, nodes)
 
 
 def _runs_clean(a: argparse.Namespace) -> int:

@@ -80,3 +80,41 @@ def test_missing_zstandard_exits_2_with_its_message(tmp_path, capsys, monkeypatc
     monkeypatch.setitem(sys.modules, "zstandard", None)
     assert cli_module.main(["runs", "trace", "r", "--runs-dir", str(tmp_path)]) == 2
     assert "coxswain-tools[traces]" in capsys.readouterr().out
+
+
+def summarised(role, call_id, turns, cost, command):
+    return {
+        "role": role, "id": call_id, "turns": turns, "cost_usd": cost,
+        "summary": {"result": "success", "is_error": False, "tool_uses": {"Bash": 1, "Read": 2}, "reads": {"a.py": 2}, "whole_file_reads": 1},
+        "commands_run": [{"command": command}],
+    }
+
+
+def test_calls_carrying_summaries_print_the_table_without_reading_events(tmp_path, capsys, monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("call_events must not be called")
+
+    monkeypatch.setattr(cli_module.run_store, "call_events", boom)
+    calls = [summarised("build", "c1", 3, 1.5, "pytest -q"), summarised("handoff", "c2", 2, 0.5, "ls")]
+    (tmp_path / "r.usage.json").write_text(json.dumps({"run_id": "r", "calls": calls}))
+    assert cli_module.main(["runs", "trace", "r", "--runs-dir", str(tmp_path), "-v"]) == 0
+    out = capsys.readouterr().out
+    assert "   $ pytest -q" in out
+    assert [line.split()[:5] for line in out.splitlines()[-2:]] == [
+        ["build-1", "3", "1.50", "success", "1"], ["handoff-1", "2", "0.50", "success", "1"],
+    ]
+
+
+def test_a_call_without_a_summary_still_reads_events(tmp_path, capsys, monkeypatch):
+    seen = []
+
+    def fake(runs_dir, run_id, call):
+        seen.append(call["id"])
+        return [result(7, 2.0)]
+
+    monkeypatch.setattr(cli_module.run_store, "call_events", fake)
+    calls = [summarised("build", "c1", 3, 1.5, "ls"), {"role": "build", "id": "c3"}]
+    (tmp_path / "r.usage.json").write_text(json.dumps({"run_id": "r", "calls": calls}))
+    assert cli_module.main(["runs", "trace", "r", "--runs-dir", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert seen == ["c3"] and nodes(out) == ["build-1", "build-2"] and "2.00" in out and "1.50" in out
