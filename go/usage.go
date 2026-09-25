@@ -1,10 +1,12 @@
 package coxgo
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,9 +15,10 @@ import (
 )
 
 // Port of `cox usage assess` (agent_tools/usage_window.py, pacing.py, cli._usage_assess).
-// It covers the usage-file path only. The Python edge prefers `ccusage blocks --active`
-// and reads the run_store SQLite fallback; the Go port does neither, so it matches Python
-// only where ccusage answers nothing and the runs dir holds `*.usage.json` files.
+// The five-hour window is the block `ccusage blocks --active --json` marks active, else
+// the runs dir's `*.usage.json` files. The Python edge also reads the run_store SQLite
+// fallback; the Go port does not, so it matches Python only where the runs dir holds
+// `*.usage.json` files.
 
 // Window is a spend window. A nil Ceiling means none was supplied.
 type Window struct {
@@ -226,6 +229,96 @@ func windowFrom(runs []usageRun, now time.Time, span time.Duration, ceiling *flo
 	return Window{Start: start, End: now, Spent: spent, Ceiling: ceiling, Burn: spent / math.Max(span.Seconds()/3600, 1e-9)}
 }
 
+// truthy is Python's bool() on a decoded JSON value.
+func truthy(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case float64:
+		return x != 0
+	case string:
+		return x != ""
+	case []any:
+		return len(x) > 0
+	case map[string]any:
+		return len(x) > 0
+	default:
+		return true
+	}
+}
+
+// pyFloat is Python's float() on a decoded JSON value; a null, list or object does not convert.
+func pyFloat(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case bool:
+		return map[bool]float64{true: 1, false: 0}[x], true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(x), 64)
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func blockTime(v any) (time.Time, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	return t, err == nil
+}
+
+// activeBlock is usage_window._active_block folded into window_from: the first block ccusage
+// marks active whose startTime, endTime and costUSD all parse. A block that does not parse
+// is skipped. The ceiling is the caller's.
+func activeBlock(text []byte) (Window, bool) {
+	var top struct {
+		Blocks []any `json:"blocks"`
+	}
+	if json.Unmarshal(text, &top) != nil {
+		return Window{}, false
+	}
+	for _, b := range top.Blocks {
+		block, ok := b.(map[string]any)
+		if !ok || !truthy(block["isActive"]) {
+			continue
+		}
+		start, okStart := blockTime(block["startTime"])
+		end, okEnd := blockTime(block["endTime"])
+		spent, okSpent := pyFloat(block["costUSD"])
+		if !okStart || !okEnd || !okSpent {
+			continue
+		}
+		return Window{Start: start, End: end, Spent: spent, Burn: spent / math.Max(end.Sub(start).Hours(), 1e-9)}, true
+	}
+	return Window{}, false
+}
+
+// ccusageArgv is the argument list usage_window.gather runs after `npx`.
+var ccusageArgv = []string{"-y", "ccusage@latest", "blocks", "--active", "--json"}
+
+// CcusageBlocks is the edge: the stdout of `npx -y ccusage@latest blocks --active --json`, or
+// nil when COX_NO_CCUSAGE is 1, npx is missing, the call times out at 30s, or it exits nonzero.
+func CcusageBlocks(getenv func(string) string) []byte {
+	if getenv("COX_NO_CCUSAGE") == "1" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "npx", ccusageArgv...)
+	cmd.WaitDelay = 2 * time.Second
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
 func pct(x float64) string { return fmt.Sprintf("%.0f%%", x*100) }
 
 func measured(w Window) bool { return w.Ceiling != nil && *w.Ceiling > 0 }
@@ -344,9 +437,10 @@ func readUsage(runsDir string) []usageRun {
 	return runs
 }
 
-// Assess is `cox usage assess` for a runs dir and a profile at an explicit now.
-// A missing or unparsable profile means no ceilings, a missing policy file means the defaults.
-func Assess(runsDir, profilePath string, now time.Time) Result {
+// Assess is `cox usage assess` for a runs dir and a profile at an explicit now. blocks is
+// ccusage's output, nil when it gave none. A missing or unparsable profile means no ceilings,
+// a missing policy file means the defaults.
+func Assess(runsDir, profilePath string, now time.Time, blocks []byte) Result {
 	var ceilings Ceilings
 	if text, ok := readText(profilePath); ok {
 		if c, err := parseProfile(text); err == nil {
@@ -358,7 +452,12 @@ func Assess(runsDir, profilePath string, now time.Time) Result {
 		policy = loadPolicy([]byte(text))
 	}
 	runs := readUsage(runsDir)
-	window := windowFrom(runs, now, 5*time.Hour, ceilings.Window)
+	window, ok := activeBlock(blocks)
+	if ok {
+		window.Ceiling = ceilings.Window
+	} else {
+		window = windowFrom(runs, now, 5*time.Hour, ceilings.Window)
+	}
 	weekly := windowFrom(runs, now, 7*24*time.Hour, ceilings.Weekly)
 	verdict, reason := assess(window, weekly, policy, now)
 	return Result{Verdict: verdict, Reason: reason, Code: exitCode(verdict)}

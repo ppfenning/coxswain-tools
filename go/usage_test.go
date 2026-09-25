@@ -28,7 +28,7 @@ func TestAssessMatchesExpected(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r := Assess(filepath.Join(dir, "runs"), filepath.Join(dir, "profile.yaml"), now)
+			r := Assess(filepath.Join(dir, "runs"), filepath.Join(dir, "profile.yaml"), now, nil)
 			if got := fmt.Sprintf("%s\nexit %d\n", r.Line(), r.Code); got != string(want) {
 				t.Fatalf("got %q, want %q", got, want)
 			}
@@ -53,6 +53,63 @@ func TestParseProfileKeepsTheCeilingsBesideAForgeKey(t *testing.T) {
 	c, err := parseProfile("team: x\nforge: github\nspend:\n  window_ceiling_usd: 20\n  weekly_ceiling_usd: 200\n")
 	if err != nil || c.Window == nil || *c.Window != 20 || c.Weekly == nil || *c.Weekly != 200 {
 		t.Fatalf("got %+v, %v", c, err)
+	}
+}
+
+// Python: window_from(json.loads(text), [], now, 5.0, 50.0) gives start 09:00Z, end 14:00Z,
+// spent_usd 38.0, burn_usd_per_hour 7.6 for this text; the first two blocks are skipped.
+const ccusageActive = `{"blocks":[` +
+	`{"isActive":false,"startTime":"2026-09-25T04:00:00.000Z","endTime":"2026-09-25T09:00:00.000Z","costUSD":99},` +
+	`{"isActive":true,"startTime":"nope","endTime":"2026-09-25T14:00:00.000Z","costUSD":1},` +
+	`{"isActive":true,"startTime":"2026-09-25T09:00:00.000Z","endTime":"2026-09-25T14:00:00.000Z","costUSD":38}]}`
+
+func TestActiveBlockGivesTheWindowPythonGivesFromTheSameText(t *testing.T) {
+	w, ok := activeBlock([]byte(ccusageActive))
+	start := time.Date(2026, 9, 25, 9, 0, 0, 0, time.UTC)
+	if !ok || !w.Start.Equal(start) || !w.End.Equal(start.Add(5*time.Hour)) || w.Spent != 38 || w.Burn != 7.6 || w.Ceiling != nil {
+		t.Fatalf("got %+v, %v", w, ok)
+	}
+}
+
+func TestActiveBlockFindsNothingWhereJustPythonFindsNothing(t *testing.T) {
+	for _, text := range []string{
+		"", "not json", "[]", "{}", `{"blocks":null}`,
+		`{"blocks":[{"isActive":false,"startTime":"2026-09-25T09:00:00Z","endTime":"2026-09-25T14:00:00Z","costUSD":1}]}`,
+		`{"blocks":[{"startTime":"2026-09-25T09:00:00Z","endTime":"2026-09-25T14:00:00Z","costUSD":1}]}`,
+		`{"blocks":[{"isActive":true,"startTime":"2026-09-25T09:00:00Z","endTime":"2026-09-25T14:00:00Z"}]}`,
+		`{"blocks":[{"isActive":true,"startTime":"2026-09-25T09:00:00Z","endTime":"2026-09-25T14:00:00Z","costUSD":null}]}`,
+		`{"blocks":["x"]}`,
+	} {
+		if w, ok := activeBlock([]byte(text)); ok {
+			t.Errorf("%q gave %+v", text, w)
+		}
+	}
+}
+
+func TestAssessTakesTheActiveBlockAndTheProfilesSpendCeilings(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "profile.yaml")
+	if err := os.WriteFile(profile, []byte("team: x\nspend:\n  window_ceiling_usd: 50\n  weekly_ceiling_usd: 907\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 25, 10, 0, 0, 0, time.UTC)
+	r := Assess(dir, profile, now, []byte(ccusageActive))
+	want := "stop: spent 76% of ceiling at 20% elapsed; both ladders exhausted; weekly 0% of weekly ceiling"
+	if r.Line() != want || r.Code != 4 {
+		t.Fatalf("got %q, exit %d", r.Line(), r.Code)
+	}
+	if r := Assess(dir, profile, now, []byte("not json")); r.Code != 0 || !strings.Contains(r.Reason, "spent 0% of ceiling") {
+		t.Fatalf("no block should fall back to the usage files: %q", r.Line())
+	}
+}
+
+func TestCcusageBlocksIsSkippedByCoxNoCcusage(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if got := CcusageBlocks(func(string) string { return "1" }); got != nil {
+		t.Fatalf("got %q", got)
+	}
+	if got := CcusageBlocks(func(string) string { return "" }); got != nil {
+		t.Fatalf("a missing npx should give nil, got %q", got)
 	}
 }
 
