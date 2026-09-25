@@ -35,8 +35,8 @@ except ImportError:
     _DB_ERRORS = (sqlite3.DatabaseError,)
 
 __all__ = [
-    "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "call_events", "call_from_row", "connect_readonly",
-    "harness_python", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
+    "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "build_counts", "call_events", "call_from_row",
+    "connect_readonly", "cost_since", "harness_python", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
     "run_started", "store_usages", "summarize", "usage", "usages",
 ]
 
@@ -271,6 +271,40 @@ def run_ids(runs_dir: Path) -> set[str]:
         return {row["run_id"] for row in conn.execute("SELECT run_id FROM runs")}
     except _DB_ERRORS:
         return set()
+    finally:
+        conn.close()
+
+
+def cost_since(runs_dir: Path, since: str, until: str | None = None) -> float | None:
+    """Edge. Sum of `node_calls.cost_usd` with `since <= ts < until` (ISO text); None with no store or an unreadable one."""
+    opened = _open(runs_dir)
+    if opened is None:
+        return None
+    conn, p = opened
+    bound, params = (" AND ts < {p}", (since, until)) if until is not None else ("", (since,))
+    try:
+        row = conn.execute(_sql("SELECT SUM(cost_usd) AS total FROM node_calls WHERE ts >= {p}" + bound, p), params).fetchone()
+        return float(row["total"] or 0.0)
+    except _DB_ERRORS:
+        return None
+    finally:
+        conn.close()
+
+
+def build_counts(runs_dir: Path, task_ids: Collection[str], runs: Collection[str] = ()) -> dict[str, int]:
+    """Edge. Build calls per `task_id` equal to one of `task_ids` or a `<run>:...` composite of one of `runs`; empty with no store or an unreadable one."""
+    ids, prefixes = sorted(set(task_ids)), sorted(set(runs))
+    opened = _open(runs_dir) if ids or prefixes else None
+    if opened is None:
+        return {}
+    conn, p = opened
+    match = " OR ".join(["task_id = {p}"] * len(ids) + ["task_id LIKE {p} ESCAPE '\\'"] * len(prefixes))
+    likes = tuple(r.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%" for r in prefixes)
+    try:
+        sql = _sql(f"SELECT task_id, COUNT(*) AS n FROM node_calls WHERE role = 'build' AND ({match}) GROUP BY task_id", p)
+        return {r["task_id"]: int(r["n"]) for r in conn.execute(sql, (*ids, *likes)).fetchall()}
+    except _DB_ERRORS:
+        return {}
     finally:
         conn.close()
 
