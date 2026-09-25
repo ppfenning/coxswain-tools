@@ -1079,7 +1079,7 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         record_path = Path(step["path"])
         record = json.loads(record_path.read_text(encoding="utf-8"))
         record_path.write_text(json.dumps({**record, "landed": True}, indent=2), encoding="utf-8")
-        _close_approved_item(step.get("item"))
+        _close_approved_item(step.get("item"), merged=True)
         return True, f"{step['task']} marked landed at {record_path}"
     if kind == "route_sync":
         # A failed sync is reported, never a failed land: after the merge nothing is undone,
@@ -1118,20 +1118,19 @@ def _resolved_tracker(runs_dir: Path) -> str:
     return tracker if isinstance(tracker, str) and tracker else "github-projects"
 
 
-def _close_approved_item(item_path: str | None) -> None:
-    """Moves the work item at `item_path` from `approved` to `done`, prints
-    the reason and leaves it when it is any other state, does nothing when
-    `item_path` is `None` or names no file on disk (no work item to close)
-    or is already `done`."""
+def _close_approved_item(item_path: str | None, *, merged: bool = False) -> None:
+    """Moves the work item at `item_path` to `done` by `land.approve_to_done`
+    and prints its message. Pass `merged` only after a merge step succeeded:
+    recover's already_recovered path is not evidence of a merge."""
     if item_path is None:
         return
     item = Path(item_path)
     if not item.exists():
         return
-    new_text, message = land.approve_to_done(item.read_text(encoding="utf-8"))
+    new_text, message = land.approve_to_done(item.read_text(encoding="utf-8"), merged=merged)
     if new_text is not None:
         item.write_text(new_text, encoding="utf-8")
-    elif message:
+    if message:
         print(message)
 
 
