@@ -293,3 +293,95 @@ def test_call_events_without_zstandard_raises_naming_the_extra(tmp_path, monkeyp
     monkeypatch.setitem(sys.modules, "zstandard", None)
     with pytest.raises(run_store.TracesUnavailable, match=r"coxswain-tools\[traces\]"):
         run_store.call_events(tmp_path, "r1", {"id": "c1"})
+
+
+PHASES_COLUMNS = (
+    "run_id TEXT, phase_id TEXT, ts TEXT, principal TEXT, human_minutes REAL, totals_json TEXT, record_json TEXT, "
+    "PRIMARY KEY (run_id, phase_id)"
+)
+
+
+def manifest(run_id, phase, ts="2026-09-25T04:40:00+00:00"):
+    return {
+        "cartridge_sha": "abc123", "cartridge_team": "pat", "gate_diffs": [], "human_minutes": 1.5, "overlay_sha": None,
+        "principal": "epic-swarm", "proposals": [], "provider_profile": "default", "run_id": f"{run_id}:{phase}",
+        "totals": {"cost_usd": 0.1}, "ts": ts,
+    }
+
+
+def phase_row(run_id, phase, ts, record=None):
+    record = {"phase": phase, "status": "ok", "ts": ts} if record is None else record
+    return {"run_id": run_id, "phase_id": phase, "ts": ts, "record_json": json.dumps(record)}
+
+
+def with_record(run_id, phase, ts):
+    record = {"phase": phase, "status": "ok", "ts": ts, "manifest": f"{run_id}:{phase}", "manifest_record": manifest(run_id, phase, ts)}
+    return phase_row(run_id, phase, ts, record)
+
+
+def phases_table(runs_dir, *rows):
+    conn = sqlite3.connect(runs_dir / "cox.db")
+    conn.execute(f"CREATE TABLE phases ({PHASES_COLUMNS})")
+    for row in rows:
+        conn.execute(f"INSERT INTO phases ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", tuple(row.values()))
+    conn.commit()
+    conn.close()
+
+
+def test_manifest_files_win_over_the_store_and_come_back_sorted_by_file_name(tmp_path):
+    for phase in ("scope", "build", "plan"):
+        (tmp_path / f"r1:{phase}.json").write_text(json.dumps(manifest("r1", phase)))
+    (tmp_path / "r1:broken.json").write_text("[1, 2]")
+    (tmp_path / "r1.usage.json").write_text(json.dumps({"run_id": "r1"}))
+    runs_table(tmp_path, run_row("r1"))
+    phases_table(tmp_path, with_record("r1", "store", "2026-09-25T04:41:00+00:00"))
+    got = run_store.phase_manifests(tmp_path, "r1")
+    assert [m["run_id"] for m in got] == ["r1:build", "r1:plan", "r1:scope"]
+
+
+def test_the_store_answers_when_no_file_exists_ordered_by_row_ts(tmp_path):
+    runs_table(tmp_path, run_row("r1"))
+    phases_table(
+        tmp_path,
+        with_record("r1", "a-late", "2026-09-25T04:50:00+00:00"),
+        with_record("r1", "z-early", "2026-09-25T04:40:00+00:00"),
+    )
+    got = run_store.phase_manifests(tmp_path, "r1")
+    assert [m["run_id"] for m in got] == ["r1:z-early", "r1:a-late"]
+
+
+def test_the_store_is_ignored_for_a_run_that_has_not_ended_or_has_no_runs_row(tmp_path):
+    runs_table(tmp_path, run_row("r1", ended_at=None))
+    phases_table(tmp_path, with_record("r1", "plan", "2026-09-25T04:40:00+00:00"), with_record("r2", "plan", "2026-09-25T04:40:00+00:00"))
+    assert run_store.phase_manifests(tmp_path, "r1") == []
+    assert run_store.phase_manifests(tmp_path, "r2") == []
+
+
+def test_a_phase_row_without_manifest_record_is_skipped(tmp_path):
+    runs_table(tmp_path, run_row("r1"))
+    phases_table(
+        tmp_path,
+        phase_row("r1", "plan", "2026-09-25T04:40:00+00:00"),
+        with_record("r1", "build", "2026-09-25T04:41:00+00:00"),
+    )
+    assert [m["run_id"] for m in run_store.phase_manifests(tmp_path, "r1")] == ["r1:build"]
+
+
+def test_no_files_and_no_store_return_empty(tmp_path):
+    assert run_store.phase_manifests(tmp_path, "r1") == []
+    assert run_store.all_phase_manifests(tmp_path) == {}
+
+
+def test_all_phase_manifests_lists_file_runs_and_store_only_runs_once_each(tmp_path):
+    (tmp_path / "r1:plan.json").write_text(json.dumps(manifest("r1", "plan")))
+    runs_table(tmp_path, run_row("r1"), run_row("r2"), run_row("r3", ended_at=None))
+    phases_table(
+        tmp_path,
+        with_record("r1", "store-only-phase", "2026-09-25T04:40:00+00:00"),
+        with_record("r2", "build", "2026-09-25T04:41:00+00:00"),
+        with_record("r3", "build", "2026-09-25T04:42:00+00:00"),
+    )
+    got = run_store.all_phase_manifests(tmp_path)
+    assert sorted(got) == ["r1", "r2"]
+    assert [m["run_id"] for m in got["r1"]] == ["r1:plan"]
+    assert [m["run_id"] for m in got["r2"]] == ["r2:build"]
