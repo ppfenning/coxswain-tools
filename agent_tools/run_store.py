@@ -659,12 +659,21 @@ def _parquet_rows_once(root: TracesRoot, run_id: str) -> tuple[dict, ...] | None
         return None
 
 
+def synthetic_call_id(run_id: str, trace: object) -> str | None:
+    """Pure: the id the Parquet backfill gave a call, `<run_id>-<stem of its trace path>`; None without a trace."""
+    return f"{run_id}-{Path(trace).stem}" if isinstance(trace, str) and trace else None
+
+
 def call_events(runs_dir: Path, run_id: str, call: Mapping[str, Any]) -> list[dict] | None:
-    """A call's stream events by `call["id"]`, first source holding any wins: the run's Parquet file, then the
-    `.jsonl.zst` day files, then the loose `trace` file. None when there is no trace store and no loose file."""
+    """A call's stream events by `call["id"]`, first source holding any wins: the run's Parquet file (again under
+    the backfill's synthetic id), then the `.jsonl.zst` day files, then the loose `trace` file. None when there is
+    no trace store and no loose file."""
     call_id = str(call.get("id"))
+    synthetic = synthetic_call_id(run_id, call.get("trace"))
     rows = _parquet_rows_once(_traces_root(Path(runs_dir)), run_id)
-    if rows and (found := _parquet_call_events(rows, call_id)):
+    if rows and (
+        found := _parquet_call_events(rows, call_id) or (synthetic and _parquet_call_events(rows, synthetic))
+    ):
         return found
     traces = Path(runs_dir) / TRACES_DIRNAME
     stored = _store_events(traces, run_id, call_id) if traces.is_dir() else None
