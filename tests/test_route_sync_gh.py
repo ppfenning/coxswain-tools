@@ -3,7 +3,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from agent_tools import cli, route_sync_gh
+from agent_tools import cli, route_sync, route_sync_gh
 
 
 class _Result:
@@ -23,7 +23,8 @@ def _seed_workspace(root):
     _write(checkout / ".git" / "config", '[remote "origin"]\n\turl = git@github.com:acme/widgets.git\n')
     _write(root / "work" / "init1" / "initiative.md", f"---\nrepo: {checkout}\n---\n")
     _write(root / "runs" / "run1.pid", str(os.getpid()))
-    _write(root / "runs" / "run1.usage.json", json.dumps({"calls": [{"cost_usd": 1.5}]}))
+    _write(root / "runs" / "run1.usage.json", json.dumps({"calls": [
+        {"task_id": "task1", "cost_usd": 1.5}, {"task_id": "sibling", "cost_usd": 9.0}]}))
     _write(root / "work" / "init1" / "build" / "task1.md",
            "---\ntitle: Do the thing\nstate: ready\nattempts: [run1]\ngate: cheap\n---\nbody\n")
 
@@ -510,3 +511,126 @@ def test_route_file_still_writes_the_item_and_says_so_in_one_line_when_the_sync_
     assert failures == ["route file: wrote fix-the-thing; issue sync failed (exit 1; issue_create: rate limited); "
                         "run `route sync --item fix-the-thing`"]
     assert "issue_create:" not in out.replace(failures[0], "")
+
+
+def _task_record(root, run, task, landed):
+    _write(root / "runs" / run / "tasks" / "build" / f"{task}.json",
+           json.dumps({"ticket": task, "phase": "build", "landed": landed}))
+
+
+def _two_task_store(root):
+    _write(root / "work" / "init1" / "initiative.md", "---\nrepo: acme/widgets\n---\nInitiative body\n")
+    for task in ("tA", "tB"):
+        _write(root / "work" / "init1" / "build" / f"{task}.md",
+               f"---\ntitle: {task}\nstate: done\nattempts: [run1]\n---\nb\n")
+
+
+def _by_id(root):
+    return {item.id: item for item in route_sync_gh.items_from_store(root)}
+
+
+def test_run_is_the_run_whose_task_record_landed_the_item(tmp_path):
+    _two_task_store(tmp_path)
+    _task_record(tmp_path, "run1", "tA", False)
+    _task_record(tmp_path, "run2", "tA", True)
+    items = _by_id(tmp_path)
+    assert items["tA"].run == "run2"
+    assert items["tB"].run == "run1"
+
+
+def test_cost_is_only_this_tasks_calls_across_two_runs_and_never_a_run_total(tmp_path):
+    _two_task_store(tmp_path)
+    _write(tmp_path / "runs" / "run1.usage.json", json.dumps({"calls": [
+        {"task_id": "tA", "cost_usd": 1.0}, {"task_id": "tB", "cost_usd": 10.0},
+        {"role": "scope_epic", "task_id": None, "cost_usd": 100.0}]}))
+    _write(tmp_path / "runs" / "run2.usage.json", json.dumps({"calls": [
+        {"task_id": "tA", "cost_usd": 0.25}, {"task_id": "tB", "cost_usd": 20.0}]}))
+    items = _by_id(tmp_path)
+    assert items["tA"].cost_usd == 1.25
+    assert items["tB"].cost_usd == 30.0
+
+
+def test_a_call_with_a_composite_task_id_or_none_is_no_tasks_cost(tmp_path):
+    _two_task_store(tmp_path)
+    _write(tmp_path / "runs" / "run1.usage.json", json.dumps({"calls": [
+        {"task_id": "run1:build:tA", "cost_usd": 2.0}, {"cost_usd": 50.0}, {"task_id": "tA", "cost_usd": "x"}]}))
+    assert _by_id(tmp_path)["tA"].cost_usd == 0.0
+
+
+def test_an_unreadable_usage_file_costs_a_task_nothing(tmp_path):
+    _two_task_store(tmp_path)
+    _write(tmp_path / "runs" / "run1.usage.json", "{not json")
+    assert _by_id(tmp_path)["tA"].cost_usd == 0.0
+
+
+def test_an_initiative_is_a_card_listed_before_its_tasks_and_done_only_when_every_task_is(tmp_path):
+    _two_task_store(tmp_path)
+    items = route_sync_gh.items_from_store(tmp_path)
+    assert [item.id for item in items] == ["initiative:init1", "tA", "tB"]
+    assert items[0].state == "done" and items[0].initiative and items[1].parent == "initiative:init1"
+    _write(tmp_path / "work" / "init1" / "build" / "tB.md", "---\ntitle: tB\nstate: ready\n---\nb\n")
+    assert route_sync_gh.items_from_store(tmp_path)[0].state == "ready"
+
+
+def test_an_initiative_with_no_task_is_not_done(tmp_path):
+    _write(tmp_path / "work" / "empty" / "initiative.md", "---\nrepo: acme/widgets\n---\n")
+    assert [(i.id, i.state) for i in route_sync_gh.items_from_store(tmp_path)] == [("initiative:empty", "ready")]
+
+
+def _sub_issue_gh(calls, parent_of_child=None):
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[:3] == ["gh", "issue", "create"]:
+            number = 10 if argv[argv.index("--title") + 1] == "init1" else 11
+            return _Result(stdout=f"https://github.com/acme/widgets/issues/{number}")
+        if argv[2].startswith("repos/"):
+            return _Result(stdout="NODE_" + argv[2].rsplit("/", 1)[-1] + "\n")
+        if "$id:ID!" in " ".join(argv):
+            parent = {"id": parent_of_child} if parent_of_child else None
+            return _Result(stdout=json.dumps({"data": {"node": {"parent": parent}}}))
+        return _Result(stdout=json.dumps({"data": {"addSubIssue": {"issue": {"id": "NODE_10"}}}}))
+    return run
+
+
+def test_the_initiative_gets_its_own_issue_and_each_task_is_linked_under_it(tmp_path):
+    checkout = tmp_path / "checkout"
+    _write(checkout / ".git" / "config", '[remote "origin"]\n\turl = git@github.com:acme/widgets.git\n')
+    _write(tmp_path / "work" / "init1" / "initiative.md", f"---\nrepo: {checkout}\n---\nInitiative body\n")
+    _write(tmp_path / "work" / "init1" / "build" / "t1.md", "---\ntitle: T1\nstate: done\n---\nb\n")
+    items = route_sync_gh.items_from_store(tmp_path)
+    steps = [s for s in route_sync.plan(items, {}, {}, "github-projects")
+             if s["kind"] in ("issue_create", "writeback", "sub_issue_link")]
+    calls = []
+    log = route_sync_gh.execute(steps, _sub_issue_gh(calls), "", tmp_path, items)
+    assert [(kind, ok) for kind, ok, _ in log] == [
+        ("issue_create", True), ("writeback", True), ("issue_create", True), ("writeback", True),
+        ("sub_issue_link", True)]
+    creates = [c for c in calls if c[:3] == ["gh", "issue", "create"]]
+    assert [(c[c.index("--repo") + 1], c[c.index("--title") + 1]) for c in creates] == [
+        ("acme/widgets", "init1"), ("acme/widgets", "T1")]
+    assert calls[-1] == ["gh", "api", "graphql", "-f", f"query={route_sync_gh._SUB_ISSUE_MUTATION}",
+                         "-f", "parent=NODE_10", "-f", "child=NODE_11"]
+    assert "issue: 10" in (tmp_path / "work" / "init1" / "initiative.md").read_text()
+    assert "issue: 11" in (tmp_path / "work" / "init1" / "build" / "t1.md").read_text()
+
+
+def _link_step():
+    return {"kind": "sub_issue_link", "repo": "acme/widgets", "parent_item": "initiative:init1",
+            "parent_issue": "10", "child_item": "t1", "child_issue": "11"}
+
+
+def test_a_child_already_under_its_parent_issues_no_mutation(tmp_path):
+    calls = []
+    log = route_sync_gh.execute([_link_step()], _sub_issue_gh(calls, parent_of_child="NODE_10"), "", tmp_path)
+    assert log == [("sub_issue_link", True, "11 already under 10")]
+    assert not any("addSubIssue" in " ".join(c) for c in calls)
+
+
+def test_a_failed_add_sub_issue_is_reported(tmp_path):
+    def run(argv, **kw):
+        if argv[2].startswith("repos/"):
+            return _Result(stdout="NODE\n")
+        if "$id:ID!" in " ".join(argv):
+            return _Result(stdout=json.dumps({"data": {"node": {"parent": None}}}))
+        return _Result(stdout=json.dumps({"errors": [{"message": "sub-issues disabled"}]}))
+    assert route_sync_gh.execute([_link_step()], run, "", tmp_path) == [("sub_issue_link", False, "sub-issues disabled")]
