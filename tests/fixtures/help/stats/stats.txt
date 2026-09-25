@@ -1,9 +1,9 @@
-usage: cox stats [-h] {ingest,roles,explain,series,coverage,bounds,spend-mix,chair} ...
+usage: cox stats [-h] {ingest,roles,explain,series,coverage,bounds,spend-mix,chair,examples} ...
 
 Load the run corpus into the stats store.
 
 positional arguments:
-  {ingest,roles,explain,series,coverage,bounds,spend-mix,chair}
+  {ingest,roles,explain,series,coverage,bounds,spend-mix,chair,examples}
     ingest              load usage, task, node and launch records into stats.db
     roles               landed rate, attempts-to-land and $/landed per role and model
     explain             the failure-class breakdown behind one role
@@ -14,6 +14,8 @@ positional arguments:
     spend-mix           per-model token counts and cost share by class, plus the build-only split
     chair               harness PRs and $, chair $ per PR, hand-finished lands and quarantine $ by
                         cause
+    examples            the local system-one backend's training file (JSON lines) from task
+                        records
 
 options:
   -h, --help            show this help message and exit
@@ -27,3 +29,4 @@ examples:
   cox stats coverage --json
   cox stats bounds --json
   cox stats spend-mix --json
+  cox stats examples --role handoff --out examples.jsonl
