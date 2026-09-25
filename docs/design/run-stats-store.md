@@ -204,6 +204,19 @@ Everything else below is independent of the spike's outcome.
 `run_id` FK, `task_id`, `ticket`, `phase`, `initiative`, `attempt`, `outcome`,
 `review_rounds`, `arbitration_verdict`, `fix_loop_rounds`, `cost_usd`, `reason`.
 
+Schema version 2 adds nine nullable gate-fact columns, filled from the task record
+and left `NULL` when the record does not state the fact: `handoff_verdict`,
+`charter_verdict`, `adversary_verdict`, `arbiter_verdict`, `arbiter_sided_with`,
+`arbiter_state` (`ruled`, or `skipped` for `arbiter: skipped (both approved)`),
+`fix_loop_attempts`, `fix_loop_stopped` and `plan_gate_verdict`. `handoff_verdict` is
+`yes` or `no` from the bool `handoff.complete`. An `adversary` findings list reads `NULL`.
+`arbiter_state` is `ruled` only when the arbitration dict states a verdict.
+`fix_loop_attempts` uses the same count as the join identity where the record states one.
+`fix_loop_stopped` is `1` when `fix_loop.stopped` is a reason string (`budget`,
+`attempts_exhausted`) and `0` when the key is present and null; a `fix_loop` with no
+`stopped` key, or a list of rounds, leaves it `NULL`. A since-date filter joins `tasks`
+to `runs` on `run_id` and reads `runs.started_at`.
+
 `outcome` is a closed enum: `landed`, `quarantined`, `budget_stop`, `skipped`, `unknown`.
 Derivation order is explicit and recorded per row in `outcome_source`: the explicit
 `landed` field where present (6 rows), then the work store's own `state: done`, then
