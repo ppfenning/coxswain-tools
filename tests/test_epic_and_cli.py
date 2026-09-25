@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from conftest import strip_ansi
-from test_run_store import ROW, run_row, runs_table, store
+from test_run_store import ROW, leases_table, run_row, runs_table, store
 
 from agent_tools import cli as cli_module
 from agent_tools import epic
@@ -216,3 +216,33 @@ def test_help_usage_names_cox(capsys, monkeypatch):
         main(["--help"])
     assert exc.value.code == 0
     assert strip_ansi(capsys.readouterr().out).startswith("usage: cox")
+
+
+NOW = "2026-09-25T05:00:00Z"
+DEAD_PID = 999999999
+
+
+def _lease_case(tmp_path, holder, expires_at):
+    leases_table(tmp_path, ("runs:x", holder, expires_at))
+    return tmp_path / "x-3.pid"
+
+
+def test_run_live_is_live_on_a_held_lease_even_when_the_pid_is_dead(tmp_path):
+    pidfile = _lease_case(tmp_path, "x-3", "2026-09-25T06:00:00Z")
+    assert epic.run_live(DEAD_PID, pidfile, now=NOW)
+
+
+@pytest.mark.parametrize("holder, expires_at", [
+    ("x-3", "2026-09-25T04:00:00Z"),
+    ("x-3", "1970-01-01T00:00:00Z"),
+    ("x-4", "2026-09-25T06:00:00Z"),
+])
+def test_run_live_is_not_live_on_an_expired_released_or_newer_lease_even_when_the_pid_answers(tmp_path, holder, expires_at):
+    pidfile = _lease_case(tmp_path, holder, expires_at)
+    assert not epic.run_live(os.getpid(), pidfile, now=NOW)
+
+
+def test_run_live_falls_back_to_the_pid_when_the_store_has_no_row_for_the_run(tmp_path):
+    leases_table(tmp_path, ("runs:y", "y-1", "2026-09-25T06:00:00Z"))
+    assert epic.run_live(os.getpid(), tmp_path / "x-3.pid", now=NOW)
+    assert not epic.run_live(DEAD_PID, tmp_path / "x-3.pid", now=NOW)

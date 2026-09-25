@@ -10,13 +10,12 @@ from __future__ import annotations
 import contextlib
 import datetime
 import json
-import os
 import re
 import socket
 import time
 from pathlib import Path
 
-from agent_tools import chair, run_store, runs_top
+from agent_tools import chair, epic, run_store, runs_top
 from agent_tools import events as events_module
 from agent_tools.records import ceiling_for, load_trace
 
@@ -26,12 +25,9 @@ _STALE_SECONDS = 600
 _TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)$")
 
 
-def _default_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+def is_alive(now_alive, pid: int, pidfile: Path) -> bool:
+    """Edge. An injected `now_alive(pid)` probe when given; otherwise `epic.run_live`, so the screen agrees with route status."""
+    return epic.run_live(pid, pidfile) if now_alive is None else now_alive(pid)
 
 
 def _read_pid(path: Path):
@@ -116,13 +112,13 @@ def _fact(root: Path, run: str, alive: bool) -> dict:
             "ceiling": _ceiling(root, run), "launched_by": _launched_by(root, run)}
 
 
-def facts(runs_dir, now_alive=_default_alive) -> list[dict]:
+def facts(runs_dir, now_alive=None) -> list[dict]:
     """Every run still worth a line on screen: a `.pid` that probes alive,
     plus a `.log` whose `.pid` is missing or dead but was touched in the
     last ten minutes, so a run that just exited stays on screen briefly."""
     root = Path(runs_dir)
     pids = {p.stem: _read_pid(p) for p in root.glob("*.pid")}
-    alive = {run for run, pid in pids.items() if pid is not None and now_alive(pid)}
+    alive = {run for run, pid in pids.items() if pid is not None and is_alive(now_alive, pid, root / f"{run}.pid")}
     now = time.time()
     recent = {
         p.stem for p in root.glob("*.log")
@@ -281,7 +277,7 @@ def _accordion_detail(runs_dir, run: str, width: int, now_alive) -> list[str]:
     return [*runs_detail.render(detail, width), *tail]
 
 
-def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=_default_alive,
+def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=None,
          heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES) -> int:
     import curses
 
