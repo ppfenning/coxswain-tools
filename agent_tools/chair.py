@@ -9,6 +9,7 @@ import json
 import os
 import socket
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ __all__ = [
     "beat",
     "beat_loop",
     "chair_path",
+    "claude_session_from_env",
     "clear",
     "guard",
     "leader_path",
@@ -70,6 +72,7 @@ def take(
     heartbeat_minutes: int,
     pid_alive_: bool,
     steal: bool = False,
+    claude_session: str | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     """Pure."""
     state = liveness(record, pid_alive_, now, host, heartbeat_minutes)
@@ -78,17 +81,31 @@ def take(
     if state in ("stale", "crashed") and not steal:
         return None, f"chair: {_held_by_line(record)} ({state}; pass --steal to take over)"
     taken_at = now.isoformat()
-    new_record = {"session": session, "pid": pid, "host": host, "taken_at": taken_at, "heartbeat_at": taken_at, "runs": []}
+    new_record = {"session": session, "pid": pid, "host": host, "taken_at": taken_at, "heartbeat_at": taken_at, "runs": [], "claude_session": claude_session}
     return new_record, ""
 
 
-def beat(record: dict[str, Any] | None, session: str, pid: int, host: str, now: datetime.datetime, run_id: str | None = None) -> tuple[dict[str, Any] | None, str]:
-    """Pure."""
+def claude_session_from_env(environ: Mapping[str, str]) -> str | None:
+    """Edge helper. The chair's Claude session id, or None when unset or empty; absence never fails."""
+    return environ.get("CLAUDE_SESSION_ID") or None
+
+
+def beat(
+    record: dict[str, Any] | None,
+    session: str,
+    pid: int,
+    host: str,
+    now: datetime.datetime,
+    run_id: str | None = None,
+    claude_session: str | None = None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Pure. A None `claude_session` keeps the recorded one, so a beat from a shell without the env var does not erase it."""
     if record is None or not _is_holder(record, session, pid, host):
         return None, f"chair: not held by {session} (pid {pid}) on {host}"
     existing_runs = record.get("runs", [])
     runs = existing_runs if run_id is None or run_id in existing_runs else [*existing_runs, run_id]
-    return {**record, "heartbeat_at": now.isoformat(), "runs": runs}, ""
+    kept = claude_session if claude_session is not None else record.get("claude_session")
+    return {**record, "heartbeat_at": now.isoformat(), "runs": runs, "claude_session": kept}, ""
 
 
 def beat_loop(
@@ -99,6 +116,7 @@ def beat_loop(
     interval: float | None = None,
     clock=time,
     alive=os.kill,
+    environ: Mapping[str, str] = os.environ,
 ) -> int:
     """Edge. Beats the chair at `runs_dir` for `label`/`pid` every `interval`
     seconds (default: half of DEFAULT_HEARTBEAT_MINUTES) while `pid` is alive;
@@ -115,7 +133,7 @@ def beat_loop(
         except PermissionError:
             pass
         with locked(runs_dir):
-            new_record, reason = beat(read(runs_dir), label, pid, host, datetime.datetime.now(datetime.UTC))
+            new_record, reason = beat(read(runs_dir), label, pid, host, datetime.datetime.now(datetime.UTC), claude_session=claude_session_from_env(environ))
             if new_record is None:
                 print(f"chair: {reason}")
                 return 2

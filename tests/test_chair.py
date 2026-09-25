@@ -85,3 +85,43 @@ def test_a_permission_error_from_alive_is_treated_as_still_alive_not_gone(tmp_pa
 
     assert rc == 0
     assert len(calls) == 2
+
+
+_NOW = datetime.datetime(2026, 9, 24, 14, 30, tzinfo=datetime.UTC)
+
+
+def test_take_records_the_claude_session_or_null():
+    with_id, _ = chair.take(None, "c", 1, "h", _NOW, 10, False, claude_session="abc-123")
+    without, _ = chair.take(None, "c", 1, "h", _NOW, 10, False)
+    assert with_id["claude_session"] == "abc-123"
+    assert without["claude_session"] is None
+
+
+def test_beat_records_keeps_and_backfills_the_claude_session():
+    taken, _ = chair.take(None, "c", 1, "h", _NOW, 10, False, claude_session="abc-123")
+    legacy = {k: v for k, v in taken.items() if k != "claude_session"}
+    assert chair.beat(taken, "c", 1, "h", _NOW, claude_session="new")[0]["claude_session"] == "new"
+    assert chair.beat(taken, "c", 1, "h", _NOW)[0]["claude_session"] == "abc-123"
+    assert chair.beat(legacy, "c", 1, "h", _NOW)[0]["claude_session"] is None
+
+
+def test_claude_session_from_env_reads_the_variable_and_never_fails():
+    assert chair.claude_session_from_env({"CLAUDE_SESSION_ID": "abc"}) == "abc"
+    assert chair.claude_session_from_env({}) is None
+    assert chair.claude_session_from_env({"CLAUDE_SESSION_ID": ""}) is None
+
+
+def test_beat_loop_writes_the_claude_session_from_environ_to_disk(tmp_path):
+    session, pid, host = "chair-test", 4321, socket.gethostname()
+    record, _ = chair.take(None, session, pid, host, _NOW, 10, False)
+    chair.write(tmp_path, record)
+    outcomes = iter([True, False])
+
+    def fake_alive(pid: int, sig: int) -> None:
+        if not next(outcomes):
+            raise ProcessLookupError()
+
+    env = {"CLAUDE_SESSION_ID": "abc-123"}
+    chair.beat_loop(session, pid, runs_dir=tmp_path, interval=0, clock=_FakeClock(), alive=fake_alive, environ=env)
+
+    assert chair.read(tmp_path)["claude_session"] == "abc-123"
