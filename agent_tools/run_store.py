@@ -1,7 +1,9 @@
 """A run's usage: the `<run_id>.usage.json` file first, the read-only SQLite
-store `cox.db` only once that file is gone. `usages` lists every run that way,
-and `run_started` reads a run's `launched_at`. Reads only; never creates,
-migrates or writes the store."""
+store `cox.db` only once that file is gone, and only for a run whose `runs` row
+has an `ended_at`. Calls alone do not mean the run is done: graphs writes each
+call as it finishes. `usages` lists every run that way, and `run_started`
+reads a run's `launched_at`. Reads only; never creates, migrates or writes the
+store."""
 
 from __future__ import annotations
 
@@ -80,7 +82,11 @@ def _read_calls(runs_dir: Path, run_id: str) -> list[dict]:
         return []
     conn.row_factory = sqlite3.Row
     try:
-        rows = conn.execute("SELECT * FROM node_calls WHERE run_id = ? ORDER BY ts, seq", (run_id,)).fetchall()
+        rows = conn.execute(
+            "SELECT n.* FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
+            "WHERE n.run_id = ? AND r.ended_at IS NOT NULL ORDER BY n.ts, n.seq",
+            (run_id,),
+        ).fetchall()
     except sqlite3.DatabaseError:
         return []
     finally:
@@ -89,7 +95,7 @@ def _read_calls(runs_dir: Path, run_id: str) -> list[dict]:
 
 
 def usage(runs_dir: Path, run_id: str) -> dict | None:
-    """The usage file unchanged when it parses as an object, else the store's rows, else None."""
+    """The usage file unchanged when it parses as an object, else the store's rows for an ended run, else None."""
     from_file = _read_file(Path(runs_dir) / f"{run_id}.usage.json")
     if from_file is not None:
         return from_file
@@ -102,13 +108,16 @@ def _store_usage(run_id: str, calls: list[dict]) -> dict:
 
 
 def _store_runs(runs_dir: Path) -> dict[str, list[dict]]:
-    """Every run with `node_calls` rows, its calls ordered by ts then seq."""
+    """Every run with `node_calls` rows and an ended `runs` row, its calls ordered by ts then seq."""
     conn = connect_readonly(runs_dir)
     if conn is None:
         return {}
     conn.row_factory = sqlite3.Row
     try:
-        rows = conn.execute("SELECT * FROM node_calls ORDER BY run_id, ts, seq").fetchall()
+        rows = conn.execute(
+            "SELECT n.* FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
+            "WHERE r.ended_at IS NOT NULL ORDER BY n.run_id, n.ts, n.seq"
+        ).fetchall()
     except sqlite3.DatabaseError:
         return {}
     finally:
@@ -120,7 +129,7 @@ def _store_runs(runs_dir: Path) -> dict[str, list[dict]]:
 
 
 def usages(runs_dir: Path) -> dict[str, dict]:
-    """Run id to usage: every parsing usage file, then each store run that has no file."""
+    """Run id to usage: every parsing usage file, then each ended store run that has no file."""
     files = {
         path.name.removesuffix(".usage.json"): body
         for path in sorted(Path(runs_dir).glob("*.usage.json"))

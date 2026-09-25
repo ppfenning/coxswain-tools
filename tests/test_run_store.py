@@ -54,6 +54,13 @@ def runs_table(runs_dir, *rows):
     conn.close()
 
 
+ENDED = "2026-09-25T05:03:46.812070+00:00"
+
+
+def run_row(run_id, ended_at=ENDED):
+    return {"run_id": run_id, "launched_at": "2026-09-25T04:59:39.238479+00:00", "ended_at": ended_at, "status": None if ended_at is None else "ok"}
+
+
 def test_the_file_is_returned_unchanged_even_when_the_store_has_rows(tmp_path):
     body = {"run_id": "r1", "calls": [], "summary": {"calls": 99}}
     (tmp_path / "r1.usage.json").write_text(json.dumps(body))
@@ -63,6 +70,7 @@ def test_the_file_is_returned_unchanged_even_when_the_store_has_rows(tmp_path):
 
 def test_the_store_answers_when_the_file_is_absent_and_its_summary_matches(tmp_path):
     store(tmp_path, ROW, {**ROW, "call_id": "c2", "seq": 2, "model_alias": "opus", "cost_usd": 1.0})
+    runs_table(tmp_path, run_row("r1"))
     got = run_store.usage(tmp_path, "r1")
     assert got["run_id"] == "r1"
     assert [c["model"] for c in got["calls"]] == ["haiku", "opus"]
@@ -73,6 +81,7 @@ def test_the_store_answers_when_the_file_is_absent_and_its_summary_matches(tmp_p
 def test_the_store_answers_when_the_file_is_not_a_json_object(tmp_path):
     (tmp_path / "r1.usage.json").write_text("[1, 2]")
     store(tmp_path, ROW)
+    runs_table(tmp_path, run_row("r1"))
     assert run_store.usage(tmp_path, "r1")["calls"][0]["id"] == "c3a75b39"
 
 
@@ -83,6 +92,7 @@ def test_calls_come_back_ordered_by_ts_then_seq(tmp_path):
         {**ROW, "call_id": "a", "seq": 1},
         {**ROW, "call_id": "z", "seq": 9, "ts": "2026-09-25T00:00:00+00:00"},
     )
+    runs_table(tmp_path, run_row("r1"))
     assert [c["id"] for c in run_store.usage(tmp_path, "r1")["calls"]] == ["z", "a", "b"]
 
 
@@ -145,6 +155,7 @@ def test_usages_lists_file_runs_and_store_only_runs(tmp_path):
     body = {"run_id": "f1", "calls": [], "summary": {"calls": 0}}
     (tmp_path / "f1.usage.json").write_text(json.dumps(body))
     store(tmp_path, ROW)
+    runs_table(tmp_path, run_row("r1"))
     got = run_store.usages(tmp_path)
     assert list(got) == ["f1", "r1"]
     assert got["f1"] == body
@@ -168,7 +179,44 @@ def test_usages_without_a_database_lists_the_files_only(tmp_path):
 def test_usages_lets_the_store_answer_for_a_file_that_is_not_an_object(tmp_path):
     (tmp_path / "r1.usage.json").write_text("[1, 2]")
     store(tmp_path, ROW)
+    runs_table(tmp_path, run_row("r1"))
     assert run_store.usages(tmp_path)["r1"]["calls"][0]["id"] == "c3a75b39"
+
+
+def test_a_run_with_calls_and_no_ended_at_is_none_and_left_out(tmp_path):
+    store(tmp_path, ROW, {**ROW, "call_id": "c9", "run_id": "r2"})
+    runs_table(tmp_path, run_row("r1", None), run_row("r2", None))
+    assert run_store.usage(tmp_path, "r1") is None
+    assert run_store.usages(tmp_path) == {}
+
+
+def test_a_run_with_calls_and_no_runs_row_is_none_and_left_out(tmp_path):
+    store(tmp_path, ROW)
+    runs_table(tmp_path, run_row("other"))
+    assert run_store.usage(tmp_path, "r1") is None
+    assert run_store.usages(tmp_path) == {}
+
+
+def test_the_same_run_is_returned_once_ended_at_is_set(tmp_path):
+    store(tmp_path, ROW)
+    runs_table(tmp_path, run_row("r1", None))
+    assert run_store.usage(tmp_path, "r1") is None
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("UPDATE runs SET ended_at = ?, status = 'ok' WHERE run_id = 'r1'", (ENDED,))
+    conn.commit()
+    conn.close()
+    got = run_store.usage(tmp_path, "r1")
+    assert [c["id"] for c in got["calls"]] == ["c3a75b39"]
+    assert run_store.usages(tmp_path) == {"r1": got}
+
+
+def test_a_usage_file_is_returned_whatever_the_store_says(tmp_path):
+    body = {"run_id": "r1", "calls": [], "summary": {"calls": 99}}
+    (tmp_path / "r1.usage.json").write_text(json.dumps(body))
+    store(tmp_path, ROW)
+    runs_table(tmp_path, run_row("r1", None))
+    assert run_store.usage(tmp_path, "r1") == body
+    assert run_store.usages(tmp_path) == {"r1": body}
 
 
 def test_run_started_reads_launched_at(tmp_path):
