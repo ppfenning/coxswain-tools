@@ -98,6 +98,11 @@ def run_live(pid: int | None, pidfile: Path | str, log: Path | str | None = None
         return holder == pidfile.stem and expires_at > (now or datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
     if pid is None or pid <= 0:
         return False
+    try:
+        if not alive(pid):
+            return False  # a dead pid needs no file reads; most pidfiles in a runs dir are long dead
+    except OverflowError:
+        return False
     logged_at = launched_epoch(_read(pidfile.with_suffix(".launched.json")))
     # the pidfile is written right after the spawn, so its mtime bounds the launch when no launched.json says
     launched_at = logged_at if logged_at is not None else _mtime(pidfile)

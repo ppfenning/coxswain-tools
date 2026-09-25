@@ -16,6 +16,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -146,17 +147,26 @@ def lease(runs_dir: Path, run_id: str) -> tuple[str, str, str] | None:
     """Edge. The (holder, expires_at, heartbeat_at) of the store lease for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
     # mirrors graphs `harness/run_lease.lease_name`: the lease is per prefix, so `x-3` and `x-4` share `runs:x`
     name = "runs:" + re.sub(r"-\d+$", "", run_id)
-    opened = _open(runs_dir)
+    return _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S)).get(name)
+
+
+_LEASE_SNAPSHOT_S = 2  # one read of the leases table serves every liveness check within this window
+
+
+@functools.lru_cache(maxsize=8)
+def _lease_table(runs_dir: str, _window: int) -> dict[str, tuple[str, str, str]]:
+    """Every lease row by name, read once per `_LEASE_SNAPSHOT_S` window: a docket asks about ~800 pidfiles."""
+    opened = _open(Path(runs_dir))
     if opened is None:
-        return None
-    conn, p = opened
+        return {}
+    conn, _ = opened
     try:
-        row = conn.execute(_sql("SELECT holder, expires_at, heartbeat_at FROM leases WHERE name = {p}", p), (name,)).fetchone()
+        rows = conn.execute("SELECT name, holder, expires_at, heartbeat_at FROM leases").fetchall()
     except _DB_ERRORS:
-        return None
+        return {}
     finally:
         conn.close()
-    return None if row is None else (row["holder"], row["expires_at"], row["heartbeat_at"])
+    return {r["name"]: (r["holder"], r["expires_at"], r["heartbeat_at"]) for r in rows}
 
 
 def run_ids(runs_dir: Path) -> set[str]:
