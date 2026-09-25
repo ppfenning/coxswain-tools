@@ -127,21 +127,39 @@ def run_ids(runs_dir: Path) -> set[str]:
 
 
 def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
-    """Edge. (run_id, launched_at, ended_at) of runs still open or ended at or after `since`, by launch time; empty with no store or an unreadable one."""
+    """Edge. (run_id, launched_at, ended_at) of runs still open or ended at or after `since`, by launch time; empty with no store or an unreadable one.
+
+    A run with no `ended_at` that is not live (killed, or from before ended_at was stamped) ends at its last
+    recorded call, or at its launch when it has none; only a live run stays open."""
     conn = connect_readonly(runs_dir)
     if conn is None:
         return []
+
+    def last_call(run_id: str) -> str | None:
+        try:
+            return conn.execute("SELECT MAX(ts) FROM node_calls WHERE run_id = ?", (run_id,)).fetchone()[0]
+        except sqlite3.DatabaseError:
+            return None
+
+    spans = []
     try:
         rows = conn.execute(
             "SELECT run_id, launched_at, ended_at FROM runs "
             "WHERE launched_at IS NOT NULL AND (ended_at IS NULL OR ended_at >= ?) ORDER BY launched_at",
             (since,),
         ).fetchall()
+        for run_id, launched_at, stamped in rows:
+            ended_at = stamped
+            if stamped is None and _run_ended(Path(runs_dir), run_id, None):
+                ended_at = last_call(run_id) or launched_at
+                if ended_at < since:
+                    continue
+            spans.append((run_id, launched_at, ended_at))
     except sqlite3.DatabaseError:
         return []
     finally:
         conn.close()
-    return [(r[0], r[1], r[2]) for r in rows]
+    return spans
 
 
 def _read_file(path: Path) -> dict | None:
