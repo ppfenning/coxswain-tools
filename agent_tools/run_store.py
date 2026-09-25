@@ -18,12 +18,13 @@ import re
 import sqlite3
 import time
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from agent_tools import epic
 from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeholder
-from agent_tools.store_url import read_provider_profile, resolve_store_url
+from agent_tools.store_url import TracesRoot, read_provider_profile, resolve_store_url, traces_root
 
 try:
     import psycopg
@@ -33,8 +34,9 @@ except ImportError:
     _DB_ERRORS = (sqlite3.DatabaseError,)
 
 __all__ = [
-    "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly", "lease", "phase_manifests",
-    "phase_names", "run_ids", "run_spans", "run_started", "store_usages", "summarize", "usage", "usages",
+    "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly", "lease",
+    "parquet_readable", "phase_manifests", "phase_names", "run_ids", "run_spans", "run_started", "store_usages", "summarize",
+    "usage", "usages",
 ]
 
 STORE_FILENAME = "cox.db"
@@ -43,7 +45,7 @@ TRACES_DIRNAME = "traces"
 
 
 class TracesUnavailable(Exception):
-    """The trace store is needed but the optional `zstandard` package is not installed."""
+    """The trace store is needed but an optional package (`zstandard`, or `pyarrow` for Parquet traces) is not installed."""
 
 
 # Columns that carry over unchanged from a node_calls row to a usage-file call.
@@ -438,13 +440,94 @@ def _store_events(traces: Path, run_id: str, call_id: str) -> list[dict]:
     return [r["event"] for r in sorted(mine, key=lambda r: r["seq"])]
 
 
+_PARQUET_COLUMNS = ["call_id", "seq", "event"]
+_NEEDS_PYARROW = "reading Parquet traces needs pyarrow: pip install 'coxswain-tools[parquet]'"
+
+
+def _parquet_call_events(rows: Sequence[Mapping[str, Any]], call_id: str) -> list[dict]:
+    """Pure: the decoded `event` of each row for `call_id`, ordered by `seq`; an event that is not a JSON object is dropped."""
+    mine = sorted((r for r in rows if r.get("call_id") == call_id), key=lambda r: r["seq"])
+    return _json_objects(r["event"] for r in mine if isinstance(r.get("event"), str))
+
+
+def _import_pyarrow() -> tuple[Any, Any]:
+    """The only place pyarrow is imported: `(pyarrow.fs, pyarrow.parquet)`, else TracesUnavailable naming the extra."""
+    try:
+        import pyarrow.fs
+        import pyarrow.parquet
+    except ImportError as exc:
+        raise TracesUnavailable(_NEEDS_PYARROW) from exc
+    return pyarrow.fs, pyarrow.parquet
+
+
+def _filesystem(pafs: Any, root: TracesRoot) -> tuple[Any, str]:
+    """pyarrow's own resolution for a remote URL; a plain local path (possibly relative) gets the local filesystem."""
+    if root.remote:
+        return pafs.FileSystem.from_uri(root.url)
+    return pafs.LocalFileSystem(), str(Path(root.url).absolute())
+
+
+def _parquet_rows(root: TracesRoot, run_id: str) -> list[dict] | None:
+    """Edge: the rows of the run's `YYYY/MM/DD/<run_id>.parquet` files, None when it has none.
+
+    A local root is probed with a glob first, so a missing pyarrow only matters once a file exists. A remote root
+    cannot be probed without pyarrow, so it raises TracesUnavailable at once."""
+    name = f"{run_id}.parquet"
+    if root.remote:
+        pafs, pq = _import_pyarrow()
+        fs, base = _filesystem(pafs, root)
+        selector = pafs.FileSelector(base, recursive=True, allow_not_found=True)
+        found = sorted(i.path for i in fs.get_file_info(selector) if i.type == pafs.FileType.File and i.base_name == name)
+    else:
+        found = sorted(str(p) for p in Path(root.url).absolute().glob(f"*/*/*/{name}"))
+        if not found:
+            return None
+        pafs, pq = _import_pyarrow()
+        fs, _ = _filesystem(pafs, root)
+    if not found:
+        return None
+    return [row for path in found for row in pq.read_table(path, filesystem=fs, columns=_PARQUET_COLUMNS).to_pylist()]
+
+
 def call_events(runs_dir: Path, run_id: str, call: Mapping[str, Any]) -> list[dict] | None:
-    """A call's stream events: its loose `trace` file when that exists, else the trace store by `call["id"]`, else None."""
+    """A call's stream events by `call["id"]`, first source holding any wins: the run's Parquet file, then the
+    `.jsonl.zst` day files, then the loose `trace` file. None when there is no trace store and no loose file."""
+    call_id = str(call.get("id"))
+    rows = _parquet_rows(traces_root(None, runs_dir), run_id)
+    if rows and (found := _parquet_call_events(rows, call_id)):
+        return found
+    traces = Path(runs_dir) / TRACES_DIRNAME
+    stored = _store_events(traces, run_id, call_id) if traces.is_dir() else None
+    if stored:
+        return stored
     loose = call.get("trace")
     if isinstance(loose, str) and loose and Path(loose).is_file():
         return _loose_events(Path(loose))
-    traces = Path(runs_dir) / TRACES_DIRNAME
-    return _store_events(traces, run_id, str(call.get("id"))) if traces.is_dir() else None
+    return stored
+
+
+@dataclass(frozen=True)
+class ParquetCheck:
+    """`readable` with the `reason`: `ok`, `pyarrow missing` or `root unreachable`."""
+
+    readable: bool
+    reason: str
+
+
+def parquet_readable(traces_root: TracesRoot) -> ParquetCheck:
+    """Edge: whether Parquet traces under `traces_root` can be read, for the doctor. Opens no trace file."""
+    try:
+        pafs, _ = _import_pyarrow()
+    except TracesUnavailable:
+        return ParquetCheck(False, "pyarrow missing")
+    import pyarrow
+
+    try:
+        fs, base = _filesystem(pafs, traces_root)
+        reachable = fs.get_file_info(base).type == pafs.FileType.Directory
+    except (OSError, ValueError, pyarrow.ArrowException):
+        reachable = False
+    return ParquetCheck(True, "ok") if reachable else ParquetCheck(False, "root unreachable")
 
 
 def run_started(runs_dir: Path, run_id: str) -> str | None:
