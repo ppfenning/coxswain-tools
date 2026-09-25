@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from test_run_store import leases_table
 
 from agent_tools import leader, pacing, route, usage_window
 from agent_tools.cli import main
@@ -991,6 +992,19 @@ def test_launch_cos_refuses_when_a_cos_run_is_already_live(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 2
     assert "already running" in out
+
+
+def test_launch_cos_refuses_while_a_held_lease_names_another_run_of_the_prefix(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "runs" / "cos-4.pid").write_text("999999999")  # dead pid: the lease alone says it is running
+    leases_table(ws / "runs", ("runs:cos", "cos-4", "2999-01-01T00:00:00Z"))
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    rc = main(["route", "launch", "cos", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "cos-4 is already running" in out
 
 
 def test_launch_refuses_a_bad_graph_name(tmp_path, capsys):
