@@ -27,3 +27,11 @@ jobs:
         working-directory: ../coxswain
       - run: uv run pytest -q tests/devtools/test_commands_render.py
         working-directory: ../coxswain
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go/go.mod }
+      - run: go -C go vet ./...
+      - run: go -C go test ./...
