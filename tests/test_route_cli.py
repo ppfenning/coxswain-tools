@@ -5,13 +5,14 @@ import sqlite3
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
 import yaml
 from test_run_store import leases_table
 
-from agent_tools import leader, pacing, route, usage_window
+from agent_tools import leader, pacing, route, run_store, usage_window
 from agent_tools.cli import main
 from agent_tools.pacing import Window
 
@@ -255,7 +256,7 @@ def _expected_status_rows(ws):
          "started": _mtime_utc(ws / "runs" / "run2.pid"), **epic.summarize_log("")},
         {"id": "run3", "pid": None, "alive": False, "started": None, **epic.summarize_log(_LOG_RUN3)},
     ]
-    return route.status_rows(entries)
+    return [{**row, "host": None, "remote": False} for row in route.status_rows(entries)]
 
 
 def test_status_text_no_profile_exits_2_and_names_the_path(tmp_path, capsys):
@@ -335,6 +336,127 @@ def test_status_json_treats_pid_zero_as_not_alive_and_survives_an_oversized_pidf
     assert rc == 0
     assert rows["run-zero"]["pid"] == 0 and rows["run-zero"]["state"] == "exited"
     assert rows["run-huge"]["state"] == "exited"
+
+
+_BEAT = "2026-09-25T11:59:48Z"
+_LIVE = "2999-01-01T00:00:00Z"  # `epic.run_live` reads the real clock, so a live lease must outlast it
+
+
+def _shared_store(runs_dir, *leases, runs=(("far-1", "host-b"),), host_column=True):
+    """A store as a shared backend holds it: run rows, and lease rows of (name, holder, expires_at, heartbeat_at)."""
+    conn = sqlite3.connect(runs_dir / "cox.db")
+    conn.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, launched_at TEXT, host TEXT)")
+    conn.executemany("INSERT INTO runs VALUES (?, '2026-09-25T10:40:00Z', ?)", runs)
+    if not host_column:
+        conn.execute("ALTER TABLE runs DROP COLUMN host")
+    conn.commit()
+    conn.close()
+    leases_table(runs_dir, *leases)
+
+
+def _remote_lane_text():
+    since = datetime.datetime.fromisoformat("2026-09-25T10:40:00Z").astimezone().strftime("%H:%M")
+    return f"far-1 (on host-b, since {since}, heartbeat 12s ago)"
+
+
+@pytest.fixture
+def pinned_now(monkeypatch):
+    """The wall clock beneath `cli._now_iso`, frozen at 12:00:00.5 UTC. A lease time is text, so only a `now` with no fraction and a `Z` suffix compares right against it."""
+
+    class Frozen(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 25, 12, 0, 0, 500000, tzinfo=tz)
+
+    monkeypatch.setattr("agent_tools.cli.datetime", types.SimpleNamespace(**{**vars(datetime), "datetime": Frozen}))
+
+
+def test_the_docket_lists_a_live_lease_with_no_local_pidfile_as_a_remote_lane(tmp_path, capsys, pinned_now):
+    profile = _write_workspace(tmp_path)
+    _shared_store(tmp_path / "workspace" / "runs", ("runs:far", "far-1", _LIVE, _BEAT))
+    assert main(["route", "context", "--profile", str(profile)]) == 0
+    lanes = next(l for l in capsys.readouterr().out.splitlines() if l.startswith("lanes:"))
+    assert lanes.endswith(f", {_remote_lane_text()}") and lanes.startswith("lanes: 2 busy")
+    assert main(["route", "context", "--profile", str(profile), "--json"]) == 0
+    runs = {row["id"]: row for row in json.loads(capsys.readouterr().out)["runs"]}
+    assert (runs["far-1"]["host"], runs["far-1"]["remote"], runs["far-1"]["pid"]) == ("host-b", True, None)
+    assert (runs["run1"]["host"], runs["run1"]["remote"]) == (None, False)
+
+
+def test_status_lists_a_live_lease_with_no_local_pidfile_as_a_remote_lane(tmp_path, capsys, pinned_now):
+    profile = _write_workspace(tmp_path)
+    _shared_store(tmp_path / "workspace" / "runs", ("runs:far", "far-1", _LIVE, _BEAT))
+    assert main(["route", "status", "--profile", str(profile)]) == 0
+    assert f"far-1: alive {_remote_lane_text().removeprefix('far-1 ')}" in capsys.readouterr().out.splitlines()
+    assert main(["route", "status", "--profile", str(profile), "--json"]) == 0
+    rows = {row["id"]: row for row in json.loads(capsys.readouterr().out)["runs"]}
+    assert (rows["far-1"]["host"], rows["far-1"]["remote"], rows["far-1"]["state"]) == ("host-b", True, "alive")
+    assert (rows["run1"]["host"], rows["run1"]["remote"]) == (None, False)
+
+
+def test_a_run_with_a_local_pidfile_and_a_live_lease_shows_once_as_local(tmp_path, capsys, pinned_now):
+    profile = _write_workspace(tmp_path)
+    _shared_store(tmp_path / "workspace" / "runs", ("runs:run1", "run1", _LIVE, _BEAT), runs=(("run1", "host-b"),))
+    assert main(["route", "context", "--profile", str(profile), "--json"]) == 0
+    runs = [row for row in json.loads(capsys.readouterr().out)["runs"] if row["id"] == "run1"]
+    assert [(row["host"], row["remote"], row["pid"]) for row in runs] == [(None, False, os.getpid())]
+    assert main(["route", "status", "--profile", str(profile), "--json"]) == 0
+    rows = [row for row in json.loads(capsys.readouterr().out)["runs"] if row["id"] == "run1"]
+    assert [(row["host"], row["remote"], row["state"]) for row in rows] == [(None, False, "alive")]
+    assert main(["route", "context", "--profile", str(profile)]) == 0
+    lanes = next(l for l in capsys.readouterr().out.splitlines() if l.startswith("lanes:"))
+    assert lanes.count("run1 (") == 1 and "on host-b" not in lanes
+
+
+def test_a_lease_that_expired_a_second_ago_is_not_listed(tmp_path, capsys, pinned_now):
+    """At 12:00:00.5Z the lease that ended at 11:59:59Z and the one that ended at 12:00:00Z are both gone; only the one ending at 12:00:01Z is live."""
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"team: acme\nworkspace_dir: {ws}\n")
+    _shared_store(
+        ws / "runs",
+        ("runs:old", "old-1", "2026-09-25T11:59:59Z", _BEAT),
+        ("runs:edge", "edge-1", "2026-09-25T12:00:00Z", _BEAT),
+        ("runs:live", "live-1", "2026-09-25T12:00:01Z", _BEAT),
+        runs=(("old-1", "host-b"), ("edge-1", "host-b"), ("live-1", "host-b")),
+    )
+    assert main(["route", "status", "--profile", str(profile), "--json"]) == 0
+    assert [row["id"] for row in json.loads(capsys.readouterr().out)] == ["live-1"]
+
+
+def test_on_a_sqlite_store_holding_only_local_leases_the_output_is_the_local_only_output(tmp_path, capsys, monkeypatch, pinned_now):
+    profile, ws = _write_runs_workspace(tmp_path)
+    _shared_store(ws / "runs", ("runs:run1", "run1", _LIVE, _BEAT), runs=(("run1", None),), host_column=False)
+    argvs = (["route", "context", "--profile", str(profile)], ["route", "status", "--profile", str(profile), "--all"], ["route", "status", "--profile", str(profile), "--json"])
+
+    def outputs():
+        result = []
+        for argv in argvs:
+            assert main(argv) == 0
+            result.append(capsys.readouterr().out)
+        return result
+
+    with monkeypatch.context() as local_only:
+        local_only.setattr(run_store, "live_lanes", lambda *_a: [])
+        expected = outputs()
+    docket, status_text, status_json = actual = outputs()
+    assert actual == expected
+    since = datetime.datetime.fromtimestamp((ws / "runs" / "run1.pid").stat().st_mtime, datetime.UTC).astimezone().strftime("%H:%M")
+    assert f"lanes: 1 busy — run1 (since {since}, heartbeat 12s ago)" in docket.splitlines()
+    assert status_text.splitlines()[:2] == [
+        f"run1: alive (pid {os.getpid()}, started {_mtime_utc(ws / 'runs' / 'run1.pid')})",
+        f"run2: exited (pid 999999999, started {_mtime_utc(ws / 'runs' / 'run2.pid')})",
+    ]
+    assert status_text.splitlines()[2:] == [
+        "run3: no pidfile quarantined task: c — timeout reused d from run-9 (approved patch, no model call)"
+        " epic run-3: 1 phase(s) complete, 0 partial, 1 blocked, 1 task(s) quarantined, 0 stack(s) rebased"
+        " usage   : 3 node call(s), 12 turns, $0.40",
+        "gate: ticket",
+    ]
+    rows = json.loads(status_json)
+    assert [(row["host"], row["remote"]) for row in rows] == [(None, False)] * 3
+    assert rows == _expected_status_rows(ws)
 
 
 def _write_file_profile(tmp_path):

@@ -1579,6 +1579,29 @@ def _now_iso() -> str:
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _with_remote_lanes(runs_dir: Path, local_entries: list) -> list:
+    """Edge. The local run entries, then an entry for each live store lease no local pidfile names.
+
+    `now` must be `_now_iso()`'s form: `live_lanes` compares lease times as text."""
+    lanes = run_store.live_lanes(runs_dir, _now_iso())
+    remote = run_store.remote_lanes(lanes, {entry["id"] for entry in local_entries})
+    return [*local_entries, *route.remote_lane_entries(remote)]
+
+
+def _with_lane_fields(rows: list, runs: list, now: str) -> list:
+    """`status_rows` output with `host` and `remote` on every row. A remote row reads `alive` and carries its lane text as `summary`, because `status_rows` has no place for either."""
+    by_id = {run["id"]: run for run in runs}
+
+    def one(row: dict) -> dict:
+        run = by_id.get(row["id"], {})
+        if not run.get("remote"):
+            return {**row, "host": run.get("host"), "remote": False}
+        lane = route._lane(run, now)
+        return {**row, "state": "alive", "host": run["host"], "remote": True, "summary": lane.removeprefix(run["id"] + " ")}
+
+    return [one(row) for row in rows]
+
+
 def _gather_context(profile_path: Path):
     """Read the profile and the workspace; return (profile_or_none, reason, intake, runs, initiatives, problems)."""
     text = _read_text_or_none(profile_path)
@@ -1601,7 +1624,7 @@ def _gather_context(profile_path: Path):
     items = _work_items(ws)
     return (profile, "",
             _intake_groups(ws, items),
-            route.run_entries(pids, alive, started, _heartbeats(ws / "runs", pids)),
+            _with_remote_lanes(ws / "runs", route.run_entries(pids, alive, started, _heartbeats(ws / "runs", pids))),
             route.initiative_summaries(items),
             route.state_problems(items))
 
@@ -1697,9 +1720,9 @@ def _status_rows_for(runs_dir: Path) -> list:
     pids = {p.stem: t for p in sorted(runs_dir.glob("*.pid")) if (t := _read_text_or_none(p)) is not None}
     alive = {run_id: epic.run_live(route.parse_pid(t), runs_dir / f"{run_id}.pid") for run_id, t in pids.items()}
     started = {run_id: _mtime_iso(runs_dir / f"{run_id}.pid") for run_id in pids}
-    runs = route.run_entries(pids, alive, started, _heartbeats(runs_dir, pids))
+    runs = _with_remote_lanes(runs_dir, route.run_entries(pids, alive, started, _heartbeats(runs_dir, pids)))
     summaries = {p.stem: epic.summarize_log(_read_text_or_none(p) or "") for p in runs_dir.glob("*.log")}
-    return route.status_rows(route.status_entries(runs, summaries))
+    return _with_lane_fields(route.status_rows(route.status_entries(runs, summaries)), runs, _now_iso())
 
 
 def _route_status(a: argparse.Namespace) -> int:
