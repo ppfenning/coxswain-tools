@@ -177,9 +177,9 @@ The `stats` commands differ one from another.
 - `stats chair` takes only its usage calls from the store. Its landed tasks,
   `land.jsonl`, chair file, session transcripts and work items are local files,
   so those parts still cover this machine alone.
-- `stats lanes` is not ready for a Postgres store. Its query in `run_spans`
-  uses SQLite placeholders and catches only SQLite errors, so on a Postgres URL
-  expect it to fail rather than show lanes from every machine.
+- `stats lanes` reads run spans from the store, so on a shared store it shows
+  the lanes of every machine. Liveness for a run with no end stamp still comes
+  from its lease.
 - `stats roles`, `stats coverage`, `stats explain`, `stats series`,
   `stats spend-mix` and `stats bounds` read only the `--db` file. Their output
   does not change, and it is as fresh as the last ingest.
