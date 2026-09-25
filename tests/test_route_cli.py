@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from test_run_store import leases_table
+from test_run_store import ROW, leases_table, store
 
 from agent_tools import leader, pacing, route, run_store, usage_window
 from agent_tools.cli import main
@@ -153,6 +153,78 @@ def test_context_carries_the_heartbeat_of_a_run_holding_its_lease_and_none_for_t
     assert main(["route", "context", "--profile", str(profile)]) == 0
     lanes = next(l for l in capsys.readouterr().out.splitlines() if l.startswith("lanes:"))
     assert "run1 (since " in lanes and ", heartbeat " in lanes and "pid" not in lanes
+
+
+def _efficiency_line(capsys):
+    return next((l for l in capsys.readouterr().out.splitlines() if l.startswith("efficiency:")), None)
+
+
+def _today_and_calls(*calls):
+    ts = datetime.datetime.now(datetime.UTC).isoformat()
+    return ts, [{**ROW, "call_id": f"c{i}", "ts": ts, **call} for i, call in enumerate(calls)]
+
+
+def _landed(ts, run, task):
+    return json.dumps({"ts": ts, "run": run, "task": task, "steps_reached": ["mark_done"], "exit": 0, "pr": None})
+
+
+def test_context_prints_todays_spend_lands_and_first_try_rate_after_lanes(tmp_path, capsys):
+    profile = _write_workspace(tmp_path)
+    runs = tmp_path / "workspace" / "runs"
+    # Ids as the harness writes them: land.jsonl names the bare ticket, node_calls a truncated `run:phase:ticket` composite.
+    ts, calls = _today_and_calls(
+        {"cost_usd": 1.5, "role": "build", "task_id": "epic-x-5:seams:seams-t"},
+        {"cost_usd": 1.5, "role": "build", "task_id": "epic-x-5:wires:wires-t"},
+        {"cost_usd": 3.0, "role": "build", "task_id": "epic-x-5:wires:wires-t"},
+    )
+    store(runs, *calls)
+    lines = [_landed(ts, "epic-x-5", "seams-task"), "not json", _landed(ts, "epic-x-5", "wires-task"), _landed(ts, "epic-x-5", "loose-task")]
+    (runs / "land.jsonl").write_text("\n".join(lines) + "\n")
+    assert main(["route", "context", "--profile", str(profile)]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[out.index(next(l for l in out if l.startswith("lanes:"))) + 1] == (
+        "efficiency: today $6.00 for 3 landed ($2.00 per landed task), first-try 50% of 2 measured"
+    )
+
+
+def test_context_does_not_hand_a_ticket_the_builds_of_a_ticket_whose_name_it_extends(tmp_path, capsys):
+    profile = _write_workspace(tmp_path)
+    runs = tmp_path / "workspace" / "runs"
+    ts, calls = _today_and_calls(
+        {"cost_usd": 1.0, "role": "build", "task_id": "epic-x-5:seams:seams-task"},
+        {"cost_usd": 1.0, "role": "build", "task_id": "epic-x-5:seams:seams-task-two"},
+        {"cost_usd": 1.0, "role": "build", "task_id": "epic-x-5:seams:seams-task-two"},
+    )
+    store(runs, *calls)
+    (runs / "land.jsonl").write_text("\n".join([_landed(ts, "epic-x-5", "seams-task"), _landed(ts, "epic-x-5", "seams-task-two")]) + "\n")
+    assert main(["route", "context", "--profile", str(profile)]) == 0
+    assert _efficiency_line(capsys) == "efficiency: today $3.00 for 2 landed ($1.50 per landed task), first-try 0% of 1 measured"
+
+
+def test_context_says_nothing_landed_yet_when_the_store_has_spend_and_no_lands(tmp_path, capsys):
+    profile = _write_workspace(tmp_path)
+    store(tmp_path / "workspace" / "runs", *_today_and_calls({"cost_usd": 0.5})[1])
+    assert main(["route", "context", "--profile", str(profile)]) == 0
+    assert _efficiency_line(capsys) == "efficiency: today $0.50, nothing landed yet"
+
+
+def test_context_prints_no_efficiency_line_with_no_store(tmp_path, capsys):
+    profile = _write_workspace(tmp_path)
+    assert main(["route", "context", "--profile", str(profile)]) == 0
+    assert _efficiency_line(capsys) is None
+
+
+@pytest.mark.parametrize("error", [sqlite3.OperationalError("database is locked"), ValueError("bad cost"), TypeError("bad row")])
+def test_context_prints_no_efficiency_line_and_still_the_docket_when_the_store_errors(tmp_path, capsys, monkeypatch, error):
+    profile = _write_workspace(tmp_path)
+
+    def broken(*_a, **_k):
+        raise error
+
+    monkeypatch.setattr(run_store, "cost_since", broken)
+    assert main(["route", "context", "--profile", str(profile)]) == 0
+    out = capsys.readouterr().out
+    assert "efficiency:" not in out and "lanes: 1 busy" in out
 
 
 def test_context_text_with_full_profile_lists_initiative_and_runs(tmp_path, capsys):

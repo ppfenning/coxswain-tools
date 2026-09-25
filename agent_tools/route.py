@@ -8,7 +8,7 @@ import datetime
 import json
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import NamedTuple
 
 from agent_tools.pacing import Assessment
@@ -753,8 +753,68 @@ def _lane(run: dict, now: str | None) -> str:
     return f'{run["id"]} (pid {run["pid"]}, since {since})' if age is None else f'{run["id"]} (since {since}, heartbeat {age} ago)'
 
 
+def efficiency_line(spend: float | None, landed: int, first_try_rate: float | None, measured: int | None = None) -> str | None:
+    """The docket's `efficiency:` line; None with no store. `first_try_rate` is a 0..1 share of `measured` tasks, None when none were measured."""
+    if spend is None:
+        return None
+    if landed == 0:
+        return f"efficiency: today ${spend:.2f}, nothing landed yet"
+    head = f"efficiency: today ${spend:.2f} for {landed} landed (${spend / landed:.2f} per landed task)"
+    if first_try_rate is None:
+        return f"{head}, first-try unknown"
+    if measured is not None and measured < landed:
+        return f"{head}, first-try {first_try_rate * 100:.0f}% of {measured} measured"
+    return f"{head}, first-try {first_try_rate * 100:.0f}%"
+
+
+def _json_object(line: str) -> dict | None:
+    try:
+        value = json.loads(line)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _is_landed_today(row: dict, today: str) -> bool:
+    steps = row.get("steps_reached")
+    return row.get("exit") == 0 and isinstance(steps, list) and "mark_done" in steps and str(row.get("ts", "")).startswith(today)
+
+
+def _str_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def landed_today(land_log: str, today: str) -> list[tuple[str | None, str | None]]:
+    """`(run, task)` per task landed on `today` (exit 0, `mark_done` reached, `ts` that day), once per named task; unparseable lines skipped."""
+    rows = [
+        (_str_or_none(r.get("run")), _str_or_none(r.get("task"))) for r in map(_json_object, land_log.splitlines())
+        if r is not None and _is_landed_today(r, today)
+    ]
+    return [row for i, row in enumerate(rows) if row[1] is None or row not in rows[:i]]
+
+
+def task_owner(task_id: str, run: str | None, tickets: Collection[str]) -> str | None:
+    """The one of `tickets` landed in `run` that store `task_id` names, bare or as a `<run>:<phase>:<head>` composite; None when none or several could."""
+    if task_id in tickets:
+        return task_id
+    parts = task_id.split(":", 2)
+    owners = [t for t in tickets if len(parts) == 3 and parts[0] == run and parts[2] != "" and t.startswith(parts[2])]
+    return owners[0] if len(owners) == 1 else None
+
+
+def first_try(landed: list[tuple[str | None, str | None]], build_counts: dict[str, int]) -> tuple[float | None, int]:
+    """(share of measured tasks with one build call, tasks measured); measured tasks have build calls, and the share is None when none do."""
+    tickets = {run: {t for r, t in landed if r == run and t is not None} for run, _ in landed}
+    counts = [
+        sum(n for task_id, n in build_counts.items() if task_owner(task_id, run, tickets[run]) == ticket)
+        for run, ticket in landed if ticket is not None
+    ]
+    measured = [n for n in counts if n > 0]
+    return (sum(1 for n in measured if n == 1) / len(measured) if measured else None), len(measured)
+
+
 def render_context(profile_or_none, intake: dict, runs, initiatives, problems: list | None = None,
-                   gate_level: str | None = None, now: str | None = None) -> str:
+                   gate_level: str | None = None, now: str | None = None, efficiency: str | None = None) -> str:
     """The human-readable layout `agent-tools route context` prints, spec
     §2. `profile_or_none` is a parsed profile dict or None; `intake` is an
     `intake_groups` result; `runs` and `initiatives` are already-gathered
@@ -780,6 +840,7 @@ def render_context(profile_or_none, intake: dict, runs, initiatives, problems: l
         lines.append(f"lanes: {len(live)} busy — {described}")
     else:
         lines.append("lanes: all clear")
+    lines += [efficiency] if efficiency is not None else []
     if initiatives:
         described = ", ".join(_describe_initiative(i) for i in initiatives)
         lines.append(f"ready: {described}")
