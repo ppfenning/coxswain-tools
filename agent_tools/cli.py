@@ -63,6 +63,7 @@ from agent_tools import (
     stats_schema,
     stats_system_one,
     steward,
+    tracker,
     usage_window,
 )
 from agent_tools import runs as runs_module
@@ -923,7 +924,8 @@ def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> di
 
 def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None,
                   item_path: str | None = None, workspace: str | None = None,
-                  item_id: str | None = None) -> list[dict]:
+                  item_id: str | None = None, profile: str | None = None,
+                  runs_dir: str | None = None) -> list[dict]:
     """Steps enriched with what only the edge knows: each `mark_done`'s own
     record file path (`task_paths` maps task name to path in phase mode), and
     the configured worktree root for `clean`/`clean_phase`. `item_path` (task
@@ -931,11 +933,13 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
     `checks` step that names a `branch` (phase mode) gets no filesystem write
     here — a dry run must stay read-only, so the actual worktree is only ever
     created at execution time, inside `_execute_land_step`, under `--apply`.
-    A `route_sync` step gets the `workspace` to sync and the item's own `id`
-    (`item_id`, else the task name the plan used)."""
+    A `route_sync` step gets the `workspace` to sync, the item's own `id`
+    (`item_id`, else the task name the plan used), and the land's `profile`
+    and `runs_dir`, so the step reads the tracker from where the plan did."""
     def enrich(step: dict) -> dict:
         if step["kind"] == "route_sync":
-            return {**step, "item": item_id or step["item"], "workspace": workspace}
+            return {**step, "item": item_id or step["item"], "workspace": workspace,
+                    "profile": profile, "runs_dir": runs_dir}
         if step["kind"] == "mark_done":
             marked = {**step, "path": (task_paths or {}).get(step["task"], path)}
             return {**marked, "item": item_path, "from": "approved", "to": "done"} if item_path else marked
@@ -1091,7 +1095,10 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         # before the PR it opens without `Closes`.
         when = "before the PR" if step.get("before") else "after the merge"
         tail = "the PR opens without Closes" if step.get("before") else "land not undone"
-        sync = argparse.Namespace(item=step["item"], workspace=step["workspace"], dry_run=False, project=None, profile=None)
+        sync = argparse.Namespace(item=step["item"], workspace=step["workspace"], dry_run=False, project=None,
+                                  profile=step.get("profile"), runs_dir=step.get("runs_dir"))
+        if _sync_skipped(sync):
+            return True, f"sync of {step['item']} skipped {when}: tracker is none"
         try:
             rc = _route_sync(sync)
         except Exception as exc:
@@ -1110,17 +1117,9 @@ def _land_item_facts(item_path: str | None) -> tuple[str | None, str | None]:
     return (str(item_id) if item_id else None), (str(issue) if issue else None)
 
 
-def _resolved_tracker(runs_dir: Path) -> str:
-    """`tracker` from `<runs_dir>/policy.tracker.json` when a landing step has
-    dropped one there; `github-projects` when absent, unreadable or not a name.
-    A remote-is-github.com check is not made here."""
-    text = _read_text_or_none(runs_dir / "policy.tracker.json")
-    try:
-        raw = json.loads(text) if text is not None else None
-    except json.JSONDecodeError:
-        raw = None
-    tracker = raw.get("tracker") if isinstance(raw, dict) else None
-    return tracker if isinstance(tracker, str) and tracker else "github-projects"
+def _resolved_tracker(profile: dict, runs_dir: Path) -> str:
+    """The policy file wins, then the profile's `tracker`, then `none`."""
+    return tracker.tracker_name(profile, runs_dir)
 
 
 def _close_approved_item(item_path: str | None, *, merged: bool = False) -> None:
@@ -1167,6 +1166,12 @@ def _runs_land(a: argparse.Namespace) -> int:
         guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim)
         if guard_rc is not None:
             return guard_rc
+    profile_text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(profile_text) if profile_text is not None else {}
+    except route.ProfileError as exc:
+        print(f"land: profile unreadable: {exc}")
+        return 2
     default_branch = "main"
     repo_facts = {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists()}
     phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, a.run_id))
@@ -1195,9 +1200,10 @@ def _runs_land(a: argparse.Namespace) -> int:
                      if record.get("initiative") else None)
         item_id, issue = _land_item_facts(item_path)
         plan_steps = land.land_plan(record, branches, default_branch, repo_facts,
-                                    tracker=_resolved_tracker(runs_dir), issue=issue)
+                                    tracker=_resolved_tracker(profile, runs_dir), issue=issue)
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, item_path=item_path,
-                              workspace=str(runs_dir.parent), item_id=item_id)
+                              workspace=str(runs_dir.parent), item_id=item_id,
+                              profile=str(_profile_path(a)), runs_dir=str(runs_dir))
     level = a.gate or _resolved_gate_level(runs_dir)
     if a.gate:
         print(f"land: --gate {level} overrides the resolved level")
@@ -1205,12 +1211,7 @@ def _runs_land(a: argparse.Namespace) -> int:
     if not a.apply:
         print(json.dumps(steps, indent=2))
         return 2 if any(s["kind"] == "refuse" for s in steps) else 0
-    profile_text = _read_text_or_none(_profile_path(a))
-    try:
-        forge_choice = forge.forge_name(route.parse_profile(profile_text) if profile_text is not None else {})
-    except route.ProfileError as exc:
-        print(f"land: profile unreadable: {exc}")
-        return 2
+    forge_choice = forge.forge_name(profile)
     forge_module = forge.forge_for(forge_choice)
     if forge_module is None:
         print(f"land: no forge named {forge_choice} (built in: local, github)")
@@ -1868,6 +1869,9 @@ def _sync_filed_items(mapping: dict, ws: Path, a: argparse.Namespace) -> None:
     for rel in rels:
         item_id = route.parse_frontmatter(mapping[rel])[0].get("id") or Path(rel).stem
         sync = argparse.Namespace(item=item_id, workspace=str(ws), dry_run=False, project=None, profile=a.profile)
+        if _sync_skipped(sync):
+            print(f"route file: wrote {item_id}; not synced: tracker is none")
+            continue
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
@@ -2127,22 +2131,51 @@ def _resolve_sync_project(a: argparse.Namespace, items: list, state_path: Path):
     return project, None
 
 
+def _sync_context(a: argparse.Namespace) -> tuple[str, str] | str:
+    """`(workspace, tracker)` a sync runs against, or why the profile is unreadable.
+    The policy file is read from `a.runs_dir` when a land passes one, else `<workspace>/runs`."""
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(text) if text is not None else {}
+    except route.ProfileError as exc:
+        return f"profile unreadable: {exc}"
+    workspace = a.workspace or profile.get("workspace_dir") or "."
+    runs_dir = Path(getattr(a, "runs_dir", None) or Path(workspace).expanduser() / "runs")
+    return workspace, _resolved_tracker(profile, runs_dir)
+
+
+def _sync_skipped(a: argparse.Namespace) -> bool:
+    """True when the sync `a` describes would mirror nothing because the tracker is `none`."""
+    context = _sync_context(a)
+    return not isinstance(context, str) and context[1] == "none"
+
+
 def _route_sync(a: argparse.Namespace) -> int:
     """Mirror the work store onto GitHub Projects: `--dry-run` renders the
     plan and touches nothing that outlives the run; otherwise `execute`
     runs it and stops at the first failed `gh` call. Refuses at once, exit
-    2, when `gh` is not authenticated."""
+    2, when `gh` is not authenticated. The tracker is checked first: `none`
+    exits 0, and an unknown or non-built-in tracker exits 2, both before `gh`."""
+    context = _sync_context(a)
+    if isinstance(context, str):
+        print(f"route sync: {context}")
+        return 2
+    workspace, tracker_choice = context
+    profile_path = _profile_path(a)
+    if tracker_choice == "none":
+        print("route sync: tracker is none; set tracker: github-projects in the profile to mirror the work store")
+        return 0
+    mirror = tracker.tracker_for(tracker_choice)
+    if mirror is None:
+        print(f"route sync: no tracker named {tracker_choice} (built in: none, github-projects)")
+        return 2
+    if mirror is not route_sync_gh:
+        # The sync below is gh and GitHub Projects throughout; a registered tracker must not fall into it.
+        print(f"route sync: tracker {tracker_choice} is installed, but route sync drives only github-projects")
+        return 2
     if not route_sync_gh.auth_ok(subprocess.run):
         print("route sync: gh is not authenticated; run `gh auth login`")
         return 2
-    profile_path = _profile_path(a)
-    text = _read_text_or_none(profile_path)
-    try:
-        profile = route.parse_profile(text) if text is not None else {}
-    except route.ProfileError as exc:
-        print(f"route sync: profile unreadable: {exc}")
-        return 2
-    workspace = a.workspace or profile.get("workspace_dir") or "."
     items = route_sync_gh.items_from_store(workspace)
     if a.item:
         items = [item for item in items if item.id == a.item]
