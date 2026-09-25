@@ -1837,18 +1837,34 @@ def _with_lane_fields(rows: list, runs: list, now: str) -> list:
     return [one(row) for row in rows]
 
 
+def _efficiency(runs_dir: Path, now: str) -> str | None:
+    """Edge. The `efficiency:` line for the UTC day of `now`; None with no store or one that fails to answer."""
+    today = now[:10]
+    tomorrow = (datetime.date.fromisoformat(today) + datetime.timedelta(days=1)).isoformat()
+    try:
+        spend = run_store.cost_since(runs_dir, today, tomorrow)
+        if spend is None:
+            return None
+        landed = route.landed_today(_read_text_or_none(runs_dir / "land.jsonl") or "", today)
+        counts = run_store.build_counts(runs_dir, [t for _, t in landed if t is not None], [r for r, _ in landed if r is not None])
+    except (*run_store._DB_ERRORS, OSError, RuntimeError, ValueError, TypeError):
+        return None
+    rate, measured = route.first_try(landed, counts)
+    return route.efficiency_line(spend, len(landed), rate, measured)
+
+
 def _gather_context(profile_path: Path):
-    """Read the profile and the workspace; return (profile_or_none, reason, intake, runs, initiatives, problems)."""
+    """Read the profile and the workspace; return (profile_or_none, reason, intake, runs, initiatives, problems, efficiency)."""
     text = _read_text_or_none(profile_path)
     if text is None:
-        return None, f"no profile at {profile_path}", [], [], [], []
+        return None, f"no profile at {profile_path}", [], [], [], [], None
     try:
         profile = route.parse_profile(text)
     except route.ProfileError as exc:
-        return None, f"profile unreadable: {exc}", [], [], [], []
+        return None, f"profile unreadable: {exc}", [], [], [], [], None
     workspace = profile.get("workspace_dir", "")
     if not workspace:
-        return profile, "workspace_dir not set in profile", [], [], [], []
+        return profile, "workspace_dir not set in profile", [], [], [], [], None
     ws = Path(workspace).expanduser()
     pid_paths = sorted((ws / "runs").glob("*.pid"))
     pids = {p.stem: t for p in pid_paths if (t := _read_text_or_none(p)) is not None}
@@ -1861,7 +1877,8 @@ def _gather_context(profile_path: Path):
             _intake_groups(ws, items),
             _with_remote_lanes(ws / "runs", route.run_entries(pids, alive, started, _heartbeats(ws / "runs", pids))),
             route.initiative_summaries(items),
-            route.state_problems(items))
+            route.state_problems(items),
+            _efficiency(ws / "runs", _now_iso()))
 
 
 def _route_context(a: argparse.Namespace) -> int:
@@ -1871,7 +1888,7 @@ def _route_context(a: argparse.Namespace) -> int:
     # gatherer, per charter A6, so a bug in the usage assessment surfaces
     # instead of erasing an otherwise-good docket (run tools-pacing-7).
     try:
-        profile, reason, intake, runs, initiatives, problems = _gather_context(_profile_path(a))
+        profile, reason, intake, runs, initiatives, problems, efficiency = _gather_context(_profile_path(a))
     except Exception as exc:
         print(f"routing: context unavailable ({type(exc).__name__}: {exc})")
         return 0
@@ -1899,7 +1916,8 @@ def _route_context(a: argparse.Namespace) -> int:
         print(f"{first_line} ({reason})")
     else:
         gate_level = _resolved_gate_level(Path(profile["workspace_dir"]).expanduser() / "runs")
-        print(f"{route.render_context(profile, intake, runs, initiatives, problems, gate_level=gate_level, now=_now_iso())}\nusage: {usage_reason}")
+        rendered = route.render_context(profile, intake, runs, initiatives, problems, gate_level=gate_level, now=_now_iso(), efficiency=efficiency)
+        print(f"{rendered}\nusage: {usage_reason}")
     return 0
 
 

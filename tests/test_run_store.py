@@ -77,6 +77,60 @@ def test_run_ids_is_empty_with_no_store_or_no_runs_table(tmp_path):
     assert run_store.run_ids(tmp_path) == set()
 
 
+def test_cost_since_sums_calls_of_the_day_and_nothing_before_or_after_it(tmp_path):
+    store(tmp_path, {**ROW, "call_id": "a", "cost_usd": 0.25}, {**ROW, "call_id": "b", "cost_usd": 0.5},
+          {**ROW, "call_id": "c", "cost_usd": 9.0, "ts": "2026-09-24T23:59:59+00:00"},
+          {**ROW, "call_id": "d", "cost_usd": 7.0, "ts": "2026-09-26T00:00:00+00:00"})
+    assert run_store.cost_since(tmp_path, "2026-09-25", "2026-09-26") == 0.75
+
+
+def test_cost_since_is_none_without_a_store(tmp_path):
+    assert run_store.cost_since(tmp_path, "2026-09-25") is None
+
+
+def test_cost_since_is_zero_for_a_store_with_no_calls_that_day(tmp_path):
+    store(tmp_path, {**ROW, "ts": "2026-09-24T10:00:00+00:00"})
+    assert run_store.cost_since(tmp_path, "2026-09-25") == 0.0
+
+
+def test_cost_since_is_none_for_a_store_without_a_node_calls_table(tmp_path):
+    runs_table(tmp_path, run_row("a-1"))
+    assert run_store.cost_since(tmp_path, "2026-09-25") is None
+
+
+def test_build_counts_counts_build_calls_per_task_and_leaves_out_tasks_with_none(tmp_path):
+    store(tmp_path, {**ROW, "call_id": "a", "role": "build", "task_id": "t1"}, {**ROW, "call_id": "b", "role": "build", "task_id": "t2"},
+          {**ROW, "call_id": "c", "role": "build", "task_id": "t2"}, {**ROW, "call_id": "d", "role": "review", "task_id": "t3"})
+    assert run_store.build_counts(tmp_path, ["t1", "t2", "t3", "t4"]) == {"t1": 1, "t2": 2}
+
+
+def test_build_counts_returns_the_composites_of_the_given_run_and_not_a_run_it_prefixes(tmp_path):
+    store(tmp_path, {**ROW, "call_id": "a", "role": "build", "task_id": "epic-x-5:seams:seams-t"},
+          {**ROW, "call_id": "b", "role": "build", "task_id": "epic-x-5:seams:seams-t"},
+          {**ROW, "call_id": "c", "role": "build", "task_id": "epic-x-50:seams:other-t"})
+    assert run_store.build_counts(tmp_path, [], ["epic-x-5"]) == {"epic-x-5:seams:seams-t": 2}
+
+
+def test_build_counts_treats_underscore_and_percent_in_a_run_name_literally(tmp_path):
+    store(tmp_path, {**ROW, "call_id": "a", "role": "build", "task_id": "epicAx-5:seams:wild-t"},
+          {**ROW, "call_id": "b", "role": "build", "task_id": "epic-x-5:seams:seams-t"})
+    assert run_store.build_counts(tmp_path, [], ["epic_x-5", "epic%5"]) == {}
+
+
+def test_build_counts_is_empty_without_a_store(tmp_path):
+    assert run_store.build_counts(tmp_path, ["t1"]) == {}
+
+
+def test_build_counts_is_empty_for_a_store_without_a_node_calls_table(tmp_path):
+    runs_table(tmp_path, run_row("a-1"))
+    assert run_store.build_counts(tmp_path, ["t1"]) == {}
+
+
+def test_build_counts_is_empty_for_no_ids_and_no_runs(tmp_path):
+    store(tmp_path, {**ROW, "role": "build", "task_id": "t1"})
+    assert run_store.build_counts(tmp_path, []) == {}
+
+
 def test_the_file_is_returned_unchanged_even_when_the_store_has_rows(tmp_path):
     body = {"run_id": "r1", "calls": [], "summary": {"calls": 99}}
     (tmp_path / "r1.usage.json").write_text(json.dumps(body))

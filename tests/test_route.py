@@ -573,6 +573,100 @@ def test_render_context_appends_the_gate_line_when_given():
     assert text.splitlines()[-1] == "gate: phase"
 
 
+def test_efficiency_line_states_spend_lands_cost_per_land_and_first_try_rate():
+    assert route.efficiency_line(3.0, 4, 0.75) == "efficiency: today $3.00 for 4 landed ($0.75 per landed task), first-try 75%"
+
+
+def test_efficiency_line_with_no_lands_says_nothing_landed_yet():
+    assert route.efficiency_line(1.234, 0, 0.0) == "efficiency: today $1.23, nothing landed yet"
+
+
+def test_efficiency_line_with_no_store_is_none():
+    assert route.efficiency_line(None, 0, 0.0) is None
+
+
+def test_efficiency_line_with_no_measured_task_says_first_try_unknown():
+    assert route.efficiency_line(2.0, 1, None, 0) == "efficiency: today $2.00 for 1 landed ($2.00 per landed task), first-try unknown"
+
+
+def test_efficiency_line_names_how_many_tasks_the_rate_covers_when_some_are_unmeasured():
+    assert route.efficiency_line(3.0, 3, 0.5, 2) == "efficiency: today $3.00 for 3 landed ($1.00 per landed task), first-try 50% of 2 measured"
+
+
+def test_render_context_puts_the_efficiency_line_after_lanes():
+    line = "efficiency: today $0.00, nothing landed yet"
+    text = route.render_context(FIXTURE_PROFILE, EMPTY_INTAKE_GROUPS, [], [], efficiency=line)
+    assert text.splitlines()[2:5] == ["lanes: all clear", line, "ready: none"]
+
+
+def test_render_context_without_an_efficiency_line_is_unchanged():
+    assert "efficiency" not in route.render_context(FIXTURE_PROFILE, EMPTY_INTAKE_GROUPS, [], [])
+
+
+LAND_LOG = "\n".join([
+    '{"ts": "2026-09-25T01:00:00+00:00", "run": "r-1", "task": "t1", "steps_reached": ["build", "mark_done"], "exit": 0}',
+    '{"ts": "2026-09-25T02:00:00+00:00", "run": "r-1", "task": "t2", "steps_reached": ["build"], "exit": 0}',
+    '{"ts": "2026-09-25T03:00:00+00:00", "run": "r-1", "task": "t3", "steps_reached": ["mark_done"], "exit": 1}',
+    '{"ts": "2026-09-24T23:00:00+00:00", "run": "r-1", "task": "t4", "steps_reached": ["mark_done"], "exit": 0}',
+    "not json",
+    "[1, 2]",
+    '{"ts": "2026-09-25T04:00:00+00:00", "run": "r-2", "task": null, "steps_reached": ["mark_done"], "exit": 0}',
+])
+
+
+def test_landed_today_keeps_only_clean_mark_done_lines_of_the_day_and_skips_garbage():
+    assert route.landed_today(LAND_LOG, "2026-09-25") == [("r-1", "t1"), ("r-2", None)]
+
+
+def test_landed_today_ignores_a_line_whose_steps_reached_is_a_string_not_a_list():
+    line = '{"ts": "2026-09-25T01:00:00+00:00", "run": "r-1", "task": "t1", "steps_reached": "mark_done", "exit": 0}'
+    assert route.landed_today(line, "2026-09-25") == []
+
+
+def test_landed_today_counts_a_task_logged_twice_once():
+    line = '{"ts": "2026-09-25T01:00:00+00:00", "run": "r-1", "task": "t1", "steps_reached": ["mark_done"], "exit": 0}'
+    assert route.landed_today(f"{line}\n{line}", "2026-09-25") == [("r-1", "t1")]
+
+
+def test_landed_today_counts_two_lines_with_no_task_twice():
+    line = '{"ts": "2026-09-25T01:00:00+00:00", "run": "r-1", "task": null, "steps_reached": ["mark_done"], "exit": 0}'
+    assert route.landed_today(f"{line}\n{line}", "2026-09-25") == [("r-1", None), ("r-1", None)]
+
+
+def test_a_composite_with_a_truncated_head_belongs_to_the_one_ticket_it_prefixes():
+    assert route.task_owner("epic-x-5:seams:seams-t", "epic-x-5", {"seams-task", "wires-task"}) == "seams-task"
+
+
+def test_a_bare_task_id_belongs_to_the_ticket_it_names():
+    assert route.task_owner("seams-task", "epic-x-5", {"seams-task", "seams-task-two"}) == "seams-task"
+
+
+def test_a_composite_from_another_run_belongs_to_no_ticket():
+    assert route.task_owner("epic-x-4:seams:seams-t", "epic-x-5", {"seams-task"}) is None
+
+
+def test_a_composite_whose_head_prefixes_two_landed_tickets_belongs_to_neither():
+    assert route.task_owner("epic-x-5:seams:seams-task", "epic-x-5", {"seams-task", "seams-task-two"}) is None
+
+
+def test_a_composite_whose_head_names_only_the_longer_ticket_belongs_to_it():
+    assert route.task_owner("epic-x-5:seams:seams-task-two", "epic-x-5", {"seams-task", "seams-task-two"}) == "seams-task-two"
+
+
+def test_first_try_is_the_share_of_measured_tasks_with_one_build_call_and_leaves_unmeasured_ones_out():
+    landed = [("r-1", "alpha"), ("r-1", "beta"), ("r-1", "gamma"), ("r-2", None)]
+    assert route.first_try(landed, {"r-1:build:alpha": 1, "r-1:build:bet": 2}) == (0.5, 2)
+
+
+def test_first_try_never_gives_a_sibling_ticket_the_calls_of_its_shorter_named_neighbour():
+    landed = [("r-1", "seams-task"), ("r-1", "seams-task-two")]
+    assert route.first_try(landed, {"r-1:p:seams-task": 1, "r-1:p:seams-task-two": 2}) == (0.0, 1)
+
+
+def test_first_try_with_nothing_measured_is_an_unknown_share():
+    assert route.first_try([("r-1", "alpha")], {}) == (None, 0)
+
+
 def test_render_context_without_profile_is_the_one_liner():
     text = route.render_context(None, [], [], [])
     assert text == (
