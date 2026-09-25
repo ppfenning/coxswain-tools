@@ -28,6 +28,7 @@ from pathlib import PurePath
 from typing import Any
 
 __all__ = [
+    "LAUNCH_ERROR",
     "approve_to_done",
     "arbitration_verdict",
     "check_poll_result",
@@ -49,6 +50,8 @@ __all__ = [
     "unreadable_poll",
     "wait_decision",
 ]
+
+LAUNCH_ERROR = "refuse checks: "  # a check that cannot launch, marked so the edge refuses (exit 2) not just stops (exit 1)
 
 
 def _proposal(record: dict[str, Any], kind: str) -> dict[str, Any] | None:

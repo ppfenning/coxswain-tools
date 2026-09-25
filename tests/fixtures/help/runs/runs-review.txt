@@ -1,0 +1,6 @@
+usage: cox runs review [-h] --pr PR [--profile PROFILE]
+
+options:
+  -h, --help         show this help message and exit
+  --pr PR            https://github.com/<owner>/<repo>/pull/<n>
+  --profile PROFILE
