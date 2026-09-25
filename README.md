@@ -102,7 +102,7 @@ cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|stand
 cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
 cox router select --role ROLE [--db DB] [--profile PROFILE] [--json]   the effective tier for a role under the profile's router: off|shadow|on flag
 cox steward propose [--db DB] [--profile PROFILE] [--json]   write each candidate clearing the evidence bar as a new intake file; never edits a provider profile
-cox setup doctor [--profile PROFILE] [--repo REPO] [--json]   check this machine's profile against what it needs
+cox setup doctor [--profile PROFILE] [--repo REPO] [--json] [--host HOST]   check this machine's profile against what it needs
 cox setup install --root ROOT --team TEAM --workspace WORKSPACE [--provider-profile PROVIDER_PROFILE] [--skills-root SKILLS_ROOT] [--assume a|r] [--plugins] [--hook] [--force-profile] [--dry-run] [--window-ceiling-usd WINDOW_CEILING_USD] [--weekly-ceiling-usd WEEKLY_CEILING_USD]   clone components and write a profile for this machine
 ```
 <!-- commands:end -->
