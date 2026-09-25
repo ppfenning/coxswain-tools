@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import stat
 import sys
 
@@ -35,6 +36,13 @@ def _write_executable(path, text):
     assert os.access(path, os.X_OK)
 
 
+def _make_store(workspace_dir):
+    conn = sqlite3.connect(workspace_dir / "runs" / "cox.db")
+    conn.execute("CREATE TABLE runs (id TEXT)")
+    conn.commit()
+    conn.close()
+
+
 def _good_setup(tmp_path, monkeypatch):
     cartridges_dir = tmp_path / "cartridges"; cartridges_dir.mkdir()
     skills_a = tmp_path / "skills_a"; skills_a.mkdir()
@@ -51,6 +59,8 @@ def _good_setup(tmp_path, monkeypatch):
     _write_executable(bin_dir / "fakeprovider", _PROVIDER.format(python=sys.executable))
     _write_executable(bin_dir / "git", _GIT)
     monkeypatch.setenv("PATH", str(bin_dir))
+
+    _make_store(workspace_dir)
 
     profile = tmp_path / "profile.yaml"
     profile.write_text(
@@ -347,6 +357,23 @@ def _fake_schema_package(tmp_path, monkeypatch, *, cartridges, graphs):
     monkeypatch.delitem(sys.modules, "harness", raising=False)
 
 
+def test_a_fresh_install_fails_only_the_store_row_until_the_first_run_creates_the_store(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    (tmp_path / "workspace" / "runs" / "cox.db").unlink()
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    failing = {name: r["detail"] for name, r in _rows(capsys).items() if not r["ok"]}
+    assert rc == 1
+    assert failing == {"store": "no store yet (it is created by the first run)"}
+
+
+def test_a_malformed_storage_url_fails_the_store_row_without_echoing_it(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    (tmp_path / "provider.yaml").write_text("command: fakeprovider\nstorage_url: postgresql://u:secret@[bad/db\n")
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    assert _rows(capsys)["store"] == {"check": "store", "ok": False, "detail": "storage_url is not a valid URL"}
+    assert rc == 1
+
+
 def test_schema_versions_are_gathered_and_agree_ok(tmp_path, monkeypatch, capsys):
     profile, *_ = _good_setup(tmp_path, monkeypatch)
     _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="1.0")
@@ -382,6 +409,7 @@ def test_schema_row_reads_cartridges_from_the_checkout_above_provider_profile(tm
     workspace_dir = tmp_path / "workspace"
     for name in ("work", "runs", "intake"):
         (workspace_dir / name).mkdir(parents=True, exist_ok=True)
+    _make_store(workspace_dir)
     provider_profile = provider_dir / "provider.yaml"
     provider_profile.write_text("command: fakeprovider\n")
 

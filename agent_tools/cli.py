@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -66,6 +67,8 @@ from agent_tools import (
     stats_schema,
     stats_system_one,
     steward,
+    store_dialect,
+    store_url,
     tracker,
     usage_window,
 )
@@ -2712,6 +2715,56 @@ def _provider_facts(provider_profile_path: str) -> dict:
     return facts
 
 
+_NO_STORE_YET = "no store yet (it is created by the first run)"
+_NO_RUNS_TABLE = "the store answers but has no runs table yet (it is created by the first run)"
+_STORE_CONNECT_TIMEOUT_S = 5
+
+
+def _sqlite_store_file(url: str) -> Path:
+    """The file `connect_readonly_url` opens for a non-Postgres URL."""
+    return Path(url.removeprefix("sqlite:///") if url.startswith("sqlite:") else url)
+
+
+def _with_connect_timeout(url: str) -> str:
+    """The Postgres URL with a connect timeout added unless it sets one."""
+    parts = urllib.parse.urlsplit(url)
+    if "connect_timeout" in urllib.parse.parse_qs(parts.query):
+        return url
+    query = "&".join(q for q in (parts.query, f"connect_timeout={_STORE_CONNECT_TIMEOUT_S}") if q)
+    return urllib.parse.urlunsplit(parts._replace(query=query))
+
+
+def _store_error(exc: Exception) -> str:
+    """A fixed message for a known cause, else the exception class; driver text can quote the URL, so it is never passed on."""
+    if str(exc) == store_dialect.MISSING_PSYCOPG:
+        return store_dialect.MISSING_PSYCOPG
+    if type(exc).__name__ == "UndefinedTable" or (isinstance(exc, sqlite3.OperationalError) and "no such table" in str(exc)):
+        return _NO_RUNS_TABLE
+    return f"the store did not answer ({type(exc).__name__})"
+
+
+def _store_facts(provider_profile: str, workspace_dir: str) -> dict:
+    """Edge. Whether the run store answers a read; the URL never leaves this function."""
+    url = store_url.resolve_store_url(provider_profile, Path(workspace_dir) / "runs")
+    kind = store_url.describe_store(url).removeprefix("store: ")
+    try:
+        postgres = store_dialect.is_postgres(url)
+    except ValueError:  # urlsplit rejects e.g. an unclosed `[`; the message would quote the URL
+        return {"kind": kind, "reachable": False, "runs": None, "error": "storage_url is not a valid URL"}
+    # `other` is a bare path with no scheme, which `connect_readonly_url` opens as a SQLite file.
+    if not postgres and kind not in ("sqlite", "other"):
+        return {"kind": kind, "reachable": False, "runs": None,
+                "error": f"unsupported store scheme {kind}: storage_url must be a postgresql:// or sqlite:/// URL"}
+    if not postgres and not _sqlite_store_file(url).exists():
+        return {"kind": kind, "reachable": False, "error": _NO_STORE_YET, "runs": None}
+    try:
+        with contextlib.closing(store_dialect.connect_readonly_url(_with_connect_timeout(url) if postgres else url)) as conn:
+            runs = int(conn.execute("SELECT count(*) AS n FROM runs").fetchone()["n"])
+    except Exception as exc:  # any driver failure is the answer this row reports
+        return {"kind": kind, "reachable": False, "error": _store_error(exc), "runs": None}
+    return {"kind": kind, "reachable": True, "error": None, "runs": runs}
+
+
 def _workspace_facts(workspace_dir: str) -> dict:
     ws = Path(workspace_dir).expanduser()
     return {"workspace_dirs": {name: (ws / name).exists() for name in ("work", "runs", "intake")}}
@@ -2772,6 +2825,8 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
                                      [expand(r) for r in roots], raw_roots=roots, overlay_text=overlay_text))
     if profile.get("provider_profile"):
         facts.update(_provider_facts(expand(profile["provider_profile"])))
+        if profile.get("workspace_dir"):
+            facts["store"] = _store_facts(expand(profile["provider_profile"]), expand(profile["workspace_dir"]))
     if profile.get("workspace_dir"):
         facts.update(_workspace_facts(expand(profile["workspace_dir"])))
     facts["schema_versions"] = _schema_versions(harness_dir, expand(profile.get("provider_profile", "")),
