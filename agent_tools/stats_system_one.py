@@ -189,13 +189,13 @@ def to_json(ss: list[Summary]) -> dict[str, Any]:
 
 
 def render_proposal(s: Summary, date: str) -> str:
-    """The graduation proposal for Pat. It states a cost cut with its quality cost and edits nothing."""
+    """The graduation proposal for the maintainer. It states a cost cut with its quality cost and edits nothing."""
     label, unmet = verdict(s)
     return f"""# System one graduation: {s.role}, {date}
 
 Verdict: {label}{f" ({'; '.join(unmet)})" if unmet else ""}
 
-Proposal only. Nothing was edited. Pat approves and makes the change.
+Proposal only. Nothing was edited. The maintainer approves and makes the change.
 
 ## Numbers
 

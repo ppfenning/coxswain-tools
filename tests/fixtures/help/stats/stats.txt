@@ -18,7 +18,8 @@ positional arguments:
                         cause
     examples            the local system-one backend's training file (JSON lines) from task
                         records
-    system-one          shadow-to-on graduation report per role, and a proposal for Pat
+    system-one          shadow-to-on graduation report per role, and a proposal for the maintainer
+                        to approve
 
 options:
   -h, --help            show this help message and exit
