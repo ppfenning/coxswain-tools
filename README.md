@@ -135,10 +135,10 @@ floating window as the dotfiles' `runs top` chord; right-click opens the HUD.
 ## Reading a shared store
 
 Commands that read run records read them from one store. Cox finds the store
-URL the way graphs does. It reads the routing profile named by
-`AGENT_TOOLS_PROFILE`, or `~/.config/agent-tools/profile.yaml` when that
-variable is unset (the directory keeps the deprecated agent-tools name). It follows that profile's `provider_profile` key to the
-provider profile, and takes the `storage_url` key from there. When the key is
+URL the way graphs does.
+It reads the routing profile named by `AGENT_TOOLS_PROFILE`, or `~/.config/agent-tools/profile.yaml` when that variable is unset (the directory keeps the deprecated agent-tools name).
+It follows that profile's `provider_profile` key to the provider profile, and
+takes the `storage_url` key from there. When the key is
 absent or empty, the store is SQLite at `runs_dir/cox.db`. The lookup is
 `resolve_store_url` in `agent_tools/store_url.py`, and it returns the full URL.
 
