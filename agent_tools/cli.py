@@ -52,6 +52,7 @@ from agent_tools import (
     schema,
     setup_install,
     setup_screen,
+    stats_chair,
     stats_ingest,
     stats_query,
     stats_schema,
@@ -588,6 +589,28 @@ def _runs_stranded(a: argparse.Namespace) -> int:
         print("no stranded work")
         return 0
     print(records.format_table(rows, ["run", "task", "phase", "branch", "remedy"]))
+    return 0
+
+
+def _runs_cause(a: argparse.Namespace) -> int:
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"cause: {reason}")
+        return 2
+    record, where, found = _land_record(runs_dir, a.run_id, a.task_id)
+    if record is None:
+        print(f"cause: expected one task record for {a.task_id} under {where}, found {found}")
+        return 2
+    items = sorted((runs_dir.parent / "work").glob(f"*/{record['phase']}/{a.task_id}.md"))
+    if len(items) != 1:
+        print(f"cause: expected one work item {a.task_id} in phase {record['phase']}, found {len(items)}")
+        return 2
+    updated = stats_chair.set_attempt_cause(items[0].read_text(encoding="utf-8"), a.run_id, a.cause, a.note)
+    if updated is None:
+        print(f"cause: {items[0]} has no attempts entry for run {a.run_id}")
+        return 2
+    items[0].write_text(updated, encoding="utf-8")
+    print(f"{a.task_id}: attempt {a.run_id} cause = {a.cause}")
     return 0
 
 
@@ -2825,6 +2848,15 @@ RUNS_COMMANDS = [
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
         _runs_stranded, False, (),
+    ),
+    commands.Command(
+        "cause", "runs", "record why one run's attempt at a task was quarantined",
+        (
+            commands.Arg(("run_id",)), commands.Arg(("task_id",)), commands.Arg(("cause",), {"choices": list(stats_chair.CAUSES)}),
+            commands.Arg(("--note",), {"help": "free text kept beside the cause"}),
+            commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+        ),
+        _runs_cause, False, (),
     ),
 ]
 
