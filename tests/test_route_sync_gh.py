@@ -17,6 +17,11 @@ def _write(path, text):
     path.write_text(text)
 
 
+def _mirror(root):
+    """Turn the mirror on for a workspace: the tracker defaults to none, and the policy file wins."""
+    _write(root / "runs" / "policy.tracker.json", '{"tracker": "github-projects"}')
+
+
 def _seed_workspace(root):
     _write(root / "intake" / "2026-09-05-fresh.md",
            "---\nid: fresh\ntitle: Fresh idea\nrepo: acme/widgets\n---\nbody text\n")
@@ -191,6 +196,7 @@ def test_a_refuse_step_calls_no_gh_and_does_not_stop_the_rest_of_the_run():
 
 
 def test_cli_dry_run_prints_the_rendered_steps_and_exits_0(tmp_path, capsys, monkeypatch):
+    _mirror(tmp_path)
     _write(tmp_path / "intake" / "2026-09-05-fresh.md",
            "---\nid: fresh\ntitle: Fresh idea\nrepo: acme/widgets\n---\n")
 
@@ -208,6 +214,7 @@ def test_cli_dry_run_prints_the_rendered_steps_and_exits_0(tmp_path, capsys, mon
 
 
 def test_cli_dry_run_without_a_project_makes_no_mutating_gh_calls(tmp_path, monkeypatch):
+    _mirror(tmp_path)
     _write(tmp_path / "intake" / "2026-09-05-fresh.md",
            "---\nid: fresh\ntitle: Fresh idea\nrepo: acme/widgets\n---\n")
     calls = []
@@ -227,12 +234,14 @@ def test_cli_dry_run_without_a_project_makes_no_mutating_gh_calls(tmp_path, monk
 
 
 def test_cli_exits_2_when_no_project_is_given_and_no_repo_can_derive_an_owner(tmp_path, monkeypatch):
+    _mirror(tmp_path)
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: _Result(returncode=0) if argv[:3] == ["gh", "auth", "status"] else _Result(stdout="[]"))
     rc = cli.main(["route", "sync", "--profile", str(tmp_path / "profile.yaml"), "--workspace", str(tmp_path)])
     assert rc == 2
 
 
 def test_cli_exits_2_when_gh_is_not_authenticated(tmp_path, monkeypatch):
+    _mirror(tmp_path)
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: _Result(returncode=1))
     rc = cli.main(["route", "sync", "--dry-run", "--workspace", str(tmp_path)])
     assert rc == 2
@@ -339,6 +348,7 @@ def test_existing_item_fails_loudly_when_graphql_answers_with_errors():
 
 
 def test_cli_item_sync_refuses_an_unknown_or_shared_id_without_listing_anything(tmp_path, monkeypatch, capsys):
+    _mirror(tmp_path)
     _write(tmp_path / "intake" / "a.md", "---\nid: a\ntitle: A\nrepo: acme/widgets\nissue: 5\n---\nB\n")
     _write(tmp_path / "intake" / "a2.md", "---\nid: shared\ntitle: A\nrepo: acme/widgets\nissue: 5\n---\nB\n")
     _write(tmp_path / "work" / "init1" / "build" / "t.md", "---\nid: shared\ntitle: T\nstate: ready\n---\nB\n")
@@ -357,6 +367,7 @@ def test_cli_item_sync_refuses_an_unknown_or_shared_id_without_listing_anything(
 
 
 def test_cli_item_sync_issues_only_the_per_item_gh_calls(tmp_path, monkeypatch):
+    _mirror(tmp_path)
     _write(tmp_path / "intake" / "a.md", "---\nid: a\ntitle: A\nrepo: acme/widgets\nissue: 5\n---\nB\n")
     _write(tmp_path / "intake" / "b.md", "---\nid: b\ntitle: B\nrepo: acme/other\nissue: 6\n---\nB\n")
     calls = []
@@ -395,6 +406,7 @@ def _checkout(root):
 
 
 def test_cli_item_sync_closes_the_open_issue_of_a_done_item(tmp_path, monkeypatch):
+    _mirror(tmp_path)
     _write(tmp_path / "work" / "init1" / "initiative.md", f"---\nrepo: {_checkout(tmp_path)}\n---\n")
     _write(tmp_path / "work" / "init1" / "build" / "t.md",
            "---\nid: t\ntitle: T\nstate: done\nissue: 5\n---\nB\n")
@@ -435,12 +447,12 @@ def test_cli_item_sync_closes_the_open_issue_of_a_done_item(tmp_path, monkeypatc
     assert not any(c[:3] == ["gh", "issue", "close"] for c in calls)
 
 
-def _file_profile(tmp_path):
+def _file_profile(tmp_path, tracker_line="tracker: github-projects\n"):
     ws = tmp_path / "workspace"
     ws.mkdir()
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"team: acme\nworkspace_dir: {ws}\nharness_dir: /opt/h\ncartridges_dir: /opt/c\n"
-                       "provider_profile: /opt/p.yaml\n")
+                       f"provider_profile: /opt/p.yaml\n{tracker_line}")
     return profile, ws
 
 
@@ -475,6 +487,19 @@ def test_route_file_creates_the_items_issue_at_birth_and_writes_it_back(tmp_path
     assert [c[c.index("--title") + 1] for c in _creates(calls)] == ["Fix the thing"]
     assert "issue: 9" in (ws / "work" / "fix-the-thing" / "build" / "fix-the-thing.md").read_text()
     assert "synced fix-the-thing" in capsys.readouterr().out
+
+
+def test_route_file_under_tracker_none_says_not_synced_and_calls_no_gh(tmp_path, monkeypatch, capsys):
+    profile, ws = _file_profile(tmp_path, tracker_line="")
+    calls = []
+    monkeypatch.setattr(subprocess, "run", _gh_for_file(calls))
+    rc = cli.main(["route", "file", "--profile", str(profile), "--repo", str(_checkout(tmp_path)), "--title", "Fix the thing"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert (ws / "work" / "fix-the-thing" / "build" / "fix-the-thing.md").exists()
+    assert "route file: wrote fix-the-thing; not synced: tracker is none" in out.splitlines()
+    assert "synced fix-the-thing" not in out.splitlines()
+    assert not any(c[:1] == ["gh"] for c in calls)
 
 
 def test_route_file_intake_syncs_the_intake_item_too(tmp_path, monkeypatch):
