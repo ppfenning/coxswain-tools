@@ -43,6 +43,12 @@ def help_texts(group: str) -> dict[str, str]:
     return texts
 
 
+def normalized(text: str) -> str:
+    """The usage block (up to the first blank line) has its whitespace runs collapsed; the rest is kept as is."""
+    usage, sep, rest = text.partition("\n\n")
+    return " ".join(usage.split()) + sep + rest
+
+
 def _write() -> None:
     for group in GROUPS:
         fixtures = fixtures_for(group)
@@ -61,7 +67,15 @@ def _cases() -> list[tuple[str, str]]:
 @pytest.mark.parametrize("group,stem", _cases())
 def test_help_matches_its_fixture(group: str, stem: str, monkeypatch) -> None:
     monkeypatch.setenv("COLUMNS", COLUMNS)
-    assert help_texts(group)[stem] == (fixtures_for(group) / f"{stem}.txt").read_text()
+    assert normalized(help_texts(group)[stem]) == normalized((fixtures_for(group) / f"{stem}.txt").read_text())
+
+
+def test_normalized_ignores_usage_line_breaks_but_not_the_body() -> None:
+    choices = "{usage,trace,clean,land,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause}"
+    py312 = f"usage: cox runs [-h]\n                {choices}\n                ...\n\nbody one\n"
+    py314 = f"usage: cox runs [-h]\n                {choices} ...\n\nbody one\n"
+    assert normalized(py312) == normalized(py314)
+    assert normalized(py312) != normalized(py314.replace("body one", "body two"))
 
 
 @pytest.mark.parametrize("group", GROUPS)
