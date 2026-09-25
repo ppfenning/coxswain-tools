@@ -40,12 +40,14 @@ from agent_tools import (
     install_exec,
     lake_config,
     land,
+    lane_hosts,
     leader_chat,
     notify,
     pacing,
     plan,
     provenance,
     records,
+    remote_doctor,
     review_pr,
     route,
     route_sync,
@@ -2925,7 +2927,49 @@ def _parquet_traces_line(profile: dict | None) -> str | None:
     return doctor.parquet_line(check.readable, check.reason)
 
 
+def _profile_lane_hosts(text: str) -> tuple[lane_hosts.LaneHost, ...] | lane_hosts.LaneHostError:
+    """Reads `lane_hosts` straight from the YAML text; `route.parse_profile` does not know the key yet."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        return lane_hosts.LaneHostError(f"profile is not readable as YAML: {exc}")
+    return lane_hosts.parse_lane_hosts(data if isinstance(data, Mapping) else {})
+
+
+def _run_ssh(argv: list[str]) -> tuple[int, str]:
+    """Edge: the one real subprocess call for `setup doctor --host`; stderr joins the output rows."""
+    try:
+        done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    except OSError as exc:
+        return 127, f"{argv[0]}: {exc}"
+    return done.returncode, done.stdout
+
+
+def _setup_doctor_host(a: argparse.Namespace, run) -> int:
+    """Prints the named lane host's doctor rows under a header; non-zero when the host is unknown or its doctor fails."""
+    path = _profile_path(a)
+    text = _read_text_or_none(path)
+    if text is None:
+        print(f"cannot read profile: {path}")
+        return 1
+    hosts = _profile_lane_hosts(text)
+    if isinstance(hosts, lane_hosts.LaneHostError):
+        print(hosts.message)
+        return 1
+    host = lane_hosts.find_lane_host(hosts, a.host)
+    if host is None:
+        print(f"unknown lane host: {a.host}")
+        print(f"configured: {', '.join(h.name for h in hosts) or 'none'}")
+        return 1
+    code, rows = remote_doctor.doctor_on_host(host, run)
+    print(f"doctor on {host.name} ({host.ssh})")
+    print("\n".join(rows))
+    return code
+
+
 def _setup_doctor(a: argparse.Namespace) -> int:
+    if getattr(a, "host", None):
+        return _setup_doctor_host(a, _run_ssh)
     repo = Path(a.repo).expanduser() if a.repo else Path.cwd()
     facts = _gather_doctor_facts(_profile_path(a), repo)
     rows = doctor.checks(facts)
@@ -4284,6 +4328,7 @@ SETUP_COMMANDS = [
             commands.Arg(("--profile",)),
             commands.Arg(("--repo",), {"help": "target repo to check for a .agent/cartridge.yaml overlay (default: cwd)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
+            commands.Arg(("--host",), {"help": "run the doctor on this lane host from lane_hosts; --json is ignored"}),
         ),
         _setup_doctor_row, False, (),
     ),
