@@ -33,6 +33,27 @@ def store(runs_dir, *rows):
     conn.close()
 
 
+RUNS_COLUMNS = (
+    "run_id TEXT PRIMARY KEY, principal TEXT, launched_by TEXT, launched_at TEXT, cartridge_sha TEXT, "
+    "cartridge_team TEXT, overlay_sha TEXT, provider_profile TEXT, started_at TEXT, ended_at TEXT, "
+    "status TEXT, record_json TEXT"
+)
+
+RUN = {
+    "run_id": "storage-sqlite-run-records-14", "principal": "epic-swarm(lifecycle-propose)", "launched_by": "cli",
+    "launched_at": "2026-09-25T04:30:00.123456+00:00",
+}
+
+
+def runs_table(runs_dir, *rows):
+    conn = sqlite3.connect(runs_dir / "cox.db")
+    conn.execute(f"CREATE TABLE runs ({RUNS_COLUMNS})")
+    for row in rows:
+        conn.execute(f"INSERT INTO runs ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", tuple(row.values()))
+    conn.commit()
+    conn.close()
+
+
 def test_the_file_is_returned_unchanged_even_when_the_store_has_rows(tmp_path):
     body = {"run_id": "r1", "calls": [], "summary": {"calls": 99}}
     (tmp_path / "r1.usage.json").write_text(json.dumps(body))
@@ -118,3 +139,44 @@ def test_connect_readonly_refuses_writes(tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         conn.execute("DELETE FROM node_calls")
     conn.close()
+
+
+def test_usages_lists_file_runs_and_store_only_runs(tmp_path):
+    body = {"run_id": "f1", "calls": [], "summary": {"calls": 0}}
+    (tmp_path / "f1.usage.json").write_text(json.dumps(body))
+    store(tmp_path, ROW)
+    got = run_store.usages(tmp_path)
+    assert list(got) == ["f1", "r1"]
+    assert got["f1"] == body
+    assert got["r1"] == run_store.usage(tmp_path, "r1")
+
+
+def test_usages_takes_a_run_in_both_from_its_file(tmp_path):
+    body = {"run_id": "r1", "calls": [], "summary": {"calls": 99}}
+    (tmp_path / "r1.usage.json").write_text(json.dumps(body))
+    store(tmp_path, ROW)
+    assert run_store.usages(tmp_path) == {"r1": body}
+
+
+def test_usages_without_a_database_lists_the_files_only(tmp_path):
+    (tmp_path / "f1.usage.json").write_text('{"run_id": "f1"}')
+    (tmp_path / "bad.usage.json").write_text("[1]")
+    assert run_store.usages(tmp_path) == {"f1": {"run_id": "f1"}}
+    assert not (tmp_path / "cox.db").exists()
+
+
+def test_usages_lets_the_store_answer_for_a_file_that_is_not_an_object(tmp_path):
+    (tmp_path / "r1.usage.json").write_text("[1, 2]")
+    store(tmp_path, ROW)
+    assert run_store.usages(tmp_path)["r1"]["calls"][0]["id"] == "c3a75b39"
+
+
+def test_run_started_reads_launched_at(tmp_path):
+    runs_table(tmp_path, RUN)
+    assert run_store.run_started(tmp_path, "storage-sqlite-run-records-14") == "2026-09-25T04:30:00.123456+00:00"
+
+
+def test_run_started_is_none_for_a_run_the_store_does_not_have(tmp_path):
+    runs_table(tmp_path, RUN)
+    assert run_store.run_started(tmp_path, "other") is None
+    assert run_store.run_started(tmp_path / "missing", "other") is None
