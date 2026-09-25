@@ -33,3 +33,7 @@ def refuse_taken_run_id(run_id: str, taken: set[str] | frozenset[str]) -> str | 
 
 def land_needs_fetch(has_remote_record: bool, has_task_records: bool) -> bool:
     return has_remote_record and not has_task_records
+
+
+def unfetched(remote_runs: list[str], fetched: set[str] | frozenset[str]) -> list[str]:
+    return [run for run in remote_runs if run not in fetched]
