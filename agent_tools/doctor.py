@@ -206,6 +206,17 @@ def _plugins_row(facts: Mapping) -> dict:
     return {"check": "plugins", "ok": True, "detail": "; ".join(parts)}
 
 
+def _store_row(facts: Mapping, cascade: bool) -> dict:
+    if cascade:
+        return _skip("store")
+    store = facts.get("store", _MISSING)
+    if store is _MISSING:
+        return _not_checked("store")
+    if store.get("reachable"):
+        return {"check": "store", "ok": True, "detail": f"{store.get('kind')}, {store.get('runs')} runs"}
+    return {"check": "store", "ok": False, "detail": store.get("error") or "the store did not answer"}
+
+
 def _workspace_row(facts: Mapping, cascade: bool) -> dict:
     if cascade:
         return _skip("workspace")
@@ -251,7 +262,7 @@ def checks(facts: Mapping) -> list[dict]:
     """Judge a Facts mapping. Returns rows `{"check", "ok", "detail"}` in a
     fixed check order: git, forge, profile, profile paths, harness venv, core
     importable, cartridge, project overlay, skills, provider, plugins,
-    workspace, schema, cast. A fact that was never gathered fails as "not checked",
+    store, workspace, schema, cast. A fact that was never gathered fails as "not checked",
     except `cast` which passes when ungathered; a profile that fails to parse
     fails every row after it as "skipped: no profile"; an empty collection
     where paths, skill roots or workspace dirs belong fails naming that
@@ -269,6 +280,7 @@ def checks(facts: Mapping) -> list[dict]:
         _skills_row(facts, cascade, parsed),
         _provider_row(facts, cascade),
         _plugins_row(facts),
+        _store_row(facts, cascade),
         _workspace_row(facts, cascade),
         _schema_row(facts, cascade),
         _cast_row(facts, cascade),

@@ -14,6 +14,7 @@ _CHECK_ORDER = (
     "skills",
     "provider",
     "plugins",
+    "store",
     "workspace",
     "schema",
     "cast",
@@ -36,6 +37,7 @@ def _good_facts():
         "provider_command": "claude",
         "provider_on_path": True,
         "provider_version": "claude 1.2.3",
+        "store": {"kind": "sqlite", "reachable": True, "error": None, "runs": 593},
         "workspace_dirs": {"/w/work": True, "/w/runs": True, "/w/intake": True},
         "schema_versions": {"cartridges": "1.0", "graphs": "1.0", "tools": "1.0"},
         "cast_seats": {},
@@ -252,7 +254,7 @@ def test_render_lists_every_row_in_order_with_its_own_check_label():
     data_lines = lines[1 : 1 + len(rows)]
     labels = [re.split(r"\s{2,}", line.strip())[0] for line in data_lines]
     assert labels == list(_CHECK_ORDER)
-    assert lines[-1] == "doctor: 14 ok, 0 failing"
+    assert lines[-1] == "doctor: 15 ok, 0 failing"
 
 
 def test_render_marks_a_failing_row_as_fail_and_counts_it():
@@ -261,7 +263,7 @@ def test_render_marks_a_failing_row_as_fail_and_counts_it():
     rows = doctor.checks(facts)
     text = doctor.render(rows)
     assert "FAIL" in text
-    assert "doctor: 13 ok, 1 failing" in text
+    assert "doctor: 14 ok, 1 failing" in text
 
 
 def test_empty_facts_dict_yields_all_rows_not_checked_and_exit_one():
@@ -392,3 +394,174 @@ def test_gather_reads_tools_plugin_names_per_group_sorted(monkeypatch, tmp_path)
     facts = _gather_doctor_facts(tmp_path / "absent.yaml", tmp_path)
     assert facts["plugins_tools"] == {"coxswain.sources": ["alpha", "beta"], "coxswain.forges": [],
                                       "coxswain.trackers": ["linear"]}
+
+
+def _store_row_for(store):
+    return _rows_by_check(doctor.checks(_good_facts() | {"store": store}))["store"]
+
+
+def test_store_row_names_the_kind_and_run_count_when_reachable():
+    assert _store_row_for({"kind": "sqlite", "reachable": True, "error": None, "runs": 593}) == {
+        "check": "store", "ok": True, "detail": "sqlite, 593 runs"}
+    assert _store_row_for({"kind": "postgresql", "reachable": True, "error": None, "runs": 12})["detail"] == "postgresql, 12 runs"
+
+
+def test_store_row_fails_with_the_missing_driver_message_for_postgres():
+    from agent_tools.store_dialect import MISSING_PSYCOPG
+    row = _store_row_for({"kind": "postgresql", "reachable": False, "error": MISSING_PSYCOPG, "runs": None})
+    assert row == {"check": "store", "ok": False, "detail": MISSING_PSYCOPG}
+
+
+def test_store_row_fails_with_the_no_store_yet_message():
+    row = _store_row_for({"kind": "sqlite", "reachable": False,
+                          "error": "no store yet (it is created by the first run)", "runs": None})
+    assert row["ok"] is False
+    assert row["detail"] == "no store yet (it is created by the first run)"
+
+
+def test_store_row_cascades_with_the_profile_and_reads_not_checked_when_ungathered():
+    assert _rows_by_check(doctor.checks(_good_facts() | {"profile_text": None}))["store"]["detail"] == "skipped: no profile"
+    facts = {k: v for k, v in _good_facts().items() if k != "store"}
+    assert _rows_by_check(doctor.checks(facts))["store"]["detail"] == "not checked"
+
+
+def _store_profile(tmp_path, provider_text):
+    (tmp_path / "workspace" / "runs").mkdir(parents=True)
+    provider = tmp_path / "provider.yaml"
+    provider.write_text(provider_text)
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"team: acme\nprovider_profile: {provider}\nworkspace_dir: {tmp_path / 'workspace'}\n")
+    return profile
+
+
+def test_gather_reports_the_run_count_of_a_sqlite_store_and_never_the_url(tmp_path):
+    import sqlite3
+
+    from agent_tools.cli import _gather_doctor_facts
+    profile = _store_profile(tmp_path, "command: x\n")
+    db = tmp_path / "workspace" / "runs" / "cox.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE runs (id TEXT)")
+    conn.executemany("INSERT INTO runs VALUES (?)", [("a",), ("b",), ("c",)])
+    conn.commit()
+    conn.close()
+    store = _gather_doctor_facts(profile, tmp_path)["store"]
+    assert store == {"kind": "sqlite", "reachable": True, "error": None, "runs": 3}
+    assert "sqlite:" not in str(store) and str(db) not in str(store)
+
+
+def test_gather_reports_no_store_yet_without_creating_the_file(tmp_path):
+    from agent_tools.cli import _gather_doctor_facts
+    profile = _store_profile(tmp_path, "command: x\n")
+    store = _gather_doctor_facts(profile, tmp_path)["store"]
+    assert store == {"kind": "sqlite", "reachable": False,
+                     "error": "no store yet (it is created by the first run)", "runs": None}
+    assert not (tmp_path / "workspace" / "runs" / "cox.db").exists()
+
+
+def test_gather_reports_a_postgres_store_without_the_driver_as_unreachable(tmp_path, monkeypatch):
+    import sys
+
+    from agent_tools.cli import _gather_doctor_facts
+    from agent_tools.store_dialect import MISSING_PSYCOPG
+    monkeypatch.setitem(sys.modules, "psycopg", None)
+    url = "postgresql://user:secret@db.example:5432/cox"
+    profile = _store_profile(tmp_path, f"command: x\nstorage_url: {url}\n")
+    store = _gather_doctor_facts(profile, tmp_path)["store"]
+    assert store == {"kind": "postgresql", "reachable": False, "error": MISSING_PSYCOPG, "runs": None}
+    assert "secret" not in str(store)
+
+
+def test_gather_keeps_every_fragment_of_the_url_out_of_a_driver_error(tmp_path, monkeypatch):
+    from agent_tools import store_dialect
+    from agent_tools.cli import _gather_doctor_facts
+    seen = []
+
+    def leaky_connect(url):
+        seen.append(url)
+        raise OSError('invalid percent-encoded token: "s%ZZecret" for user "dbuser" at host "db.example"')
+
+    monkeypatch.setattr(store_dialect, "connect_readonly_url", leaky_connect)
+    url = "postgresql://dbuser:s%ZZecret@db.example:5432/cox?sslmode=require"
+    profile = _store_profile(tmp_path, f"command: x\nstorage_url: {url}\n")
+    store = _gather_doctor_facts(profile, tmp_path)["store"]
+    assert store == {"kind": "postgresql", "reachable": False,
+                     "error": "the store did not answer (OSError)", "runs": None}
+    assert all(fragment not in str(store) for fragment in ("ZZecret", "dbuser", "db.example", "sslmode", "5432"))
+    assert seen == [url + "&connect_timeout=5"]
+
+
+def test_connect_timeout_is_added_once_and_an_explicit_one_is_kept():
+    from agent_tools.cli import _with_connect_timeout
+    assert _with_connect_timeout("postgresql://u@h/db") == "postgresql://u@h/db?connect_timeout=5"
+    assert _with_connect_timeout("postgresql://u@h/db?connect_timeout=30") == "postgresql://u@h/db?connect_timeout=30"
+
+
+def test_gather_names_an_unknown_scheme_instead_of_calling_it_no_store_yet(tmp_path):
+    from agent_tools.cli import _gather_doctor_facts
+    profile = _store_profile(tmp_path, "command: x\nstorage_url: postgress://u:pw@h/db\n")
+    store = _gather_doctor_facts(profile, tmp_path)["store"]
+    assert store["reachable"] is False
+    assert store["error"] == "unsupported store scheme postgress: storage_url must be a postgresql:// or sqlite:/// URL"
+    assert "pw" not in str(store)
+
+
+def test_the_no_store_yet_path_agrees_with_the_file_the_reader_opens(tmp_path, monkeypatch):
+    import sqlite3
+
+    import pytest
+
+    from agent_tools.cli import _sqlite_store_file
+    from agent_tools.store_dialect import connect_readonly_url
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "cox.db"
+    urls = (f"sqlite:///{db}", str(db), "sqlite:///cox.db", "cox.db")
+    for url in urls:
+        assert _sqlite_store_file(url).resolve() == db
+        with pytest.raises(sqlite3.OperationalError):
+            connect_readonly_url(url)
+    sqlite3.connect(db).close()
+    for url in urls:
+        assert _sqlite_store_file(url).exists()
+        connect_readonly_url(url).close()
+
+
+def test_gather_says_a_store_with_no_runs_table_answers_but_is_empty_of_schema(tmp_path):
+    import sqlite3
+
+    from agent_tools.cli import _gather_doctor_facts
+    profile = _store_profile(tmp_path, "command: x\n")
+    sqlite3.connect(tmp_path / "workspace" / "runs" / "cox.db").close()
+    store = _gather_doctor_facts(profile, tmp_path)["store"]
+    assert store == {"kind": "sqlite", "reachable": False, "runs": None,
+                     "error": "the store answers but has no runs table yet (it is created by the first run)"}
+
+
+def test_gather_says_the_same_for_a_postgres_server_with_no_runs_table(tmp_path, monkeypatch):
+    from agent_tools import store_dialect
+    from agent_tools.cli import _gather_doctor_facts
+
+    class UndefinedTable(Exception):
+        pass
+
+    def connect(url):
+        raise UndefinedTable('relation "runs" does not exist at db.example')
+
+    monkeypatch.setattr(store_dialect, "connect_readonly_url", connect)
+    profile = _store_profile(tmp_path, "command: x\nstorage_url: postgresql://u:pw@db.example/cox\n")
+    store = _gather_doctor_facts(profile, tmp_path)["store"]
+    assert store["error"] == "the store answers but has no runs table yet (it is created by the first run)"
+    assert "db.example" not in str(store)
+
+
+def test_a_bare_path_store_reads_as_other_and_still_answers(tmp_path):
+    import sqlite3
+
+    from agent_tools.cli import _gather_doctor_facts
+    db = tmp_path / "bare.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE runs (id TEXT)")
+    conn.commit()
+    conn.close()
+    profile = _store_profile(tmp_path, f"command: x\nstorage_url: {db}\n")
+    assert _gather_doctor_facts(profile, tmp_path)["store"] == {"kind": "other", "reachable": True, "error": None, "runs": 0}

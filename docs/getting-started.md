@@ -133,8 +133,16 @@ cox setup doctor
 ```
 
 is read-only: it checks profile, paths, harness venv, cartridge, skills,
-provider, and workspace, prints a table, and exits 0 when the layer is
+provider, run store, and workspace, prints a table, and exits 0 when the layer is
 ready to launch a run. `--profile PATH` and `--json` both work here too.
+
+On a fresh install the run store does not exist yet, because the first run
+creates it. The `store` row then reads `no store yet (it is created by the
+first run)` and fails, so doctor exits 1 until you have launched once in
+section 8. That is the one failure to expect at this step; fix any other
+failing row first, then rerun doctor after the first run and the `store` row
+reads `sqlite, N runs`. A store with no `runs` table yet reads the same way
+and clears on the first run.
 
 ## 8. A first run
 
@@ -160,6 +168,29 @@ A finished run leaves behind its phase branches and a scratch worktree.
 Under `runs/` it also leaves a pidfile, a log, a `<run-id>-trace` directory,
 and the usage and manifest files that `runs usage` and `runs series` read
 back.
+
+## Running lanes on a second machine
+
+A second machine can launch lanes against the same run store as the first.
+Set it up in this order.
+
+1. Clone the component repositories, as in section 2.
+2. Install cox, with the `postgres` extra so it can talk to a shared
+   Postgres: `pip install 'coxswain-tools[postgres]'`.
+3. Copy the routing profile from the first machine and adjust its paths.
+4. In the provider profile, set `storage_url` to the shared Postgres URL.
+   Without it each machine writes its own local SQLite store.
+5. Run `cox setup doctor` and check the `store` row. It shows the store's
+   kind and run count, for example `postgresql, 12 runs`. It fails with the
+   reason when the store does not answer, after at most 5 seconds for an
+   unreachable host. The row never shows the URL or its credentials.
+6. Launch as in section 8.
+
+The store lease enforces one live run per epic across machines, so a second
+machine cannot start an epic that the first is already running. Two things
+stay per machine for now (roadmap 0.18.0): traces, and the workspace. The
+workspace holds the work items and the task records under `runs/`, so land a
+lane from the machine that ran it.
 
 ## 9. Edit your cartridge
 
