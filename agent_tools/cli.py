@@ -1178,12 +1178,18 @@ def _repo_is_dirty(repo: Path) -> bool:
     return bool(status.stdout.strip())
 
 
+def _taken_run_names(runs_dir: Path) -> list[str]:
+    """Edge. Names in `runs_dir` plus every run id in the store; empty for a runs dir that does not exist."""
+    names = [p.name for p in runs_dir.iterdir()] if runs_dir.is_dir() else []
+    return [*names, *sorted(run_store.run_ids(runs_dir))]
+
+
 def _runs_review(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
         return rc
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
-    run_id = route.next_run_id([p.name for p in runs_dir.iterdir()] if runs_dir.is_dir() else [], "review")
+    run_id = route.next_run_id(_taken_run_names(runs_dir), "review")
     return review_pr.run_review(a.pr, profile, run_id, lambda argv: subprocess.run(argv, capture_output=True, text=True))
 
 
@@ -2334,7 +2340,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         if already is not None:
             print(already)
             return 2
-        run_id = route.next_run_id([p.name for p in runs_dir.iterdir()], prefix)
+        run_id = route.next_run_id(_taken_run_names(runs_dir), prefix)
         needs = {"initiative": a.initiative, "repo": repo}
         if a.fix_attempts is not None:
             needs["fix_attempts"] = a.fix_attempts
@@ -2374,7 +2380,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             else:
                 initiative_md.parent.mkdir(parents=True, exist_ok=True)
                 initiative_md.write_text(initiative_content, encoding="utf-8")
-        run_id = route.next_run_id([p.name for p in runs_dir.iterdir()], a.initiative_id)
+        run_id = route.next_run_id(_taken_run_names(runs_dir), a.initiative_id)
         needs = {"idea": a.idea, "initiative_id": a.initiative_id}
         env_repo = ""
     else:  # cos
@@ -2382,7 +2388,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         if already is not None:
             print(already)
             return 2
-        run_id = route.next_run_id([p.name for p in runs_dir.iterdir()], "cos")
+        run_id = route.next_run_id(_taken_run_names(runs_dir), "cos")
         needs = {}
         env_repo = ""
 

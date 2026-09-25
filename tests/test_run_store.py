@@ -64,6 +64,17 @@ def run_row(run_id, ended_at=ENDED):
     return {"run_id": run_id, "launched_at": "2026-09-25T04:59:39.238479+00:00", "ended_at": ended_at, "status": None if ended_at is None else "ok"}
 
 
+def test_run_ids_lists_every_id_in_the_runs_table(tmp_path):
+    runs_table(tmp_path, run_row("a-1"), run_row("a-3", ended_at=None))
+    assert run_store.run_ids(tmp_path) == {"a-1", "a-3"}
+
+
+def test_run_ids_is_empty_with_no_store_or_no_runs_table(tmp_path):
+    assert run_store.run_ids(tmp_path) == set()
+    store(tmp_path, ROW)
+    assert run_store.run_ids(tmp_path) == set()
+
+
 def test_the_file_is_returned_unchanged_even_when_the_store_has_rows(tmp_path):
     body = {"run_id": "r1", "calls": [], "summary": {"calls": 99}}
     (tmp_path / "r1.usage.json").write_text(json.dumps(body))
