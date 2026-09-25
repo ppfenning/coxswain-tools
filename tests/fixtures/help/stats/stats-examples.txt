@@ -5,6 +5,6 @@ positional arguments:
 
 options:
   -h, --help     show this help message and exit
-  --role ROLE    handoff or review_charter
+  --role ROLE    handoff or review_charter; repeat for several
   --out OUT      write the file to PATH (default: stdout)
   --since SINCE  keep only records dated on or after DATE (YYYY-MM-DD)

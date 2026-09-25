@@ -1195,7 +1195,8 @@
                 "--role"
               ],
               "kwargs": {
-                "help": "handoff or review_charter",
+                "action": "append",
+                "help": "handoff or review_charter; repeat for several",
                 "required": true
               }
             },
