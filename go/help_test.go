@@ -51,6 +51,36 @@ func TestCommandHelpRouteStatusMatchesItsFixture(t *testing.T) {
 	}
 }
 
+func TestCommandHelpRouteChairMatchesItsFixture(t *testing.T) {
+	got, err := CommandHelp(loadTable(t), "route", "chair", fixtureWidth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := fixture(t, "route", "route-chair"); got != want {
+		t.Errorf("route chair help differs\n--- got\n%s\n--- want\n%s", got, want)
+	}
+}
+
+func TestCommandHelpRouteLaunchMatchesItsFixture(t *testing.T) {
+	got, err := CommandHelp(loadTable(t), "route", "launch", fixtureWidth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := fixture(t, "route", "route-launch"); got != want {
+		t.Errorf("route launch help differs\n--- got\n%s\n--- want\n%s", got, want)
+	}
+}
+
+func TestSubcommandHelpRendersTheSubsOwnParser(t *testing.T) {
+	got, err := SubcommandHelp(loadTable(t), "route", "chair", "take", fixtureWidth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "usage: cox route chair take [-h]") || !strings.Contains(got, "options:") {
+		t.Errorf("got %q", got)
+	}
+}
+
 func TestCommandHelpUsageAssessMatchesItsFixture(t *testing.T) {
 	got, err := CommandHelp(loadTable(t), "usage", "assess", fixtureWidth)
 	if err != nil {
@@ -68,6 +98,15 @@ func TestUnknownGroupAndCommandAreErrors(t *testing.T) {
 	}
 	if _, err := CommandHelp(table, "runs", "nope", fixtureWidth); err == nil {
 		t.Error("CommandHelp accepted an unknown command")
+	}
+	if _, err := SubcommandHelp(table, "route", "chair", "nope", fixtureWidth); err == nil {
+		t.Error("SubcommandHelp accepted an unknown subcommand")
+	}
+	if _, err := SubcommandHelp(table, "route", "status", "x", fixtureWidth); err == nil {
+		t.Error("SubcommandHelp accepted a command with no subcommands")
+	}
+	if _, err := SubcommandHelp(table, "nope", "chair", "take", fixtureWidth); err == nil {
+		t.Error("SubcommandHelp accepted an unknown group")
 	}
 }
 
@@ -95,7 +134,7 @@ func TestDescriptionAndEpilogExpandProg(t *testing.T) {
 }
 
 // TestEveryFixtureWalk reports how many fixtures the port already matches. It fails for none of
-// them: the three golden tests above own the bar, this one is the phase 2 backlog.
+// them: the golden tests above own the bar, this one is the phase 2 backlog.
 func TestEveryFixtureWalk(t *testing.T) {
 	table := loadTable(t)
 	files, err := filepath.Glob(filepath.Join(fixtureDir, "*", "*.txt"))
