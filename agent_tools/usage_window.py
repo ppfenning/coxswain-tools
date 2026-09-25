@@ -12,6 +12,7 @@ unmeasured case: pace and projection, no headroom or verdict past `go`.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 from collections.abc import Mapping
@@ -23,9 +24,15 @@ from agent_tools import run_store
 from agent_tools.pacing import Policy, Window
 
 __all__ = [
-    "DEFAULT_POLICY", "block_remaining", "ceiling_remaining", "gather", "gather_weekly",
-    "usage_cost_usd", "weekly_window_from", "window_from",
+    "CCUSAGE_CACHE_S", "DEFAULT_POLICY", "block_remaining", "ceiling_remaining", "gather",
+    "gather_weekly", "usage_cost_usd", "weekly_window_from", "window_from",
 ]
+
+# Every pacing check shells out to ccusage (a ~2.5 s Node process) and they run
+# seconds apart, so a parsed answer is reused for this long. Only a successful
+# parse is cached; a failed run is retried on the next call.
+CCUSAGE_CACHE_S = 60
+_CCUSAGE_CACHE_FILE = ".ccusage-block.json"
 
 # Used wherever the resolved cartridge dict carries no `policy.pacing` key
 # yet (the cross-repository policy has not landed). These are the real
@@ -149,6 +156,35 @@ def _read_usage_files(runs_dir: Path | str, now: datetime) -> list[tuple[datetim
     return usage_files + store_only
 
 
+def _cached_blocks(cached: object, now: datetime) -> dict[str, Any] | None:
+    """The cached ccusage JSON when it is under `CCUSAGE_CACHE_S` old at `now`, else None.
+    A naive or future `at`, or any wrong shape, counts as absent."""
+    if not isinstance(cached, dict) or not isinstance(cached.get("blocks"), dict):
+        return None
+    try:
+        at = datetime.fromisoformat(cached["at"])
+    except (TypeError, ValueError):
+        return None
+    if at.tzinfo is None:
+        return None
+    return cached["blocks"] if 0 <= (now - at).total_seconds() < CCUSAGE_CACHE_S else None
+
+
+def _read_ccusage_cache(runs_dir: Path | str, now: datetime) -> dict[str, Any] | None:
+    try:
+        cached = json.loads((Path(runs_dir) / _CCUSAGE_CACHE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return _cached_blocks(cached, now)
+
+
+def _write_ccusage_cache(runs_dir: Path | str, now: datetime, blocks: dict[str, Any]) -> None:
+    with contextlib.suppress(OSError):
+        (Path(runs_dir) / _CCUSAGE_CACHE_FILE).write_text(
+            json.dumps({"at": now.isoformat(), "blocks": blocks}), encoding="utf-8",
+        )
+
+
 def gather(
     runs_dir: Path | str,
     now: datetime,
@@ -156,18 +192,22 @@ def gather(
     window_hours: float = 5.0,
     ceiling_usd: float | None = None,
 ) -> Window:
-    """Impure edge: launches ccusage, reads the run directory's usage files,
-    and folds whichever answers into a `Window` via `window_from`."""
-    blocks_json: dict[str, Any] = {}
-    try:
-        result = run(
-            ["npx", "-y", "ccusage@latest", "blocks", "--active", "--json"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode == 0:
-            blocks_json = json.loads(result.stdout)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
-        blocks_json = {}
+    """Impure edge: launches ccusage (or reuses its answer cached under a minute),
+    reads the run directory's usage files, and folds whichever answers into a
+    `Window` via `window_from`."""
+    cached = _read_ccusage_cache(runs_dir, now)
+    blocks_json: dict[str, Any] = {} if cached is None else cached
+    if cached is None:
+        try:
+            result = run(
+                ["npx", "-y", "ccusage@latest", "blocks", "--active", "--json"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                blocks_json = json.loads(result.stdout)
+                _write_ccusage_cache(runs_dir, now, blocks_json)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+            blocks_json = {}
 
     return window_from(blocks_json, _read_usage_files(runs_dir, now), now, window_hours, ceiling_usd)
 

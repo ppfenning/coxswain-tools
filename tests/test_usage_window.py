@@ -133,6 +133,57 @@ def test_gather_falls_back_when_ccusage_returns_no_blocks(tmp_path):
     assert window.spent_usd == 2.0
 
 
+def _counting_run(*outcomes):
+    """A fake `run` answering with each outcome in turn, plus its call log. An
+    exception outcome is raised; anything else is returned."""
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        outcome = outcomes[min(len(calls), len(outcomes) - 1)]
+        calls.append(argv)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    return fake_run, calls
+
+
+def _answer():
+    return _FakeResult(0, f'{{"blocks": [{_block_json()}]}}')
+
+
+def test_two_gathers_thirty_seconds_apart_run_ccusage_once(tmp_path):
+    fake_run, calls = _counting_run(_answer())
+    first = gather(runs_dir=tmp_path, now=_NOW, run=fake_run)
+    second = gather(runs_dir=tmp_path, now=_NOW + timedelta(seconds=30), run=fake_run)
+    assert (len(calls), first.spent_usd, second.spent_usd) == (1, 30.0, 30.0)
+
+
+def test_two_gathers_ninety_seconds_apart_run_ccusage_twice(tmp_path):
+    fake_run, calls = _counting_run(_answer())
+    gather(runs_dir=tmp_path, now=_NOW, run=fake_run)
+    gather(runs_dir=tmp_path, now=_NOW + timedelta(seconds=90), run=fake_run)
+    assert len(calls) == 2
+
+
+def test_a_failed_ccusage_is_not_cached(tmp_path):
+    import subprocess
+    for failure in (_FakeResult(1, ""), subprocess.TimeoutExpired("npx", 30)):
+        fake_run, calls = _counting_run(failure, _answer())
+        gather(runs_dir=tmp_path, now=_NOW, run=fake_run)
+        assert not (tmp_path / ".ccusage-block.json").exists()
+        window = gather(runs_dir=tmp_path, now=_NOW + timedelta(seconds=1), run=fake_run)
+        assert (len(calls), window.spent_usd) == (2, 30.0)
+        (tmp_path / ".ccusage-block.json").unlink()
+
+
+def test_a_malformed_cache_file_is_ignored(tmp_path):
+    (tmp_path / ".ccusage-block.json").write_text("not json", encoding="utf-8")
+    fake_run, calls = _counting_run(_answer())
+    window = gather(runs_dir=tmp_path, now=_NOW, run=fake_run)
+    assert (len(calls), window.spent_usd) == (1, 30.0)
+
+
 def test_ccusage_path_assessment_traces_back_to_the_blocks_own_numbers():
     window = window_from({"blocks": [_active_block()]}, [], _NOW)
     result = assess(window, DEFAULT_POLICY, _NOW)
