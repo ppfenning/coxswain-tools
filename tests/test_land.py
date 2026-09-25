@@ -1368,6 +1368,10 @@ def test_wait_checks_reads_the_sha_of_the_repos_own_head_and_runs_gh_there(monke
     assert cli._wait_checks(tmp_path, 180.0, sleep=lambda s: None) == (True, "green")
     assert head != main and len(gh_calls) == 2
     assert all(head in argv[-1] and main not in argv[-1] and cwd == tmp_path for argv, cwd in gh_calls)
+    gh_calls.clear()
+    assert cli._wait_checks(tmp_path, 180.0, sleep=lambda s: None, ref="main") == (True, "green")
+    assert len(gh_calls) == 2
+    assert all(main in argv[-1] and head not in argv[-1] for argv, _ in gh_calls)
 
 
 # --- land.jsonl: one row per applied land that reached its steps ---
@@ -1490,11 +1494,11 @@ def test_a_profile_naming_github_routes_pr_create_to_the_github_forge(repo, tmp_
     monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
     monkeypatch.setattr(forge_github, "find_open_prs", lambda repo, branch: [])
     monkeypatch.setattr(forge_github, "push", lambda repo, branch: (calls.append("push") or True, branch))
-    monkeypatch.setattr(forge_github, "open_pr", lambda repo, title, body: (calls.append("open_pr") or True, "https://x/pull/7"))
+    monkeypatch.setattr(forge_github, "open_pr", lambda repo, title, body, **refs: (calls.append(("open_pr", refs)) or True, "https://x/pull/7"))
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), *argv])
     out = capsys.readouterr().out
     assert rc == 3, out
-    assert calls == ["push", "open_pr"]
+    assert calls == ["push", ("open_pr", {"head": "pr/seams-task", "base": "main"})]
     assert "forge: github" in out.splitlines()
     assert "pr_create: https://x/pull/7" in out
 
@@ -1505,6 +1509,34 @@ def test_a_profile_naming_an_unknown_forge_refuses_with_exit_2(repo, tmp_path, c
     assert rc == 2
     assert capsys.readouterr().out.splitlines()[-1] == "land: no forge named nope (built in: local, github)"
     assert "pr/seams-task" not in cleanup.git_branches(repo)
+
+
+def test_a_github_land_hands_the_forge_the_planned_head_base_and_checks_ref(repo, tmp_path, capsys, monkeypatch):
+    argv = _forge_land(tmp_path, "forge: github\n")
+    calls = []
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    monkeypatch.setattr(forge_github, "find_open_prs", lambda repo, branch: [])
+    monkeypatch.setattr(forge_github, "push", lambda repo, branch: (True, branch))
+    monkeypatch.setattr(forge_github, "open_pr", lambda repo, title, body, *, head=None, base=None:
+                        (calls.append(("open_pr", head, base)) or True, "https://x/pull/7"))
+    monkeypatch.setattr(forge_github, "wait_checks", lambda repo, timeout_s, *, ref="HEAD":
+                        (calls.append(("wait_checks", ref)) or True, "green"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--gate", "phase", *argv])
+    out = capsys.readouterr().out
+    assert rc == 3, out
+    assert calls == [("open_pr", "pr/seams-task", "main"), ("wait_checks", "pr/seams-task")]
+
+
+def test_a_land_refuses_before_any_step_when_the_forge_predates_explicit_refs(repo, tmp_path, capsys, monkeypatch):
+    argv = _forge_land(tmp_path, "forge: github\n")
+    pushed = []
+    monkeypatch.setattr(forge_github, "find_open_prs", lambda repo, branch: [])
+    monkeypatch.setattr(forge_github, "push", lambda repo, branch: (pushed.append(branch) or True, branch))
+    monkeypatch.setattr(forge_github, "open_pr", lambda repo, title, body: (True, "https://x/pull/7"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), *argv])
+    out = capsys.readouterr().out
+    assert rc == 2 and pushed == []
+    assert "land: refusing, forge github does not accept open_pr(head), open_pr(base)" in out
 
 
 def test_the_ticket_plans_merge_step_carries_what_the_local_forge_reads():
@@ -1523,6 +1555,22 @@ def test_the_phase_plans_merge_step_carries_what_the_local_forge_reads():
         "kind": "merge", "squash": True, "delete_branch": True,
         "branch": "epic/x/seams", "default_branch": "trunk", "subject": "epic x: seams",
     }
+
+
+def test_the_ticket_plans_pr_and_checks_steps_name_their_branch_and_base():
+    steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Add seams module"]}, "trunk")
+    pr = next(s for s in steps if s["kind"] == "pr_create")
+    assert (pr["head"], pr["base"]) == ("pr/seams-task", "trunk")
+    assert next(s for s in steps if s["kind"] == "wait_checks") == {"kind": "wait_checks", "branch": "pr/seams-task"}
+
+
+def test_the_phase_plans_pr_and_checks_steps_name_their_branch_and_base():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    steps = land.land_plan(phase_record, {}, "trunk", items=[{"id": "seams-task", "status": "done"}],
+                           task_records=[_record(status="done")])
+    pr = next(s for s in steps if s["kind"] == "pr_create")
+    assert (pr["head"], pr["base"]) == ("epic/x/seams", "trunk")
+    assert next(s for s in steps if s["kind"] == "wait_checks") == {"kind": "wait_checks", "branch": "epic/x/seams"}
 
 
 def test_land_phase_record_reads_the_store_manifest_when_no_file_exists(tmp_path):

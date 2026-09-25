@@ -1063,9 +1063,9 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
     if kind == "push":
         return forge_module.push(repo, step["branch"])
     if kind == "pr_create":
-        return forge_module.open_pr(repo, step["title"], step["body"])
+        return forge_module.open_pr(repo, step["title"], step["body"], head=step.get("head"), base=step.get("base"))
     if kind == "wait_checks":
-        return forge_module.wait_checks(repo, float(step.get("timeout_s", 180)))
+        return forge_module.wait_checks(repo, float(step.get("timeout_s", 180)), ref=step.get("branch", "HEAD"))
     if kind == "merge":
         return forge_module.merge(repo, step)
     if kind == "clean":
@@ -1215,6 +1215,10 @@ def _runs_land(a: argparse.Namespace) -> int:
     forge_module = forge.forge_for(forge_choice)
     if forge_module is None:
         print(f"land: no forge named {forge_choice} (built in: local, github)")
+        return 2
+    stale = forge.missing_refs(forge_module)
+    if stale:
+        print(f"land: refusing, forge {forge_choice} does not accept {', '.join(stale)}; see agent_tools/forge.py")
         return 2
     print(f"forge: {forge_choice}")
     if _repo_is_dirty(repo):
