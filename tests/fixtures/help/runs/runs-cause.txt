@@ -1,0 +1,13 @@
+usage: cox runs cause [-h] [--note NOTE] [--runs-dir RUNS_DIR] [--profile PROFILE]
+                      run_id task_id {ticket,code,harness,unknown}
+
+positional arguments:
+  run_id
+  task_id
+  {ticket,code,harness,unknown}
+
+options:
+  -h, --help            show this help message and exit
+  --note NOTE           free text kept beside the cause
+  --runs-dir RUNS_DIR   override: resolve task records here instead of the profile's workspace_dir
+  --profile PROFILE

@@ -1,10 +1,11 @@
 usage: cox runs [-h]
-                {usage,trace,clean,land,recover,series,events,top,bar,notify,detail,stranded} ...
+                {usage,trace,clean,land,recover,series,events,top,bar,notify,detail,stranded,cause}
+                ...
 
 What a harness run recorded, and cleaning up after it.
 
 positional arguments:
-  {usage,trace,clean,land,recover,series,events,top,bar,notify,detail,stranded}
+  {usage,trace,clean,land,recover,series,events,top,bar,notify,detail,stranded,cause}
     usage               usage stats and cost for one run
     trace               the tool-call trace for one run
     clean               delete a run's worktree and branches locally
@@ -18,6 +19,7 @@ positional arguments:
     notify              desktop notifications for exits, quarantines, budget stops and cost
     detail              one run's timeline, objection and last tool calls
     stranded            every approved task record whose work item is not done, with its remedy
+    cause               record why one run's attempt at a task was quarantined
 
 options:
   -h, --help            show this help message and exit
