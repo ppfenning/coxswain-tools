@@ -40,3 +40,13 @@ def pytest_configure(config):
     import test_cli_help_snapshot
 
     test_cli_help_snapshot._write()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_store_url():
+    """run_store caches the store URL per process; each test starts without it."""
+    from agent_tools import run_store
+
+    run_store._store_url_for.cache_clear()
+    yield
+    run_store._store_url_for.cache_clear()
