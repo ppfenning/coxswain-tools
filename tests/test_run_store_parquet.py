@@ -35,6 +35,20 @@ def stand_in_zst(runs_dir, monkeypatch, rows, run="r1", day="2026/09/25"):
     path.write_text("".join(json.dumps({"run_id": run, **r}) + "\n" for r in rows))
 
 
+@pytest.fixture(autouse=True)
+def _no_routing_profile(tmp_path, monkeypatch):
+    """A machine's own routing profile must not point these tests at its traces."""
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path / "no-such-profile.yaml"))
+
+
+def profile_with(tmp_path, monkeypatch, provider_lines):
+    provider = tmp_path / "provider.yaml"
+    provider.write_text(provider_lines)
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(f"provider_profile: {provider}\n")
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(routing))
+
+
 def test_the_pure_part_filters_by_call_id_orders_by_seq_and_decodes_the_event_text():
     rows = [row("c1", 2, {"n": "c"}), row("c2", 0, {"n": "x"}), row("c1", 0, {"n": "a"}), row("c1", 1, {"n": "b"})]
     assert run_store._parquet_call_events(rows, "c1") == [{"n": "a"}, {"n": "b"}, {"n": "c"}]
@@ -109,3 +123,35 @@ def test_parquet_readable_is_ok_for_a_local_directory_and_unreachable_for_a_miss
     pytest.importorskip("pyarrow.fs")
     assert run_store.parquet_readable(TracesRoot(str(tmp_path), False)) == run_store.ParquetCheck(True, "ok")
     assert run_store.parquet_readable(TracesRoot(str(tmp_path / "gone"), False)) == run_store.ParquetCheck(False, "root unreachable")
+
+
+def test_a_provider_profile_traces_url_outside_the_runs_dir_is_where_parquet_events_are_read(tmp_path, monkeypatch):
+    elsewhere = tmp_path / "elsewhere"
+    write_parquet(elsewhere, [row("c1", 0, {"n": "profile"})])
+    profile_with(tmp_path, monkeypatch, f"traces_url: {elsewhere / 'traces'}\n")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    assert run_store.call_events(runs_dir, "r1", {"id": "c1"}) == [{"n": "profile"}]
+
+
+def test_with_no_traces_url_the_runs_dir_traces_directory_is_read(tmp_path, monkeypatch):
+    write_parquet(tmp_path, [row("c1", 0, {"n": "local"})])
+    profile_with(tmp_path, monkeypatch, "storage_url: sqlite:///unused.db\n")
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1"}) == [{"n": "local"}]
+
+
+def test_two_calls_of_one_run_read_the_parquet_file_once(tmp_path, monkeypatch):
+    pq = pytest.importorskip("pyarrow.parquet")
+    write_parquet(tmp_path, [row("c1", 0, {"n": "a"}), row("c2", 0, {"n": "b"})])
+    reads = []
+    real = pq.read_table
+    monkeypatch.setattr(pq, "read_table", lambda *a, **k: reads.append(a) or real(*a, **k))
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1"}) == [{"n": "a"}]
+    assert run_store.call_events(tmp_path, "r1", {"id": "c2"}) == [{"n": "b"}]
+    assert len(reads) == 1
+
+
+def test_a_run_with_no_parquet_file_is_found_once_the_file_appears(tmp_path):
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1"}) is None
+    write_parquet(tmp_path, [row("c1", 0, {"n": "late"})])
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1"}) == [{"n": "late"}]

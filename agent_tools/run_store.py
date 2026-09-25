@@ -24,7 +24,7 @@ from typing import Any
 
 from agent_tools import epic
 from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeholder
-from agent_tools.store_url import TracesRoot, read_provider_profile, resolve_store_url, traces_root
+from agent_tools.store_url import TracesRoot, profile_traces_root, read_provider_profile, resolve_store_url
 
 try:
     import psycopg
@@ -129,6 +129,18 @@ def _store_url_for(runs_dir: str, routing_profile: str) -> str:
     routing = read_provider_profile(routing_profile)
     named = routing.get("provider_profile")
     return resolve_store_url(named if isinstance(named, str) else "", runs_dir)
+
+
+def _traces_root(runs_dir: Path) -> TracesRoot:
+    """Edge. The traces root: the `traces_url` of the provider profile the routing profile names, else `<runs_dir>/traces`."""
+    return _traces_root_for(str(runs_dir), os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
+
+
+@functools.lru_cache(maxsize=32)
+def _traces_root_for(runs_dir: str, routing_profile: str) -> TracesRoot:
+    """Cached per process, like `_store_url_for`: a call's events are asked for once per call."""
+    named = read_provider_profile(routing_profile).get("provider_profile")
+    return profile_traces_root(read_provider_profile(named) if isinstance(named, str) and named else {}, runs_dir)
 
 
 def _open(runs_dir: Path) -> tuple[Any, str] | None:
@@ -546,11 +558,28 @@ def _parquet_rows(root: TracesRoot, run_id: str) -> list[dict] | None:
     return [row for path in found for row in pq.read_table(path, filesystem=fs, columns=_PARQUET_COLUMNS).to_pylist()]
 
 
+@functools.lru_cache(maxsize=8)
+def _found_parquet_rows(url: str, remote: bool, run_id: str) -> tuple[dict, ...]:
+    """Raises LookupError on a miss, which lru_cache does not store: a live run's file can appear later."""
+    rows = _parquet_rows(TracesRoot(url, remote), run_id)
+    if not rows:
+        raise LookupError(run_id)
+    return tuple(rows)
+
+
+def _parquet_rows_once(root: TracesRoot, run_id: str) -> tuple[dict, ...] | None:
+    """Edge: `_parquet_rows` read once per process for a run whose file exists; a run with none is asked again."""
+    try:
+        return _found_parquet_rows(root.url, root.remote, run_id)
+    except LookupError:
+        return None
+
+
 def call_events(runs_dir: Path, run_id: str, call: Mapping[str, Any]) -> list[dict] | None:
     """A call's stream events by `call["id"]`, first source holding any wins: the run's Parquet file, then the
     `.jsonl.zst` day files, then the loose `trace` file. None when there is no trace store and no loose file."""
     call_id = str(call.get("id"))
-    rows = _parquet_rows(traces_root(None, runs_dir), run_id)
+    rows = _parquet_rows_once(_traces_root(Path(runs_dir)), run_id)
     if rows and (found := _parquet_call_events(rows, call_id)):
         return found
     traces = Path(runs_dir) / TRACES_DIRNAME
