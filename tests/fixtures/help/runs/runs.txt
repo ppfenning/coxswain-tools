@@ -1,11 +1,11 @@
 usage: cox runs [-h]
-                {usage,trace,clean,land,review,recover,series,events,top,bar,notify,detail,stranded,cause}
+                {usage,trace,clean,land,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause}
                 ...
 
 What a harness run recorded, and cleaning up after it.
 
 positional arguments:
-  {usage,trace,clean,land,review,recover,series,events,top,bar,notify,detail,stranded,cause}
+  {usage,trace,clean,land,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause}
     usage               usage stats and cost for one run
     trace               the tool-call trace for one run
     clean               delete a run's worktree and branches locally
@@ -14,6 +14,7 @@ positional arguments:
     recover             merge an approved task's commit into its phase branch after an escalated
                         merge
     series              per-run summary rows across a runs directory
+    wait                block until a busy lane's run exits, then print its outcome lines
     events              poll a run's log for structured events
     top                 live table of busy lanes (runs in flight); --once prints it and exits
     bar                 one Waybar JSON line: busy lanes, cost, class idle|running|attention

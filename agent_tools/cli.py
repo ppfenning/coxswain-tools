@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import uuid
 from pathlib import Path
@@ -1418,6 +1419,44 @@ def _runs_recover(a: argparse.Namespace) -> int:
     print(diff.stdout.strip())
     _close_approved_item(item_path)
     return 0
+
+
+def _lane_live(runs_dir: Path, run: str) -> bool:
+    pidfile = runs_dir / f"{run}.pid"
+    try:
+        pid = int(pidfile.read_text().strip())
+    except (OSError, ValueError):
+        pid = None
+    return epic.run_live(pid, pidfile)
+
+
+def _lane_outcome(runs_dir: Path, run: str, at: str) -> dict:
+    try:
+        log = (runs_dir / f"{run}.log").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        log = ""
+    s = epic.summarize_log(log)
+    return {"run": run, "at": at, "approved": s["approved"], "quarantined": s["quarantined"], "summary": s["summary"]}
+
+
+def _runs_wait(a: argparse.Namespace) -> int:
+    d = Path(a.runs_dir)
+    busy = [pf.stem for pf in sorted(d.glob("*.pid")) if _lane_live(d, pf.stem)]
+    if not busy:
+        print("all lanes clear")
+        return 2
+    exited, still = epic.wait_lanes(busy, lambda r: _lane_live(d, r), time.monotonic, time.sleep, a.max_seconds, a.interval)
+    at = datetime.datetime.now(datetime.UTC).astimezone().strftime("%H:%M")  # when the exit was noticed, not when it happened
+    outcomes = [_lane_outcome(d, r, at) for r in exited]
+    if a.json:
+        print(json.dumps({"exited": outcomes, "busy": still}, indent=2))
+    elif not outcomes:
+        print(f"still busy: {' '.join(still)}")
+    else:
+        for o in outcomes:
+            print(f"exited {o['run']} at {o['at']}")
+            print("\n".join([*o["approved"], *o["quarantined"], *([o["summary"]] if o["summary"] else [])]))
+    return 0 if outcomes else 3
 
 
 def _epic_watch(a: argparse.Namespace) -> int:
@@ -3196,6 +3235,14 @@ RUNS_COMMANDS = [
         "series", "runs", "per-run summary rows across a runs directory",
         (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"}), commands.Arg(("--append",))),
         _runs_series, False, (),
+    ),
+    commands.Command(
+        "wait", "runs", "block until a busy lane's run exits, then print its outcome lines",
+        (
+            commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--max-seconds",), {"type": float, "default": 3600}),
+            commands.Arg(("--interval",), {"type": float, "default": 15}), commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _runs_wait, False, (),
     ),
     commands.Command(
         "events", "runs", "poll a run's log for structured events",

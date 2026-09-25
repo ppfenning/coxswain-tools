@@ -1,0 +1,9 @@
+usage: cox runs wait [-h] [--runs-dir RUNS_DIR] [--max-seconds MAX_SECONDS] [--interval INTERVAL]
+                     [--json]
+
+options:
+  -h, --help            show this help message and exit
+  --runs-dir RUNS_DIR
+  --max-seconds MAX_SECONDS
+  --interval INTERVAL
+  --json

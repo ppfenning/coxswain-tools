@@ -51,6 +51,7 @@ cox runs land RUN_ID --repo REPO [--task TASK] [--phase PHASE] [--label LABEL] [
 cox runs review --pr PR [--profile PROFILE]   review a contributor PR with the review graph and post the verdict
 cox runs recover RUN_ID TASK_ID --repo REPO [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run]   merge an approved task's commit into its phase branch after an escalated merge
 cox runs series [--runs-dir RUNS_DIR] [--json] [--append APPEND]   per-run summary rows across a runs directory
+cox runs wait [--runs-dir RUNS_DIR] [--max-seconds MAX_SECONDS] [--interval INTERVAL] [--json]   block until a busy lane's run exits, then print its outcome lines
 cox runs events [--runs-dir RUNS_DIR] [--follow] [--json]   poll a run's log for structured events
 cox runs top [--runs-dir RUNS_DIR] [--interval INTERVAL] [--once]   live table of busy lanes (runs in flight); --once prints it and exits
 cox runs bar [--runs-dir RUNS_DIR]   one Waybar JSON line: busy lanes, cost, class idle|running|attention
