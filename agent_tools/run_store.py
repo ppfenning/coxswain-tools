@@ -34,9 +34,9 @@ except ImportError:
     _DB_ERRORS = (sqlite3.DatabaseError,)
 
 __all__ = [
-    "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly", "lease",
-    "parquet_readable", "phase_manifests", "phase_names", "run_ids", "run_spans", "run_started", "store_usages", "summarize",
-    "usage", "usages",
+    "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly",
+    "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
+    "run_started", "store_usages", "summarize", "usage", "usages",
 ]
 
 STORE_FILENAME = "cox.db"
@@ -145,11 +145,14 @@ def connect_readonly(runs_dir: Path) -> Any | None:
     return None if opened is None else opened[0]
 
 
+def _lease_name(run_id: str) -> str:
+    # mirrors graphs `harness/run_lease.lease_name`: the lease is per prefix, so `x-3` and `x-4` share `runs:x`
+    return "runs:" + re.sub(r"-\d+$", "", run_id)
+
+
 def lease(runs_dir: Path, run_id: str) -> tuple[str, str, str] | None:
     """Edge. The (holder, expires_at, heartbeat_at) of the store lease for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
-    # mirrors graphs `harness/run_lease.lease_name`: the lease is per prefix, so `x-3` and `x-4` share `runs:x`
-    name = "runs:" + re.sub(r"-\d+$", "", run_id)
-    return _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S)).get(name)
+    return _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S)).get(_lease_name(run_id))
 
 
 _LEASE_SNAPSHOT_S = 2  # one read of the leases table serves every liveness check within this window
@@ -169,6 +172,60 @@ def _lease_table(runs_dir: str, _window: int) -> dict[str, tuple[str, str, str]]
     finally:
         conn.close()
     return {r["name"]: (r["holder"], r["expires_at"], r["heartbeat_at"]) for r in rows}
+
+
+@dataclass(frozen=True)
+class Lane:
+    """A live lease joined to its newest run row. `host` is None when the store's `runs` table has no `host` column."""
+
+    run: str
+    host: str | None
+    launched_at: str
+    heartbeat_at: str
+
+
+def _runs_columns(conn: Any, token: str) -> set[str]:
+    """Edge. The column names of `runs`, asked of the backend: a failed SELECT would abort a Postgres transaction."""
+    if token == placeholder("postgres://"):
+        sql = "SELECT column_name AS name FROM information_schema.columns WHERE table_name = {p} AND table_schema = current_schema()"
+        return {r["name"] for r in conn.execute(_sql(sql, token), ("runs",)).fetchall()}
+    return {r["name"] for r in conn.execute("PRAGMA table_info(runs)").fetchall()}
+
+
+def _newest_run(conn: Any, token: str, name: str, host_expr: str) -> Any | None:
+    """Edge. The run row of lease `name`'s prefix with the latest `launched_at`; None when the prefix has no run."""
+    prefix = name.removeprefix("runs:")
+    like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "-%"
+    sql = _sql(
+        f"SELECT run_id, launched_at, {host_expr} FROM runs WHERE (run_id = {{p}} OR run_id LIKE {{p}} ESCAPE '\\') ORDER BY launched_at DESC",
+        token,
+    )
+    return next((r for r in conn.execute(sql, (prefix, like)).fetchall() if _lease_name(r["run_id"]) == name), None)
+
+
+def live_lanes(runs_dir: Path, now: str) -> list[Lane]:
+    """Edge. Every `runs:` lease with `expires_at` later than `now` (ISO UTC, passed in), joined to its prefix's newest run row, by lease name.
+
+    A lease with no run row is skipped. Empty with no store or an unreadable one."""
+    table = _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S))
+    live = sorted((name, beat) for name, (_, expires, beat) in table.items() if name.startswith("runs:") and expires > now)
+    opened = _open(runs_dir) if live else None
+    if opened is None:
+        return []
+    conn, token = opened
+    try:
+        host_expr = "host" if "host" in _runs_columns(conn, token) else "NULL AS host"
+        joined = [(_newest_run(conn, token, name, host_expr), beat) for name, beat in live]
+    except _DB_ERRORS:
+        return []
+    finally:
+        conn.close()
+    return [Lane(r["run_id"], r["host"], r["launched_at"], beat) for r, beat in joined if r is not None]
+
+
+def remote_lanes(lanes: Sequence[Lane], local_runs: Collection[str]) -> list[Lane]:
+    """Pure: the lanes whose run no local pidfile names, in input order. A run with a pidfile is local even when its lease is live."""
+    return [lane for lane in lanes if lane.run not in local_runs]
 
 
 def run_ids(runs_dir: Path) -> set[str]:
