@@ -8,6 +8,7 @@ from agent_tools.store_cli import (
     LeaseError,
     LeaseGranted,
     LeaseRefused,
+    LeaseReleased,
     NotAvailable,
     NotInStore,
 )
@@ -80,3 +81,14 @@ def test_a_missing_harness_is_not_available_and_runs_nothing(monkeypatch, tmp_pa
     monkeypatch.setattr(store_cli.subprocess, "run", boom)
     assert store_cli.mark_landed(tmp_path, "r", "p", "t", "u", "a") == NotAvailable()
     assert store_cli.lease_release(tmp_path, "chair", "me", 1) == NotAvailable()
+
+
+def test_lease_exit_0_with_null_epoch_and_holder_is_released():
+    assert store_cli.parse_lease(0, '{"epoch": null, "holder": null, "ok": true}') == LeaseReleased()
+
+
+def test_lease_exit_0_is_released_only_with_both_keys_present_and_null():
+    bare = '{"ok": true}'
+    mixed = '{"epoch": null, "holder": "me", "ok": true}'
+    assert store_cli.parse_lease(0, bare) == LeaseError(f"exit 0: {bare}")
+    assert store_cli.parse_lease(0, mixed) == LeaseError(f"exit 0: {mixed}")
