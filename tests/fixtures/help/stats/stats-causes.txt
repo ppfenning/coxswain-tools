@@ -1,0 +1,7 @@
+usage: cox stats causes [-h] [--runs-dir RUNS_DIR] [--since SINCE] [--json]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
+  --since SINCE        keep only rows dated on or after DATE (YYYY-MM-DD)
+  --json

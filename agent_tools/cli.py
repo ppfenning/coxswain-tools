@@ -67,6 +67,7 @@ from agent_tools import (
     setup_install,
     setup_screen,
     sources,
+    stats_causes,
     stats_chair,
     stats_examples,
     stats_gates,
@@ -208,6 +209,15 @@ def _stats_tiers(a: argparse.Namespace) -> int:
         print(f"cox stats tiers: --since must be a date as YYYY-MM-DD, got {a.since!r}", file=sys.stderr)
         return 2
     return stats_tiers_cmd.run(a.db, a.since, a.min_samples, a.json)
+
+
+def _stats_causes(a: argparse.Namespace) -> int:
+    if a.since is not None and not _canonical_date(a.since):
+        print(f"cox stats causes: --since must be a date as YYYY-MM-DD, got {a.since!r}", file=sys.stderr)
+        return 2
+    summaries = stats_causes.summarise(run_store.attempt_causes(Path(a.runs_dir), a.since or ""))
+    print(json.dumps(stats_causes.to_json(summaries), indent=2) if a.json else "\n".join(stats_causes.render_lines(summaries)))
+    return 0
 
 
 def _stats_gates(a: argparse.Namespace) -> int:
@@ -3795,6 +3805,15 @@ STATS_COMMANDS = [
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
         _stats_tiers, False, (),
+    ),
+    commands.Command(
+        "causes", "stats", "quarantined attempts by cause and kind, with sample reasons",
+        (
+            commands.Arg(("--runs-dir",), {"default": "runs"}),
+            commands.Arg(("--since",), {"default": None, "help": "keep only rows dated on or after DATE (YYYY-MM-DD)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _stats_causes, False, (),
     ),
     commands.Command(
         "gates", "stats", "what each review, validation and plan gate costs and how often it changes the outcome",
