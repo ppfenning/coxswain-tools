@@ -1,2 +1,0 @@
-stop: weekly spend 95% of weekly ceiling (hard stop at 93%)
-exit 4
