@@ -144,7 +144,9 @@ with. `forge` names how `cox runs land` lands work: `local` (the default,
 plain git: the task commit fast-forwards the default branch after the land's
 own checks pass, then pushes when `origin` exists) or `github` (a pull
 request, its checks, and a squash merge, through `gh`). Other forges register
-by entry point under `coxswain.forges`. `--profile PATH` overrides the location for one command,
+by entry point under `coxswain.forges`. Integrations that name a vendor (intake sources, forges,
+trackers) live in [ppfenning/coxswain-plugins](https://github.com/ppfenning/coxswain-plugins); install
+it beside `cox`. `--profile PATH` overrides the location for one command,
 `AGENT_TOOLS_PROFILE` overrides it for a shell, and the default path is read
 when neither is set. Without a profile, `route context` prints one line and
 exits 0; `file`, `launch` and `status` exit 2 and name the path they looked
