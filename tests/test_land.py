@@ -438,6 +438,21 @@ def test_execute_cherry_pick_resolves_by_commit_range_not_by_subject_text(repo):
     assert (repo / "f").read_text() == "y"
 
 
+def test_execute_cherry_pick_lands_a_child_whose_stacked_parent_already_merged_as_a_squash(repo):
+    # The child branch carries its parent's commit and its own; main has the parent's patch under another message.
+    sp.run(["git", "-C", repo, "checkout", "-qb", "agents/epic-x-6/child", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
+    (repo / "g").write_text("child"); sp.run(["git", "-C", repo, "add", "-A"], check=True, env=_ENV)
+    sp.run(["git", "-C", repo, "commit", "-qm", "Add child"], check=True, env=_ENV)
+    sp.run(["git", "-C", repo, "checkout", "-q", "main"], check=True, env=_ENV)
+    (repo / "f").write_text("y"); sp.run(["git", "-C", repo, "commit", "-aqm", "Add seams module (#90)"], check=True, env=_ENV)
+    ok, detail = cli._execute_land_step(repo, {
+        "kind": "cherry_pick", "branch": "agents/epic-x-6/child", "commit_subject": "Add child",
+        "onto": "pr/child", "from": "main",
+    })
+    assert ok, detail
+    assert (repo / "g").read_text() == "child"
+
+
 def test_execute_cherry_pick_conflict_reports_failure_without_raising_and_leaves_the_repo_clean(repo):
     sp.run(["git", "-C", repo, "commit", "--allow-empty", "-qm", "noop"], check=True, env=_ENV)
     (repo / "f").write_text("conflicting"); sp.run(["git", "-C", repo, "commit", "-aqm", "unrelated main change"], check=True, env=_ENV)
