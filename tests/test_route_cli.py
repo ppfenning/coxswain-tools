@@ -1480,6 +1480,37 @@ def test_pull_marks_each_written_file_and_a_failed_mark_exits_2_naming_the_link(
     assert "marking https://x/9 failed (exit 3)" in capsys.readouterr().out
 
 
+def test_one_pull_files_an_intake_issue_and_reviews_then_marks_a_review_pr_under_the_pull_profile(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from agent_tools import cli
+
+    issue = {"title": "Fix it", "body": "b", "labels": [{"name": "intake"}], "url": "https://github.com/acme/widgets/issues/1", "repository": {"nameWithOwner": "acme/widgets"}}
+    listings = {
+        ("gh", "issue"): json.dumps([issue]),
+        ("gh", "pr", "list"): (Path(__file__).parent / "fixtures" / "gh" / "pr-list.json").read_text(encoding="utf-8"),
+    }
+    ran: list[list[str]] = []
+
+    def run(argv):
+        ran.append(argv)
+        return 0, next((out for prefix, out in listings.items() if tuple(argv[: len(prefix)]) == prefix), ""), ""
+
+    monkeypatch.setattr(cli, "_run_argv", run)
+    profile, ws = _write_file_profile(tmp_path)
+    with profile.open("a") as f:
+        f.write('sources: {"github": {"repos": ["acme/widgets"]}}\nrepo_map: {"acme/widgets": "tools"}\n')
+
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    [written] = (ws / "intake").glob("*.md")
+    assert 'link: "https://github.com/acme/widgets/issues/1"' in written.read_text(encoding="utf-8")
+    pr = "https://github.com/acme/widgets/pull/21"
+    assert ran[-2:] == [
+        ["cox", "runs", "review", "--pr", pr, "--profile", str(profile)],
+        ["gh", "pr", "edit", "21", "--repo", "acme/widgets", "--remove-label", "review", "--add-label", "review:taken"],
+    ]
+
+
 def test_two_issues_on_one_path_file_the_first_and_refuse_the_second_by_link(tmp_path, monkeypatch, capsys):
     profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1"), _issue("https://x/2")])
     assert main(["route", "pull", "--profile", str(profile)]) == 2

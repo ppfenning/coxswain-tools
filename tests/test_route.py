@@ -1468,7 +1468,7 @@ def _cand(link: str, repo: str = "a/b"):
 
 
 def test_pull_plan_writes_a_mapped_candidate_with_source_and_link():
-    files, refusals = route.pull_plan([_cand("l1")], frozenset(), {"a/b": "tools"}, date="2026-09-24", source="github")
+    files, reviews, refusals = route.pull_plan([_cand("l1")], frozenset(), {"a/b": "tools"}, date="2026-09-24", source="github")
     assert refusals == []
     assert files == [route.intake_file("Fix it", "b", "tools", "2026-09-24", source="github", link="l1")]
     assert "link: l1\n" in files[0]["intake/2026-09-24-fix-it.md"]
@@ -1476,6 +1476,14 @@ def test_pull_plan_writes_a_mapped_candidate_with_source_and_link():
 
 def test_pull_plan_skips_a_taken_link_and_refuses_an_unmapped_repo_by_name():
     cands = [_cand("l1"), _cand("l2", repo="x/y")]
-    files, refusals = route.pull_plan(cands, frozenset({"l1"}), {"a/b": "tools"}, date="2026-09-24", source="github")
+    files, reviews, refusals = route.pull_plan(cands, frozenset({"l1"}), {"a/b": "tools"}, date="2026-09-24", source="github")
     assert files == []
     assert len(refusals) == 1 and "'Fix it'" in refusals[0] and "l2" in refusals[0] and "x/y" in refusals[0]
+
+
+def test_pull_plan_routes_a_pr_to_a_review_and_an_issue_to_an_intake_file():
+    from agent_tools.sources import Candidate
+
+    pr = Candidate(title="Add retry", body="b", repo="a/b", link="l2", kind="pr")
+    files, reviews, refusals = route.pull_plan([_cand("l1"), pr], frozenset(), {"a/b": "tools"}, date="2026-09-24", source="github")
+    assert (len(files), reviews, refusals) == (1, ["l2"], [])
