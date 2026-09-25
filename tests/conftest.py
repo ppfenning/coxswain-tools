@@ -48,5 +48,7 @@ def _fresh_store_url():
     from agent_tools import run_store
 
     run_store._store_url_for.cache_clear()
+    run_store._lease_table.cache_clear()
     yield
     run_store._store_url_for.cache_clear()
+    run_store._lease_table.cache_clear()

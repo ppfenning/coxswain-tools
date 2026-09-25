@@ -547,3 +547,18 @@ def test_lease_is_none_with_no_store_or_no_leases_table(tmp_path):
     assert run_store.lease(tmp_path, "x-3") is None
     store(tmp_path, ROW)
     assert run_store.lease(tmp_path, "x-3") is None
+
+
+def test_lease_reads_the_leases_table_once_per_window(tmp_path, monkeypatch):
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("CREATE TABLE leases (name TEXT, holder TEXT, epoch INTEGER, heartbeat_at TEXT, expires_at TEXT)")
+    conn.execute("INSERT INTO leases VALUES ('runs:x', 'x-3', 1, '2026-09-25T12:00:00Z', '2026-09-25T12:02:00Z')")
+    conn.commit()
+    conn.close()
+    opens = []
+    real_open = run_store._open
+    monkeypatch.setattr(run_store, "_open", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
+    assert run_store.lease(tmp_path, "x-3") == ("x-3", "2026-09-25T12:02:00Z", "2026-09-25T12:00:00Z")
+    assert run_store.lease(tmp_path, "x-4") == ("x-3", "2026-09-25T12:02:00Z", "2026-09-25T12:00:00Z")
+    assert run_store.lease(tmp_path, "y-1") is None
+    assert len(opens) == 1
