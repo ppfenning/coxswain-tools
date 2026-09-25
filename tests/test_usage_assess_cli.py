@@ -81,7 +81,7 @@ def test_usage_assess_resolves_the_profiles_window_ceiling_usd_not_unmeasured(ca
     profile_path.write_text("workspace_dir: /tmp/ws\nspend:\n  window_ceiling_usd: 50\n", encoding="utf-8")
     captured = {}
 
-    def _gather(runs_dir, now, ceiling_usd=None):
+    def _gather(runs_dir, now, ceiling_usd=None, usage=None):
         captured["ceiling_usd"] = ceiling_usd
         return Window(start=_START, end=_END, spent_usd=5.0, ceiling_usd=ceiling_usd,
                       burn_usd_per_hour=0.0, runs_in_flight=1)

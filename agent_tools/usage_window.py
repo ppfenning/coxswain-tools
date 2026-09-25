@@ -25,7 +25,7 @@ from agent_tools.pacing import Policy, Window
 
 __all__ = [
     "CCUSAGE_CACHE_S", "DEFAULT_POLICY", "block_remaining", "ceiling_remaining", "gather",
-    "gather_weekly", "usage_cost_usd", "weekly_window_from", "window_from",
+    "gather_weekly", "read_usage", "usage_cost_usd", "weekly_window_from", "window_from",
 ]
 
 # Every pacing check shells out to ccusage (a ~2.5 s Node process) and they run
@@ -133,27 +133,42 @@ def _store_started(runs_dir: Path, run_id: str) -> datetime | None:
         return None
 
 
-def _read_usage_files(runs_dir: Path | str, now: datetime) -> list[tuple[datetime, dict[str, Any]]]:
+def _read_usage_files(
+    runs_dir: Path | str, now: datetime, since: datetime | None = None,
+) -> list[tuple[datetime, dict[str, Any]]]:
     """Every run's usage as `(started, parsed)` pairs. A run with a `*.usage.json` starts
     where the file says, and a file that fails to parse is skipped, not raised. A
-    store-only run starts at its `launched_at` and is skipped without one."""
+    store-only run starts at its `launched_at` and is skipped without one. With `since`,
+    a file last written before it is not opened: it is written when its run ends, so
+    that run started before `since`. A store run that ended before `since` is left out too."""
     root = Path(runs_dir)
     usage_files: list[tuple[datetime, dict[str, Any]]] = []
     file_runs: set[str] = set()
     for path in root.glob("*.usage.json"):
+        run_id = path.name.removesuffix(".usage.json")
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=now.tzinfo)
+        if since is not None and mtime < since:
+            file_runs.add(run_id)
+            continue
         try:
             usage = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=now.tzinfo)
         usage_files.append((_usage_started(usage, mtime), usage))
-        file_runs.add(path.name.removesuffix(".usage.json"))
+        file_runs.add(run_id)
     store_only = [
         (started, usage)
-        for run_id, usage in run_store.usages(root).items()
-        if run_id not in file_runs and (started := _store_started(root, run_id)) is not None
+        for run_id, usage in run_store.store_usages(
+            root, exclude=file_runs, since=since.isoformat() if since else None,
+        ).items()
+        if (started := _store_started(root, run_id)) is not None
     ]
     return usage_files + store_only
+
+
+def read_usage(runs_dir: Path | str, now: datetime) -> list[tuple[datetime, dict[str, Any]]]:
+    """Every run's usage that can fall in the last 7 days, the widest window read."""
+    return _read_usage_files(runs_dir, now, since=now - timedelta(days=7))
 
 
 def _cached_blocks(cached: object, now: datetime) -> dict[str, Any] | None:
@@ -191,10 +206,11 @@ def gather(
     run: Any = subprocess.run,
     window_hours: float = 5.0,
     ceiling_usd: float | None = None,
+    usage: list[tuple[datetime, dict[str, Any]]] | None = None,
 ) -> Window:
     """Impure edge: launches ccusage (or reuses its answer cached under a minute),
-    reads the run directory's usage files, and folds whichever answers into a
-    `Window` via `window_from`."""
+    reads the run directory's usage (unless `usage` is given), and folds whichever
+    answers into a `Window` via `window_from`."""
     cached = _read_ccusage_cache(runs_dir, now)
     blocks_json: dict[str, Any] = {} if cached is None else cached
     if cached is None:
@@ -209,7 +225,9 @@ def gather(
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
             blocks_json = {}
 
-    return window_from(blocks_json, _read_usage_files(runs_dir, now), now, window_hours, ceiling_usd)
+    return window_from(
+        blocks_json, read_usage(runs_dir, now) if usage is None else usage, now, window_hours, ceiling_usd,
+    )
 
 
 def weekly_window_from(
@@ -230,7 +248,12 @@ def weekly_window_from(
     )
 
 
-def gather_weekly(runs_dir: Path | str, now: datetime, weekly_ceiling_usd: float | None = None) -> Window:
-    """Impure edge: the same `*.usage.json` reader as `gather`, folded through
+def gather_weekly(
+    runs_dir: Path | str,
+    now: datetime,
+    weekly_ceiling_usd: float | None = None,
+    usage: list[tuple[datetime, dict[str, Any]]] | None = None,
+) -> Window:
+    """Impure edge: the same reader as `gather` (or the given `usage`), folded through
     `weekly_window_from` instead of the five-hour `window_from`."""
-    return weekly_window_from(_read_usage_files(runs_dir, now), now, weekly_ceiling_usd)
+    return weekly_window_from(read_usage(runs_dir, now) if usage is None else usage, now, weekly_ceiling_usd)

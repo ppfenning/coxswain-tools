@@ -3062,8 +3062,9 @@ def _usage_assessment(
     launch`'s gate all call this so the same window yields the same reason.
     """
     now = datetime.datetime.now(datetime.UTC)
-    window = usage_window.gather(runs_dir, now, ceiling_usd=window_ceiling_usd)
-    weekly = usage_window.gather_weekly(runs_dir, now, weekly_ceiling_usd)
+    usage = usage_window.read_usage(runs_dir, now)
+    window = usage_window.gather(runs_dir, now, ceiling_usd=window_ceiling_usd, usage=usage)
+    weekly = usage_window.gather_weekly(runs_dir, now, weekly_ceiling_usd, usage=usage)
     policy = _resolved_pacing_policy(Path(runs_dir))
     return pacing.assess(window, policy, now, weekly=weekly)
 

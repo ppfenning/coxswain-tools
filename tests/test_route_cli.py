@@ -183,7 +183,7 @@ def test_context_threads_the_profiles_spend_window_ceiling_into_gather(tmp_path,
     profile.write_text(profile.read_text() + "spend:\n  window_ceiling_usd: 42\n")
     captured = {}
 
-    def fake_gather(runs_dir, now, ceiling_usd=None):
+    def fake_gather(runs_dir, now, ceiling_usd=None, usage=None):
         captured["ceiling_usd"] = ceiling_usd
         return _unmeasured_window(runs_dir, now)
 
@@ -590,7 +590,7 @@ def test_launch_threads_the_profiles_spend_window_ceiling_into_the_usage_gate(tm
     profile.write_text(profile.read_text() + "spend:\n  window_ceiling_usd: 42\n")
     captured = {}
 
-    def fake_gather(runs_dir, now, ceiling_usd=None):
+    def fake_gather(runs_dir, now, ceiling_usd=None, usage=None):
         captured["ceiling_usd"] = ceiling_usd
         return _unmeasured_window(runs_dir, now)
 
@@ -618,11 +618,11 @@ def test_launch_refuses_on_a_weekly_breach_even_though_the_window_is_not_close(t
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
     profile.write_text(profile.read_text() + "spend:\n  window_ceiling_usd: 100\n  weekly_ceiling_usd: 100\n")
 
-    def fake_gather(runs_dir, now, ceiling_usd=None):
+    def fake_gather(runs_dir, now, ceiling_usd=None, usage=None):
         return Window(start=_USAGE_START, end=_USAGE_END, spent_usd=10.0, ceiling_usd=ceiling_usd,
                       burn_usd_per_hour=0.0, runs_in_flight=0)
 
-    def fake_gather_weekly(runs_dir, now, weekly_ceiling_usd=None):
+    def fake_gather_weekly(runs_dir, now, weekly_ceiling_usd=None, usage=None):
         return Window(start=_USAGE_START, end=_USAGE_END, spent_usd=95.0, ceiling_usd=weekly_ceiling_usd,
                       burn_usd_per_hour=0.0, runs_in_flight=0)
 

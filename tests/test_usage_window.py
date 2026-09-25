@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import subprocess
 from datetime import UTC, datetime, timedelta
 
 from agent_tools import cli, home_screen
@@ -13,6 +14,7 @@ from agent_tools.usage_window import (
     ceiling_remaining,
     gather,
     gather_weekly,
+    read_usage,
     usage_cost_usd,
     weekly_window_from,
     window_from,
@@ -256,7 +258,7 @@ def test_ceiling_remaining_is_none_with_no_ceiling_set():
 
 
 def _capturing_gather(captured):
-    def fake_gather(runs_dir, now, ceiling_usd=None):
+    def fake_gather(runs_dir, now, ceiling_usd=None, usage=None):
         captured["ceiling_usd"] = ceiling_usd
         return window_from({"blocks": []}, [], now, window_hours=5.0)
     return fake_gather
@@ -370,3 +372,55 @@ def test_read_usage_files_starts_a_store_only_run_at_its_launched_at_and_skips_o
     by_cost = {usage_cost_usd(usage): started for started, usage in _read_usage_files(tmp_path, _NOW)}
     assert sorted(by_cost) == [1.0, 2.5]
     assert by_cost[2.5] == datetime(2026, 9, 5, 10, 15, tzinfo=UTC)
+
+
+def _aged_usage_file(runs_dir, name, cost, age):
+    path = runs_dir / f"{name}.usage.json"
+    path.write_text(json.dumps({"summary": {"cost_usd": cost}}), encoding="utf-8")
+    mtime = (_NOW - age).timestamp()
+    os.utime(path, (mtime, mtime))
+
+
+def test_a_usage_file_older_than_seven_days_is_not_opened_and_counts_in_neither_window(tmp_path, monkeypatch):
+    _aged_usage_file(tmp_path, "old", 50.0, timedelta(days=8))
+    _aged_usage_file(tmp_path, "new", 4.0, timedelta(hours=1))
+    opened = []
+    real = json.loads
+    monkeypatch.setattr(json, "loads", lambda text, *a, **k: opened.append(text) or real(text, *a, **k))
+    usage = read_usage(tmp_path, _NOW)
+    assert [u["summary"]["cost_usd"] for _, u in usage] == [4.0]
+    assert len(opened) == 1
+    assert gather_weekly(tmp_path, _NOW).spent_usd == 4.0
+    assert window_from({"blocks": []}, usage, _NOW, window_hours=5.0).spent_usd == 4.0
+
+
+def test_a_skipped_old_file_does_not_let_the_store_answer_for_its_run(tmp_path):
+    _aged_usage_file(tmp_path, "r1", 50.0, timedelta(days=8))
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, launched_at TEXT, ended_at TEXT)")
+    conn.execute("CREATE TABLE node_calls (call_id TEXT, run_id TEXT, seq INTEGER, cost_usd REAL, ts TEXT, ok BOOL)")
+    conn.execute("INSERT INTO runs VALUES ('r1', ?, NULL)", ((_NOW - timedelta(hours=1)).isoformat(),))
+    conn.execute("INSERT INTO node_calls VALUES ('c1', 'r1', 1, 9.0, ?, 1)", (_NOW.isoformat(),))
+    conn.commit()
+    conn.close()
+    assert read_usage(tmp_path, _NOW) == []
+
+
+def _no_read(*_a, **_k):
+    raise AssertionError("read the runs dir")
+
+
+def test_gather_and_gather_weekly_use_a_given_usage_instead_of_reading(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent_tools.usage_window.read_usage", _no_read)
+    given = [(_NOW - timedelta(hours=1), {"cost_usd": 3.0})]
+    assert gather_weekly(tmp_path, _NOW, usage=given).spent_usd == 3.0
+    no_ccusage = lambda *_a, **_k: subprocess.CompletedProcess([], 1, "", "")  # noqa: E731
+    assert gather(tmp_path, _NOW, run=no_ccusage, usage=given).spent_usd == 3.0
+
+
+def test_usage_assessment_reads_the_runs_dir_once(tmp_path, monkeypatch):
+    calls = []
+    real = read_usage
+    monkeypatch.setattr(cli.usage_window, "read_usage", lambda d, now: calls.append(d) or real(d, now))
+    cli._usage_assessment(tmp_path)
+    assert calls == [tmp_path]
