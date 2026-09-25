@@ -255,7 +255,7 @@ def _write_lease(runs_dir: Path, holder: str, epoch: int) -> None:
 def acquire_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = DEFAULT_LEASE_TTL_SECONDS) -> str:
     """Edge. The refusal line when another holder has a live lease, else "". A missing harness or a lease error warns on stderr and returns "", so the lock file alone governs."""
     holder = lease_holder(session, pid, host)
-    result = store_cli.lease_acquire(LEASE_NAME, holder, ttl)
+    result = store_cli.lease_acquire(runs_dir, LEASE_NAME, holder, ttl)
     if isinstance(result, store_cli.LeaseGranted):
         _write_lease(runs_dir, holder, result.epoch)
         return ""
@@ -268,12 +268,13 @@ def acquire_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = 
 
 
 def renew_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = DEFAULT_LEASE_TTL_SECONDS) -> str:
-    """Edge. The refusal line when the lease is lost to another holder, else "". No sidecar means the claim fell back to the lock file, so there is nothing to renew."""
+    """Edge. The refusal line when the lease is lost to another holder, else "". With no sidecar (a chair taken before
+    the lease existed, or one that fell back to the lock file), the beat tries to acquire it instead."""
     holder = lease_holder(session, pid, host)
     lease = _read_lease(runs_dir, holder)
     if lease is None:
-        return ""
-    result = store_cli.lease_renew(LEASE_NAME, holder, lease["epoch"], ttl)
+        return acquire_lease(runs_dir, session, pid, host, ttl)
+    result = store_cli.lease_renew(runs_dir, LEASE_NAME, holder, lease["epoch"], ttl)
     if isinstance(result, store_cli.LeaseGranted):
         _write_lease(runs_dir, holder, result.epoch)
         return ""
@@ -290,7 +291,7 @@ def release_lease(runs_dir: Path, session: str, pid: int, host: str) -> None:
     lease = _read_lease(runs_dir, holder)
     if lease is None:
         return
-    result = store_cli.lease_release(LEASE_NAME, holder, lease["epoch"])
+    result = store_cli.lease_release(runs_dir, LEASE_NAME, holder, lease["epoch"])
     if not isinstance(result, store_cli.LeaseGranted):
         print(lease_verdict(result)[1], file=sys.stderr)
     _lease_path(runs_dir).unlink(missing_ok=True)

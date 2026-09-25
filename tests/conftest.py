@@ -55,3 +55,11 @@ def _fresh_store_url():
     yield
     for cache in caches:
         cache.cache_clear()
+
+@pytest.fixture(autouse=True)
+def _no_real_harness(monkeypatch):
+    """No test reaches the machine's real harness: a store_cli call would write leases into a real store. A test that
+    needs a harness monkeypatches `store_cli._harness_python` itself."""
+    from agent_tools import store_cli
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: None)

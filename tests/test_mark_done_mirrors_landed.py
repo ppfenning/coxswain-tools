@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_tools import cli
+from agent_tools import cli, store_cli
 
 _RECORD = {"task": "seams-task", "state": "approved"}
 _PR = "https://example.test/pr/7"
@@ -49,8 +49,9 @@ def test_exit_0_mirrors_with_run_phase_task_pr_and_time_and_prints_nothing_extra
     step = _mirrored(tmp_path)
     ok, detail = cli._execute_land_step(tmp_path, step)
     assert ok is True
+    runs_dir = Path(step["path"]).resolve().parents[3]
     assert harness.calls == [["/fake/python", "-m", "harness.store_cli", "mark-landed", "run-1", "seams", "seams-task",
-                              "--pr", _PR, "--at", _AT]]
+                              "--pr", _PR, "--at", _AT, "--store-url", store_cli._store_url(runs_dir)]]
     assert capsys.readouterr().out == ""
     assert Path(step["path"]).read_text(encoding="utf-8") == _rewritten(step["path"])
 
