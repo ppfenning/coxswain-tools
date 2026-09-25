@@ -92,6 +92,20 @@ def test_a_call_with_no_id_is_found_under_the_synthetic_id_of_its_trace(tmp_path
     assert run_store.call_events(tmp_path, "r1", {"trace": "/x/r1-trace/build-2.jsonl"}) == [{"n": "a"}, {"n": "b"}]
 
 
+def test_a_call_with_no_id_is_found_under_the_store_id_for_its_trace_path(tmp_path):
+    """After graphs #445 relinks the traces, a pre-id call's Parquet rows carry the store's `legacy:` id."""
+    import sqlite3
+
+    trace = "/x/r1-trace/build-2.jsonl"
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("CREATE TABLE node_calls (call_id TEXT PRIMARY KEY, run_id TEXT, detail_json TEXT)")
+    conn.execute("INSERT INTO node_calls VALUES (?, ?, ?)", ("legacy:r1:3", "r1", json.dumps({"trace": trace})))
+    conn.commit()
+    conn.close()
+    write_parquet(tmp_path, [row("legacy:r1:3", 0, {"n": "relinked"})])
+    assert run_store.call_events(tmp_path, "r1", {"trace": trace}) == [{"n": "relinked"}]
+
+
 def test_a_call_whose_own_id_matches_wins_over_the_synthetic_id(tmp_path):
     write_parquet(tmp_path, [row("c1", 0, {"n": "own"}), row("r1-build-2", 0, {"n": "synthetic"})])
     assert run_store.call_events(tmp_path, "r1", {"id": "c1", "trace": "/x/r1-trace/build-2.jsonl"}) == [{"n": "own"}]

@@ -664,15 +664,50 @@ def synthetic_call_id(run_id: str, trace: object) -> str | None:
     return f"{run_id}-{Path(trace).stem}" if isinstance(trace, str) and trace else None
 
 
+@functools.lru_cache(maxsize=8)
+def _store_ids_by_trace(runs_dir: str, run_id: str) -> dict[str, str]:
+    """Edge, cached per run: the store's call id for each trace path its node_calls rows name. Calls from before call
+    ids carry `legacy:<run>:<seq>` in the store, and the Parquet traces are relinked to it (graphs #445)."""
+    opened = _open(Path(runs_dir))
+    if opened is None:
+        return {}
+    conn, p = opened
+    try:
+        rows = conn.execute(_sql("SELECT call_id, detail_json FROM node_calls WHERE run_id = {p}", p), (run_id,)).fetchall()
+    except _DB_ERRORS:
+        return {}
+    finally:
+        conn.close()
+    ids = {}
+    for row in rows:
+        detail = _detail(row["detail_json"])
+        trace = detail.get("trace") if isinstance(detail, dict) else None
+        if isinstance(trace, str) and trace:
+            ids[trace] = row["call_id"]
+    return ids
+
+
+def _detail(raw: Any) -> Any:
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+    return raw
+
+
 def call_events(runs_dir: Path, run_id: str, call: Mapping[str, Any]) -> list[dict] | None:
-    """A call's stream events by `call["id"]`, first source holding any wins: the run's Parquet file (again under
-    the backfill's synthetic id), then the `.jsonl.zst` day files, then the loose `trace` file. None when there is
-    no trace store and no loose file."""
+    """A call's stream events by `call["id"]`, first source holding any wins: the run's Parquet file (for a call with
+    no id, under the store's id for its trace path, then the backfill's synthetic id), then the `.jsonl.zst` day
+    files, then the loose `trace` file. None when there is no trace store and no loose file."""
     call_id = str(call.get("id"))
-    synthetic = synthetic_call_id(run_id, call.get("trace"))
+    trace = call.get("trace")
+    synthetic = synthetic_call_id(run_id, trace)
     rows = _parquet_rows_once(_traces_root(Path(runs_dir)), run_id)
     if rows and (
-        found := _parquet_call_events(rows, call_id) or (synthetic and _parquet_call_events(rows, synthetic))
+        found := _parquet_call_events(rows, call_id)
+        or (isinstance(trace, str) and trace and _parquet_call_events(rows, _store_ids_by_trace(str(runs_dir), run_id).get(trace, "")))
+        or (synthetic and _parquet_call_events(rows, synthetic))
     ):
         return found
     traces = Path(runs_dir) / TRACES_DIRNAME
