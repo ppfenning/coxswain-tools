@@ -79,6 +79,7 @@ CALLS_COLUMNS = (
     Column("recovered_from_trace", "INTEGER", default=0, not_null=True),
 )
 
+# A since-date filter joins tasks to runs on run_id and reads runs.started_at; tasks carry no timestamp of their own.
 TASKS_COLUMNS = (
     Column("run_id", "TEXT"),
     Column("task_id", "TEXT"),
@@ -94,6 +95,16 @@ TASKS_COLUMNS = (
     Column("cost_usd", "REAL"),
     Column("reason", "TEXT"),
     Column("outcome_kind", "TEXT"),
+    # Gate facts: one scalar per task, like arbitration_verdict above, so columns rather than a child table. NULL means the record did not say.
+    Column("handoff_verdict", "TEXT"),
+    Column("charter_verdict", "TEXT"),
+    Column("adversary_verdict", "TEXT"),
+    Column("arbiter_verdict", "TEXT"),
+    Column("arbiter_sided_with", "TEXT"),
+    Column("arbiter_state", "TEXT"),
+    Column("fix_loop_attempts", "INTEGER"),
+    Column("fix_loop_stopped", "INTEGER"),
+    Column("plan_gate_verdict", "TEXT"),
 )
 
 TABLES = {

@@ -25,7 +25,7 @@ from typing import Any
 
 from agent_tools import run_store
 from agent_tools.events import Event, from_log
-from agent_tools.land import arbitration_verdict
+from agent_tools.land import _ARBITER_SKIPPED, arbitration_verdict
 from agent_tools.records import load_trace
 from agent_tools.route import parse_frontmatter
 from agent_tools.runs_detail import NODE_ORDER
@@ -54,7 +54,7 @@ __all__ = [
 
 LEDGER_PATH = Path.home() / ".local" / "state" / "agent-graphs" / "ledger.jsonl"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def run_row(
@@ -273,6 +273,85 @@ def _work_store_ticket_done(work_store_root: Path, ticket: Any) -> bool:
     return fields.get("state") == "done"
 
 
+def _section_verdict(record: Mapping[str, Any], section: str) -> str | None:
+    value = record.get(section)
+    verdict = value.get("verdict") if isinstance(value, Mapping) else None
+    return verdict if isinstance(verdict, str) else None
+
+
+def _text_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _handoff_verdict(handoff: Any) -> str | None:
+    """The bool `complete` as the yes/no labels `stats_examples.handoff_example` uses; no repo code writes a handoff `verdict`."""
+    complete = handoff.get("complete") if isinstance(handoff, Mapping) else None
+    if isinstance(complete, bool):
+        return "yes" if complete else "no"
+    return None
+
+
+def _plan_gate_verdict(plan_gate: Any) -> str | None:
+    """A dict's `verdict`, or the bare string a gate section can be written as."""
+    if isinstance(plan_gate, Mapping):
+        return _text_or_none(plan_gate.get("verdict"))
+    return plan_gate if isinstance(plan_gate, str) and plan_gate else None
+
+
+def _arbiter_facts(arbitration: Any) -> tuple[str | None, str | None, str | None]:
+    """(verdict, sided_with, state): "ruled" only when the dict states a verdict, "skipped" for the arbiter-skip string."""
+    if isinstance(arbitration, Mapping):
+        verdict = _text_or_none(arbitration.get("verdict"))
+        return verdict, _text_or_none(arbitration.get("sided_with")), "ruled" if verdict else None
+    if arbitration == _ARBITER_SKIPPED:
+        return None, None, "skipped"
+    return None, None, None
+
+
+def _stopped_flag(stopped: Any) -> int | None:
+    """1 for a stop reason ("budget", "attempts_exhausted") or True, 0 for an explicit null or False, else None."""
+    if isinstance(stopped, bool):
+        return int(stopped)
+    if isinstance(stopped, str) and stopped:
+        return 1
+    if stopped is None:
+        return 0
+    return None
+
+
+def _fix_loop_facts(record: Mapping[str, Any]) -> tuple[int | None, int | None]:
+    """(attempts, stopped). Attempts is `_fix_loop_attempts`'s own count where the record states one, so the column
+    agrees with the join identity, and None where that function would fall back to its default of 1.
+    Stopped is None unless a `fix_loop` dict carries a `stopped` key."""
+    fix_loop = record.get("fix_loop")
+    stated = (isinstance(fix_loop, Mapping) and isinstance(fix_loop.get("attempts"), int)) or (
+        isinstance(fix_loop, list) and bool(fix_loop)
+    )
+    keyed = isinstance(fix_loop, Mapping) and "stopped" in fix_loop
+    return (
+        _fix_loop_attempts(record) if stated else None,
+        _stopped_flag(fix_loop["stopped"]) if keyed else None,
+    )
+
+
+def gate_facts(record: Mapping[str, Any]) -> dict[str, Any]:
+    """The nine gate columns of one task record; a fact the record does not state is None, never 0 or ""."""
+    arbiter_verdict, sided_with, arbiter_state = _arbiter_facts(record.get("arbitration"))
+    attempts, stopped = _fix_loop_facts(record)
+    return {
+        "handoff_verdict": _handoff_verdict(record.get("handoff")),
+        "charter_verdict": _section_verdict(record, "review"),
+        # `adversary` as {"verdict": ...} is what land._verdict reads; a findings list carries none and reads None.
+        "adversary_verdict": _section_verdict(record, "adversary"),
+        "arbiter_verdict": arbiter_verdict,
+        "arbiter_sided_with": sided_with,
+        "arbiter_state": arbiter_state,
+        "fix_loop_attempts": attempts,
+        "fix_loop_stopped": stopped,
+        "plan_gate_verdict": _plan_gate_verdict(record.get("plan_gate")),
+    }
+
+
 def task_row(
     run_id: str,
     phase: str,
@@ -321,6 +400,7 @@ def task_row(
         "cost_usd": record.get("cost_usd"),
         "reason": record.get("reason"),
         "outcome_kind": outcome_kind,
+        **gate_facts(record),
     }
 
 
