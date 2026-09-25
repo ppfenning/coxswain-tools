@@ -1,11 +1,13 @@
 import json
 import os
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 from agent_tools import cli, home_screen
 from agent_tools.pacing import Window, assess
 from agent_tools.usage_window import (
     DEFAULT_POLICY,
+    _read_usage_files,
     _usage_started,
     block_remaining,
     ceiling_remaining,
@@ -294,3 +296,26 @@ def test_gather_weekly_reports_nonzero_for_a_real_shaped_usage_file(tmp_path):
     window = gather_weekly(tmp_path, _NOW, weekly_ceiling_usd=1043.0)
     assert window.spent_usd == 770.0
     assert ceiling_remaining(window) != 1.0
+
+
+def test_read_usage_files_starts_a_store_only_run_at_its_launched_at_and_skips_one_without(tmp_path):
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, launched_at TEXT, ended_at TEXT)")
+    conn.execute(
+        "CREATE TABLE node_calls (call_id TEXT, run_id TEXT, seq INTEGER, task_id TEXT, cost_usd REAL, ts TEXT, "
+        "model_alias TEXT, ok BOOL, decision_json TEXT, role TEXT, tier TEXT, ceiling_usd REAL, ceiling_source TEXT, "
+        "turns INTEGER, duration_ms INTEGER, input_tokens INTEGER, cache_read_tokens INTEGER, "
+        "cache_creation_tokens INTEGER, input_total INTEGER, output_tokens INTEGER)"
+    )
+    conn.executemany("INSERT INTO runs VALUES (?, ?, '2026-09-05T11:30:00+00:00')",
+                     [("dated", "2026-09-05T10:15:00+00:00"), ("undated", None)])
+    conn.executemany(
+        "INSERT INTO node_calls (call_id, run_id, seq, cost_usd, ts, ok) VALUES (?, ?, 1, 2.5, '2026-09-05T10:20:00+00:00', 1)",
+        [("c1", "dated"), ("c2", "undated")],
+    )
+    conn.commit()
+    conn.close()
+    (tmp_path / "filed.usage.json").write_text('{"cost_usd": 1.0}', encoding="utf-8")
+    by_cost = {usage_cost_usd(usage): started for started, usage in _read_usage_files(tmp_path, _NOW)}
+    assert sorted(by_cost) == [1.0, 2.5]
+    assert by_cost[2.5] == datetime(2026, 9, 5, 10, 15, tzinfo=UTC)
