@@ -1,8 +1,9 @@
 import json
+import subprocess
 
 from test_doctor_cli import _good_setup
 
-from agent_tools import doctor, run_store
+from agent_tools import cli, doctor, run_store
 from agent_tools.cli import main
 
 
@@ -13,12 +14,45 @@ def _profile(tmp_path):
 
 
 def _patch(monkeypatch, readable, reason, seen=None):
-    def fake(root):
+    def fake(root, harness):
         if seen is not None:
             seen.append(root)
         return run_store.ParquetCheck(readable, reason)
 
     monkeypatch.setattr(run_store, "parquet_readable", fake)
+
+
+def _harness_with_python(root):
+    python = root / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("")
+    return python
+
+
+def _without_pyarrow_probes_succeed(monkeypatch):
+    def missing():
+        raise run_store.TracesUnavailable(run_store._NEEDS_PYARROW)
+
+    probes = []
+    monkeypatch.setattr(run_store, "_import_pyarrow", missing)
+    monkeypatch.setattr(run_store.subprocess, "run",
+                        lambda argv, **kw: probes.append(argv) or subprocess.CompletedProcess(argv, 0, "", ""))
+    return probes
+
+
+def test_the_doctor_line_checks_the_harness_of_the_diagnosed_profile_not_the_environment_one(tmp_path, monkeypatch):
+    env_python = _harness_with_python(tmp_path / "env-harness")
+    env_routing = tmp_path / "env-routing.yaml"
+    env_routing.write_text(f"harness_dir: {tmp_path / 'env-harness'}\n")
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(env_routing))
+    probes = _without_pyarrow_probes_succeed(monkeypatch)
+    diagnosed = {"workspace_dir": str(tmp_path / "ws"), "harness_dir": str(tmp_path / "no-venv-harness")}
+    assert cli._parquet_traces_line(diagnosed) == doctor.parquet_line(False, "pyarrow missing")
+    assert probes == []
+    mine = _harness_with_python(tmp_path / "my-harness")
+    assert cli._parquet_traces_line({**diagnosed, "harness_dir": str(tmp_path / "my-harness")}) == "parquet traces: readable"
+    assert [argv[0] for argv in probes] == [str(mine)]
+    assert str(env_python) not in [argv[0] for argv in probes]
 
 
 def test_readable_line():

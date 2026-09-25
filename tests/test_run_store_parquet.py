@@ -1,6 +1,7 @@
 """`call_events` reads a run's Parquet trace first, then the zst day files, then the loose file."""
 
 import json
+import subprocess
 import sys
 import types
 
@@ -116,13 +117,13 @@ def test_an_s3_root_without_pyarrow_cannot_be_probed_and_raises_the_same_error(m
 
 def test_parquet_readable_reports_pyarrow_missing(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "pyarrow", None)
-    assert run_store.parquet_readable(TracesRoot(str(tmp_path), False)) == run_store.ParquetCheck(False, "pyarrow missing")
+    assert run_store.parquet_readable(TracesRoot(str(tmp_path), False), None) == run_store.ParquetCheck(False, "pyarrow missing")
 
 
 def test_parquet_readable_is_ok_for_a_local_directory_and_unreachable_for_a_missing_one(tmp_path):
     pytest.importorskip("pyarrow.fs")
-    assert run_store.parquet_readable(TracesRoot(str(tmp_path), False)) == run_store.ParquetCheck(True, "ok")
-    assert run_store.parquet_readable(TracesRoot(str(tmp_path / "gone"), False)) == run_store.ParquetCheck(False, "root unreachable")
+    assert run_store.parquet_readable(TracesRoot(str(tmp_path), False), None) == run_store.ParquetCheck(True, "ok")
+    assert run_store.parquet_readable(TracesRoot(str(tmp_path / "gone"), False), None) == run_store.ParquetCheck(False, "root unreachable")
 
 
 def test_a_provider_profile_traces_url_outside_the_runs_dir_is_where_parquet_events_are_read(tmp_path, monkeypatch):
@@ -155,3 +156,163 @@ def test_a_run_with_no_parquet_file_is_found_once_the_file_appears(tmp_path):
     assert run_store.call_events(tmp_path, "r1", {"id": "c1"}) is None
     write_parquet(tmp_path, [row("c1", 0, {"n": "late"})])
     assert run_store.call_events(tmp_path, "r1", {"id": "c1"}) == [{"n": "late"}]
+
+
+def hide_pyarrow(monkeypatch):
+    def missing():
+        raise run_store.TracesUnavailable(run_store._NEEDS_PYARROW)
+
+    monkeypatch.setattr(run_store, "_import_pyarrow", missing)
+
+
+def with_harness(tmp_path, monkeypatch):
+    """A routing profile naming a harness_dir whose `.venv/bin/python` exists; returns that python."""
+    python = tmp_path / "harness" / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("")
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(f"harness_dir: {tmp_path / 'harness'}\n")
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(routing))
+    return python
+
+
+def dump_returns(monkeypatch, code, stdout="", stderr=""):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, code, stdout, stderr)
+
+    monkeypatch.setattr(run_store.subprocess, "run", run)
+    return calls
+
+
+def local_root_with_file(tmp_path):
+    path = tmp_path / "traces" / "2026" / "09" / "25" / "r1.parquet"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"")
+    return TracesRoot(str(tmp_path / "traces"), False)
+
+
+def two_dump_lines():
+    return "\n".join(json.dumps(row("c1", i, {"n": i})) for i in range(2)) + "\n"
+
+
+def test_the_dump_output_is_cut_to_the_parquet_columns():
+    assert run_store._dump_rows(two_dump_lines() + "\n") == [
+        {"call_id": "c1", "seq": 0, "event": '{"n": 0}'}, {"call_id": "c1", "seq": 1, "event": '{"n": 1}'}]
+
+
+def test_without_pyarrow_exit_0_gives_the_dumped_rows(tmp_path, monkeypatch):
+    python = with_harness(tmp_path, monkeypatch)
+    hide_pyarrow(monkeypatch)
+    root = local_root_with_file(tmp_path)
+    calls = dump_returns(monkeypatch, 0, two_dump_lines())
+    assert len(run_store._parquet_rows(root, "r1")) == 2
+    assert calls[0][0] == [str(python), "-m", "harness.store_traces", "dump", root.url, "r1"]
+    assert calls[0][1] == {"capture_output": True, "text": True, "timeout": 60}
+
+
+def test_without_pyarrow_call_events_reads_through_the_harness(tmp_path, monkeypatch):
+    with_harness(tmp_path, monkeypatch)
+    hide_pyarrow(monkeypatch)
+    local_root_with_file(tmp_path)
+    dump_returns(monkeypatch, 0, json.dumps(row("c1", 0, {"n": "a"})) + "\n")
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1"}) == [{"n": "a"}]
+
+
+def test_without_pyarrow_exit_3_is_no_file(tmp_path, monkeypatch):
+    with_harness(tmp_path, monkeypatch)
+    hide_pyarrow(monkeypatch)
+    dump_returns(monkeypatch, 3)
+    assert run_store._parquet_rows(local_root_with_file(tmp_path), "r1") is None
+
+
+def test_without_pyarrow_exit_2_raises_naming_both_failures(tmp_path, monkeypatch):
+    with_harness(tmp_path, monkeypatch)
+    hide_pyarrow(monkeypatch)
+    dump_returns(monkeypatch, 2, stderr="Traceback\nModuleNotFoundError: No module named 'pyarrow'\n")
+    with pytest.raises(run_store.TracesUnavailable) as err:
+        run_store._parquet_rows(local_root_with_file(tmp_path), "r1")
+    assert str(err.value) == (f"{run_store._NEEDS_PYARROW} (the harness could not read it either): "
+                              "exit 2: ModuleNotFoundError: No module named 'pyarrow'")
+
+
+def test_a_failing_harness_is_run_once_per_run_not_once_per_call(tmp_path, monkeypatch):
+    with_harness(tmp_path, monkeypatch)
+    hide_pyarrow(monkeypatch)
+    local_root_with_file(tmp_path)
+    calls = dump_returns(monkeypatch, 2)
+    for call_id in ("c1", "c2"):
+        with pytest.raises(run_store.TracesUnavailable, match="exit 2"):
+            run_store.call_events(tmp_path, "r1", {"id": call_id})
+    assert len(calls) == 1
+
+
+def test_exit_3_is_asked_again_so_a_late_file_is_found(tmp_path, monkeypatch):
+    with_harness(tmp_path, monkeypatch)
+    hide_pyarrow(monkeypatch)
+    root = TracesRoot("s3://bucket/traces", True)
+    calls = dump_returns(monkeypatch, 3)
+    assert run_store._parquet_rows(root, "r1") is None
+    assert run_store._parquet_rows(root, "r1") is None
+    assert len(calls) == 2
+
+
+def test_without_pyarrow_a_harness_timeout_raises(tmp_path, monkeypatch):
+    with_harness(tmp_path, monkeypatch)
+    hide_pyarrow(monkeypatch)
+
+    def slow(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 60)
+
+    monkeypatch.setattr(run_store.subprocess, "run", slow)
+    with pytest.raises(run_store.TracesUnavailable, match="could not read it either"):
+        run_store._parquet_rows(local_root_with_file(tmp_path), "r1")
+
+
+def test_without_pyarrow_and_no_harness_python_it_raises_as_before(tmp_path, monkeypatch):
+    hide_pyarrow(monkeypatch)
+    calls = dump_returns(monkeypatch, 0)
+    with pytest.raises(run_store.TracesUnavailable) as err:
+        run_store._parquet_rows(local_root_with_file(tmp_path), "r1")
+    assert str(err.value) == run_store._NEEDS_PYARROW
+    assert calls == []
+
+
+def test_a_harness_dir_with_no_python_file_is_no_harness_python(tmp_path):
+    routing = tmp_path / "routing.yaml"
+    routing.write_text(f"harness_dir: {tmp_path / 'empty'}\n")
+    assert run_store._harness_python_for(str(routing)) is None
+
+
+def test_with_no_parquet_file_the_harness_is_never_run(tmp_path, monkeypatch):
+    with_harness(tmp_path, monkeypatch)
+    hide_pyarrow(monkeypatch)
+    calls = dump_returns(monkeypatch, 0)
+    assert run_store.call_events(tmp_path, "r1", {"id": "c1"}) is None
+    assert calls == []
+
+
+def test_parquet_readable_reports_through_the_harness_when_it_imports_what_a_dump_needs(tmp_path, monkeypatch):
+    python = with_harness(tmp_path, monkeypatch)
+    hide_pyarrow(monkeypatch)
+    calls = dump_returns(monkeypatch, 0)
+    check = run_store.parquet_readable(TracesRoot(str(tmp_path), False), python)
+    assert check == run_store.ParquetCheck(True, "through the harness")
+    assert calls[0][0] == [str(python), "-c", "import pyarrow.parquet, harness.store_traces"]
+
+
+def test_parquet_readable_is_not_readable_when_the_harness_cannot_import_them(tmp_path, monkeypatch):
+    python = with_harness(tmp_path, monkeypatch)
+    hide_pyarrow(monkeypatch)
+    dump_returns(monkeypatch, 1)
+    check = run_store.parquet_readable(TracesRoot(str(tmp_path), False), python)
+    assert check == run_store.ParquetCheck(False, "pyarrow missing")
+
+
+def test_parquet_readable_still_reports_pyarrow_missing_with_no_harness_python(tmp_path, monkeypatch):
+    hide_pyarrow(monkeypatch)
+    calls = dump_returns(monkeypatch, 0)
+    assert run_store.parquet_readable(TracesRoot(str(tmp_path), False), None) == run_store.ParquetCheck(False, "pyarrow missing")
+    assert calls == []

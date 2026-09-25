@@ -16,6 +16,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import time
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ except ImportError:
 
 __all__ = [
     "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly",
-    "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
+    "harness_python", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
     "run_started", "store_usages", "summarize", "usage", "usages",
 ]
 
@@ -141,6 +142,26 @@ def _traces_root_for(runs_dir: str, routing_profile: str) -> TracesRoot:
     """Cached per process, like `_store_url_for`: a call's events are asked for once per call."""
     named = read_provider_profile(routing_profile).get("provider_profile")
     return profile_traces_root(read_provider_profile(named) if isinstance(named, str) and named else {}, runs_dir)
+
+
+def harness_python(routing: Mapping[str, Any]) -> Path | None:
+    """Edge: the routing profile's `<harness_dir>/.venv/bin/python` when that file exists, else None."""
+    harness_dir = routing.get("harness_dir")
+    if not isinstance(harness_dir, str) or not harness_dir:
+        return None
+    python = Path(harness_dir).expanduser() / ".venv" / "bin" / "python"
+    return python if python.is_file() else None
+
+
+@functools.lru_cache(maxsize=32)
+def _harness_python_for(routing_profile: str) -> Path | None:
+    """Cached per process: `harness_python` of the routing profile at that path."""
+    return harness_python(read_provider_profile(routing_profile))
+
+
+def _harness_python() -> Path | None:
+    """Edge. `_harness_python_for` for `$AGENT_TOOLS_PROFILE` or the default routing profile."""
+    return _harness_python_for(os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
 
 
 def _open(runs_dir: Path) -> tuple[Any, str] | None:
@@ -519,6 +540,11 @@ def _parquet_call_events(rows: Sequence[Mapping[str, Any]], call_id: str) -> lis
     return _json_objects(r["event"] for r in mine if isinstance(r.get("event"), str))
 
 
+def _dump_rows(stdout: str) -> list[dict]:
+    """Pure: the rows of `harness.store_traces dump` output, one JSON object per line, cut to `_PARQUET_COLUMNS`."""
+    return [{c: row[c] for c in _PARQUET_COLUMNS} for row in map(json.loads, filter(str.strip, stdout.splitlines()))]
+
+
 def _import_pyarrow() -> tuple[Any, Any]:
     """The only place pyarrow is imported: `(pyarrow.fs, pyarrow.parquet)`, else TracesUnavailable naming the extra."""
     try:
@@ -536,14 +562,69 @@ def _filesystem(pafs: Any, root: TracesRoot) -> tuple[Any, str]:
     return pafs.LocalFileSystem(), str(Path(root.url).absolute())
 
 
+def _dump_failure(returncode: int, stderr: str) -> str:
+    """Pure: the exit code and the last stderr line of a failed dump, for the TracesUnavailable message."""
+    last = next((line.strip() for line in reversed(stderr.splitlines()) if line.strip()), "")
+    return f"exit {returncode}: {last}" if last else f"exit {returncode}"
+
+
+@functools.lru_cache(maxsize=8)
+def _harness_dump(python: str, url: str, run_id: str) -> tuple[dict, ...] | str:
+    """Edge, cached per process: the run's dumped rows, else the failure as text, so a broken harness runs once.
+
+    Exit 3 raises LookupError, which lru_cache does not store: a live run's file can appear later."""
+    argv = [python, "-m", "harness.store_traces", "dump", url, run_id]
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return "timed out after 60s"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"{type(exc).__name__}: {exc}"
+    if done.returncode == 3:
+        raise LookupError(run_id)
+    if done.returncode != 0:
+        return _dump_failure(done.returncode, done.stderr)
+    try:
+        return tuple(_dump_rows(done.stdout))
+    except (ValueError, KeyError, TypeError) as exc:
+        return f"unreadable output: {type(exc).__name__}: {exc}"
+
+
+def _harness_parquet_rows(root: TracesRoot, run_id: str, missing: TracesUnavailable) -> list[dict] | None:
+    """Edge: the run's rows through the harness `store_traces dump`, None on exit 3, else `missing` re-raised."""
+    python = _harness_python()
+    if python is None:
+        raise missing
+    try:
+        dumped = _harness_dump(str(python), root.url, run_id)
+    except LookupError:
+        return None
+    if isinstance(dumped, str):
+        raise TracesUnavailable(f"{missing} (the harness could not read it either): {dumped}") from missing
+    return list(dumped)
+
+
+def _harness_can_read(python: Path) -> bool:
+    """Edge: whether the harness python imports pyarrow and `harness.store_traces`, the two things a dump needs."""
+    argv = [str(python), "-c", "import pyarrow.parquet, harness.store_traces"]
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=60).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _parquet_rows(root: TracesRoot, run_id: str) -> list[dict] | None:
     """Edge: the rows of the run's `YYYY/MM/DD/<run_id>.parquet` files, None when it has none.
 
     A local root is probed with a glob first, so a missing pyarrow only matters once a file exists. A remote root
-    cannot be probed without pyarrow, so it raises TracesUnavailable at once."""
+    cannot be probed without pyarrow. Without pyarrow the rows come through the harness when it has a python,
+    else TracesUnavailable is raised."""
     name = f"{run_id}.parquet"
     if root.remote:
-        pafs, pq = _import_pyarrow()
+        try:
+            pafs, pq = _import_pyarrow()
+        except TracesUnavailable as missing:
+            return _harness_parquet_rows(root, run_id, missing)
         fs, base = _filesystem(pafs, root)
         selector = pafs.FileSelector(base, recursive=True, allow_not_found=True)
         found = sorted(i.path for i in fs.get_file_info(selector) if i.type == pafs.FileType.File and i.base_name == name)
@@ -551,7 +632,10 @@ def _parquet_rows(root: TracesRoot, run_id: str) -> list[dict] | None:
         found = sorted(str(p) for p in Path(root.url).absolute().glob(f"*/*/*/{name}"))
         if not found:
             return None
-        pafs, pq = _import_pyarrow()
+        try:
+            pafs, pq = _import_pyarrow()
+        except TracesUnavailable as missing:
+            return _harness_parquet_rows(root, run_id, missing)
         fs, _ = _filesystem(pafs, root)
     if not found:
         return None
@@ -594,18 +678,21 @@ def call_events(runs_dir: Path, run_id: str, call: Mapping[str, Any]) -> list[di
 
 @dataclass(frozen=True)
 class ParquetCheck:
-    """`readable` with the `reason`: `ok`, `pyarrow missing` or `root unreachable`."""
+    """`readable` with the `reason`: `ok`, `through the harness`, `pyarrow missing` or `root unreachable`."""
 
     readable: bool
     reason: str
 
 
-def parquet_readable(traces_root: TracesRoot) -> ParquetCheck:
-    """Edge: whether Parquet traces under `traces_root` can be read, for the doctor. Opens no trace file."""
+def parquet_readable(traces_root: TracesRoot, harness: Path | None) -> ParquetCheck:
+    """Edge: whether Parquet traces under `traces_root` can be read, for the doctor. Opens no trace file.
+
+    `harness` is the diagnosed profile's harness python; without pyarrow it counts only when it imports what a dump needs."""
     try:
         pafs, _ = _import_pyarrow()
     except TracesUnavailable:
-        return ParquetCheck(False, "pyarrow missing")
+        readable = harness is not None and _harness_can_read(harness)
+        return ParquetCheck(True, "through the harness") if readable else ParquetCheck(False, "pyarrow missing")
     import pyarrow
 
     try:
