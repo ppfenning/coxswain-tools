@@ -1,13 +1,15 @@
 usage: cox stats [-h]
-                 {ingest,roles,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes}
+                 {ingest,roles,gates,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes}
                  ...
 
 Load the run corpus into the stats store.
 
 positional arguments:
-  {ingest,roles,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes}
+  {ingest,roles,gates,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes}
     ingest              load usage, task, node and launch records into stats.db
     roles               landed rate, attempts-to-land and $/landed per role and model
+    gates               what each review, validation and plan gate costs and how often it changes
+                        the outcome
     explain             the failure-class breakdown behind one role
     series              per-run summary rows read from the stats store
     coverage            known/total provenance rows for runs, calls and tasks
@@ -30,6 +32,7 @@ examples:
   cox stats ingest
   cox stats ingest runs --db workspace/stats/stats.db
   cox stats roles --json
+  cox stats gates --since 2026-09-01
   cox stats explain build --json
   cox stats series --json
   cox stats coverage --json

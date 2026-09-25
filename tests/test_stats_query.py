@@ -5,7 +5,9 @@ from agent_tools.stats_query import (
     bounds_report,
     coverage_report,
     explain_report,
+    gates_inputs,
     render_capped,
+    render_gates,
     roles_report,
     series_report,
     spend_mix_report,
@@ -299,3 +301,37 @@ def test_coverage_report_fractions_reflect_a_gap_in_outcome_kind_and_call_source
     }
     assert report["runs_with_provider_profile"]["fraction"] == 1.0
     assert report["tasks_with_a_known_outcome"]["fraction"] == 1.0
+
+
+def _gates_conn():
+    conn = stats_schema.connect(":memory:")
+    for run_id, started in (("r_old", "2026-09-01T10:00:00Z"), ("r_new", "2026-09-20T10:00:00Z"), ("r_undated", None)):
+        conn.execute("INSERT INTO runs (run_id, started_at) VALUES (?, ?)", (run_id, started))
+        conn.execute("INSERT INTO tasks (run_id, task_id) VALUES (?, 't')", (run_id,))
+        conn.execute("INSERT INTO calls (run_id, seq, role, task_id) VALUES (?, 1, 'handoff', 't')", (run_id,))
+    return conn
+
+
+def test_gates_inputs_without_since_returns_every_task_and_call_as_dicts():
+    tasks, calls = gates_inputs(_gates_conn(), None)
+    assert sorted(t["run_id"] for t in tasks) == ["r_new", "r_old", "r_undated"]
+    assert sorted(c["run_id"] for c in calls) == ["r_new", "r_old", "r_undated"]
+    assert calls[0]["role"] == "handoff" and "charter_verdict" in tasks[0]
+
+
+def test_gates_inputs_since_keeps_rows_whose_run_started_on_or_after_the_date():
+    tasks, calls = gates_inputs(_gates_conn(), "2026-09-20")
+    assert [t["run_id"] for t in tasks] == ["r_new"]
+    assert [c["run_id"] for c in calls] == ["r_new"]
+    assert sorted(t["run_id"] for t in gates_inputs(_gates_conn(), "2026-09-01")[0]) == ["r_new", "r_old"]
+
+
+def test_render_gates_pads_columns_and_prints_none_as_a_dash():
+    row = {
+        "role": "handoff", "calls": 2, "cost": 0.5, "cost_per_task": 0.25, "verdict_mix": {"yes": 1, "no": 1},
+        "changed": None, "caught": None, "agreed": None, "cost_per_changed": None,
+    }
+    head, line, blank, verdict = render_gates([row], ["handoff: x."]).split("\n")
+    assert line == "handoff | 2     | 0.5000 | 0.2500    | no:1 yes:1  | -       | -      | -      | -"
+    assert head.startswith("role    | calls | cost   | cost/task | verdict mix | changed")
+    assert (blank, verdict) == ("", "handoff: x.")
