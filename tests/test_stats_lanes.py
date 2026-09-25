@@ -62,7 +62,8 @@ def _store(runs_dir, *rows):
     conn.close()
 
 
-def test_run_spans_keeps_open_and_recent_runs_in_launch_order(tmp_path):
+def test_run_spans_keeps_open_and_recent_runs_in_launch_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_store, "_run_ended", lambda runs_dir, run_id, ended_at: ended_at is not None)
     _store(
         tmp_path,
         ("old", "2026-09-25T01:00:00+00:00", "2026-09-25T02:00:00+00:00"),
@@ -81,7 +82,22 @@ def test_run_spans_is_empty_with_no_store_or_no_runs_table(tmp_path):
     assert run_store.run_spans(tmp_path, "2026-09-25T00:00:00+00:00") == []
 
 
-def test_cli_json_reports_one_row_per_hour_and_the_totals(tmp_path, capsys):
+def test_a_dead_run_that_never_stamped_its_end_ends_at_its_last_call(tmp_path):
+    _store(tmp_path, ("killed", "2026-09-25T04:00:00+00:00", None), ("quiet", "2026-09-25T04:30:00+00:00", None))
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("CREATE TABLE node_calls (run_id TEXT, ts TEXT)")
+    conn.execute("INSERT INTO node_calls VALUES ('killed', '2026-09-25T04:20:00+00:00')")
+    conn.commit()
+    conn.close()
+    # no pidfile and no lease: neither run is live
+    assert run_store.run_spans(tmp_path, "2026-09-25T03:00:00+00:00") == [
+        ("killed", "2026-09-25T04:00:00+00:00", "2026-09-25T04:20:00+00:00"),
+        ("quiet", "2026-09-25T04:30:00+00:00", "2026-09-25T04:30:00+00:00"),
+    ]
+
+
+def test_cli_json_reports_one_row_per_hour_and_the_totals(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(run_store, "_run_ended", lambda runs_dir, run_id, ended_at: ended_at is not None)
     start = datetime.datetime.now(UTC) - datetime.timedelta(minutes=10)
     _store(tmp_path, ("live", start.isoformat(), None))
     assert main(["stats", "lanes", "--runs-dir", str(tmp_path), "--hours", "3", "--json"]) == 0
