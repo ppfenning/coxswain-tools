@@ -31,6 +31,21 @@ func TestRoutePrintsGroupHelpOnStdoutAndAnUnknownGroupOnStderr(t *testing.T) {
 	}
 }
 
+func TestRoutePrintsSubcommandHelpAndAnUnknownSubOnStderr(t *testing.T) {
+	table, err := coxgo.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := route(table, []string{"route", "chair", "take", "-h"}, 100)
+	if !strings.HasPrefix(stdout, "usage: cox route chair take [-h]") || stderr != "" || code != 0 {
+		t.Errorf("help: got stdout %q, stderr %q, code %d", stdout, stderr, code)
+	}
+	stdout, stderr, code = route(table, []string{"route", "chair", "nope", "-h"}, 100)
+	if stdout != "" || !strings.Contains(stderr, `unknown subcommand "nope"`) || code != 2 {
+		t.Errorf("unknown: got stdout %q, stderr %q, code %d", stdout, stderr, code)
+	}
+}
+
 func TestUsageAssessPrintsTheExpectedLineAndExitsWithItsCodeForEveryCase(t *testing.T) {
 	cases, _ := filepath.Glob("../../testdata/usage-assess/*")
 	if len(cases) < 3 {

@@ -63,14 +63,50 @@ func CommandHelp(t Table, group, command string, width int) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unknown group %q", group)
 	}
-	for _, c := range g.Commands {
-		if c.Name == command {
-			p := parser{prog: t.Prog + " " + g.Name + " " + c.Name}
-			p.positionals, p.optionals = splitArgs(c.Args)
-			return formatHelp(p, width), nil
+	c, ok := findCommand(g.Commands, command)
+	if !ok {
+		return "", fmt.Errorf("unknown command %q in group %q", command, group)
+	}
+	return formatHelp(commandParser(t.Prog+" "+g.Name+" "+c.Name, c), width), nil
+}
+
+// SubcommandHelp renders `cox <group> <command> <sub> --help`. width is the terminal width minus 2.
+func SubcommandHelp(t Table, group, command, sub string, width int) (string, error) {
+	g, ok := findGroup(t, group)
+	if !ok {
+		return "", fmt.Errorf("unknown group %q", group)
+	}
+	c, ok := findCommand(g.Commands, command)
+	if !ok {
+		return "", fmt.Errorf("unknown command %q in group %q", command, group)
+	}
+	if len(c.Subcommands) == 0 {
+		return "", fmt.Errorf("command %q in group %q has no subcommands", command, group)
+	}
+	s, ok := findCommand(c.Subcommands, sub)
+	if !ok {
+		return "", fmt.Errorf("unknown subcommand %q in command %q of group %q", sub, command, group)
+	}
+	return formatHelp(commandParser(t.Prog+" "+g.Name+" "+c.Name+" "+s.Name, s), width), nil
+}
+
+// commandParser is a command's parser; subcommands become a subparsers action, as in GroupHelp.
+func commandParser(prog string, c Command) parser {
+	p := parser{prog: prog}
+	p.positionals, p.optionals = splitArgs(c.Args)
+	if len(c.Subcommands) > 0 {
+		p.positionals = append(p.positionals, subparsersAction(c.Subcommands))
+	}
+	return p
+}
+
+func findCommand(cmds []Command, name string) (Command, bool) {
+	for _, c := range cmds {
+		if c.Name == name {
+			return c, true
 		}
 	}
-	return "", fmt.Errorf("unknown command %q in group %q", command, group)
+	return Command{}, false
 }
 
 func findGroup(t Table, name string) (Group, bool) {

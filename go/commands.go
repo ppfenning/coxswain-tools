@@ -16,11 +16,15 @@ type Arg struct {
 }
 
 type Command struct {
-	Name     string   `json:"name"`
-	Summary  string   `json:"summary"`
-	Slash    bool     `json:"slash"`
-	Examples []string `json:"examples"`
-	Args     []Arg    `json:"args"`
+	Name        string         `json:"name"`
+	Summary     string         `json:"summary"`
+	Slash       bool           `json:"slash"`
+	Examples    []string       `json:"examples"`
+	Args        []Arg          `json:"args"`
+	Subcommands []Command      `json:"subcommands"`
+	SubDest     string         `json:"sub_dest"`
+	SubRequired bool           `json:"sub_required"`
+	Defaults    map[string]any `json:"defaults"`
 }
 
 type Group struct {
