@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -126,15 +127,13 @@ func stripComment(line string) string {
 	return line
 }
 
-func knownKey(key string) bool {
-	switch key {
-	case "team", "cartridges_dir", "skills_roots", "provider_profile", "harness_dir",
-		"workspace_dir", "assume", "router", "sources", "repo_map", "forge":
-		return true
-	default:
-		return false
-	}
+// profileKeys is route._KNOWN_KEYS; testdata/profile-keys.json holds Python's list and both test suites check it.
+var profileKeys = []string{
+	"assume", "cartridges_dir", "forge", "harness_dir", "provider_profile", "repo_map", "router",
+	"skills_roots", "sources", "team", "tracker", "workspace_dir",
 }
+
+func knownKey(key string) bool { return slices.Contains(profileKeys, key) }
 
 // parseProfile is route.parse_profile narrowed to the two ceilings. Any line
 // Python rejects is an error here too, so the caller drops both ceilings as cli does.
