@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent_tools import run_store
 from agent_tools.events import Event, from_log
 from agent_tools.land import arbitration_verdict
 from agent_tools.records import load_trace
@@ -35,6 +36,7 @@ __all__ = [
     "IngestReport",
     "assign_task_ids",
     "call_rows",
+    "call_trace_key",
     "discover_runs",
     "fill_failure_classes",
     "ingest",
@@ -225,19 +227,30 @@ def assign_task_ids(
     ]
 
 
+def call_trace_key(call: Mapping[str, Any]) -> str | None:
+    """The key a usage call's trace is filed under: its own `trace` string, or its `id`
+    when it has none (a run the trace store answers for carries no loose trace path)."""
+    return call.get("trace") or call.get("id") or None
+
+
 def fill_failure_classes(
-    calls: Sequence[Mapping[str, Any]], traces_by_path: Mapping[str, Sequence[Mapping[str, Any]]], log_excerpt: str = ""
+    calls: Sequence[Mapping[str, Any]],
+    traces_by_path: Mapping[str, Sequence[Mapping[str, Any]]],
+    log_excerpt: str = "",
+    keys: Sequence[str | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Sets `failure_class` on every call whose `failure_class` is still unset and
-    whose `trace_path` names a key in `traces_by_path`, via the same
-    `extract_failure_class` `recovered_call_rows` already uses — 'ok' for a
-    successful call, never unset where the trace has a result line. A call with
-    no trace, or one `recovered_call_rows` already classified, passes through."""
+    whose key names a trace in `traces_by_path`, via the same `extract_failure_class`
+    `recovered_call_rows` already uses — 'ok' for a successful call, never unset where
+    the trace has a result line. The key is the call's `trace_path` unless `keys`
+    gives one per call (`call_trace_key` of each usage call, so a store call with no
+    trace path still finds its trace by id). A call with no trace, or one
+    `recovered_call_rows` already classified, passes through."""
     return [
-        {**call, "failure_class": extract_failure_class(traces_by_path[call["trace_path"]], log_excerpt, call.get("role"))}
-        if call.get("failure_class") is None and call.get("trace_path") in traces_by_path
+        {**call, "failure_class": extract_failure_class(traces_by_path[key], log_excerpt, call.get("role"))}
+        if call.get("failure_class") is None and key in traces_by_path
         else dict(call)
-        for call in calls
+        for call, key in zip(calls, keys if keys is not None else [c.get("trace_path") for c in calls])
     ]
 
 
@@ -345,16 +358,25 @@ def discover_runs(runs_dir: Path) -> list[str]:
     `tasks/` stems, `<run>:<node>.json` records and `<run>-trace/` directories — a run
     that only ever wrote node records (no usage.json, no launched.json, no tasks/) is
     still a run, and so is one whose only surviving artifact is its trace directory
-    (spec §1 fact 5: a budget-stopped run can write no usage.json at all)."""
+    (spec §1 fact 5: a budget-stopped run can write no usage.json at all). An ended
+    run that only the run store knows (usage rows or phase manifests) is a run too."""
     usage_ids = {p.name[: -len(".usage.json")] for p in runs_dir.glob("*.usage.json")}
     launched_ids = {p.name[: -len(".launched.json")] for p in runs_dir.glob("*.launched.json")}
     task_ids = {p.name for p in runs_dir.glob("*") if p.is_dir() and (p / "tasks").is_dir()}
     node_ids = {p.name.split(":", 1)[0] for p in runs_dir.glob("*:*.json")}
     trace_ids = {p.name.removesuffix("-trace") for p in runs_dir.glob("*-trace") if p.is_dir()}
-    return sorted(usage_ids | launched_ids | task_ids | node_ids | trace_ids)
+    store_ids = set(run_store.usages(runs_dir)) | set(run_store.all_phase_manifests(runs_dir))
+    return sorted(usage_ids | launched_ids | task_ids | node_ids | trace_ids | store_ids)
 
 
 _NODE_INDEX = {name: i for i, name in enumerate(NODE_ORDER)}
+
+
+def _manifest_sort_key(manifest: Mapping[str, Any]) -> tuple[int, str]:
+    """A store manifest's position in NODE_ORDER, from its `run_id` (`<run>:<node>`) —
+    the same key `_node_sort_key` reads off a file name."""
+    node = str(manifest.get("run_id", "")).split(":", 1)[-1]
+    return (_NODE_INDEX.get(node, len(NODE_ORDER)), node)
 
 
 def _node_sort_key(path: Path) -> tuple[int, str]:
@@ -428,21 +450,61 @@ def _resolve_trace_path(runs_dir: Path, trace: str) -> Path:
     return path if path.is_absolute() else runs_dir / path
 
 
-def _read_call_traces(runs_dir: Path, usage: Mapping[str, Any] | None, unparsed: list[str]) -> dict[str, list[dict[str, Any]]]:
-    """Every distinct trace a run's `usage.json` calls name, parsed once each and
-    keyed by the call's own `trace` string — the input `fill_failure_classes` needs
-    and `call_rows` itself has no reason to read."""
+def _read_call_traces(
+    runs_dir: Path, run_id: str, usage: Mapping[str, Any] | None, unparsed: list[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Every distinct trace a run's usage calls name, keyed by `call_trace_key` (the
+    call's `trace` string, else its `id`), so `ingest` can hand each call's key to
+    `fill_failure_classes`. A loose trace file that exists is read as before. A call
+    whose file is gone, or that names none, reads the trace store, one
+    `run_store.call_events` per call because it has no batch form. A call found in
+    neither is left out (storing `[]` would class it 'unknown'), and its named path
+    is recorded in `unparsed` as before. A store that cannot be read is recorded once
+    for the run, and the remaining calls skip it."""
     traces: dict[str, list[dict[str, Any]]] = {}
+    broken: list[str] = []
     for call in (usage or {}).get("calls") or []:
-        trace = call.get("trace")
-        if not trace or trace in traces:
+        key = call_trace_key(call)
+        if not key or key in traces:
             continue
-        path = _resolve_trace_path(runs_dir, trace)
-        try:
-            traces[trace] = load_trace(path)
-        except (OSError, UnicodeDecodeError):
+        path = _resolve_trace_path(runs_dir, call["trace"]) if call.get("trace") else None
+        if path is not None and path.exists():
+            try:
+                traces[key] = load_trace(path)
+            except (OSError, UnicodeDecodeError):
+                unparsed.append(str(path))
+        elif events := _call_store_events(runs_dir, run_id, call, broken):
+            traces[key] = events
+        elif path is not None:
             unparsed.append(str(path))
+    unparsed.extend(broken)
     return traces
+
+
+def _store_errors() -> tuple[type[Exception], ...]:
+    """What reading the trace store can raise: `TracesUnavailable`, `OSError` from a day
+    file, `ValueError` from a decode, `KeyError` from a row without `seq`, and
+    `zstandard.ZstdError` (not an `OSError`) from a truncated frame when it is installed."""
+    base: tuple[type[Exception], ...] = (run_store.TracesUnavailable, OSError, ValueError, KeyError)
+    try:
+        import zstandard
+    except ImportError:
+        return base
+    zstd_error = getattr(zstandard, "ZstdError", None)
+    return base if zstd_error is None else (*base, zstd_error)
+
+
+def _call_store_events(runs_dir: Path, run_id: str, call: Mapping[str, Any], broken: list[str]) -> list[dict[str, Any]]:
+    """The call's events from the trace store, `[]` when it has none. The first store
+    error is appended to `broken`, and later calls skip the store: each would re-read
+    the same bad day file and repeat the same entry."""
+    if broken:
+        return []
+    try:
+        return run_store.call_events(runs_dir, run_id, call) or []
+    except _store_errors() as exc:
+        broken.append(f"{runs_dir / run_store.TRACES_DIRNAME}: {type(exc).__name__}")
+        return []
 
 
 def _read_ledger(path: Path, unparsed: list[str]) -> list[dict[str, Any]]:
@@ -585,7 +647,9 @@ def resolve_provider_profile_sha(
     return blob.stdout.strip() or None
 
 
-def load_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
+def load_run(
+    runs_dir: Path, run_id: str, manifests: Mapping[str, Sequence[Mapping[str, Any]]] | None = None
+) -> dict[str, Any]:
     """Every file this ingester reads for one run — usage, launch marker, node
     records, task records and log lines — plus the paths that failed to parse.
     When `usage` is absent, `<run>.calls.jsonl` is read next (observed-record.md
@@ -595,21 +659,34 @@ def load_run(runs_dir: Path, run_id: str) -> dict[str, Any]:
     usage record's `calls[]` is authoritative, and `.usage.json` is exactly the
     file fact 5 says a budget-stopped run never wrote. A run whose usage.json IS
     present but undercounts a call (a different, already-measured symptom) is out
-    of scope here and reads unrecovered, exactly as before this ticket."""
+    of scope here and reads unrecovered, exactly as before this ticket. A run with no
+    `<run>:*.json` file takes its node records from the run store; `manifests` is
+    `run_store.all_phase_manifests(runs_dir)` when the caller already has it, because
+    `run_store.phase_manifests` re-scans every manifest file and the whole `phases`
+    table on each call, which over a corpus of store runs is quadratic."""
     unparsed: list[str] = []
-    usage = _read_json(runs_dir / f"{run_id}.usage.json", unparsed)
+    usage_path = runs_dir / f"{run_id}.usage.json"
+    usage = _read_json(usage_path, unparsed) if usage_path.exists() else run_store.usage(runs_dir, run_id)
     launched = _read_json(runs_dir / f"{run_id}.launched.json", unparsed)
     calls_jsonl = _read_calls_jsonl(runs_dir / f"{run_id}.calls.jsonl", unparsed) if usage is None else None
     traces = (
         _read_traces(runs_dir / f"{run_id}-trace", unparsed) if usage is None and calls_jsonl is None else []
     )
-    call_traces = _read_call_traces(runs_dir, usage, unparsed) if usage is not None else {}
-    node_records = [
-        parsed
-        for path in sorted(runs_dir.glob(f"{run_id}:*.json"), key=_node_sort_key)
-        for parsed in [_read_json(path, unparsed)]
-        if parsed is not None
-    ]
+    call_traces = _read_call_traces(runs_dir, run_id, usage, unparsed) if usage is not None else {}
+    node_paths = sorted(runs_dir.glob(f"{run_id}:*.json"), key=_node_sort_key)
+    node_records = (
+        [
+            parsed
+            for path in node_paths
+            for parsed in [_read_json(path, unparsed)]
+            if parsed is not None
+        ]
+        if node_paths
+        else sorted(
+            manifests.get(run_id, []) if manifests is not None else run_store.phase_manifests(runs_dir, run_id),
+            key=_manifest_sort_key,
+        )
+    )
     tasks_root = runs_dir / run_id / "tasks"
     task_files = [
         (path.parent.name, path.stem, parsed)
@@ -699,8 +776,9 @@ def ingest(
     profile_sources: list[str] = []
     sha_resolutions: list[bool] = []
     challenger_calls = 0
+    manifests = run_store.all_phase_manifests(runs_dir)
     for run_id in run_ids:
-        loaded = load_run(runs_dir, run_id)
+        loaded = load_run(runs_dir, run_id, manifests)
         unparsed.extend(loaded["unparsed"])
         gate_diffs = [d for node in loaded["node_records"] for d in (node.get("gate_diffs") or [])]
         log_events = from_log(run_id, loaded["log_lines"])
@@ -720,7 +798,12 @@ def ingest(
             # scoped to one call, and load_run has no per-call log slice, only the whole
             # run's — passing that would misclassify every call in a run by any other
             # call's log line (e.g. one call's budget_stop bleeding onto another's).
-            else fill_failure_classes(call_rows(run_id, loaded["usage"]), loaded["call_traces"], "")
+            else fill_failure_classes(
+                call_rows(run_id, loaded["usage"]),
+                loaded["call_traces"],
+                "",
+                [call_trace_key(c) for c in (loaded["usage"] or {}).get("calls") or []],
+            )
         )
         tasks = [
             task_row(run_id, phase, ticket, record, gate_diffs, log_events, work_store_root)
