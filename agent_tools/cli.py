@@ -1017,14 +1017,38 @@ def _run_checks(checks: list[tuple[str, list[str]]], cwd: Path) -> tuple[bool, s
     return True, f"{len(checks)} checks passed"
 
 
+def _land_worktree(repo: Path, branch: str) -> Path:
+    return Path(tempfile.gettempdir()) / f"cox-land-{Path(repo).resolve().name}-{branch.replace('/', '-')}"
+
+
+def _link_venv(repo: Path, wt: Path) -> None:
+    """Point `wt/.venv` at the checkout's, so a check naming `.venv/bin/python` runs the worktree's code in the repo's environment."""
+    venv = Path(repo).resolve() / ".venv"
+    if venv.is_dir() and not (wt / ".venv").exists():
+        (wt / ".venv").symlink_to(venv, target_is_directory=True)
+
+
+def _remove_land_worktree(repo: Path, branch: str) -> None:
+    """Drop `branch`'s land worktree and its registration; the branch itself stays."""
+    wt = _land_worktree(repo, branch)
+    subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
+    # A leftover directory git no longer knows (a crashed land, another repo) would block `worktree add`.
+    shutil.rmtree(wt, ignore_errors=True)
+    subprocess.run(["git", "-C", str(repo), "worktree", "prune"], capture_output=True)
+
+
 def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tuple[bool, str]:
     kind = step["kind"]
     if kind == "pick_branch":
         return True, f"{step['branch']} ({step['commit_subject']})"
     if kind == "cherry_pick":
-        co = subprocess.run(["git", "-C", str(repo), "checkout", "-b", step["onto"], step["from"]], capture_output=True, text=True)
+        # The pr branch is built in its own worktree, so `repo`'s HEAD never moves.
+        wt = _land_worktree(repo, step["onto"])
+        _remove_land_worktree(repo, step["onto"])
+        co = subprocess.run(["git", "-C", str(repo), "worktree", "add", "-b", step["onto"], str(wt), step["from"]], capture_output=True, text=True)
         if co.returncode != 0:
             return False, co.stderr.strip() or co.stdout.strip()
+        _link_venv(repo, wt)
         # The branch was chosen because it is exactly one commit ahead of
         # `from`, counted as `_land_branches` counts it: merges and commits
         # whose patch `from` already has (a stacked parent that merged as a
@@ -1035,14 +1059,18 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         shas = [s for s in rev.stdout.split() if s]
         if rev.returncode != 0 or len(shas) != 1:
             return False, f"expected exactly one commit ahead of {step['from']} on {step['branch']}, found {len(shas)}"
-        cp = subprocess.run(["git", "-C", str(repo), "cherry-pick", shas[0]], capture_output=True, text=True)
+        cp = subprocess.run(["git", "-C", str(wt), "cherry-pick", shas[0]], capture_output=True, text=True)
         if cp.returncode != 0:
-            subprocess.run(["git", "-C", str(repo), "cherry-pick", "--abort"], capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
             return False, cp.stderr.strip() or cp.stdout.strip()
         return True, f"cherry-picked {shas[0][:8]} onto {step['onto']}"
     if kind == "reuse_branch":
-        args = ["checkout", step["branch"]] if step["local"] else ["checkout", "-b", step["branch"], f"origin/{step['branch']}"]
+        wt = _land_worktree(repo, step["branch"])
+        _remove_land_worktree(repo, step["branch"])
+        args = ["worktree", "add", str(wt), step["branch"]] if step["local"] else ["worktree", "add", "-b", step["branch"], str(wt), f"origin/{step['branch']}"]
         co = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+        if co.returncode == 0:
+            _link_venv(repo, wt)
         return co.returncode == 0, (f"reusing {step['branch']}" if co.returncode == 0 else co.stderr.strip() or co.stdout.strip())
     if kind == "checks":
         if "branch" in step:
@@ -1055,10 +1083,13 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             add = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(wt), step["branch"]], capture_output=True, text=True)
             if add.returncode != 0:
                 return False, add.stderr.strip() or add.stdout.strip()
+            _link_venv(repo, wt)
             try:
                 return _run_checks(step["checks"], wt)
             finally:
                 subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
+        if "worktree_of" in step:
+            return _run_checks(step["checks"], _land_worktree(repo, step["worktree_of"]))
         return _run_checks(step["checks"], repo)
     if kind == "push":
         return forge_module.push(repo, step["branch"])
@@ -1250,7 +1281,19 @@ def _append_land_log(runs_dir: Path, row: dict) -> None:
 
 def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
                   level: str, no_merge: bool, forge_module=forge_github) -> tuple[int, list[str], str]:
-    """Walk `steps`; return the exit code, the step kinds run in order, and the PR url ("" when none opened)."""
+    """Walk `steps`; return the exit code, the step kinds run in order, and the PR url ("" when none opened).
+
+    A pr branch's land worktree is dropped before `merge` and on every stop; the branch itself stays."""
+    built: list[str] = []
+    try:
+        return _land_walk(repo, steps, planned, record, item_path, level, no_merge, forge_module, built)
+    finally:
+        for branch in built:
+            _remove_land_worktree(repo, branch)
+
+
+def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
+               level: str, no_merge: bool, forge_module, built: list[str]) -> tuple[int, list[str], str]:
     pr = ""
     reached: list[str] = []
     for i in range(len(steps)):
@@ -1261,6 +1304,12 @@ def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: di
         if step["kind"] == "note":
             continue
         reached.append(step["kind"])
+        if step["kind"] in ("cherry_pick", "reuse_branch"):
+            built.append(step.get("onto") or step["branch"])
+        if step["kind"] == "merge":
+            # gh and git cannot delete a branch a worktree still holds.
+            for branch in built:
+                _remove_land_worktree(repo, branch)
         ok, detail = _execute_land_step(repo, step, forge_module)
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
