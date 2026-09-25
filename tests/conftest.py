@@ -47,8 +47,9 @@ def _fresh_store_url():
     """run_store caches the store URL per process; each test starts without it."""
     from agent_tools import run_store
 
-    run_store._store_url_for.cache_clear()
-    run_store._lease_table.cache_clear()
+    caches = (run_store._store_url_for, run_store._lease_table, run_store._traces_root_for, run_store._found_parquet_rows)
+    for cache in caches:
+        cache.cache_clear()
     yield
-    run_store._store_url_for.cache_clear()
-    run_store._lease_table.cache_clear()
+    for cache in caches:
+        cache.cache_clear()
