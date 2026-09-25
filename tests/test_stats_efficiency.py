@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from agent_tools.cli import main
-from agent_tools.stats_efficiency import efficiency, first_land_days, landed_lands, render_lines, to_json
+from agent_tools.stats_efficiency import efficiency, first_land_days, first_log_day, landed_lands, render_lines, to_json
 
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 SINCE = "2026-09-20"
@@ -37,7 +37,7 @@ LANDS = [("2026-09-22", "t1"), ("2026-09-22", "t5"), ("2026-09-01", "old")]
 
 
 def _by_day():
-    rows, total = efficiency(CALLS, TASKS, LANDS, SINCE, NOW)
+    rows, total = efficiency(CALLS, TASKS, LANDS, SINCE, NOW, "2026-09-01")
     return {r.day: r for r in rows}, total
 
 
@@ -70,7 +70,7 @@ def test_a_task_whose_last_call_is_under_two_days_old_is_left_out_of_waste():
 
 
 def _waste_of_one_unlanded_task(last_ts):
-    return efficiency([_call("2026-09-22", "t9", 1.0, 1, 0, 0)], [_task("t9", 1, last_ts)], [], SINCE, NOW)[1].waste_share
+    return efficiency([_call("2026-09-22", "t9", 1.0, 1, 0, 0)], [_task("t9", 1, last_ts)], [], SINCE, NOW, SINCE)[1].waste_share
 
 
 def test_a_last_call_exactly_two_days_old_counts_toward_waste():
@@ -91,7 +91,7 @@ def test_an_unparseable_or_missing_last_call_reads_as_old():
 
 def test_a_task_that_failed_in_one_run_and_landed_in_a_retry_is_not_waste_and_not_first_try():
     calls = [_call("2026-09-22", "t7", 2.0, 3, 0, 0), _call("2026-09-23", "t7", 1.0, 2, 0, 0)]
-    rows, total = efficiency(calls, [_task("t7", 2, "2026-09-23T10:00:00+00:00")], [("2026-09-23", "t7")], SINCE, NOW)
+    rows, total = efficiency(calls, [_task("t7", 2, "2026-09-23T10:00:00+00:00")], [("2026-09-23", "t7")], SINCE, NOW, "2026-09-22")
     assert [(r.day, r.waste_share, r.landed, r.first_try_rate) for r in rows] == [
         ("2026-09-22", 0.0, 0, None), ("2026-09-23", 0.0, 1, 0.0),
     ]
@@ -117,8 +117,28 @@ def test_totals_sum_the_window_and_ignore_a_land_before_the_cutoff():
 def test_a_task_landed_twice_counts_once_on_its_first_day_so_the_days_sum_to_the_total():
     calls = [_call("2026-09-22", "t1", 1.0, 1, 0, 0), _call("2026-09-24", "t1", 1.0, 1, 0, 0)]
     lands = [("2026-09-24", "t1"), ("2026-09-22", "t1"), ("2026-09-22", "t1")]
-    rows, total = efficiency(calls, [_task("t1", 1, "2026-09-24T00:00:00+00:00")], lands, SINCE, NOW)
+    rows, total = efficiency(calls, [_task("t1", 1, "2026-09-24T00:00:00+00:00")], lands, SINCE, NOW, "2026-09-22")
     assert ([r.landed for r in rows], total.landed) == ([1, 0], 1)
+
+
+def test_a_day_before_the_land_logs_first_row_is_unknown_and_a_later_day_with_no_lands_is_zero():
+    calls = [
+        _call("2026-09-20", "t0", 2.0, 3, 0, 0), _call("2026-09-21", "t1", 1.0, 1, 0, 0),
+        _call("2026-09-22", "t2", 1.0, 2, 0, 0), _call("2026-09-23", "t3", 4.0, 1, 0, 0),
+    ]
+    tasks = [_task(t, 1, f"{d}T10:00:00+00:00") for t, d in [("t0", "2026-09-20"), ("t1", "2026-09-21"), ("t2", "2026-09-22"), ("t3", "2026-09-23")]]
+    log = [
+        '{"ts": "2026-09-22T10:00:00+00:00", "task": "t2", "steps_reached": ["mark_done"], "exit": 0}',
+        '{"ts": "2026-09-21T10:00:00+00:00", "task": "t1", "steps_reached": ["merge"], "exit": 1}',
+    ]
+    rows, total = efficiency(calls, tasks, landed_lands(log), SINCE, NOW, first_log_day(log))
+    lines = render_lines(rows, total)
+    assert lines[1].split()[4:8] == ["-", "-", "-", "-"]
+    assert (lines[2].split()[4], lines[2].split()[7]) == ("0", "100%")
+    assert (total.cost_usd, total.turns, total.landed, total.cost_per_landed, total.first_try_rate) == (8.0, 7, 1, 6.0, 1.0)
+    assert total.waste_share == pytest.approx(5.0 / 6.0)
+    rows, total = efficiency(calls, tasks, [], SINCE, NOW, first_log_day([]))
+    assert [r.landed for r in [*rows, total]] == [None] * 5
 
 
 def test_first_land_days_keeps_the_earliest_dated_land_per_task():
@@ -128,12 +148,12 @@ def test_first_land_days_keeps_the_earliest_dated_land_per_task():
 def test_a_task_landed_before_the_window_or_with_no_ts_is_not_waste_and_not_counted():
     calls = [_call("2026-09-22", "old", 4.0, 1, 0, 0), _call("2026-09-22", "t8", 2.0, 1, 0, 0)]
     tasks = [_task("old", 1, "2026-09-22T00:00:00+00:00"), _task("t8", 1, "2026-09-22T00:00:00+00:00")]
-    rows, total = efficiency(calls, tasks, [("2026-09-01", "old"), ("", "t8")], SINCE, NOW)
+    rows, total = efficiency(calls, tasks, [("2026-09-01", "old"), ("", "t8")], SINCE, NOW, "2026-09-01")
     assert (rows[0].waste_share, total.landed) == (0.0, 0)
 
 
 def test_no_calls_and_no_lands_gives_no_days_and_an_all_none_total():
-    rows, total = efficiency([], [], [], SINCE, NOW)
+    rows, total = efficiency([], [], [], SINCE, NOW, None)
     assert (rows, total.cost_usd, total.cost_per_turn, total.waste_share) == ([], 0, None, None)
 
 
@@ -158,7 +178,7 @@ def test_render_lines_dashes_a_missing_ratio_and_ends_with_the_total():
 
 
 def test_to_json_carries_each_day_and_the_total():
-    rows, total = efficiency(CALLS, TASKS, LANDS, SINCE, NOW)
+    rows, total = efficiency(CALLS, TASKS, LANDS, SINCE, NOW, "2026-09-01")
     out = to_json(rows, total)
     assert [d["day"] for d in out["days"]] == ["2026-09-22", "2026-09-23", "2026-09-25"]
     assert out["total"]["landed"] == 2
@@ -196,7 +216,7 @@ def test_the_command_keys_a_retried_task_by_its_task_id_across_runs(tmp_path, mo
 def test_the_command_on_a_runs_dir_with_no_store_prints_an_empty_total(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path / "none.yaml"))
     assert main(["stats", "efficiency", "--runs-dir", str(tmp_path)]) == 0
-    assert capsys.readouterr().out.splitlines()[-1].split() == ["total", "0.00", "0", "-", "0", "-", "-", "-", "-"]
+    assert capsys.readouterr().out.splitlines()[-1].split() == ["total", "0.00", "0", "-", "-", "-", "-", "-", "-"]
 
 
 def test_days_below_one_is_refused(tmp_path, capsys):

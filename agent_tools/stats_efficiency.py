@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -20,7 +20,7 @@ class EfficiencyRow:
     cost_usd: float
     turns: int
     cost_per_turn: float | None
-    landed: int
+    landed: int | None  # None on a day before the land log's first row
     cost_per_landed: float | None
     first_try_rate: float | None  # landed tasks with exactly one build call over all runs, over landed tasks
     waste_share: float | None  # task-scoped spend on tasks that never landed, over task-scoped spend
@@ -53,6 +53,20 @@ def first_land_days(lands: Iterable[tuple[str, str]]) -> dict[str, str]:
     return {task: day for day, task in reversed(dated)}
 
 
+def _log_day(line: str) -> str:
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return ""
+    ts = row.get("ts") if isinstance(row, dict) else None
+    return ts[:10] if isinstance(ts, str) else ""
+
+
+def first_log_day(lines: Iterable[str]) -> str | None:
+    """The earliest dated day over every parseable `land.jsonl` row, failed lands included; None when no row has a `ts`."""
+    return min(filter(None, map(_log_day, lines)), default=None)
+
+
 def _is_in_flight(last_ts: str | None, now: datetime) -> bool:
     """True when the last call is under two days before `now`. A naive stamp reads as UTC; an unparseable one as old."""
     try:
@@ -69,13 +83,14 @@ def _row(
     ever_landed: frozenset[str],
     tasks: Mapping[str, Mapping[str, Any]],
     now: datetime,
+    covered: bool = True,
 ) -> EfficiencyRow:
     cost = sum(c["cost_usd"] for c in calls)
     turns = sum(c["turns"] for c in calls)
     scoped = [c for c in calls if c["task_id"] is not None and not _is_in_flight(tasks.get(c["task_id"], {}).get("last_ts"), now)]
     wasted = sum(c["cost_usd"] for c in scoped if c["task_id"] not in ever_landed)
     first_try = sum(1 for t in landed if tasks.get(t, {}).get("builds") == 1)
-    return EfficiencyRow(
+    row = EfficiencyRow(
         day=day,
         cost_usd=cost,
         turns=turns,
@@ -86,6 +101,9 @@ def _row(
         waste_share=_ratio(wasted, sum(c["cost_usd"] for c in scoped)),
         cache_read_share=_ratio(sum(c["cache_read_tokens"] for c in calls), sum(c["input_total"] for c in calls)),
     )
+    if covered:
+        return row
+    return replace(row, landed=None, cost_per_landed=None, first_try_rate=None, waste_share=None)
 
 
 def efficiency(
@@ -94,25 +112,39 @@ def efficiency(
     lands: Sequence[tuple[str, str]],
     since: str,
     now: datetime,
+    log_start: str | None,
 ) -> tuple[list[EfficiencyRow], EfficiencyRow]:
     """Per-day rows oldest first, and a total whose landed count is the sum of the days'.
 
     `calls` are per (day, task_id) sums, `tasks` per task_id build counts and last call ts. A task's land counts on its
-    first land day when that day is on or after `since`; a land at any time keeps the task's spend out of waste."""
+    first land day when that day is on or after `since`; a land at any time keeps the task's spend out of waste.
+    `log_start` is the day of the land log's first row, None with no dated row. A day before it, or every day when it is
+    None, has landed, $/landed, first-try and waste None; the total takes those four from the covered days only."""
     by_task = {t["task_id"]: t for t in tasks}
     ever_landed = frozenset(task for _, task in lands)
     counted = {task: day for task, day in first_land_days(lands).items() if day >= since}
+
+    def is_covered(day: str) -> bool:
+        return log_start is not None and day >= log_start
+
     days = sorted({c["day"] for c in calls} | set(counted.values()))
     rows = [
         _row(
             day,
             [c for c in calls if c["day"] == day],
             frozenset(task for task, d in counted.items() if d == day),
-            ever_landed, by_task, now,
+            ever_landed, by_task, now, is_covered(day),
         )
         for day in days
     ]
-    return rows, _row(TOTAL, calls, frozenset(counted), ever_landed, by_task, now)
+    everything = _row(TOTAL, calls, frozenset(counted), ever_landed, by_task, now)
+    known = _row(
+        TOTAL, [c for c in calls if is_covered(c["day"])], frozenset(counted), ever_landed, by_task, now, log_start is not None,
+    )
+    return rows, replace(
+        everything, landed=known.landed, cost_per_landed=known.cost_per_landed,
+        first_try_rate=known.first_try_rate, waste_share=known.waste_share,
+    )
 
 
 def _cell(value: float | None, fmt: str) -> str:
@@ -123,7 +155,7 @@ def render_lines(rows: Sequence[EfficiencyRow], total: EfficiencyRow) -> list[st
     head = ["day", "cost", "turns", "$/turn", "landed", "$/landed", "first-try", "waste", "cache-read"]
     body = [
         [
-            r.day, f"{r.cost_usd:.2f}", str(r.turns), _cell(r.cost_per_turn, ".3f"), str(r.landed),
+            r.day, f"{r.cost_usd:.2f}", str(r.turns), _cell(r.cost_per_turn, ".3f"), _cell(r.landed, "d"),
             _cell(r.cost_per_landed, ".2f"), _cell(r.first_try_rate, ".0%"), _cell(r.waste_share, ".0%"), _cell(r.cache_read_share, ".0%"),
         ]
         for r in [*rows, total]
