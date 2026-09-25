@@ -53,7 +53,8 @@ func isUsageAssess(args []string) bool {
 }
 
 // usageAssess prints `<verdict>: <reason>` and exits with the verdict's code. The clock and
-// environment come in as arguments; COX_NOW, an RFC 3339 UTC timestamp, overrides the clock.
+// environment come in as arguments; COX_NOW, an RFC 3339 UTC timestamp, overrides the clock,
+// and COX_NO_CCUSAGE=1 skips the ccusage call.
 func usageAssess(args []string, getenv func(string) string, clock func() time.Time) (stdout, stderr string, code int) {
 	var usage bytes.Buffer
 	fs := flag.NewFlagSet("usage assess", flag.ContinueOnError)
@@ -79,7 +80,7 @@ func usageAssess(args []string, getenv func(string) string, clock func() time.Ti
 	if rest, ok := strings.CutPrefix(path, "~/"); ok {
 		path = filepath.Join(getenv("HOME"), rest)
 	}
-	r := coxgo.Assess(*runsDir, path, now)
+	r := coxgo.Assess(*runsDir, path, now, coxgo.CcusageBlocks(getenv))
 	return r.Line() + "\n", "", r.Code
 }
 
