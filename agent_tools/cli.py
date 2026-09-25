@@ -52,6 +52,7 @@ from agent_tools import (
     schema,
     setup_install,
     setup_screen,
+    sources,
     stats_chair,
     stats_examples,
     stats_ingest,
@@ -1949,6 +1950,95 @@ def _route_file(a: argparse.Namespace) -> int:
     return 0
 
 
+def _run_argv(argv: list[str]) -> tuple[int, str, str]:
+    """`(returncode, stdout, stderr)`; a missing executable is returncode 127, never an exception."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as exc:
+        return 127, "", str(exc)
+    return r.returncode, r.stdout, r.stderr.strip()
+
+
+def _fetch_listing(adapter, config) -> list | None:
+    """The raw listing across `config.repos`; `None` after printing when a fetch fails. An adapter with no `list_argv` lists nothing."""
+    list_argv = getattr(adapter, "list_argv", None)
+    listing: list = []
+    for repo in config.repos if list_argv else ():
+        rc, out, err = _run_argv(list_argv(config, repo))
+        try:
+            listing.extend(json.loads(out or "[]") if rc == 0 else ())
+        except json.JSONDecodeError as exc:
+            rc, err = 1, f"listing is not JSON: {exc}"
+        if rc != 0:
+            print(f"routing: listing {repo} failed: {err}")
+            return None
+    return listing
+
+
+def _pull_candidates(adapter, config, listing: list) -> tuple[dict, list[str]]:
+    """Candidates by link, reading only entries `candidates` accepts, one entry at a time; an unparsable entry is a problem line."""
+    found: dict = {}
+    problems: list[str] = []
+    for raw in listing:
+        try:
+            wanted = {ref.link for ref in adapter.candidates(config, [raw])}
+            candidate = adapter.read(raw) if wanted else None
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            name = next((str(raw[k]) for k in ("url", "link", "title") if k in raw), "an entry") if isinstance(raw, dict) else "an entry"
+            problems.append(f"routing: skipping unreadable listing entry {name}: {type(exc).__name__}: {exc}")
+            continue
+        if candidate is not None and candidate.link in wanted:
+            found[candidate.link] = candidate
+    return found, problems
+
+
+def _pull_one(adapter, mapping: dict, found: dict, ws: Path, dry_run: bool) -> bool:
+    """Write one planned intake file, then mark its source; True after printing why when either step failed."""
+    (rel, text), = mapping.items()
+    origin = found[route.parse_frontmatter(text)[0]["link"]]
+    if dry_run:
+        print(f"would write {rel}")
+        return False
+    if refusal := _write_mapping(mapping, ws):
+        print(f"{refusal}; {origin.title!r} ({origin.link}) not filed")
+        return True
+    rc, _, err = _run_argv(adapter.mark_argv(sources.Ref(origin.link, origin.repo), rel))
+    if rc != 0:
+        print(f"routing: wrote {rel}; marking {origin.link} failed (exit {rc}): {err}")
+    return rc != 0
+
+
+def _route_pull(a: argparse.Namespace) -> int:
+    profile, rc = _resolve_profile_or_refuse(a)
+    if rc is not None:
+        return rc
+    config = sources.source_config(profile, a.source)
+    adapter = sources.adapter_for(a.source)
+    if config is None or adapter is None:
+        print(f"routing: no source {a.source!r} in the profile and adapters")
+        return 2
+    listing = _fetch_listing(adapter, config)
+    if listing is None:
+        return 2
+    ws = Path(profile["workspace_dir"]).expanduser()
+    intake_root = ws / "intake"
+    known = sorted(intake_root.glob("*.md")) + sorted((intake_root / "done").glob("*.md"))
+    links = sources.intake_links({str(p.relative_to(ws)): p.read_text(encoding="utf-8") for p in known})
+    found, unreadable = _pull_candidates(adapter, config, listing)
+    taken = frozenset(link for link in found if adapter.taken(link, links))
+    date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    plan, refusals = route.pull_plan(
+        tuple(found.values()), taken, profile.get("repo_map", {}), date=date, source=a.source
+    )
+    problems = [*unreadable, *refusals]
+    for line in problems:
+        print(line)
+    if not plan:
+        print("routing: pull wrote nothing: no eligible candidates")
+    failed = [_pull_one(adapter, mapping, found, ws, a.dry_run) for mapping in plan]
+    return 2 if problems or any(failed) else 0
+
+
 def _harness_ready_or_refuse(harness_dir: str):
     """spec §4/§7: `launch` refuses before anything starts when the
     harness venv is not where the profile says. Returns 2 after printing
@@ -3416,6 +3506,14 @@ ROUTE_COMMANDS = [
             commands.Arg(("--from-intake",), {"help": "link and file an existing intake file's initiative, then retire it"}),
         ),
         _route_file, False, (),
+    ),
+    commands.Command(
+        "pull", "route", "file intake tickets from a source, once per link",
+        (
+            commands.Arg(("--profile",)), commands.Arg(("--source",), {"default": "github"}),
+            commands.Arg(("--dry-run",), {"action": "store_true"}),
+        ),
+        _route_pull, False, (),
     ),
     commands.Command(
         "lint", "route", "static ticket lint over a filed initiative, work-shape.md §3",
