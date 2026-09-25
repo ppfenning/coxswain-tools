@@ -1,0 +1,7 @@
+usage: cox stats lanes [-h] [--runs-dir RUNS_DIR] [--hours HOURS] [--json]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
+  --hours HOURS        how many clock hours back to report
+  --json
