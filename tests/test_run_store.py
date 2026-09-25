@@ -319,7 +319,7 @@ def day_file(runs_dir, day, run_id, *frames):
     path.write_bytes(b"".join(frame(rows) for rows in frames))
 
 
-def test_call_events_prefers_the_loose_file_and_skips_a_line_that_is_not_an_object(tmp_path):
+def test_call_events_reads_the_loose_file_when_the_stores_hold_nothing_and_skips_a_line_that_is_not_an_object(tmp_path):
     loose = tmp_path / "r1-trace" / "scope_epic-1.jsonl"
     loose.parent.mkdir()
     loose.write_text('{"type":"a"}\nnot json\n[1]\n\n{"type":"b"}\n')
