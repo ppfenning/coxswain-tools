@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 import pytest
 
@@ -68,6 +69,33 @@ def test_a_missing_catalog_leaves_chair_cost_unpriced_and_never_fails(shape, tmp
     assert main([*shape[:-1], str(tmp_path / "absent.yaml"), "--json"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert (report["chair_usd"], report["chair_usd_per_pr"], report["harness_prs"]) == (None, None, 36)
+
+
+def _seed_store_run(runs, run_id, launched_at, cost):
+    """An ended `runs` row and one `node_calls` row costing `cost`, with no usage file."""
+    columns = (
+        "call_id", "run_id", "seq", "role", "task_id", "tier", "model_alias", "cost_usd", "ceiling_usd", "ceiling_source",
+        "turns", "duration_ms", "input_tokens", "cache_read_tokens", "cache_creation_tokens", "input_total", "output_tokens",
+        "ok", "ts", "decision_json",
+    )
+    conn = sqlite3.connect(runs / "cox.db")
+    conn.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, launched_at TEXT, ended_at TEXT)")
+    conn.execute("CREATE TABLE node_calls (" + ", ".join(columns) + ")")
+    conn.execute("INSERT INTO runs VALUES (?, ?, ?)", (run_id, launched_at, "2026-09-10T01:00:00+00:00"))
+    row = (f"{run_id}-0", run_id, 0, "build", None, "cheap", "haiku", cost, None, None, 1, 1, 0, 0, 0, 0, 0, 1, launched_at, None)
+    conn.execute("INSERT INTO node_calls VALUES (" + ", ".join("?" * len(columns)) + ")", row)
+    conn.commit()
+    conn.close()
+
+
+def test_a_store_only_run_is_counted_and_windowed_by_its_launched_at_date(shape, tmp_path, capsys):
+    _seed_store_run(tmp_path / "runs", "s1", "2026-09-10T08:00:00+00:00", 2.0)
+    assert main([*shape, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["harness_usd"] == pytest.approx(3.75)
+    assert main([*shape, "--json", "--since", "2026-09-10"]) == 0
+    assert json.loads(capsys.readouterr().out)["harness_usd"] == pytest.approx(3.75)
+    assert main([*shape, "--json", "--since", "2026-09-11"]) == 0
+    assert json.loads(capsys.readouterr().out)["harness_usd"] == pytest.approx(1.75)
 
 
 def test_since_after_every_file_date_leaves_nothing_in_the_window(shape, capsys):

@@ -44,6 +44,7 @@ from agent_tools import (
     route_sync,
     route_sync_gh,
     router,
+    run_store,
     runs_bar,
     runs_detail,
     runs_detail_screen,
@@ -226,6 +227,15 @@ def _in_window(p: Path, since: str | None) -> bool:
     return since is None or _file_date(p) >= since
 
 
+def _run_in_window(runs_dir: Path, run_id: str, since: str | None) -> bool:
+    """A file run by its file's mtime date; a store-only run by the date of its `launched_at`, absent counting as outside."""
+    p = runs_dir / f"{run_id}.usage.json"
+    if p.exists():
+        return _in_window(p, since)
+    started = run_store.run_started(runs_dir, run_id)
+    return since is None or (started is not None and started[:10] >= since)
+
+
 def _json_or(text: str | None, default):
     try:
         return json.loads(text) if text is not None else default
@@ -264,9 +274,9 @@ def _stats_chair(a: argparse.Namespace) -> int:
     ]
     landed = [(run, task) for p, run, task in landed_tasks if _in_window(p, a.since)]
     usage_calls = [
-        {**call, "run": p.name[: -len(".usage.json")]}
-        for p in sorted(runs_dir.glob("*.usage.json")) if _in_window(p, a.since)
-        for call in (_json_or(_read_text_or_none(p), {}).get("calls") or [])
+        {**call, "run": run_id}
+        for run_id, u in run_store.usages(runs_dir).items() if _run_in_window(runs_dir, run_id, a.since)
+        for call in (u.get("calls") or [])
     ]
     land_rows = [r for line in (_read_text_or_none(runs_dir / "land.jsonl") or "").splitlines() if isinstance(r := _json_or(line, None), dict)]
     prices = _chair_catalog_prices(a)
@@ -300,10 +310,7 @@ def _stats_examples(a: argparse.Namespace) -> int:
 
 
 def _stats_system_one(a: argparse.Namespace) -> int:
-    usages = [
-        u for p in sorted(Path(a.runs_dir).glob("*.usage.json"))
-        if isinstance(u := _json_or(_read_text_or_none(p), None), dict)
-    ]
+    usages = list(run_store.usages(Path(a.runs_dir)).values())
     found = stats_system_one.summaries(stats_system_one.rows_from_usage(usages), a.since, a.role)
     print(json.dumps(stats_system_one.to_json(found), indent=2) if a.json else stats_system_one.render_report(found))
     if a.propose:
