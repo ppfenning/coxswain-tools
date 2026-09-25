@@ -1,6 +1,9 @@
 import json
 import os
+import sqlite3
 import subprocess
+import sys
+import types
 
 import pytest
 
@@ -424,6 +427,214 @@ def test_ingest_assigns_seq_to_recovered_calls_in_node_order_not_alphabetical_or
     rows = conn.execute("SELECT seq, role FROM calls WHERE run_id = 'run1' ORDER BY seq").fetchall()
     conn.close()
     assert rows == [(0, "scope_epic"), (1, "build")]
+
+
+_NODE_CALLS_COLUMNS = (
+    "call_id TEXT PRIMARY KEY, run_id TEXT, seq INTEGER, phase_id TEXT, task_id TEXT, role TEXT, tier TEXT, "
+    "model_alias TEXT, model_id TEXT, claude_code_version TEXT, cost_usd REAL, ceiling_usd REAL, "
+    "ceiling_source TEXT, turns INTEGER, duration_ms INTEGER, input_tokens INTEGER, cache_read_tokens INTEGER, "
+    "cache_creation_tokens INTEGER, input_total INTEGER, output_tokens INTEGER, ok BOOL, ts TEXT, "
+    "requested_tier TEXT, chosen_tier TEXT, decision_reason TEXT, router_tier TEXT, router_reason TEXT, "
+    "ticket_key TEXT, outcome_key TEXT, system_one_prediction TEXT, system_one_confidence REAL, "
+    "decision_json TEXT, detail_json TEXT"
+)
+_STORE_TABLES = {
+    "node_calls": _NODE_CALLS_COLUMNS,
+    "runs": "run_id TEXT PRIMARY KEY, launched_at TEXT, ended_at TEXT, status TEXT",
+    "phases": "run_id TEXT, phase_id TEXT, ts TEXT, record_json TEXT, PRIMARY KEY (run_id, phase_id)",
+}
+_ENDED = "2026-09-25T05:03:46+00:00"
+
+
+def _write_store(runs_dir, run_id, *, roles=(), phases=()):
+    """A `cox.db` holding one ended run: a `node_calls` row per role and a `phases` row per phase."""
+    conn = sqlite3.connect(runs_dir / "cox.db")
+    for name, columns in _STORE_TABLES.items():
+        conn.execute(f"CREATE TABLE {name} ({columns})")
+    conn.execute("INSERT INTO runs (run_id, ended_at, status) VALUES (?, ?, 'ok')", (run_id, _ENDED))
+    for seq, role in enumerate(roles):
+        conn.execute(
+            "INSERT INTO node_calls (call_id, run_id, seq, role, cost_usd, ok, ts) VALUES (?, ?, ?, ?, 0.5, 1, ?)",
+            (f"c{seq}", run_id, seq, role, f"2026-09-25T04:3{seq}:00+00:00"),
+        )
+    for n, phase in enumerate(phases):
+        record = {"manifest_record": {"run_id": f"{run_id}:{phase}", "cartridge_team": "pat", "human_minutes": 1.0}}
+        conn.execute(
+            "INSERT INTO phases (run_id, phase_id, ts, record_json) VALUES (?, ?, ?, ?)",
+            (run_id, phase, f"2026-09-25T04:4{n}:00+00:00", json.dumps(record)),
+        )
+    conn.commit()
+    conn.close()
+
+
+def _write_store_trace(runs_dir, run_id, events_by_call, monkeypatch):
+    """One plain-text day file, read through a stand-in decompressor so the test needs no zstandard."""
+    stand_in = types.SimpleNamespace(
+        ZstdDecompressor=lambda: types.SimpleNamespace(stream_reader=lambda fh, read_across_frames: fh)
+    )
+    monkeypatch.setitem(sys.modules, "zstandard", stand_in)
+    path = runs_dir / "traces" / "2026" / "09" / "25" / f"{run_id}.jsonl.zst"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"run_id": run_id, "call_id": call_id, "seq": seq, "event": event}
+        for call_id, events in events_by_call.items()
+        for seq, event in enumerate(events)
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+
+def test_a_store_only_ended_run_is_discovered_and_ingested_with_its_calls_and_phases(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_store(runs_dir, "sr1", roles=("scope_epic", "build"), phases=("build", "plan"))
+
+    assert stats_ingest.discover_runs(runs_dir) == ["sr1"]
+    loaded = stats_ingest.load_run(runs_dir, "sr1")
+    assert [m["run_id"] for m in loaded["node_records"]] == ["sr1:plan", "sr1:build"]
+    assert (loaded["calls_jsonl"], loaded["traces"]) == ([], [])
+
+    report = stats_ingest.ingest(runs_dir, tmp_path / "stats.db")
+
+    conn = connect(tmp_path / "stats.db")
+    calls = conn.execute("SELECT role FROM calls WHERE run_id = 'sr1' ORDER BY seq").fetchall()
+    team = conn.execute("SELECT cartridge_team FROM runs WHERE run_id = 'sr1'").fetchone()
+    conn.close()
+    assert report.runs_ingested == 1
+    assert calls == [("scope_epic",), ("build",)]
+    assert team == ("pat",)
+
+
+def test_a_run_with_files_ignores_the_store_rows_for_the_same_run(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_run(runs_dir, "r1", usage={"calls": [{"role": "build", "cost_usd": 1.0}]}, node={"run_id": "r1:node"})
+    _write_store(runs_dir, "r1", roles=("plan", "review"), phases=("plan",))
+
+    loaded = stats_ingest.load_run(runs_dir, "r1")
+
+    assert loaded["usage"] == {"calls": [{"role": "build", "cost_usd": 1.0}]}
+    assert loaded["node_records"] == [{"run_id": "r1:node"}]
+    assert loaded["unparsed"] == []
+
+
+def test_a_call_trace_is_read_from_the_store_when_its_loose_file_is_gone(tmp_path, monkeypatch):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    gone = str(runs_dir / "r1-trace" / "build-1.jsonl")
+    _write_run(runs_dir, "r1", usage={"calls": [{"id": "c1", "trace": gone}, {"id": "c2"}]})
+    _write_store_trace(runs_dir, "r1", {"c1": [{"n": 0}, {"n": 1}], "c2": [{"n": 2}]}, monkeypatch)
+
+    loaded = stats_ingest.load_run(runs_dir, "r1")
+
+    assert loaded["call_traces"] == {gone: [{"n": 0}, {"n": 1}], "c2": [{"n": 2}]}
+    assert loaded["unparsed"] == []
+
+
+def test_traces_unavailable_skips_the_calls_and_records_the_store_once_instead_of_raising(tmp_path, monkeypatch):
+    runs_dir = tmp_path / "runs"
+    (runs_dir / "traces").mkdir(parents=True)
+    gone = str(runs_dir / "gone.jsonl")
+    _write_run(runs_dir, "r1", usage={"calls": [{"id": "c1", "trace": gone}, {"id": "c2"}, {"id": "c3"}]})
+    asked = []
+
+    def unavailable(runs_dir, run_id, call):
+        asked.append(call["id"])
+        raise stats_ingest.run_store.TracesUnavailable("reading traces needs zstandard")
+
+    monkeypatch.setattr(stats_ingest.run_store, "call_events", unavailable)
+
+    loaded = stats_ingest.load_run(runs_dir, "r1")
+
+    assert loaded["call_traces"] == {}
+    assert loaded["unparsed"] == [gone, f"{runs_dir / 'traces'}: TracesUnavailable"]
+    assert asked == ["c1"]
+
+
+def test_a_missing_trace_with_nothing_in_the_store_stays_unclassified_and_unparsed(tmp_path):
+    runs_dir = tmp_path / "runs"
+    (runs_dir / "traces").mkdir(parents=True)
+    gone = str(runs_dir / "r1-trace" / "build-1.jsonl")
+    _write_run(runs_dir, "r1", usage={"calls": [{"id": "c1", "role": "build", "trace": gone}]})
+
+    loaded = stats_ingest.load_run(runs_dir, "r1")
+    stats_ingest.ingest(runs_dir, tmp_path / "stats.db")
+
+    conn = connect(tmp_path / "stats.db")
+    failure_class = conn.execute("SELECT failure_class FROM calls WHERE run_id = 'r1'").fetchone()
+    conn.close()
+    assert (loaded["call_traces"], loaded["unparsed"]) == ({}, [gone])
+    assert failure_class == (None,)
+
+
+def test_a_corrupt_store_day_file_is_recorded_and_does_not_abort_the_ingest(tmp_path, monkeypatch):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    gone = str(runs_dir / "gone.jsonl")
+    _write_run(runs_dir, "r1", usage={"calls": [{"id": "c1", "trace": gone}]})
+    _write_store_trace(runs_dir, "r1", {"c1": [{"n": 0}]}, monkeypatch)
+    (runs_dir / "traces" / "2026" / "09" / "25" / "r1.jsonl.zst").write_text('{"call_id": "c1", "event": {}}\n')
+
+    loaded = stats_ingest.load_run(runs_dir, "r1")
+
+    assert (loaded["call_traces"], loaded["unparsed"]) == ({}, [gone, f"{runs_dir / 'traces'}: KeyError"])
+
+
+def test_a_truncated_zstd_day_file_is_recorded_and_does_not_abort_the_ingest(tmp_path):
+    pytest.importorskip("zstandard")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    gone = str(runs_dir / "gone.jsonl")
+    _write_run(runs_dir, "r1", usage={"calls": [{"id": "c1", "trace": gone}, {"id": "c2"}]})
+    day = runs_dir / "traces" / "2026" / "09" / "25"
+    day.mkdir(parents=True)
+    (day / "r1.jsonl.zst").write_bytes(b"\x28\xb5\x2f\xfd truncated")
+
+    loaded = stats_ingest.load_run(runs_dir, "r1")
+
+    assert (loaded["call_traces"], loaded["unparsed"]) == ({}, [gone, f"{runs_dir / 'traces'}: ZstdError"])
+
+
+def test_a_store_only_runs_calls_get_their_failure_class_from_the_store_traces_by_id(tmp_path, monkeypatch):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_store(runs_dir, "sr1", roles=("scope_epic", "build", "review"), phases=("plan",))
+    ok = {"type": "result", "is_error": False, "subtype": "success"}
+    stopped = {"type": "result", "is_error": True, "subtype": "error_max_budget_usd"}
+    _write_store_trace(runs_dir, "sr1", {"c0": [ok], "c1": [stopped]}, monkeypatch)
+
+    stats_ingest.ingest(runs_dir, tmp_path / "stats.db")
+
+    conn = connect(tmp_path / "stats.db")
+    rows = conn.execute("SELECT role, failure_class, trace_path FROM calls WHERE run_id = 'sr1' ORDER BY seq").fetchall()
+    conn.close()
+    assert rows == [("scope_epic", "ok", None), ("build", "budget_stop", None), ("review", None, None)]
+
+
+def test_fill_failure_classes_matches_a_call_by_the_key_it_is_given_instead_of_its_trace_path():
+    calls = [{"role": "review", "trace_path": None, "failure_class": None}, {"role": "review", "trace_path": None, "failure_class": None}]
+    traces = {"c0": [{"type": "result", "is_error": False}]}
+
+    rows = stats_ingest.fill_failure_classes(calls, traces, "", ["c0", "c1"])
+
+    assert [r["failure_class"] for r in rows] == ["ok", None]
+
+
+def test_ingest_reads_the_stores_manifests_once_not_once_per_run(tmp_path, monkeypatch):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_store(runs_dir, "sr1", roles=("build",), phases=("plan",))
+
+    def rescans(runs_dir, run_id):
+        raise AssertionError("phase_manifests re-scans the whole store on every call")
+
+    monkeypatch.setattr(stats_ingest.run_store, "phase_manifests", rescans)
+
+    stats_ingest.ingest(runs_dir, tmp_path / "stats.db")
+
+    conn = connect(tmp_path / "stats.db")
+    team = conn.execute("SELECT cartridge_team FROM runs WHERE run_id = 'sr1'").fetchone()
+    conn.close()
+    assert team == ("pat",)
 
 
 def test_ingest_recovers_a_budget_stopped_runs_cost_from_its_trace_result_line(tmp_path):
