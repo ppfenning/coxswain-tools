@@ -148,7 +148,7 @@ def test_context_text_with_full_profile_lists_initiative_and_runs(tmp_path, caps
     assert rc == 0
     assert "demo" in out
     assert "intake: 1 queued, 0 decomposed, 0 landed" in out
-    assert "runs: 1 in flight" in out
+    assert "lanes: 1 busy" in out
     assert "run1" in out and "run2" not in out
 
 

@@ -551,7 +551,7 @@ def test_render_context_with_profile_matches_spec_layout():
         "routing: team acme; work requests go through the route-work skill, "
         "questions stay inline\n"
         "intake: 1 queued, 1 decomposed, 0 landed\n"
-        "runs: 1 in flight — widget-1 (pid 4242, since 14:02)\n"
+        "lanes: 1 busy — widget-1 (pid 4242, since 14:02)\n"
         "ready: widget (3 tasks ready in phase build)"
     )
 
@@ -562,7 +562,7 @@ def test_render_context_with_profile_and_no_activity():
         "routing: team acme; work requests go through the route-work skill, "
         "questions stay inline\n"
         "intake: 0 queued, 0 decomposed, 0 landed\n"
-        "runs: 0 in flight\n"
+        "lanes: all clear\n"
         "ready: none"
     )
 
@@ -609,7 +609,7 @@ def test_render_context_counts_only_alive_runs_in_flight():
         FIXTURE_PROFILE, FIXTURE_INTAKE, FIXTURE_RUNS_MIXED, FIXTURE_INITIATIVES
     )
     lines = text.splitlines()
-    assert "runs: 1 in flight — widget-1 (pid 4242, since 14:02)" in lines
+    assert "lanes: 1 busy — widget-1 (pid 4242, since 14:02)" in lines
     assert "widget-2" not in text
     assert "widget-3" not in text
 
@@ -621,9 +621,24 @@ def test_render_context_all_exited_reports_zero_in_flight():
     ]
     text = route.render_context(FIXTURE_PROFILE, FIXTURE_INTAKE, runs, FIXTURE_INITIATIVES)
     lines = text.splitlines()
-    assert "runs: 0 in flight" in lines
+    assert "lanes: all clear" in lines
     assert "widget-2" not in text
     assert "widget-3" not in text
+
+
+def test_the_docket_lanes_line_for_none_and_for_two_busy_lanes():
+    def lanes_line(runs):
+        text = route.render_context(FIXTURE_PROFILE, EMPTY_INTAKE_GROUPS, runs, [])
+        return next(l for l in text.splitlines() if l.startswith("lanes:"))
+
+    two = [
+        {"id": "widget-1", "pid": 4242, "alive": True, "started": "14:02"},
+        {"id": "widget-2", "pid": 4243, "alive": True, "started": "13:02"},
+    ]
+    assert lanes_line([]) == "lanes: all clear"
+    assert lanes_line(two) == (
+        "lanes: 2 busy — widget-1 (pid 4242, since 14:02), widget-2 (pid 4243, since 13:02)"
+    )
 
 
 def test_context_document_adds_a_live_count_of_alive_runs():

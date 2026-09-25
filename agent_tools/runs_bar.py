@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 __all__ = ["attention", "bar"]
 
 _ATTENTION_STATUSES = ("quarantined", "budget")
-_NO_RUNS = "no runs in flight"
+_NO_RUNS = "all lanes clear"
 
 
 def attention(rows: Sequence[Mapping]) -> bool:

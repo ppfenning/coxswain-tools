@@ -52,7 +52,7 @@ def test_render_cuts_every_line_and_sorts_alive_first():
 def test_render_of_no_rows_prints_the_no_runs_message():
     lines = render([], 40)
     assert lines[0].startswith("RUN")
-    assert lines[1] == "no runs in flight"
+    assert lines[1] == "all lanes clear"
 
 
 def test_a_width_of_10_does_not_raise():

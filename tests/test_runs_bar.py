@@ -19,7 +19,7 @@ def test_attention_is_false_when_no_row_is_quarantined_or_budget_stopped():
 
 
 def test_bar_is_idle_with_no_live_runs():
-    assert runs_bar.bar([], False) == {"text": "0 runs · $0.00", "tooltip": "no runs in flight", "class": "idle"}
+    assert runs_bar.bar([], False) == {"text": "0 runs · $0.00", "tooltip": "all lanes clear", "class": "idle"}
 
 
 def test_bar_is_running_with_a_live_run_and_no_attention():

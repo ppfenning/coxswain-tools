@@ -666,7 +666,7 @@ def launch_gate(assessment: Assessment, force: bool) -> tuple[int | None, list[s
 
 
 def _alive_runs(runs: list) -> list:
-    """The subset of `runs` still in flight — spec §2's "in flight" count
+    """The subset of `runs` still in flight — the docket's `lanes:` count
     and roster both come from this, not from every entry with a pidfile."""
     return [r for r in runs if r["alive"]]
 
@@ -704,9 +704,9 @@ def render_context(profile_or_none, intake: dict, runs, initiatives, problems: l
         described = ", ".join(
             f'{r["id"]} (pid {r["pid"]}, since {r["started"]})' for r in live
         )
-        lines.append(f"runs: {len(live)} in flight — {described}")
+        lines.append(f"lanes: {len(live)} busy — {described}")
     else:
-        lines.append("runs: 0 in flight")
+        lines.append("lanes: all clear")
     if initiatives:
         described = ", ".join(_describe_initiative(i) for i in initiatives)
         lines.append(f"ready: {described}")

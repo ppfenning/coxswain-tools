@@ -3167,12 +3167,12 @@ RUNS_COMMANDS = [
         _runs_events, False, (),
     ),
     commands.Command(
-        "top", "runs", "live table of runs in flight; --once prints it and exits",
+        "top", "runs", "live table of busy lanes (runs in flight); --once prints it and exits",
         (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--interval",), {"type": float, "default": 3}), commands.Arg(("--once",), {"action": "store_true"})),
         _runs_top, False, (),
     ),
     commands.Command(
-        "bar", "runs", "one Waybar JSON line: runs in flight, cost, class idle|running|attention",
+        "bar", "runs", "one Waybar JSON line: busy lanes, cost, class idle|running|attention",
         (commands.Arg(("--runs-dir",), {"default": "runs"}),),
         _runs_bar, False, (),
     ),
