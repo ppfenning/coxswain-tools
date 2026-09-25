@@ -1,5 +1,5 @@
 from agent_tools.events import Event
-from agent_tools.runs_top import Row, column_widths, highlight, render, row, tail_lines
+from agent_tools.runs_top import STALL_S, Row, _status, column_widths, highlight, render, row, tail_lines
 
 
 def test_the_last_node_started_and_verdict_win():
@@ -153,3 +153,19 @@ def test_tail_lines_keeps_only_the_last_lines_over_the_limit():
 
 def test_tail_lines_keeps_a_blank_line_in_the_tail():
     assert tail_lines("a\n\nb\n", 3) == ["a", "", "b"]
+
+
+def test_status_is_stalled_at_the_stall_threshold_and_running_just_under_it():
+    assert STALL_S == 90
+    assert _status([], True, heartbeat_age=90) == "stalled"
+    assert _status([], True, heartbeat_age=89) == "running"
+    assert _status([], True) == "running"
+
+
+def test_exited_wins_over_stalled_for_a_dead_run():
+    assert _status([], False, heartbeat_age=500) == "exited"
+
+
+def test_row_carries_heartbeat_age_and_a_stale_one_reads_stalled():
+    r = row("r1", True, [], [], [], heartbeat_age=120)
+    assert (r.status, r.heartbeat_age) == ("stalled", 120)
