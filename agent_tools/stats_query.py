@@ -9,6 +9,7 @@ directly; `render_capped` is only the default-text path's cap.
 
 from __future__ import annotations
 
+import itertools
 import sqlite3
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -27,6 +28,7 @@ __all__ = [
     "roles_report",
     "series_report",
     "spend_mix_report",
+    "tier_call_rows",
 ]
 
 
@@ -307,6 +309,21 @@ def gates_inputs(conn: sqlite3.Connection, since: str | None) -> tuple[list[dict
         _fetch(conn, "SELECT t.* FROM tasks " + _SINCE_JOIN.format(alias="t"), (since,)),
         _fetch(conn, "SELECT c.* FROM calls " + _SINCE_JOIN.format(alias="c"), (since,)),
     )
+
+
+def _run_key(row: Mapping[str, Any]) -> str:
+    return row.get("run_id") or ""
+
+
+def _by_run(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
+    return {key: list(group) for key, group in itertools.groupby(sorted(rows, key=_run_key), key=_run_key)}
+
+
+def tier_call_rows(conn: sqlite3.Connection, since: str | None) -> list[dict[str, Any]]:
+    """`_joined` per run: a task_id relaunched in another run must not lend a call that run's outcome. `since` as in `gates_inputs`."""
+    tasks, calls = gates_inputs(conn, since)
+    tasks_by_run = _by_run(tasks)
+    return [row for run, run_calls in _by_run(calls).items() for row in _joined(run_calls, tasks_by_run.get(run, []))]
 
 
 def _gate_cell(value: Any) -> str:

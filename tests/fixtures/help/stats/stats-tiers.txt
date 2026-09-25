@@ -1,0 +1,9 @@
+usage: cox stats tiers [-h] [--db DB] [--since SINCE] [--min-samples MIN_SAMPLES] [--json]
+
+options:
+  -h, --help            show this help message and exit
+  --db DB
+  --since SINCE         keep only rows dated on or after DATE (YYYY-MM-DD)
+  --min-samples MIN_SAMPLES
+                        tasks a model needs before it can be picked (default 20)
+  --json
