@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from agent_tools.cli import build_parser, main
+from agent_tools.cli import _resolved_tier, build_parser, main
 from agent_tools.stats_query import bounds_report, coverage_report, explain_report, roles_report, series_report
 from agent_tools.stats_schema import connect
 
@@ -399,3 +399,46 @@ def test_cli_stats_bounds_write_refuses_a_path_outside_the_repo_checkout(tmp_pat
     assert code == 2
     assert "outside the repo checkout" in out
     assert not outside.exists()
+
+
+def test_resolved_tier_maps_extract_to_cheap():
+    assert _resolved_tier({}, {"build": "extract"}, "build") == "cheap"
+
+
+def test_resolved_tier_maps_reason_to_standard():
+    assert _resolved_tier({}, {"build": "reason"}, "build") == "standard"
+
+
+def test_resolved_tier_maps_judge_to_deep():
+    assert _resolved_tier({}, {"build": "judge"}, "build") == "deep"
+
+
+def test_resolved_tier_maps_frontier_to_deep():
+    assert _resolved_tier({}, {"build": "frontier"}, "build") == "deep"
+
+
+def test_resolved_tier_passes_a_tier_name_through():
+    assert _resolved_tier({}, {"build": "cheap"}, "build") == "cheap"
+
+
+def test_resolved_tier_override_wins_over_a_class_default():
+    assert _resolved_tier({"build": "deep"}, {"build": "extract"}, "build") == "deep"
+
+
+def test_resolved_tier_falls_back_to_standard_for_missing_unknown_or_non_string():
+    assert _resolved_tier({}, {}, "build") == "standard"
+    assert _resolved_tier({}, {"build": "bogus"}, "build") == "standard"
+    assert _resolved_tier({}, {"build": ["deep"]}, "build") == "standard"
+
+
+def test_cli_stats_bounds_a_class_named_default_gives_the_same_ceiling_as_its_tier(tmp_path, capsys):
+    db = tmp_path / "stats.db"
+    _seed_bounds(db)
+    ceilings = []
+    for name in ("standard", "reason"):
+        routing = _write_full_provider(tmp_path, defaults=f"  build: {name}\n")
+        code = main(["stats", "bounds", "--db", str(db), "--json", "--profile", str(routing)])
+        [row] = json.loads(capsys.readouterr().out)
+        assert code == 0
+        ceilings.append(row["ceiling"])
+    assert ceilings == [0.35, 0.35]

@@ -260,11 +260,18 @@ def _bounds_ceiling_for(a: argparse.Namespace):
     return _ceiling
 
 
+# A profile may name a capability class or a tier; tools does not import cartridges.
+_CLASS_TIER = {"extract": "cheap", "reason": "standard", "judge": "deep", "frontier": "deep"}
+
+
 def _resolved_tier(tier_overrides: dict, defaults: dict, role: str) -> str:
     """A role's tier: its own `tier_overrides` entry, else the profile's
     `defaults` entry, else `"standard"` — the chain `_bounds_ceiling_for`
-    and `_router_policy_for` both resolve a role's tier through."""
-    return tier_overrides.get(role, defaults.get(role, "standard"))
+    and `_router_policy_for` both resolve a role's tier through. An entry
+    may name a tier or a capability class; the result is always a tier."""
+    raw = tier_overrides.get(role, defaults.get(role, "standard"))
+    tier = _CLASS_TIER.get(raw, raw) if isinstance(raw, str) else None
+    return tier if tier in _CLASS_TIER.values() else "standard"
 
 
 def _stats_bounds(a: argparse.Namespace) -> int:
