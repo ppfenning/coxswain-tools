@@ -1017,9 +1017,12 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         if co.returncode != 0:
             return False, co.stderr.strip() or co.stdout.strip()
         # The branch was chosen because it is exactly one commit ahead of
-        # `from`, so that range names the commit without matching on the
-        # subject text, which a second commit could share.
-        rev = subprocess.run(["git", "-C", str(repo), "rev-list", f"{step['from']}..{step['branch']}"], capture_output=True, text=True)
+        # `from`, counted as `_land_branches` counts it: merges and commits
+        # whose patch `from` already has (a stacked parent that merged as a
+        # squash) are left out. So the range names the one commit without
+        # matching on the subject text, which a second commit could share.
+        rev = subprocess.run(["git", "-C", str(repo), "rev-list", "--no-merges", "--cherry-pick", "--right-only",
+                              f"{step['from']}...{step['branch']}"], capture_output=True, text=True)
         shas = [s for s in rev.stdout.split() if s]
         if rev.returncode != 0 or len(shas) != 1:
             return False, f"expected exactly one commit ahead of {step['from']} on {step['branch']}, found {len(shas)}"
