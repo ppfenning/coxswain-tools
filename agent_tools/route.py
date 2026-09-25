@@ -99,11 +99,14 @@ def parse_profile(text: str) -> dict:
     """
     result: dict = {}
     in_spend = False
+    in_hosts = False  # `lane_hosts:` is a list of mappings that cli reads from the YAML text; its lines are skipped here
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.rstrip("\n")
         if not line.strip():
             continue
         if line.lstrip().startswith("#"):
+            continue
+        if in_hosts and line != line.lstrip():
             continue
         if line != line.lstrip():
             if not in_spend:
@@ -121,6 +124,7 @@ def parse_profile(text: str) -> dict:
                 raise ProfileError(f"line {lineno}: {raw_line}") from None
             continue
         in_spend = False
+        in_hosts = False
         content = _stripped_content(line)
         if ":" not in content:
             raise ProfileError(f"line {lineno}: {raw_line}")
@@ -131,6 +135,11 @@ def parse_profile(text: str) -> dict:
             if value:
                 raise ProfileError(f"line {lineno}: {raw_line}")
             in_spend = True
+            continue
+        if key == "lane_hosts":
+            if value:
+                raise ProfileError(f"line {lineno}: {raw_line}")
+            in_hosts = True
             continue
         if key not in _KNOWN_KEYS:
             raise ProfileError(f"line {lineno}: {raw_line}")
