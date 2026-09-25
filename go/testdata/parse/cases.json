@@ -1,0 +1,365 @@
+[
+  {
+    "argv": [
+      "runs",
+      "usage",
+      "r-1"
+    ],
+    "values": {
+      "cmd": "usage",
+      "group": "runs",
+      "json": false,
+      "run_id": "r-1",
+      "runs_dir": "runs"
+    }
+  },
+  {
+    "argv": [
+      "runs",
+      "usage",
+      "--json",
+      "r-1",
+      "--runs-dir",
+      "x"
+    ],
+    "values": {
+      "cmd": "usage",
+      "group": "runs",
+      "json": true,
+      "run_id": "r-1",
+      "runs_dir": "x"
+    }
+  },
+  {
+    "argv": [
+      "runs",
+      "usage",
+      "r-1",
+      "--runs-dir=x"
+    ],
+    "values": {
+      "cmd": "usage",
+      "group": "runs",
+      "json": false,
+      "run_id": "r-1",
+      "runs_dir": "x"
+    }
+  },
+  {
+    "argv": [
+      "runs",
+      "usage",
+      "r-1",
+      "--runs",
+      "x"
+    ],
+    "values": {
+      "cmd": "usage",
+      "group": "runs",
+      "json": false,
+      "run_id": "r-1",
+      "runs_dir": "x"
+    }
+  },
+  {
+    "argv": [
+      "runs",
+      "usage"
+    ],
+    "error": {
+      "message": "the following arguments are required: run_id",
+      "prog": "cox runs usage"
+    }
+  },
+  {
+    "argv": [
+      "runs",
+      "usage",
+      "r-1",
+      "--nope"
+    ],
+    "error": {
+      "message": "unrecognized arguments: --nope",
+      "prog": "cox"
+    }
+  },
+  {
+    "argv": [
+      "runs",
+      "usage",
+      "r-1",
+      "extra"
+    ],
+    "error": {
+      "message": "unrecognized arguments: extra",
+      "prog": "cox"
+    }
+  },
+  {
+    "argv": [
+      "runs",
+      "land",
+      "r-1",
+      "--repo",
+      "R",
+      "--gate",
+      "full"
+    ],
+    "values": {
+      "apply": false,
+      "cmd": "land",
+      "force": false,
+      "gate": "full",
+      "group": "runs",
+      "label": null,
+      "no_claim": false,
+      "no_merge": false,
+      "phase": null,
+      "profile": null,
+      "repo": "R",
+      "run_id": "r-1",
+      "runs_dir": null,
+      "task": null,
+      "worktree_root": "~/worktrees"
+    }
+  },
+  {
+    "argv": [
+      "runs",
+      "land",
+      "r-1",
+      "--repo",
+      "R",
+      "--gate",
+      "nope"
+    ],
+    "error": {
+      "message": "argument --gate: invalid choice: 'nope' (choose from ticket, phase, epic, full)",
+      "prog": "cox runs land"
+    }
+  },
+  {
+    "argv": [
+      "runs",
+      "land",
+      "r-1"
+    ],
+    "error": {
+      "message": "the following arguments are required: --repo",
+      "prog": "cox runs land"
+    }
+  },
+  {
+    "argv": [
+      "runs",
+      "top",
+      "--interval",
+      "0.5"
+    ],
+    "values": {
+      "cmd": "top",
+      "group": "runs",
+      "interval": 0.5,
+      "once": false,
+      "runs_dir": "runs"
+    }
+  },
+  {
+    "argv": [
+      "runs",
+      "top",
+      "--interval",
+      "x"
+    ],
+    "error": {
+      "message": "argument --interval: invalid float value: 'x'",
+      "prog": "cox runs top"
+    }
+  },
+  {
+    "argv": [
+      "stats",
+      "ingest"
+    ],
+    "values": {
+      "cartridges_repo": null,
+      "cmd": "ingest",
+      "db": "workspace/stats/stats.db",
+      "group": "stats",
+      "runs_dir": "runs",
+      "work_store_root": "work"
+    }
+  },
+  {
+    "argv": [
+      "stats",
+      "ingest",
+      "other"
+    ],
+    "values": {
+      "cartridges_repo": null,
+      "cmd": "ingest",
+      "db": "workspace/stats/stats.db",
+      "group": "stats",
+      "runs_dir": "other",
+      "work_store_root": "work"
+    }
+  },
+  {
+    "argv": [
+      "stats",
+      "chair",
+      "--session",
+      "a",
+      "--session",
+      "b"
+    ],
+    "values": {
+      "cmd": "chair",
+      "group": "stats",
+      "json": false,
+      "profile": null,
+      "projects_dir": "~/.claude/projects",
+      "runs_dir": "runs",
+      "session": [
+        "a",
+        "b"
+      ],
+      "since": null,
+      "work_store_root": "work"
+    }
+  },
+  {
+    "argv": [
+      "install",
+      "--root",
+      "R",
+      "--with",
+      "crew",
+      "--with",
+      "x"
+    ],
+    "values": {
+      "dry_run": false,
+      "edge": false,
+      "group": "install",
+      "manifest": null,
+      "provider": "claude-code",
+      "root": "R",
+      "team": null,
+      "with_": [
+        "crew",
+        "x"
+      ],
+      "workspace": null
+    }
+  },
+  {
+    "argv": [
+      "setup",
+      "install",
+      "--root",
+      "R",
+      "--team",
+      "T",
+      "--workspace",
+      "W",
+      "--weekly-ceiling-usd",
+      "900"
+    ],
+    "values": {
+      "assume": "a",
+      "cmd": "install",
+      "dry_run": false,
+      "force_profile": false,
+      "group": "setup",
+      "hook": false,
+      "plugins": false,
+      "profile": null,
+      "provider_profile": null,
+      "root": "R",
+      "skills_root": null,
+      "team": "T",
+      "weekly_ceiling_usd": 900.0,
+      "window_ceiling_usd": null,
+      "workspace": "W"
+    }
+  },
+  {
+    "argv": [
+      "setup",
+      "install",
+      "--root",
+      "R",
+      "--team",
+      "T",
+      "--workspace",
+      "W",
+      "--w",
+      "1"
+    ],
+    "error": {
+      "message": "ambiguous option: --w could match --workspace, --window-ceiling-usd, --weekly-ceiling-usd",
+      "prog": "cox setup install"
+    }
+  },
+  {
+    "argv": [
+      "route",
+      "chair",
+      "take",
+      "--pid",
+      "12"
+    ],
+    "values": {
+      "chair_cmd": "take",
+      "cmd": "chair",
+      "group": "route",
+      "label": null,
+      "pid": 12,
+      "profile": null,
+      "steal": false
+    }
+  },
+  {
+    "argv": [
+      "route",
+      "chair",
+      "take",
+      "--pid",
+      "x"
+    ],
+    "error": {
+      "message": "argument --pid: invalid int value: 'x'",
+      "prog": "cox route chair take"
+    }
+  },
+  {
+    "argv": [
+      "runs"
+    ],
+    "values": {
+      "cmd": null,
+      "group": "runs"
+    }
+  },
+  {
+    "argv": [
+      "versions"
+    ],
+    "values": {
+      "group": "versions",
+      "manifest": null,
+      "root": null
+    }
+  },
+  {
+    "argv": [
+      "nosuch"
+    ],
+    "error": {
+      "message": "argument group: invalid choice: 'nosuch' (choose from runs, stats, usage, router, steward, epic, plan, route, courier, install, upgrade, versions, dev, release, home, setup)",
+      "prog": "cox"
+    }
+  }
+]
