@@ -1,0 +1,15 @@
+usage: cox stats system-one [-h] [--role ROLE] [--since SINCE] [--json] [--propose]
+                            [--plans-dir PLANS_DIR]
+                            [runs_dir]
+
+positional arguments:
+  runs_dir
+
+options:
+  -h, --help            show this help message and exit
+  --role ROLE           report this role only
+  --since SINCE         keep only rows dated on or after DATE (YYYY-MM-DD)
+  --json
+  --propose             write a graduation proposal for each READY role; never edits a profile
+  --plans-dir PLANS_DIR
+                        where --propose writes system-one-graduation-<role>-<date>.md
