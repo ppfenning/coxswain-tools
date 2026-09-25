@@ -2921,7 +2921,7 @@ def _parquet_traces_line(profile: dict | None) -> str | None:
     provider = profile.get("provider_profile")
     provider_data = store_url.read_provider_profile(provider) if provider else {}
     root = store_url.profile_traces_root(provider_data, Path(profile["workspace_dir"]).expanduser() / "runs")
-    check = run_store.parquet_readable(root)
+    check = run_store.parquet_readable(root, run_store.harness_python(profile))
     return doctor.parquet_line(check.readable, check.reason)
 
 
