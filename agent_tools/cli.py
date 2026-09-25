@@ -1479,7 +1479,7 @@ def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool, claim: boo
         return None if force else 2
     if claim and state != "live":
         pid, host = _leader_identity()
-        new_record, _ = chair.take(record, holder, pid, host, datetime.datetime.now(datetime.UTC), _leader_heartbeat_minutes(), _leader_pid_alive(record), steal=True)
+        new_record, _ = chair.take(record, holder, pid, host, datetime.datetime.now(datetime.UTC), _leader_heartbeat_minutes(), _leader_pid_alive(record), steal=True, claude_session=chair.claude_session_from_env(os.environ))
         chair.write(runs_dir, new_record)
         print(f"taking the loop: {holder}" if record is None else f"taking the loop from {record.get('session')} ({state})")
     return None
@@ -1549,7 +1549,7 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         alive = _leader_pid_alive(record)
         prior_state = chair.liveness(record, alive, now, host, heartbeat_minutes)
         _print_if_stale(record, prior_state)
-        new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal)
+        new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal, claude_session=chair.claude_session_from_env(os.environ))
         if new_record is None:
             print(reason)
             return 2
@@ -1571,7 +1571,7 @@ def _route_chair_beat(a: argparse.Namespace) -> int:
         record, read_rc = _leader_read_or_refuse(runs_dir)
         if read_rc is not None:
             return read_rc
-        new_record, reason = chair.beat(record, session, pid, host, datetime.datetime.now(datetime.UTC), run_id=a.run)
+        new_record, reason = chair.beat(record, session, pid, host, datetime.datetime.now(datetime.UTC), run_id=a.run, claude_session=chair.claude_session_from_env(os.environ))
         if new_record is None:
             print(reason)
             return 2
