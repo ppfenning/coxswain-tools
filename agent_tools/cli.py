@@ -105,7 +105,10 @@ def _runs_series(a: argparse.Namespace) -> int:
     d = Path(a.runs_dir)
     files = {f.name: f.read_text(encoding="utf-8")
              for pattern in ("*.usage.json", "*:*.json", "*.ceiling.json", "*.launched.json") for f in d.glob(pattern)}
-    rows = records.series(files)
+    stored = {f"{run}.usage.json": json.dumps(usage) for run, usage in run_store.usages(d).items()}
+    stored |= {f"{m['run_id']}.json": json.dumps(m)
+               for ms in run_store.all_phase_manifests(d).values() for m in ms if m.get("run_id")}
+    rows = records.series({**stored, **files})
     totals = records.series_totals(rows)
     if a.json:
         print(json.dumps({"rows": rows, "totals": totals}, indent=2))
@@ -946,9 +949,11 @@ def _land_phase_record(runs_dir: Path, run_id: str, phase: str) -> tuple[dict | 
     """The phase record at `runs/<run>:<phase>.json` and every task record
     filed under it, keyed by task name for `mark_done`'s own file path."""
     phase_path = runs_dir / f"{run_id}:{phase}.json"
-    if not phase_path.exists():
+    phase_record = next((m for m in run_store.phase_manifests(runs_dir, run_id) if m.get("run_id") == f"{run_id}:{phase}"), None)
+    if phase_record is None and phase_path.exists():  # a file whose body carries no run_id
+        phase_record = json.loads(phase_path.read_text(encoding="utf-8"))
+    if phase_record is None:
         return None, [], {}, str(phase_path.resolve())
-    phase_record = json.loads(phase_path.read_text(encoding="utf-8"))
     phase_record.setdefault("run", run_id)
     phase_record.setdefault("phase", phase)
     task_records, task_paths = [], {}

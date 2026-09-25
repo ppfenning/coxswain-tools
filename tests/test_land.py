@@ -5,6 +5,7 @@ import subprocess as sp
 from pathlib import Path
 
 import pytest
+from test_run_store import phases_table, run_row, runs_table, with_record
 
 from agent_tools import chair, cleanup, cli, forge_github, land
 
@@ -1463,3 +1464,16 @@ def test_the_phase_plans_merge_step_carries_what_the_local_forge_reads():
         "kind": "merge", "squash": True, "delete_branch": True,
         "branch": "epic/x/seams", "default_branch": "trunk", "subject": "epic x: seams",
     }
+
+
+def test_land_phase_record_reads_the_store_manifest_when_no_file_exists(tmp_path):
+    runs_table(tmp_path, run_row("epic-x-5"))
+    phases_table(tmp_path, with_record("epic-x-5", "seams", "2026-09-25T04:40:00+00:00"), with_record("epic-x-5", "other", "2026-09-25T04:41:00+00:00"))
+    record, tasks, paths, _ = cli._land_phase_record(tmp_path, "epic-x-5", "seams")
+    assert not (tmp_path / "epic-x-5:seams.json").exists()
+    assert record["run_id"] == "epic-x-5:seams" and record["phase"] == "seams" and (tasks, paths) == ([], {})
+
+
+def test_land_phase_record_names_the_missing_file_when_neither_file_nor_store_has_it(tmp_path):
+    record, tasks, paths, searched = cli._land_phase_record(tmp_path, "epic-x-5", "seams")
+    assert (record, tasks, paths) == (None, [], {}) and searched == str((tmp_path / "epic-x-5:seams.json").resolve())
