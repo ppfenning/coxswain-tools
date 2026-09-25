@@ -1962,13 +1962,16 @@ def _run_argv(argv: list[str]) -> tuple[int, str, str]:
 def _fetch_listing(adapter, config) -> list | None:
     """The raw listing across `config.repos`; `None` after printing when a fetch fails. An adapter with no `list_argv` lists nothing."""
     list_argv = getattr(adapter, "list_argv", None)
+    unwrap = getattr(adapter, "unwrap", None) or (lambda payload, _repo: payload)
     listing: list = []
     for repo in config.repos if list_argv else ():
         rc, out, err = _run_argv(list_argv(config, repo))
         try:
-            listing.extend(json.loads(out or "[]") if rc == 0 else ())
+            listing.extend(unwrap(json.loads(out or "[]"), repo) if rc == 0 else ())
         except json.JSONDecodeError as exc:
             rc, err = 1, f"listing is not JSON: {exc}"
+        except (KeyError, TypeError) as exc:
+            rc, err = 1, f"listing has an unexpected shape: {type(exc).__name__}: {exc}"
         if rc != 0:
             print(f"routing: listing {repo} failed: {err}")
             return None
@@ -1992,7 +1995,14 @@ def _pull_candidates(adapter, config, listing: list) -> tuple[dict, list[str]]:
     return found, problems
 
 
-def _pull_one(adapter, mapping: dict, found: dict, ws: Path, dry_run: bool) -> bool:
+def _mark_argv(adapter, config, ref, rel: str) -> list[str]:
+    """An adapter that sets `MARK_NEEDS_TOKEN_ENV` gets the profile's `token_env` as a third argument."""
+    if getattr(adapter, "MARK_NEEDS_TOKEN_ENV", False):
+        return adapter.mark_argv(ref, rel, config.token_env)
+    return adapter.mark_argv(ref, rel)
+
+
+def _pull_one(adapter, config, mapping: dict, found: dict, ws: Path, dry_run: bool) -> bool:
     """Write one planned intake file, then mark its source; True after printing why when either step failed."""
     (rel, text), = mapping.items()
     origin = found[route.parse_frontmatter(text)[0]["link"]]
@@ -2002,7 +2012,7 @@ def _pull_one(adapter, mapping: dict, found: dict, ws: Path, dry_run: bool) -> b
     if refusal := _write_mapping(mapping, ws):
         print(f"{refusal}; {origin.title!r} ({origin.link}) not filed")
         return True
-    rc, _, err = _run_argv(adapter.mark_argv(sources.Ref(origin.link, origin.repo), rel))
+    rc, _, err = _run_argv(_mark_argv(adapter, config, sources.Ref(origin.link, origin.repo), rel))
     if rc != 0:
         print(f"routing: wrote {rel}; marking {origin.link} failed (exit {rc}): {err}")
     return rc != 0
@@ -2035,7 +2045,7 @@ def _route_pull(a: argparse.Namespace) -> int:
         print(line)
     if not plan:
         print("routing: pull wrote nothing: no eligible candidates")
-    failed = [_pull_one(adapter, mapping, found, ws, a.dry_run) for mapping in plan]
+    failed = [_pull_one(adapter, config, mapping, found, ws, a.dry_run) for mapping in plan]
     return 2 if problems or any(failed) else 0
 
 
