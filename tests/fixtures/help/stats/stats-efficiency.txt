@@ -1,0 +1,7 @@
+usage: cox stats efficiency [-h] [--runs-dir RUNS_DIR] [--days DAYS] [--json]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
+  --days DAYS          UTC days to report, today included (default 7)
+  --json

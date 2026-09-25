@@ -57,6 +57,12 @@ def _fresh_store_url():
         cache.cache_clear()
 
 @pytest.fixture(autouse=True)
+def _no_host_profile(monkeypatch, tmp_path_factory):
+    """The default profile is not absent in tests: `~/.config/agent-tools/profile.yaml` is read unless a test names another."""
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path_factory.getbasetemp() / "no-profile.yaml"))
+
+
+@pytest.fixture(autouse=True)
 def _no_real_harness(monkeypatch):
     """No test reaches the machine's real harness: a store_cli call would write leases into a real store. A test that
     needs a harness monkeypatches `store_cli._harness_python` itself."""

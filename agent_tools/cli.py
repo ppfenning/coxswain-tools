@@ -71,6 +71,7 @@ from agent_tools import (
     sources,
     stats_causes,
     stats_chair,
+    stats_efficiency,
     stats_examples,
     stats_gates,
     stats_ingest,
@@ -220,6 +221,23 @@ def _stats_causes(a: argparse.Namespace) -> int:
         return 2
     summaries = stats_causes.summarise(run_store.attempt_causes(Path(a.runs_dir), a.since or ""))
     print(json.dumps(stats_causes.to_json(summaries), indent=2) if a.json else "\n".join(stats_causes.render_lines(summaries)))
+    return 0
+
+
+def _stats_efficiency(a: argparse.Namespace) -> int:
+    if a.days < 1:
+        print(f"cox stats efficiency: --days must be at least 1, got {a.days}", file=sys.stderr)
+        return 2
+    now = datetime.datetime.now(datetime.UTC)
+    runs_dir = Path(a.runs_dir)
+    since = (now - datetime.timedelta(days=a.days - 1)).date().isoformat()
+    stored = run_store.efficiency_rows(runs_dir, since)
+    lands = stats_efficiency.landed_lands((_read_text_or_none(runs_dir / "land.jsonl") or "").splitlines())
+    rows, total = stats_efficiency.efficiency(stored["calls"], stored["tasks"], lands, since, now)
+    if a.json:
+        print(json.dumps(stats_efficiency.to_json(rows, total), indent=2))
+    else:
+        print("\n".join(stats_efficiency.render_lines(rows, total)))
     return 0
 
 
@@ -4015,6 +4033,15 @@ STATS_COMMANDS = [
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
         _stats_causes, False, (),
+    ),
+    commands.Command(
+        "efficiency", "stats", "cost per turn, cost per landed task, first-try rate, waste share, per day",
+        (
+            commands.Arg(("--runs-dir",), {"default": "runs"}),
+            commands.Arg(("--days",), {"type": int, "default": 7, "help": "UTC days to report, today included (default 7)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _stats_efficiency, False, (),
     ),
     commands.Command(
         "gates", "stats", "what each review, validation and plan gate costs and how often it changes the outcome",

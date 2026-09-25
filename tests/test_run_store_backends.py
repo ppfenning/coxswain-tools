@@ -177,6 +177,41 @@ def test_a_runs_dir_with_no_store_gives_none_and_creates_nothing(sqlite_dir):
     assert not (sqlite_dir / "cox.db").exists()
 
 
+def test_efficiency_rows_sum_calls_by_day_and_task_from_the_cutoff(runs_dir):
+    rows = run_store.efficiency_rows(runs_dir, "2026-09-24")
+    assert rows["calls"] == [
+        {"day": "2026-09-25", "task_id": None, "cost_usd": 0.75, "turns": 3, "cache_read_tokens": 0, "input_total": 48}
+    ]
+    assert rows["tasks"] == []
+
+
+def test_efficiency_rows_count_build_calls_and_the_last_ts_per_task_id_across_runs_and_time(sqlite_dir):
+    conn = sqlite3.connect(sqlite_dir / "cox.db")
+    conn.execute(SEED_DDL[3])
+    for call in (
+        _call("c1", "x-1", 1, "build", "mid", "sonnet", 0.5, 2, 10, "2026-09-10T04:00:00+00:00"),
+        _call("c2", "x-2", 1, "build", "mid", "sonnet", 0.25, 1, 10, "2026-09-25T04:00:00+00:00"),
+        _call("c3", "x-2", 2, "review_charter", "mid", "sonnet", 0.25, 1, 10, "2026-09-25T05:00:00+00:00"),
+    ):
+        conn.execute(
+            f"INSERT INTO node_calls ({', '.join(call)}, task_id) VALUES ({', '.join('?' * (len(call) + 1))})", (*call.values(), "t1")
+        )
+    conn.commit()
+    conn.close()
+    rows = run_store.efficiency_rows(sqlite_dir, "2026-09-24")
+    assert [(c["day"], c["cost_usd"], c["turns"]) for c in rows["calls"]] == [("2026-09-25", 0.5, 2)]
+    assert rows["tasks"] == [{"task_id": "t1", "builds": 2, "last_ts": "2026-09-25T05:00:00+00:00"}]
+
+
+def test_efficiency_rows_of_no_store_or_a_store_without_the_table_is_empty(sqlite_dir):
+    assert run_store.efficiency_rows(sqlite_dir, "2026-09-24") == {"calls": [], "tasks": []}
+    conn = sqlite3.connect(sqlite_dir / "cox.db")
+    conn.execute(SEED_DDL[0])
+    conn.commit()
+    conn.close()
+    assert run_store.efficiency_rows(sqlite_dir, "2026-09-24") == {"calls": [], "tasks": []}
+
+
 def test_a_store_missing_a_table_reads_as_empty(sqlite_dir):
     conn = sqlite3.connect(sqlite_dir / "cox.db")
     conn.execute(SEED_DDL[0])

@@ -35,8 +35,9 @@ except ImportError:
     _DB_ERRORS = (sqlite3.DatabaseError,)
 
 __all__ = [
-    "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "build_counts", "call_events", "call_from_row",
-    "connect_readonly", "cost_since", "harness_python", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
+    "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "build_counts",
+    "call_events", "call_from_row", "connect_readonly", "cost_since", "efficiency_rows", "harness_python", "lease",
+    "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
     "run_started", "store_usages", "summarize", "usage", "usages",
 ]
 
@@ -307,6 +308,34 @@ def build_counts(runs_dir: Path, task_ids: Collection[str], runs: Collection[str
         return {}
     finally:
         conn.close()
+
+
+# node_calls.task_id is the bare work-item id, shared by every run that retries it, so a task is its task_id alone
+_EFFICIENCY_CALLS = (
+    "SELECT substr(ts, 1, 10) AS day, task_id, COALESCE(SUM(cost_usd), 0) AS cost_usd, COALESCE(SUM(turns), 0) AS turns, "
+    "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(input_total), 0) AS input_total "
+    "FROM node_calls WHERE ts >= {p} GROUP BY substr(ts, 1, 10), task_id"
+)
+_EFFICIENCY_TASKS = (
+    "SELECT task_id, SUM(CASE WHEN role = 'build' THEN 1 ELSE 0 END) AS builds, MAX(ts) AS last_ts "
+    "FROM node_calls WHERE task_id IS NOT NULL GROUP BY task_id"
+)
+
+
+def efficiency_rows(runs_dir: Path, since: str) -> dict[str, list[dict[str, Any]]]:
+    """Edge. `calls` per (UTC day, task_id) from `since` on; `tasks` per task_id over all runs and time; empty with no store."""
+    opened = _open(runs_dir)
+    if opened is None:
+        return {"calls": [], "tasks": []}
+    conn, token = opened
+    try:
+        calls = [dict(r) for r in conn.execute(_sql(_EFFICIENCY_CALLS, token), (since,)).fetchall()]
+        tasks = [dict(r) for r in conn.execute(_EFFICIENCY_TASKS).fetchall()]
+    except _DB_ERRORS:
+        return {"calls": [], "tasks": []}
+    finally:
+        conn.close()
+    return {"calls": calls, "tasks": tasks}
 
 
 def _attempts_columns(conn: Any, token: str) -> set[str]:
