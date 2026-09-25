@@ -4,9 +4,14 @@ loop with no real wait and no real process ever needing to die."""
 from __future__ import annotations
 
 import datetime
+import json
 import socket
+import subprocess
+import types
 
-from agent_tools import chair
+import pytest
+
+from agent_tools import chair, store_cli
 
 
 class _FakeClock:
@@ -125,3 +130,130 @@ def test_beat_loop_writes_the_claude_session_from_environ_to_disk(tmp_path):
     chair.beat_loop(session, pid, runs_dir=tmp_path, interval=0, clock=_FakeClock(), alive=fake_alive, environ=env)
 
     assert chair.read(tmp_path)["claude_session"] == "abc-123"
+
+
+_HOLDER = "chair-test@h:1"
+
+
+def _harness(monkeypatch, code: int, stdout: str) -> list[list[str]]:
+    """A present harness whose every store_cli call exits `code` printing `stdout`; returns the argv list it records."""
+    argvs: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        argvs.append(argv)
+        return types.SimpleNamespace(returncode=code, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: "/h/python")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return argvs
+
+
+def test_lease_holder_joins_session_host_and_pid():
+    assert chair.lease_holder("chair-test", 1, "h") == _HOLDER
+
+
+def test_lease_verdict_maps_each_result_to_an_action():
+    assert chair.lease_verdict(store_cli.LeaseGranted(4, _HOLDER)) == ("granted", "")
+    assert chair.lease_verdict(store_cli.LeaseRefused(4, "other@h:9")) == ("refused", "chair: held by other@h:9 (store lease)")
+    assert chair.lease_verdict(store_cli.LeaseRefused(None, None)) == ("refused", "chair: the store lease was refused")
+    assert chair.lease_verdict(store_cli.LeaseError("exit 2: bad")) == ("fallback", "chair: warning: store lease failed (exit 2: bad); using the lock file only")
+    assert chair.lease_verdict(store_cli.NotAvailable()) == ("fallback", "chair: warning: no harness found; using the lock file only")
+
+
+def test_claim_with_no_lease_held_acquires_and_stores_the_epoch(tmp_path, monkeypatch):
+    argvs = _harness(monkeypatch, 0, json.dumps({"ok": True, "epoch": 7, "holder": _HOLDER}))
+
+    assert chair.acquire_lease(tmp_path, "chair-test", 1, "h") == ""
+
+    assert argvs[0][-6:] == ["lease", "acquire", "chair", _HOLDER, "--ttl", "600"]
+    assert json.loads((tmp_path / chair.LEASE_FILENAME).read_text()) == {"holder": _HOLDER, "epoch": 7}
+
+
+def test_claim_refused_by_a_foreign_live_lease_returns_the_refusal_and_stores_nothing(tmp_path, monkeypatch):
+    _harness(monkeypatch, 3, json.dumps({"ok": False, "epoch": 7, "holder": "other@h:9"}))
+
+    assert chair.acquire_lease(tmp_path, "chair-test", 1, "h") == "chair: held by other@h:9 (store lease)"
+    assert not (tmp_path / chair.LEASE_FILENAME).exists()
+
+
+def test_claim_with_an_exit_2_falls_back_with_a_warning(tmp_path, monkeypatch, capsys):
+    _harness(monkeypatch, 2, json.dumps({"error": "unreadable store"}))
+
+    assert chair.acquire_lease(tmp_path, "chair-test", 1, "h") == ""
+
+    assert "warning: store lease failed" in capsys.readouterr().err
+    assert not (tmp_path / chair.LEASE_FILENAME).exists()
+
+
+def test_claim_with_no_harness_falls_back_with_a_warning_and_spawns_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: None)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no harness, so nothing may spawn"))
+
+    assert chair.acquire_lease(tmp_path, "chair-test", 1, "h") == ""
+
+    assert "no harness found" in capsys.readouterr().err
+
+
+def test_claim_whose_spawn_fails_falls_back_with_a_warning(tmp_path, monkeypatch, capsys):
+    def boom(*a, **k):
+        raise OSError("exec failed")
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: "/h/python")
+    monkeypatch.setattr(subprocess, "run", boom)
+
+    assert chair.acquire_lease(tmp_path, "chair-test", 1, "h") == ""
+    assert "exec failed" in capsys.readouterr().err
+
+
+def test_beat_renews_the_stored_lease_with_its_epoch(tmp_path, monkeypatch):
+    (tmp_path / chair.LEASE_FILENAME).write_text(json.dumps({"holder": _HOLDER, "epoch": 7}))
+    argvs = _harness(monkeypatch, 0, json.dumps({"ok": True, "epoch": 8, "holder": _HOLDER}))
+
+    assert chair.renew_lease(tmp_path, "chair-test", 1, "h") == ""
+
+    assert argvs[0][-7:] == ["lease", "renew", "chair", _HOLDER, "7", "--ttl", "600"]
+    assert json.loads((tmp_path / chair.LEASE_FILENAME).read_text())["epoch"] == 8
+
+
+def test_beat_with_a_lost_lease_returns_the_refusal(tmp_path, monkeypatch):
+    (tmp_path / chair.LEASE_FILENAME).write_text(json.dumps({"holder": _HOLDER, "epoch": 7}))
+    _harness(monkeypatch, 3, json.dumps({"ok": False, "epoch": 9, "holder": "other@h:9"}))
+
+    assert chair.renew_lease(tmp_path, "chair-test", 1, "h") == "chair: held by other@h:9 (store lease)"
+
+
+def test_beat_without_a_stored_lease_never_spawns(tmp_path, monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no sidecar, so nothing may spawn"))
+
+    assert chair.renew_lease(tmp_path, "chair-test", 1, "h") == ""
+
+
+def test_beat_loop_stops_at_once_when_the_lease_is_lost(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(chair, "beat", lambda *a, **k: ({"heartbeat_at": "x"}, ""))
+    monkeypatch.setattr(chair, "renew_lease", lambda *a, **k: "chair: held by other@h:9 (store lease)")
+
+    rc = chair.beat_loop("chair-test", 4321, runs_dir=tmp_path, interval=0, clock=_FakeClock(), alive=lambda pid, sig: None)
+
+    assert rc == 2
+    assert "held by other@h:9" in capsys.readouterr().out
+    assert chair.read(tmp_path) is None
+
+
+def test_release_releases_the_stored_lease_and_removes_the_sidecar(tmp_path, monkeypatch):
+    (tmp_path / chair.LEASE_FILENAME).write_text(json.dumps({"holder": _HOLDER, "epoch": 7}))
+    argvs = _harness(monkeypatch, 0, json.dumps({"ok": True, "epoch": 7, "holder": _HOLDER}))
+
+    chair.release_lease(tmp_path, "chair-test", 1, "h")
+
+    assert argvs[0][-5:] == ["lease", "release", "chair", _HOLDER, "7"]
+    assert not (tmp_path / chair.LEASE_FILENAME).exists()
+
+
+def test_release_with_a_refused_lease_warns_and_still_removes_the_sidecar(tmp_path, monkeypatch, capsys):
+    (tmp_path / chair.LEASE_FILENAME).write_text(json.dumps({"holder": _HOLDER, "epoch": 7}))
+    _harness(monkeypatch, 3, json.dumps({"ok": False, "epoch": 9, "holder": "other@h:9"}))
+
+    chair.release_lease(tmp_path, "chair-test", 1, "h")
+
+    assert "held by other@h:9" in capsys.readouterr().err
+    assert not (tmp_path / chair.LEASE_FILENAME).exists()

@@ -8,14 +8,21 @@ import fcntl
 import json
 import os
 import socket
+import sys
 import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from agent_tools import store_cli
+
 __all__ = [
     "CHAIR_FILENAME",
     "DEFAULT_HEARTBEAT_MINUTES",
+    "DEFAULT_LEASE_TTL_SECONDS",
+    "LEASE_FILENAME",
+    "LEASE_NAME",
+    "acquire_lease",
     "beat",
     "beat_loop",
     "chair_path",
@@ -23,11 +30,15 @@ __all__ = [
     "clear",
     "guard",
     "leader_path",
+    "lease_holder",
+    "lease_verdict",
     "liveness",
     "locked",
     "pid_alive",
     "read",
     "release",
+    "release_lease",
+    "renew_lease",
     "take",
     "write",
 ]
@@ -36,6 +47,11 @@ CHAIR_FILENAME = "chair.json"
 _LEGACY_LEADER_FILENAME = "leader.json"
 
 DEFAULT_HEARTBEAT_MINUTES = 10
+
+LEASE_NAME = "chair"
+# Beside chair.json, never inside it: the lock file format is unchanged. Holds the holder and epoch that renew and release need.
+LEASE_FILENAME = "chair.lease.json"
+DEFAULT_LEASE_TTL_SECONDS = DEFAULT_HEARTBEAT_MINUTES * 60
 
 
 def _is_holder(record: dict[str, Any], session: str, pid: int, host: str) -> bool:
@@ -137,6 +153,10 @@ def beat_loop(
             if new_record is None:
                 print(f"chair: {reason}")
                 return 2
+            lost = renew_lease(runs_dir, label, pid, host)
+            if lost:
+                print(lost)
+                return 2
             write(runs_dir, new_record)
         clock.sleep(tick)
 
@@ -193,6 +213,87 @@ def write(runs_dir: Path, record: dict[str, Any] | None) -> None:
     tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
     os.replace(tmp, path)
     legacy.unlink(missing_ok=True)
+
+
+def lease_holder(session: str, pid: int, host: str) -> str:
+    """Pure. The one holder string the store lease sees for a (session, pid, host) triple."""
+    return f"{session}@{host}:{pid}"
+
+
+def lease_verdict(result: store_cli.LeaseResult) -> tuple[str, str]:
+    """Pure. ("granted" | "refused" | "fallback", line). A refusal is a foreign holder; a lease error or a missing harness falls back to the lock file with a warning."""
+    if isinstance(result, store_cli.LeaseGranted):
+        return "granted", ""
+    if isinstance(result, store_cli.LeaseRefused):
+        return "refused", f"chair: held by {result.holder} (store lease)" if result.holder else "chair: the store lease was refused"
+    if isinstance(result, store_cli.LeaseError):
+        return "fallback", f"chair: warning: store lease failed ({result.detail}); using the lock file only"
+    return "fallback", "chair: warning: no harness found; using the lock file only"
+
+
+def _lease_path(runs_dir: Path) -> Path:
+    return Path(runs_dir) / LEASE_FILENAME
+
+
+def _read_lease(runs_dir: Path, holder: str) -> dict[str, Any] | None:
+    """Edge. The sidecar record when it is this holder's and carries an integer epoch, else None."""
+    try:
+        parsed = json.loads(_lease_path(runs_dir).read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return None
+    if isinstance(parsed, dict) and parsed.get("holder") == holder and isinstance(parsed.get("epoch"), int):
+        return parsed
+    return None
+
+
+def _write_lease(runs_dir: Path, holder: str, epoch: int) -> None:
+    path = _lease_path(runs_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"holder": holder, "epoch": epoch}), encoding="utf-8")
+
+
+def acquire_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = DEFAULT_LEASE_TTL_SECONDS) -> str:
+    """Edge. The refusal line when another holder has a live lease, else "". A missing harness or a lease error warns on stderr and returns "", so the lock file alone governs."""
+    holder = lease_holder(session, pid, host)
+    result = store_cli.lease_acquire(LEASE_NAME, holder, ttl)
+    if isinstance(result, store_cli.LeaseGranted):
+        _write_lease(runs_dir, holder, result.epoch)
+        return ""
+    verdict, line = lease_verdict(result)
+    if verdict == "refused":
+        return line
+    _lease_path(runs_dir).unlink(missing_ok=True)
+    print(line, file=sys.stderr)
+    return ""
+
+
+def renew_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = DEFAULT_LEASE_TTL_SECONDS) -> str:
+    """Edge. The refusal line when the lease is lost to another holder, else "". No sidecar means the claim fell back to the lock file, so there is nothing to renew."""
+    holder = lease_holder(session, pid, host)
+    lease = _read_lease(runs_dir, holder)
+    if lease is None:
+        return ""
+    result = store_cli.lease_renew(LEASE_NAME, holder, lease["epoch"], ttl)
+    if isinstance(result, store_cli.LeaseGranted):
+        _write_lease(runs_dir, holder, result.epoch)
+        return ""
+    verdict, line = lease_verdict(result)
+    if verdict == "refused":
+        return line
+    print(line, file=sys.stderr)
+    return ""
+
+
+def release_lease(runs_dir: Path, session: str, pid: int, host: str) -> None:
+    """Edge. Releases the stored lease and removes the sidecar; a refusal or a fallback warns on stderr and never blocks the release."""
+    holder = lease_holder(session, pid, host)
+    lease = _read_lease(runs_dir, holder)
+    if lease is None:
+        return
+    result = store_cli.lease_release(LEASE_NAME, holder, lease["epoch"])
+    if not isinstance(result, store_cli.LeaseGranted):
+        print(lease_verdict(result)[1], file=sys.stderr)
+    _lease_path(runs_dir).unlink(missing_ok=True)
 
 
 def pid_alive(pid: int) -> bool:
