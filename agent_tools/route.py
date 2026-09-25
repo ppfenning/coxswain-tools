@@ -487,6 +487,18 @@ _FS_ROOTS = frozenset({
 })
 
 
+# Top-level directories only one Coxswain repository has, by repository basename. `docs/` and `tests/` exist in
+# every repository, so they are deliberately absent: naming one is never a cross-repository reference.
+_REPO_ROOTS: dict[str, frozenset[str]] = {
+    "coxswain-tools": frozenset({"agent_tools"}),
+    "coxswain-graphs": frozenset({"harness", "runner", "graphs"}),
+    "coxswain-cartridges": frozenset({"core", "providers", "cartridges", "skills-plugins"}),
+    "coxswain": frozenset({"devtools"}),
+    "coxswain-plugins": frozenset({"coxswain_plugins"}),
+}
+_PATH_EDGE = "\x60\x27\x22(),."
+
+
 def _is_route(path: str) -> bool:
     return path.startswith("/") and path.split("/")[1] not in _FS_ROOTS
 
@@ -501,10 +513,22 @@ def _inside_repo(path: str, repo: str) -> bool:
     return bool(root) and (path == root or path.startswith(root + "/"))
 
 
+def _cross_repo_paths(text: str, repo: str | None) -> list[tuple[str, str]]:
+    """`(path, owning repository)` for each relative token under another repository's own top-level directory.
+    Stands down when `repo` is unset or its basename is not in `_REPO_ROOTS`. Order of first sight, no repeats."""
+    home = os.path.basename(repo.rstrip("/")) if repo else ""
+    if home not in _REPO_ROOTS:
+        return []
+    owner = {top: name for name, tops in _REPO_ROOTS.items() if name != home for top in tops}
+    paths = dict.fromkeys(t.strip(_PATH_EDGE) for t in text.split())
+    return [(p, owner[p.split("/")[0]]) for p in paths if "/" in p and p.split("/")[0] in owner]
+
+
 def _item_problems(item: dict, repo: str | None, grants) -> list:
-    """reach, grant and size, each scoped to one ticket item. `repo` falsy
+    """reach, grant, size and cross_repo, each scoped to one ticket item. `repo` falsy
     (no repo could be resolved) stands the reach rule down instead of
-    flagging every path — there is no target to check against."""
+    flagging every path — there is no target to check against. An unknown
+    repo basename stands cross_repo down for the same reason."""
     task, body = item["task"], item.get("body", "")
     text = body + " " + " ".join(item.get("surfaces", []))
     allowed = set(grants or ())
@@ -523,7 +547,12 @@ def _item_problems(item: dict, repo: str | None, grants) -> list:
     words = len(body.split())
     size = [Problem(task, "size", f"body is {words} words",
                      "point at a spec file in the repository")] if words > 700 else []
-    return reach + grant + size
+    cross_repo = [
+        Problem(task, "cross_repo", f"names {path}, which lives in {other}",
+                "paste the code the build needs into the ticket: a build reads only its own repository")
+        for path, other in _cross_repo_paths(text, repo)
+    ]
+    return reach + grant + size + cross_repo
 
 
 def _needs_closure(items) -> dict:
@@ -578,7 +607,7 @@ def _coupling_problems(items) -> list:
 
 
 def lint_items(items, repo: str | None, grants) -> list:
-    """work-shape.md §3: reach, grant, size and coupling over a decomposed
+    """work-shape.md §3: reach, grant, size, cross_repo and coupling over a decomposed
     DAG's parsed ticket items; no model, no I/O."""
     problems = [p for item in items for p in _item_problems(item, repo, grants)]
     return problems + _coupling_problems(items)
