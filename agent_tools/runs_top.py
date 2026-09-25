@@ -38,6 +38,8 @@ class Row:
     ceiling: str = ""
     launched_by: str = ""
     heartbeat_age: int | None = None
+    host: str | None = None
+    remote: bool = False
 
 
 def _status(events: list[Event], alive: bool, orphaned: bool = False, heartbeat_age: int | None = None) -> str:
@@ -95,6 +97,19 @@ def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: li
     )
 
 
+def remote_row(run: str, host: str | None, heartbeat_age: int | None) -> Row:
+    """Pure: the row for a lane held on another machine. Its events and calls are not here, so only the lease speaks."""
+    return Row(run=run, alive=True, phase="", node="", attempt=0, turns=0, cost_usd=0.0, verdict="",
+               status=_status([], True, False, heartbeat_age), heartbeat_age=heartbeat_age, host=host, remote=True)
+
+
+def _run_cell(r: Row) -> str:
+    """Pure: the RUN column's text; a remote run names its host, or says it is on another machine."""
+    if not r.remote:
+        return r.run
+    return f"{r.run} (on {r.host})" if r.host else f"{r.run} (on another machine)"
+
+
 def _cut(line: str, width: int) -> str:
     return line[: max(width, 0)]
 
@@ -116,7 +131,7 @@ def _chair_line(chair: dict | None) -> str:
 
 
 def _cells(r: Row) -> tuple[str, ...]:
-    return (r.run, r.phase, r.node, str(r.attempt), str(r.turns), f"${r.cost_usd:.2f}", r.verdict, r.status, r.ceiling, r.launched_by)
+    return (_run_cell(r), r.phase, r.node, str(r.attempt), str(r.turns), f"${r.cost_usd:.2f}", r.verdict, r.status, r.ceiling, r.launched_by)
 
 
 def column_widths(rows: Sequence[Row], headers: Sequence[str]) -> tuple[int, ...]:
