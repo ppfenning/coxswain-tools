@@ -201,6 +201,7 @@ def test_cli_versions_missing_manifest_fails_gracefully_not_a_traceback(tmp_path
     out = capsys.readouterr().out
     assert rc == 2
     assert "refusing" in out
+    assert "run `cox install`" in out and "--manifest" in out
 
 
 def test_cli_install_does_not_borrow_the_enclosing_repos_tag_or_dirty_state(tmp_path, capsys):

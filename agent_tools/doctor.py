@@ -13,6 +13,7 @@ __all__ = ["checks", "exit_code", "render"]
 _MISSING = object()
 _SKIPPED = "skipped: no profile"
 _NOT_CHECKED = "not checked"
+_NEXT_STEP = "next: run `cox setup` to write a profile, or `cox install` to fetch every component"
 
 
 def _skip(check: str) -> dict:
@@ -21,6 +22,38 @@ def _skip(check: str) -> dict:
 
 def _not_checked(check: str) -> dict:
     return {"check": check, "ok": False, "detail": _NOT_CHECKED}
+
+
+def _git_row(facts: Mapping) -> dict:
+    version = facts.get("git_version", _MISSING)
+    if version is _MISSING:
+        return _not_checked("git")
+    if isinstance(version, str) and version:
+        return {"check": "git", "ok": True, "detail": version}
+    return {"check": "git", "ok": False,
+            "detail": "missing: install git (coxswain needs git; gh is needed only for the github forge)"}
+
+
+def _forge_row(facts: Mapping) -> dict:
+    name = facts.get("forge", _MISSING)
+    if name is _MISSING:
+        return _not_checked("forge")
+    if name == "local":
+        return {"check": "forge", "ok": True, "detail": "local: plain git, no pull-request host"}
+    if name == "github":
+        auth = facts.get("gh_auth", _MISSING)
+        if auth is _MISSING:
+            return _not_checked("forge")
+        if auth is True:
+            return {"check": "forge", "ok": True, "detail": "github: gh authenticated"}
+        return {"check": "forge", "ok": False,
+                "detail": "github: gh missing or not logged in (run `gh auth login`), or set forge: local in the profile"}
+    found = facts.get("forge_found", _MISSING)
+    if found is _MISSING:
+        return _not_checked("forge")
+    if found is True:
+        return {"check": "forge", "ok": True, "detail": f"{name}: installed"}
+    return {"check": "forge", "ok": False, "detail": f"no forge named {name} installed"}
 
 
 def _profile_row(facts: Mapping) -> tuple[dict, bool, dict | None]:
@@ -193,7 +226,7 @@ def _cast_row(facts: Mapping, cascade: bool) -> dict:
 
 def checks(facts: Mapping) -> list[dict]:
     """Judge a Facts mapping. Returns rows `{"check", "ok", "detail"}` in a
-    fixed check order: profile, profile paths, harness venv, core
+    fixed check order: git, forge, profile, profile paths, harness venv, core
     importable, cartridge, project overlay, skills, provider, workspace,
     schema, cast. A fact that was never gathered fails as "not checked",
     except `cast` which passes when ungathered; a profile that fails to parse
@@ -202,6 +235,8 @@ def checks(facts: Mapping) -> list[dict]:
     nothing was configured to check, rather than passing vacuously."""
     profile_row, cascade, parsed = _profile_row(facts)
     return [
+        _git_row(facts),
+        _forge_row(facts),
         profile_row,
         *_paths_rows(facts, cascade, parsed),
         _flag_row("harness venv", facts, "harness_python_exists", cascade, "venv missing"),
@@ -227,4 +262,6 @@ def render(rows: list[dict]) -> str:
     n_ok = sum(1 for r in rows if r["ok"])
     n_fail = len(rows) - n_ok
     table = records.format_table(display, ["check", "ok", "detail"])
-    return f"{table}\ndoctor: {n_ok} ok, {n_fail} failing"
+    summary = f"{table}\ndoctor: {n_ok} ok, {n_fail} failing"
+    profile_missing = any(r["check"] == "profile" and not r["ok"] and r["detail"].startswith("missing:") for r in rows)
+    return f"{summary}\n{_NEXT_STEP}" if profile_missing else summary
