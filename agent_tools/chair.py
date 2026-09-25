@@ -228,6 +228,8 @@ def lease_verdict(result: store_cli.LeaseResult) -> tuple[str, str]:
         return "refused", f"chair: held by {result.holder} (store lease)" if result.holder else "chair: the store lease was refused"
     if isinstance(result, store_cli.LeaseError):
         return "fallback", f"chair: warning: store lease failed ({result.detail}); using the lock file only"
+    if isinstance(result, store_cli.LeaseReleased):
+        return "fallback", "chair: warning: store lease answered released, not granted; using the lock file only"
     return "fallback", "chair: warning: no harness found; using the lock file only"
 
 
@@ -286,13 +288,13 @@ def renew_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = DE
 
 
 def release_lease(runs_dir: Path, session: str, pid: int, host: str) -> None:
-    """Edge. Releases the stored lease and removes the sidecar; a refusal or a fallback warns on stderr and never blocks the release."""
+    """Edge. Releases the lease and removes the sidecar; only a refusal or a fallback warns, and never blocks."""
     holder = lease_holder(session, pid, host)
     lease = _read_lease(runs_dir, holder)
     if lease is None:
         return
     result = store_cli.lease_release(runs_dir, LEASE_NAME, holder, lease["epoch"])
-    if not isinstance(result, store_cli.LeaseGranted):
+    if not isinstance(result, (store_cli.LeaseGranted, store_cli.LeaseReleased)):
         print(lease_verdict(result)[1], file=sys.stderr)
     _lease_path(runs_dir).unlink(missing_ok=True)
 

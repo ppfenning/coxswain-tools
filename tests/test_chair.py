@@ -254,6 +254,25 @@ def test_release_releases_the_stored_lease_and_removes_the_sidecar(tmp_path, mon
     assert not (tmp_path / chair.LEASE_FILENAME).exists()
 
 
+def test_release_of_a_released_reply_prints_nothing_on_stderr(tmp_path, monkeypatch, capsys):
+    (tmp_path / chair.LEASE_FILENAME).write_text(json.dumps({"holder": _HOLDER, "epoch": 7}))
+    _harness(monkeypatch, 0, json.dumps({"ok": True, "epoch": None, "holder": None}))
+
+    chair.release_lease(tmp_path, "chair-test", 1, "h")
+
+    assert capsys.readouterr().err == ""
+    assert not (tmp_path / chair.LEASE_FILENAME).exists()
+
+
+def test_acquire_given_a_released_reply_warns_it_was_not_granted_and_stores_nothing(tmp_path, monkeypatch, capsys):
+    _harness(monkeypatch, 0, json.dumps({"ok": True, "epoch": None, "holder": None}))
+
+    assert chair.acquire_lease(tmp_path, "chair-test", 1, "h") == ""
+
+    assert "answered released, not granted" in capsys.readouterr().err
+    assert not (tmp_path / chair.LEASE_FILENAME).exists()
+
+
 def test_release_with_a_refused_lease_warns_and_still_removes_the_sidecar(tmp_path, monkeypatch, capsys):
     (tmp_path / chair.LEASE_FILENAME).write_text(json.dumps({"holder": _HOLDER, "epoch": 7}))
     _harness(monkeypatch, 3, json.dumps({"ok": False, "epoch": 9, "holder": "other@h:9"}))
