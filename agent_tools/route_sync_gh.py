@@ -12,7 +12,7 @@ import json
 import re
 from pathlib import Path
 
-from agent_tools import epic, route, route_sync
+from agent_tools import epic, route, route_sync, run_store
 
 __all__ = [
     "auth_ok", "create_project", "execute", "existing", "existing_item", "find_project", "items_from_store",
@@ -109,8 +109,8 @@ def _cost_by_task(calls: list) -> dict[str, float]:
 
 
 def _task_costs(root: Path) -> dict[str, float]:
-    """Each task's own spend across every run's usage file."""
-    usages = [_json_object(p).get("calls") for p in sorted(root.glob("runs/*.usage.json"))]
+    """Each task's own spend across every run's usage, from its file or else the run store."""
+    usages = [u.get("calls") for u in run_store.usages(root / "runs").values()]
     return _cost_by_task([c for calls in usages if isinstance(calls, list) for c in calls if isinstance(c, dict)])
 
 
