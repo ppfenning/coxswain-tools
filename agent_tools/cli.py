@@ -2796,16 +2796,21 @@ def _tools_plugin_facts() -> dict:
     return {g: sorted(ep.name for ep in importlib.metadata.entry_points(group=g)) for g in _TOOLS_PLUGIN_GROUPS}
 
 
+def _doctor_profile(text: str | None) -> dict | None:
+    """The doctor's one parse rule: a missing or unparseable profile is None, never a refusal."""
+    try:
+        return route.parse_profile(text) if text is not None else None
+    except route.ProfileError:
+        return None
+
+
 def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     """Gathers exactly the Facts keys `doctor.checks` reads; never refuses on
     a missing or unparseable profile, since reporting that is the doctor's
     job (unlike `_resolve_profile_or_refuse`, which is for `file`/`launch`)."""
     text = _read_text_or_none(profile_path)
     facts: dict = {"profile_path": str(profile_path), "profile_text": text}
-    try:
-        profile = route.parse_profile(text) if text is not None else None
-    except route.ProfileError:
-        profile = None
+    profile = _doctor_profile(text)
     facts.update(_git_and_forge_facts(profile or {}))
     facts["plugins_tools"] = _tools_plugin_facts()
     if profile is None:
@@ -2834,12 +2839,31 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     return facts
 
 
+def _parquet_traces_line(profile: dict | None) -> str | None:
+    """Edge: the Parquet readability line for this profile's traces root, or None when
+    the profile names no workspace_dir and so no root can be resolved."""
+    if not profile or not profile.get("workspace_dir"):
+        return None
+    provider = profile.get("provider_profile")
+    provider_data = store_url.read_provider_profile(provider) if provider else {}
+    root = store_url.profile_traces_root(provider_data, Path(profile["workspace_dir"]).expanduser() / "runs")
+    check = run_store.parquet_readable(root)
+    return doctor.parquet_line(check.readable, check.reason)
+
+
 def _setup_doctor(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser() if a.repo else Path.cwd()
     facts = _gather_doctor_facts(_profile_path(a), repo)
     rows = doctor.checks(facts)
     rc = doctor.exit_code(rows)
-    print(json.dumps({"rows": rows, "ok": rc == 0}, indent=2) if a.json else doctor.render(rows))
+    # Informational: outside rows, so outside rc. Reuses the text the facts already read.
+    parquet = _parquet_traces_line(_doctor_profile(facts["profile_text"]))
+    if a.json:
+        print(json.dumps({"rows": rows, "ok": rc == 0, "parquet_traces": parquet}, indent=2))
+    else:
+        print(doctor.render(rows))
+        if parquet:
+            print(parquet)
     return rc
 
 
