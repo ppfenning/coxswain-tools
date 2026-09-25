@@ -34,6 +34,7 @@ class Command:
     sub_dest: str | None = None
     sub_required: bool = False
     defaults: dict = field(default_factory=dict)
+    one_of: tuple[Arg, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,10 @@ def _add_row(sub: argparse._SubParsersAction, row: Command) -> None:
     rp = sub.add_parser(row.name, help=row.summary)
     for arg in row.args:
         rp.add_argument(*arg.flags, **arg.kwargs)
+    if row.one_of:
+        exclusive = rp.add_mutually_exclusive_group(required=True)
+        for arg in row.one_of:
+            exclusive.add_argument(*arg.flags, **arg.kwargs)
     if row.subcommands:
         rp_sub = rp.add_subparsers(dest=row.sub_dest, required=row.sub_required)
         for child in row.subcommands:

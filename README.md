@@ -48,7 +48,7 @@ cox runs usage RUN_ID [--runs-dir RUNS_DIR] [--json]   usage stats and cost for 
 cox runs trace RUN_ID [--runs-dir RUNS_DIR] [--role ROLE] [-v]   the tool-call trace for one run
 cox runs clean RUN_ID --repo REPO [--worktree-root WORKTREE_ROOT] [--runs-dir RUNS_DIR] [--profile PROFILE] [--apply] [--force]   delete a run's worktree and branches locally
 cox runs land RUN_ID --repo REPO [--task TASK] [--phase PHASE] [--label LABEL] [--force] [--no-claim] [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge] [--runs-dir RUNS_DIR] [--profile PROFILE] [--gate ticket|phase|epic|full]   merge a run's branch into the target repo
-cox runs fetch RUN_ID [--runs-dir RUNS_DIR] [--profile PROFILE]   pull an ended remote lane's run directory, log and branches to this machine
+cox runs fetch [--runs-dir RUNS_DIR] [--profile PROFILE]   pull an ended remote lane's run directory, log and branches to this machine
 cox runs review --pr PR [--profile PROFILE]   review a contributor PR with the review graph and post the verdict
 cox runs recover RUN_ID TASK_ID --repo REPO [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run]   merge an approved task's commit into its phase branch after an escalated merge
 cox runs series [--runs-dir RUNS_DIR] [--json] [--append APPEND]   per-run summary rows across a runs directory
