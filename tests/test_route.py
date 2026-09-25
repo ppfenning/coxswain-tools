@@ -1452,3 +1452,30 @@ def test_parse_profile_reads_the_weekly_ceiling_beside_the_window_ceiling():
     profile = route.parse_profile(text)
     assert profile["window_ceiling_usd"] == 50.0
     assert profile["weekly_ceiling_usd"] == 1043.0
+
+
+def test_parse_profile_reads_sources_and_repo_map_as_json_values():
+    text = VALID_PROFILE + 'sources: {"github": {"repos": ["a/b"]}}\nrepo_map: {"a/b": "tools"}\n'
+    profile = route.parse_profile(text)
+    assert profile["sources"] == {"github": {"repos": ["a/b"]}}
+    assert profile["repo_map"] == {"a/b": "tools"}
+
+
+def _cand(link: str, repo: str = "a/b"):
+    from agent_tools.sources import Candidate
+
+    return Candidate(title="Fix it", body="b", repo=repo, link=link)
+
+
+def test_pull_plan_writes_a_mapped_candidate_with_source_and_link():
+    files, refusals = route.pull_plan([_cand("l1")], frozenset(), {"a/b": "tools"}, date="2026-09-24", source="github")
+    assert refusals == []
+    assert files == [route.intake_file("Fix it", "b", "tools", "2026-09-24", source="github", link="l1")]
+    assert "link: l1\n" in files[0]["intake/2026-09-24-fix-it.md"]
+
+
+def test_pull_plan_skips_a_taken_link_and_refuses_an_unmapped_repo_by_name():
+    cands = [_cand("l1"), _cand("l2", repo="x/y")]
+    files, refusals = route.pull_plan(cands, frozenset({"l1"}), {"a/b": "tools"}, date="2026-09-24", source="github")
+    assert files == []
+    assert len(refusals) == 1 and "'Fix it'" in refusals[0] and "l2" in refusals[0] and "x/y" in refusals[0]
