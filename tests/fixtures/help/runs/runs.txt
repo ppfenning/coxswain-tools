@@ -1,15 +1,17 @@
 usage: cox runs [-h]
-                {usage,trace,clean,land,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause}
+                {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause}
                 ...
 
 What a harness run recorded, and cleaning up after it.
 
 positional arguments:
-  {usage,trace,clean,land,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause}
+  {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause}
     usage               usage stats and cost for one run
     trace               the tool-call trace for one run
     clean               delete a run's worktree and branches locally
     land                merge a run's branch into the target repo
+    fetch               pull an ended remote lane's run directory, log and branches to this
+                        machine
     review              review a contributor PR with the review graph and post the verdict
     recover             merge an approved task's commit into its phase branch after an escalated
                         merge
@@ -27,6 +29,7 @@ options:
   -h, --help            show this help message and exit
 
 examples:
+  cox runs fetch <run>
   cox runs land <run> --repo PATH --apply
   cox runs recover <run> <task> --repo PATH
   cox runs usage <run> --json
