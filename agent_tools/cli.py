@@ -48,6 +48,7 @@ from agent_tools import (
     provenance,
     records,
     remote_doctor,
+    remote_fetch,
     remote_lane,
     remote_launch,
     review_pr,
@@ -1316,6 +1317,10 @@ def _runs_land(a: argparse.Namespace) -> int:
     runs_dir, reason = _runs_dir_for_land(a)
     if runs_dir is None:
         print(f"land: {reason}")
+        return 2
+    has_task_records = any((runs_dir / a.run_id / "tasks").glob("*/*.json"))
+    if remote_lane.land_needs_fetch(remote_lane.remote_record_path(runs_dir, a.run_id).exists(), has_task_records):
+        print(f"land: {a.run_id} is a remote run; run cox runs fetch {a.run_id}, then cox runs land {a.run_id} again")
         return 2
     if a.apply:
         guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim)
@@ -2700,6 +2705,47 @@ def _route_launch_on_host(a: argparse.Namespace, host: lane_hosts.LaneHost, runs
     return 0
 
 
+def _remote_fetch_facts(runs_dir: Path, run: str) -> tuple[bool, str | None]:
+    """Edge. (lease_released, ended_at) for `run` from the store, as the docket reads them: a live lease, or no ended span, keeps a lane unfetched."""
+    live = {lane.run for lane in run_store.live_lanes(runs_dir, _now_iso())}
+    ended = {span_run: ended_at for span_run, _, ended_at in run_store.run_spans(runs_dir, "")}
+    return run not in live, ended.get(run)
+
+
+def _runs_fetch(a: argparse.Namespace) -> int:
+    """Pulls an ended remote run's records, log and branches to this machine; writes nothing in the store."""
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"fetch: {reason}")
+        return 2
+    text = _read_text_or_none(remote_lane.remote_record_path(runs_dir, a.run_id))
+    record = remote_lane.parse_remote_record(text) if text is not None else None
+    if record is None:
+        print(f"fetch: no {a.run_id}.remote.json in {runs_dir}; the run was not launched with --on")
+        return 2
+    hosts = _profile_lane_hosts(_read_text_or_none(_profile_path(a)) or "")
+    if isinstance(hosts, lane_hosts.LaneHostError):
+        print(f"fetch: {hosts.message}")
+        return 2
+    host = lane_hosts.find_lane_host(hosts, record["host"])
+    if host is None:
+        print(f"fetch: host {record['host']} is no longer in the profile lane_hosts")
+        print(f"configured: {', '.join(h.name for h in hosts) or 'none'}")
+        return 2
+    lease_released, ended_at = _remote_fetch_facts(runs_dir, a.run_id)
+    run, locate = _remote_edge(runs_dir.parent)
+    result = remote_fetch.fetch_run(host, a.run_id, runs_dir, remote_fetch.task_repos, run, locate,
+                                    lease_released=lease_released, ended_at=ended_at)
+    if isinstance(result, remote_fetch.FetchError):
+        detail = f"{a.run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message
+        print(f"fetch: {result.step}: {detail}")
+        return 2
+    print(f"run {a.run_id}")
+    print(f"host {host.name}")
+    print("\n".join(f"repo {repo}" for repo in result))
+    return 0
+
+
 def _route_lint(a: argparse.Namespace) -> int:
     """work-shape.md §3: `cox route lint <initiative>`, before dispatch.
     `--repo` falls back to the initiative's own `repo:` frontmatter; only
@@ -3502,7 +3548,7 @@ def _bare_group(parser: argparse.ArgumentParser):
 RUNS_GROUP = commands.Group(
     name="runs", help="what a harness run recorded, and cleaning up after it",
     description="What a harness run recorded, and cleaning up after it.",
-    epilog="examples:\n  cox runs land <run> --repo PATH --apply\n  cox runs recover <run> <task> --repo PATH\n"
+    epilog="examples:\n  cox runs fetch <run>\n  cox runs land <run> --repo PATH --apply\n  cox runs recover <run> <task> --repo PATH\n"
            "  cox runs usage <run> --json\n  cox runs detail <run> --json",
 )
 RUNS_COMMANDS = [
@@ -3537,6 +3583,15 @@ RUNS_COMMANDS = [
             commands.Arg(("--gate",), {"choices": ["ticket", "phase", "epic", "full"], "help": "override the resolved gate level for this invocation"}),
         ),
         _runs_land, False, (),
+    ),
+    commands.Command(
+        "fetch", "runs", "pull an ended remote lane's run directory, log and branches to this machine",
+        (
+            commands.Arg(("run_id",)),
+            commands.Arg(("--runs-dir",), {"help": "override: resolve the run's records here instead of the profile's workspace_dir"}),
+            commands.Arg(("--profile",)),
+        ),
+        _runs_fetch, False, (),
     ),
     commands.Command(
         "review", "runs", "review a contributor PR with the review graph and post the verdict",
