@@ -90,7 +90,7 @@ cox route chair release [--profile PROFILE] [--label LABEL] [--pid PID]   releas
 cox route chair status [--profile PROFILE] [--json]   the chair lock's holder and computed state
 cox route chair clear [--profile PROFILE] [--force]   remove the chair lock file, refusing a live holder unless --force
 cox route chair chat [TEXT] [--profile PROFILE] [--read] [--since SINCE] [--json] [--as-leader]   append to or read the leader chat thread (runs/leader.chat.jsonl)
-cox route sync [--profile PROFILE] [--item ITEM] [--project PROJECT] [--workspace WORKSPACE] [--dry-run]   mirror the work store onto the GitHub Projects board
+cox route sync [--profile PROFILE] [--item ITEM] [--project PROJECT] [--workspace WORKSPACE] [--dry-run]   mirror the work store onto the profile's tracker
 cox route launch epic [--profile PROFILE] --initiative INITIATIVE [--repo REPO] [--fix-attempts FIX_ATTEMPTS] [--dry-run] [--include-blocked] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the epic graph against a filed initiative
 cox route launch decompose [--profile PROFILE] --idea IDEA --initiative-id INITIATIVE_ID [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the decompose graph against an idea
 cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the cos graph

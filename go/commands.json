@@ -1861,7 +1861,7 @@
           "examples": [],
           "name": "sync",
           "slash": false,
-          "summary": "mirror the work store onto the GitHub Projects board"
+          "summary": "mirror the work store onto the profile's tracker"
         },
         {
           "args": [],
