@@ -52,8 +52,8 @@ cox runs review --pr PR [--profile PROFILE]   review a contributor PR with the r
 cox runs recover RUN_ID TASK_ID --repo REPO [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run]   merge an approved task's commit into its phase branch after an escalated merge
 cox runs series [--runs-dir RUNS_DIR] [--json] [--append APPEND]   per-run summary rows across a runs directory
 cox runs events [--runs-dir RUNS_DIR] [--follow] [--json]   poll a run's log for structured events
-cox runs top [--runs-dir RUNS_DIR] [--interval INTERVAL] [--once]   live table of runs in flight; --once prints it and exits
-cox runs bar [--runs-dir RUNS_DIR]   one Waybar JSON line: runs in flight, cost, class idle|running|attention
+cox runs top [--runs-dir RUNS_DIR] [--interval INTERVAL] [--once]   live table of busy lanes (runs in flight); --once prints it and exits
+cox runs bar [--runs-dir RUNS_DIR]   one Waybar JSON line: busy lanes, cost, class idle|running|attention
 cox runs notify [--runs-dir RUNS_DIR] [--once] [--interval INTERVAL] [--replay]   desktop notifications for exits, quarantines, budget stops and cost
 cox runs detail RUN_ID [--runs-dir RUNS_DIR] [--json]   one run's timeline, objection and last tool calls
 cox runs stranded [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   every approved task record whose work item is not done, with its remedy

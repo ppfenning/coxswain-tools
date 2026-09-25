@@ -18,7 +18,7 @@ __all__ = ["UNSET", "Row", "chair_highlight", "column_widths", "highlight", "ord
 _COLUMNS = ("PHASE", "NODE", "ATT", "TURNS", "COST", "VERDICT", "STATUS", "CEIL", "BY")
 _HEADERS = ("RUN", *_COLUMNS)
 _RIGHT = {"ATT", "TURNS", "COST"}
-_NO_RUNS = "no runs in flight"
+_NO_RUNS = "all lanes clear"
 
 UNSET = object()  # `render`'s "no chair argument given" default, distinct from a real `None` (no lock file).
 

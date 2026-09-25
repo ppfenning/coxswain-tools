@@ -15,8 +15,8 @@ positional arguments:
                         merge
     series              per-run summary rows across a runs directory
     events              poll a run's log for structured events
-    top                 live table of runs in flight; --once prints it and exits
-    bar                 one Waybar JSON line: runs in flight, cost, class idle|running|attention
+    top                 live table of busy lanes (runs in flight); --once prints it and exits
+    bar                 one Waybar JSON line: busy lanes, cost, class idle|running|attention
     notify              desktop notifications for exits, quarantines, budget stops and cost
     detail              one run's timeline, objection and last tool calls
     stranded            every approved task record whose work item is not done, with its remedy
