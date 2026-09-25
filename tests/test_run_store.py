@@ -5,7 +5,7 @@ import types
 
 import pytest
 
-from agent_tools import run_store
+from agent_tools import epic, run_store
 
 COLUMNS = (
     "call_id TEXT PRIMARY KEY, run_id TEXT, seq INTEGER, phase_id TEXT, task_id TEXT, role TEXT, tier TEXT, "
@@ -185,11 +185,52 @@ def test_usages_lets_the_store_answer_for_a_file_that_is_not_an_object(tmp_path)
     assert run_store.usages(tmp_path)["r1"]["calls"][0]["id"] == "c3a75b39"
 
 
-def test_a_run_with_calls_and_no_ended_at_is_none_and_left_out(tmp_path):
+def test_a_live_run_with_calls_and_no_ended_at_is_none_and_left_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(epic, "run_live", lambda pid, pidfile, log=None: True)
     store(tmp_path, ROW, {**ROW, "call_id": "c9", "run_id": "r2"})
     runs_table(tmp_path, run_row("r1", None), run_row("r2", None))
+    (tmp_path / "r1.pid").write_text("4242")
+    (tmp_path / "r2.pid").write_text("4243")
     assert run_store.usage(tmp_path, "r1") is None
     assert run_store.usages(tmp_path) == {}
+
+
+def test_a_run_with_no_ended_at_and_no_pidfile_reads_as_ended(tmp_path):
+    store(tmp_path, ROW)
+    runs_table(tmp_path, run_row("r1", None))
+    assert [c["id"] for c in run_store.usage(tmp_path, "r1")["calls"]] == ["c3a75b39"]
+
+
+def test_a_pidfile_decides_by_run_live(tmp_path, monkeypatch):
+    store(tmp_path, ROW)
+    runs_table(tmp_path, run_row("r1", None))
+    (tmp_path / "r1.pid").write_text("4242\n")
+    seen = []
+    monkeypatch.setattr(epic, "run_live", lambda pid, pidfile, log=None: seen.append((pid, pidfile)) or True)
+    assert run_store.usage(tmp_path, "r1") is None
+    assert seen == [(4242, tmp_path / "r1.pid")]
+    monkeypatch.setattr(epic, "run_live", lambda pid, pidfile, log=None: False)
+    assert [c["id"] for c in run_store.usage(tmp_path, "r1")["calls"]] == ["c3a75b39"]
+
+
+def test_a_pidfile_that_is_not_an_int_reads_as_ended(tmp_path, monkeypatch):
+    monkeypatch.setattr(epic, "run_live", lambda pid, pidfile, log=None: True)
+    store(tmp_path, ROW)
+    runs_table(tmp_path, run_row("r1", None))
+    (tmp_path / "r1.pid").write_text("not-a-pid")
+    assert run_store.usage(tmp_path, "r1")["calls"][0]["id"] == "c3a75b39"
+
+
+def test_usages_lists_the_dead_run_and_omits_the_live_one_checking_each_run_once(tmp_path, monkeypatch):
+    store(tmp_path, ROW, {**ROW, "call_id": "c2", "seq": 2}, {**ROW, "call_id": "c9", "run_id": "r2"})
+    runs_table(tmp_path, run_row("r1", None), run_row("r2", None))
+    (tmp_path / "r1.pid").write_text("1")
+    (tmp_path / "r2.pid").write_text("2")
+    seen = []
+    monkeypatch.setattr(epic, "run_live", lambda pid, pidfile, log=None: seen.append(pid) or pid == 2)
+    got = run_store.usages(tmp_path)
+    assert list(got) == ["r1"] and len(got["r1"]["calls"]) == 2
+    assert sorted(seen) == [1, 2]
 
 
 def test_a_run_with_calls_and_no_runs_row_is_none_and_left_out(tmp_path):
@@ -199,9 +240,11 @@ def test_a_run_with_calls_and_no_runs_row_is_none_and_left_out(tmp_path):
     assert run_store.usages(tmp_path) == {}
 
 
-def test_the_same_run_is_returned_once_ended_at_is_set(tmp_path):
+def test_the_same_run_is_returned_once_ended_at_is_set(tmp_path, monkeypatch):
+    monkeypatch.setattr(epic, "run_live", lambda pid, pidfile, log=None: True)
     store(tmp_path, ROW)
     runs_table(tmp_path, run_row("r1", None))
+    (tmp_path / "r1.pid").write_text("4242")
     assert run_store.usage(tmp_path, "r1") is None
     conn = sqlite3.connect(tmp_path / "cox.db")
     conn.execute("UPDATE runs SET ended_at = ?, status = 'ok' WHERE run_id = 'r1'", (ENDED,))

@@ -763,10 +763,10 @@ def _print_trace(a: argparse.Namespace, nodes: list[tuple[str, dict]]) -> int:
 
 def _runs_trace(a: argparse.Namespace) -> int:
     d = Path(a.runs_dir) / f"{a.run_id}-trace"
-    if d.is_dir():
-        files = sorted(d.glob(f"{a.role}-*.jsonl" if a.role else "*.jsonl"), key=lambda p: (p.stem.rsplit("-", 1)[0], int(p.stem.rsplit("-", 1)[1])))
+    files = sorted(d.glob(f"{a.role}-*.jsonl" if a.role else "*.jsonl"), key=lambda p: (p.stem.rsplit("-", 1)[0], int(p.stem.rsplit("-", 1)[1])))
+    if files:
         return _print_trace(a, [(f.stem, records.trace_summary(records.load_trace(f))) for f in files])
-    # The loose files are gone once a finished run is compacted: read its calls from the usage record and the trace store.
+    # The loose files are gone (or the dir is empty) once a finished run is compacted: read its calls from the usage record and the trace store.
     usage = run_store.usage(Path(a.runs_dir), a.run_id)
     if not usage or not usage.get("calls"):
         print(f"no trace for {a.run_id} in {a.runs_dir}")

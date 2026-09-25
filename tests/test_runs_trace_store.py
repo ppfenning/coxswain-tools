@@ -33,12 +33,24 @@ def test_loose_trace_files_are_read_as_before(tmp_path, capsys):
     assert nodes(out) == ["build-1"] and "1.50" in out
 
 
-def test_a_loose_dir_wins_over_the_store(tmp_path, capsys):
+def test_a_loose_dir_with_files_wins_over_the_store(tmp_path, capsys):
+    pytest.importorskip("zstandard")
+    store_run(tmp_path)
+    d = tmp_path / "r-trace"
+    d.mkdir()
+    (d / "build-1.jsonl").write_text(json.dumps(result(9, 4.0)) + "\n")
+    assert cli_module.main(["runs", "trace", "r", "--runs-dir", str(tmp_path)]) == 0
+    assert nodes(capsys.readouterr().out) == ["build-1"]
+
+
+def test_an_empty_trace_dir_reads_the_usage_and_the_trace_store(tmp_path, capsys):
     pytest.importorskip("zstandard")
     store_run(tmp_path)
     (tmp_path / "r-trace").mkdir()
     assert cli_module.main(["runs", "trace", "r", "--runs-dir", str(tmp_path)]) == 0
-    assert nodes(capsys.readouterr().out) == []
+    out = capsys.readouterr().out
+    assert nodes(out) == ["build-1", "build-2", "handoff-1"]
+    assert "2.00" in out and "0.50" in out
 
 
 def test_with_no_trace_dir_the_table_is_read_from_usage_and_the_trace_store(tmp_path, capsys):
