@@ -68,6 +68,7 @@ cox upgrade --root ROOT [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG
 cox home [--profile PROFILE]   the live dashboard: runs, leader, backlog
 cox stats ingest [RUNS_DIR] [--db DB] [--work-store-root WORK_STORE_ROOT] [--cartridges-repo CARTRIDGES_REPO]   load usage, task, node and launch records into stats.db
 cox stats roles [--db DB] [--json] [--cartridge-sha CARTRIDGE_SHA] [--provider-profile PROVIDER_PROFILE]   landed rate, attempts-to-land and $/landed per role and model
+cox stats gates [--db DB] [--since SINCE] [--json]   what each review, validation and plan gate costs and how often it changes the outcome
 cox stats explain ROLE [--db DB] [--json]   the failure-class breakdown behind one role
 cox stats series [--db DB] [--json] [--cartridge-sha CARTRIDGE_SHA] [--provider-profile PROVIDER_PROFILE]   per-run summary rows read from the stats store
 cox stats coverage [--db DB] [--json]   known/total provenance rows for runs, calls and tasks
