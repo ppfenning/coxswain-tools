@@ -18,6 +18,8 @@ dependencies = ["pyyaml>=6", "zstandard>=0.23"]
 dev = ["pytest", "ruff==0.16.6", "zstandard>=0.23"]
 # Kept so `coxswain-tools[traces]` still installs; zstandard is now a base dependency.
 traces = ["zstandard>=0.23"]
+# Reads a Postgres run store; the name matches the extra graphs uses.
+postgres = ["psycopg[binary]>=3.2"]
 
 [project.scripts]
 cox = "agent_tools.cli:main"
