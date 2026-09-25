@@ -1,0 +1,4 @@
+team: demo
+spend:
+  window_ceiling_usd: 20
+  weekly_ceiling_usd: 50

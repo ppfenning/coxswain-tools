@@ -1,0 +1,2 @@
+hold: headroom $3.00 below minimum $5.00; holding until the window ends; weekly 4% of weekly ceiling
+exit 3
