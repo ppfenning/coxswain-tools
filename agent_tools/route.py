@@ -737,6 +737,9 @@ def _heartbeat_age(heartbeat_at, now) -> str | None:
 def _lane(run: dict, now: str | None) -> str:
     age = _heartbeat_age(run.get("heartbeat"), now)
     since = _local_hhmm(run["started"])
+    if run.get("remote"):
+        where = f'on {run.get("host") or "another machine"}'
+        return f'{run["id"]} ({where}, since {since})' if age is None else f'{run["id"]} ({where}, since {since}, heartbeat {age} ago)'
     return f'{run["id"]} (pid {run["pid"]}, since {since})' if age is None else f'{run["id"]} (since {since}, heartbeat {age} ago)'
 
 
@@ -1094,6 +1097,8 @@ def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict, heartbeat
         "alive": alive.get(run_id, False) if pid is not None else False,
         "started": started.get(run_id),
         "heartbeat": heartbeats.get(run_id),
+        "host": None,
+        "remote": False,
     }
 
 
@@ -1109,6 +1114,22 @@ def run_entries(pids: dict, alive: dict, started: dict, heartbeats: dict | None 
     passed in `alive` for that id.
     """
     return [_run_entry(run_id, pids[run_id], alive, started, heartbeats or {}) for run_id in sorted(pids)]
+
+
+def remote_lane_entries(lanes: Sequence) -> list:
+    """Run entries for lanes no local pidfile names, in input order: `pid` None, `alive` True, `remote` True. The caller passes lanes already filtered by `remote_lanes`; nothing is deduplicated here."""
+    return [
+        {
+            "id": lane.run,
+            "pid": None,
+            "alive": True,
+            "started": lane.launched_at,
+            "heartbeat": lane.heartbeat_at,
+            "host": lane.host,
+            "remote": True,
+        }
+        for lane in lanes
+    ]
 
 
 def _ready_unblocked(item: dict, done_ids: set) -> bool:

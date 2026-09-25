@@ -1,6 +1,7 @@
 import argparse
 import datetime
 import json
+from typing import NamedTuple
 
 import pytest
 
@@ -896,8 +897,10 @@ def test_run_entries_sorts_by_id_and_treats_a_non_integer_pidfile_as_dead():
     started = {"r1": "2026-09-04T00:00:00", "r2": "2026-09-04T00:01:00"}
     entries = route.run_entries(pids, alive, started)
     assert entries == [
-        {"id": "r1", "pid": None, "alive": False, "started": "2026-09-04T00:00:00", "heartbeat": None},
-        {"id": "r2", "pid": 222, "alive": True, "started": "2026-09-04T00:01:00", "heartbeat": None},
+        {"id": "r1", "pid": None, "alive": False, "started": "2026-09-04T00:00:00", "heartbeat": None,
+         "host": None, "remote": False},
+        {"id": "r2", "pid": 222, "alive": True, "started": "2026-09-04T00:01:00", "heartbeat": None,
+         "host": None, "remote": False},
     ]
 
 
@@ -939,6 +942,52 @@ def test_a_lane_with_a_heartbeat_reads_minutes_ago_from_sixty_seconds(utc_plus_2
 def test_a_lane_without_a_heartbeat_keeps_the_pid_form_with_local_since(utc_plus_2):
     run = {**_LEASED_RUN, "heartbeat": None}
     assert _lanes(run, "2026-09-25T10:43:00Z") == "lanes: 1 busy — widget-1 (pid 4242, since 12:38)"
+
+
+class _FakeLane(NamedTuple):
+    run: str
+    host: str | None
+    launched_at: str
+    heartbeat_at: str
+
+
+_REMOTE_LANE = _FakeLane("widget-2", "host-b", "2026-09-25T10:38:00+00:00", "2026-09-25T10:40:00Z")
+
+
+def test_a_remote_lane_becomes_an_entry_with_its_host():
+    assert route.remote_lane_entries([_REMOTE_LANE]) == [
+        {"id": "widget-2", "pid": None, "alive": True, "started": "2026-09-25T10:38:00+00:00",
+         "heartbeat": "2026-09-25T10:40:00Z", "host": "host-b", "remote": True}
+    ]
+
+
+def test_a_remote_lane_with_no_host_keeps_host_none_and_remote_true():
+    entry = route.remote_lane_entries([_REMOTE_LANE._replace(host=None)])[0]
+    assert (entry["host"], entry["remote"]) == (None, True)
+
+
+def test_a_local_entry_reads_remote_false_and_host_none():
+    entry = route.run_entries({"r1": "7"}, {"r1": True}, {"r1": "2026-09-25T10:38:00+00:00"})[0]
+    assert (entry["host"], entry["remote"]) == (None, False)
+
+
+def test_local_entries_come_first_then_remote_entries_in_input_order():
+    local = route.run_entries({"b": "1", "a": "2"}, {}, {})
+    remote = route.remote_lane_entries([_REMOTE_LANE._replace(run="z"), _REMOTE_LANE._replace(run="y")])
+    assert [e["id"] for e in local + remote] == ["a", "b", "z", "y"]
+    assert [e["remote"] for e in local + remote] == [False, False, True, True]
+
+
+def test_a_remote_lane_line_names_its_host(utc_plus_2):
+    entry = route.remote_lane_entries([_REMOTE_LANE])[0]
+    assert _lanes(entry, "2026-09-25T10:40:12Z") == "lanes: 1 busy — widget-2 (on host-b, since 12:38, heartbeat 12s ago)"
+
+
+def test_a_remote_lane_line_without_a_host_says_another_machine(utc_plus_2):
+    entry = route.remote_lane_entries([_REMOTE_LANE._replace(host=None)])[0]
+    assert _lanes(entry, "2026-09-25T10:43:00Z") == (
+        "lanes: 1 busy — widget-2 (on another machine, since 12:38, heartbeat 3m ago)"
+    )
 
 
 def test_initiative_summaries_picks_the_sorted_first_phase_with_a_ready_task():
