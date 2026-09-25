@@ -1,0 +1,9 @@
+usage: cox lake sync [-h] [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run] [--json]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
+  --profile PROFILE    the routing profile naming the provider profile (default: ~/.config/agent-
+                       tools/profile.yaml or $AGENT_TOOLS_PROFILE)
+  --dry-run            report what would be synced; create and write nothing
+  --json

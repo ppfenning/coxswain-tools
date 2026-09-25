@@ -19,8 +19,10 @@ import sys
 import tempfile
 import time
 import tomllib
+import types
 import urllib.parse
 import uuid
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import yaml
@@ -36,6 +38,7 @@ from agent_tools import (
     forge_github,
     install,
     install_exec,
+    lake_config,
     land,
     leader_chat,
     notify,
@@ -3614,6 +3617,175 @@ STATS_COMMANDS = [
 ]
 
 
+def _lake_provider(a: argparse.Namespace) -> tuple[Mapping, str | None]:
+    """Edge. (provider profile, problem). A profile that is named but unusable is a problem, not a silent default lake.
+
+    Only an unnamed profile falls back to files in the runs dir."""
+    explicit = a.profile or os.environ.get("AGENT_TOOLS_PROFILE")
+    text = _read_text_or_none(_profile_path(a))
+    if text is None:
+        return {}, f"no profile at {_profile_path(a)}" if explicit else None
+    try:
+        routing_profile = route.parse_profile(text)
+    except route.ProfileError as exc:
+        return {}, f"profile unreadable: {exc}"
+    provider_path = routing_profile.get("provider_profile")
+    if not provider_path:
+        return {}, None
+    provider_text = _read_text_or_none(Path(provider_path).expanduser())
+    if provider_text is None:
+        return {}, f"provider profile not readable: {provider_path}"
+    provider = store_url.read_provider_profile(provider_path)
+    has_content = any(line.strip() and not line.lstrip().startswith("#") for line in provider_text.splitlines())
+    if has_content and not provider:
+        return {}, f"provider profile is not a YAML mapping: {provider_path}"
+    return provider, None
+
+
+def _lake_sync_report(results: Sequence, traces: tuple[int, int, int], dry_run: bool, new_tables: Sequence[str],
+                      catalog: str, warehouse: str, traces_root: str) -> dict:
+    """`results` are `SyncResult`s and `traces` is (found, registered, skipped). Every URL is redacted."""
+    found, registered, skipped = traces
+    return {
+        "dry_run": dry_run,
+        "new_tables": list(new_tables),
+        "catalog": lake_config.redact(catalog),
+        "warehouse": lake_config.redact(warehouse),
+        "traces_root": lake_config.redact(traces_root),
+        "tables": [
+            {"table": r.table, "rows_found": r.rows_found, "rows_appended": r.rows_appended, "mark": r.new_mark}
+            for r in results
+        ],
+        "traces": {"found": found, "registered": registered, "skipped": skipped, "would_register": found - skipped},
+    }
+
+
+def _lake_sync_lines(report: dict) -> list[str]:
+    """A dry run says what a real run would do; its mark is the one it would set."""
+    dry = report["dry_run"]
+    created = [f"lake: would create {', '.join(report['new_tables'])}"] if report["new_tables"] else []
+    tables = [
+        f"{t['table']}: would append {t['rows_found']} (mark {t['mark'] or 'none'})" if dry
+        else f"{t['table']}: {t['rows_appended']} appended (mark {t['mark'] or 'none'})"
+        for t in report["tables"]
+    ]
+    traces = report["traces"]
+    trace_line = (
+        f"traces: would register {traces['would_register']}, {traces['skipped']} skipped" if dry
+        else f"traces: {traces['registered']} registered, {traces['skipped']} skipped"
+    )
+    return [*created, *tables, trace_line]
+
+
+def _lake_catalog_missing(catalog_uri: str) -> bool:
+    """True for a `sqlite:///` catalog whose file does not exist yet; any other catalog is assumed to exist."""
+    return catalog_uri.startswith("sqlite:///") and not Path(catalog_uri.removeprefix("sqlite:///")).exists()
+
+
+def _lake_real_run(config: lake_config.LakeConfig, store: str, root: str) -> dict:
+    """Edge. Create any missing table, append the new rows, register the new trace files."""
+    catalog = lake_config.load_catalog(config)
+    # Imported here: these modules import pyiceberg and pyarrow at module top, and cli.py must load without the extra.
+    from agent_tools import lake_sync, lake_tables, lake_traces
+
+    lake_tables.ensure_tables(catalog)
+    results = lake_sync.sync(catalog, store)
+    traces = lake_traces.register_traces(catalog, root)
+    return _lake_sync_report(results, traces, False, (), config.catalog_uri, config.warehouse, root)
+
+
+def _lake_open_readonly(config: lake_config.LakeConfig, name: str):
+    """Edge. The configured catalog opened so that it creates nothing; None when it holds no catalog tables yet."""
+    from pyiceberg.catalog.sql import IcebergTables, SqlCatalog
+    from sqlalchemy import inspect as sql_inspect
+
+    # Measured: a SqlCatalog creates its SQLite file on first connect, and its catalog tables on construction on any backend.
+    if _lake_catalog_missing(config.catalog_uri):
+        return None
+    catalog = SqlCatalog(name, uri=config.catalog_uri, warehouse=config.warehouse, init_catalog_tables="false")
+    return catalog if sql_inspect(catalog.engine).has_table(IcebergTables.__tablename__) else None
+
+
+def _lake_dry_run(config: lake_config.LakeConfig, store: str, root: str) -> dict:
+    """Edge. What a real run would do, read from the lake without creating or writing anything.
+
+    A table the lake lacks reads as empty: no mark, no data files."""
+    # An in-memory catalog: it raises LakeUnavailable when the extra is missing, names the catalog, and touches no file.
+    probe = lake_config.load_catalog(lake_config.LakeConfig("sqlite:///:memory:", config.warehouse))
+    from pyiceberg.exceptions import NoSuchTableError
+    from pyiceberg.io import load_file_io
+
+    from agent_tools import lake_sync, lake_tables, lake_traces
+
+    real = _lake_open_readonly(config, probe.name)
+    names = [f"{lake_tables.NAMESPACE}.{name}" for name in lake_tables.TABLES]
+    new_tables = names if real is None else [n for n in names if not real.table_exists(n)]
+    # The three attributes a dry run reads from a table; tests pin that lake_sync and lake_traces read no others.
+    absent = types.SimpleNamespace(
+        properties={}, io=load_file_io(dict(probe.properties), root),
+        scan=lambda: types.SimpleNamespace(plan_files=lambda: []),
+    )
+
+    def load_table(identifier: str):
+        try:
+            return absent if real is None else real.load_table(identifier)
+        except NoSuchTableError:
+            return absent
+
+    # The one catalog method a dry run calls; tests pin that lake_sync and lake_traces call no other.
+    preview = types.SimpleNamespace(load_table=load_table)
+    results = lake_sync.sync(preview, store, dry_run=True)
+    traces = lake_traces.register_traces(preview, root, dry_run=True)
+    return _lake_sync_report(results, traces, True, new_tables, config.catalog_uri, config.warehouse, root)
+
+
+def _lake_refuse(a: argparse.Namespace, message: str) -> int:
+    print(json.dumps({"error": message}) if a.json else message)
+    return 2
+
+
+def _lake_sync(a: argparse.Namespace) -> int:
+    """Edge. Sync the run store and the trace files into the Iceberg lake; `--dry-run` creates and writes nothing."""
+    # Absolute: `file://runs/lake` would name a host, and a relative trace path registered once would break from another cwd.
+    runs_dir = Path(a.runs_dir).resolve()
+    provider, problem = _lake_provider(a)
+    if problem:
+        return _lake_refuse(a, f"lake: {problem}")
+    config = lake_config.resolve_lake(provider, runs_dir)
+    store = store_url.profile_store_url(provider, runs_dir)
+    root = store_url.profile_traces_root(provider, runs_dir).url
+    root = root if "://" in root else str(Path(root).resolve())
+    try:
+        report = _lake_dry_run(config, store, root) if a.dry_run else _lake_real_run(config, store, root)
+    except lake_config.LakeUnavailable as err:
+        return _lake_refuse(a, str(err))
+    except ImportError as err:
+        # pyiceberg imported, but a module the lake also needs, such as pyarrow, did not.
+        return _lake_refuse(a, f"the Iceberg lake needs the optional extra `lake`; {err.name or err} is missing: "
+                               "pip install 'coxswain-tools[lake]'")
+    print(json.dumps(report, indent=2) if a.json else "\n".join(_lake_sync_lines(report)))
+    return 0
+
+
+LAKE_GROUP = commands.Group(
+    name="lake", help="the Iceberg lake: sync the run store and traces into it",
+    description="The Iceberg lake: sync the run store and traces into it. Needs the optional extra `lake`.",
+    epilog="examples:\n  cox lake sync\n  cox lake sync --dry-run --json",
+)
+LAKE_COMMANDS = [
+    commands.Command(
+        "sync", "lake", "append new run-store rows and register new trace files; --dry-run writes nothing",
+        (
+            commands.Arg(("--runs-dir",), {"default": "runs"}),
+            commands.Arg(("--profile",), {"help": "the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "report what would be synced; create and write nothing"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _lake_sync, False, (),
+    ),
+]
+
+
 _DEV_MOVED = "moved: run `uv run --frozen python -m devtools <command> ...` from the coxswain checkout (from 0.15.0)"
 
 
@@ -3647,6 +3819,9 @@ def build_parser() -> argparse.ArgumentParser:
     commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("stats")
+    commands.build_parser(rows, [group], sub)
+
+    group, rows = _table_entry("lake")
     commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("usage")
@@ -4074,6 +4249,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (UPGRADE_GROUP, []),
     (HOME_GROUP, []),
     (STATS_GROUP, STATS_COMMANDS),
+    (LAKE_GROUP, LAKE_COMMANDS),
     (USAGE_GROUP, USAGE_COMMANDS),
     (PLAN_GROUP, PLAN_COMMANDS),
     (EPIC_GROUP, EPIC_COMMANDS),

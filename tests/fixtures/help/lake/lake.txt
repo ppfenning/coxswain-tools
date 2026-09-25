@@ -1,0 +1,14 @@
+usage: cox lake [-h] {sync} ...
+
+The Iceberg lake: sync the run store and traces into it. Needs the optional extra `lake`.
+
+positional arguments:
+  {sync}
+    sync      append new run-store rows and register new trace files; --dry-run writes nothing
+
+options:
+  -h, --help  show this help message and exit
+
+examples:
+  cox lake sync
+  cox lake sync --dry-run --json
