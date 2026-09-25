@@ -896,9 +896,49 @@ def test_run_entries_sorts_by_id_and_treats_a_non_integer_pidfile_as_dead():
     started = {"r1": "2026-09-04T00:00:00", "r2": "2026-09-04T00:01:00"}
     entries = route.run_entries(pids, alive, started)
     assert entries == [
-        {"id": "r1", "pid": None, "alive": False, "started": "2026-09-04T00:00:00"},
-        {"id": "r2", "pid": 222, "alive": True, "started": "2026-09-04T00:01:00"},
+        {"id": "r1", "pid": None, "alive": False, "started": "2026-09-04T00:00:00", "heartbeat": None},
+        {"id": "r2", "pid": 222, "alive": True, "started": "2026-09-04T00:01:00", "heartbeat": None},
     ]
+
+
+def test_run_entries_carries_a_heartbeat_only_for_the_runs_the_caller_names():
+    entries = route.run_entries({"r1": "1", "r2": "2"}, {}, {}, {"r2": "2026-09-25T10:38:12Z"})
+    assert [e["heartbeat"] for e in entries] == [None, "2026-09-25T10:38:12Z"]
+
+
+_LEASED_RUN = {"id": "widget-1", "pid": 4242, "alive": True, "started": "2026-09-25T10:38:00+00:00",
+               "heartbeat": "2026-09-25T10:40:00Z"}
+
+
+@pytest.fixture
+def utc_plus_2(monkeypatch):
+    import time
+
+    monkeypatch.setenv("TZ", "Etc/GMT-2")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def _lanes(run, now):
+    text = route.render_context(FIXTURE_PROFILE, EMPTY_INTAKE_GROUPS, [run], [], now=now)
+    return next(l for l in text.splitlines() if l.startswith("lanes:"))
+
+
+def test_a_lane_with_a_heartbeat_reads_since_and_seconds_ago(utc_plus_2):
+    assert _lanes(_LEASED_RUN, "2026-09-25T10:40:12Z") == "lanes: 1 busy — widget-1 (since 12:38, heartbeat 12s ago)"
+
+
+def test_a_lane_with_a_heartbeat_reads_minutes_ago_from_sixty_seconds(utc_plus_2):
+    assert _lanes(_LEASED_RUN, "2026-09-25T10:43:00Z").endswith("heartbeat 3m ago)")
+    assert _lanes(_LEASED_RUN, "2026-09-25T10:40:59Z").endswith("heartbeat 59s ago)")
+    assert _lanes(_LEASED_RUN, "2026-09-25T10:41:00Z").endswith("heartbeat 1m ago)")
+
+
+def test_a_lane_without_a_heartbeat_keeps_the_pid_form_with_local_since(utc_plus_2):
+    run = {**_LEASED_RUN, "heartbeat": None}
+    assert _lanes(run, "2026-09-25T10:43:00Z") == "lanes: 1 busy — widget-1 (pid 4242, since 12:38)"
 
 
 def test_initiative_summaries_picks_the_sorted_first_phase_with_a_ready_task():

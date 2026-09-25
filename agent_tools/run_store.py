@@ -97,20 +97,20 @@ def connect_readonly(runs_dir: Path) -> sqlite3.Connection | None:
     return sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) if path.exists() else None
 
 
-def lease(runs_dir: Path, run_id: str) -> tuple[str, str] | None:
-    """Edge. The (holder, expires_at) of the store lease for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
+def lease(runs_dir: Path, run_id: str) -> tuple[str, str, str] | None:
+    """Edge. The (holder, expires_at, heartbeat_at) of the store lease for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
     # mirrors graphs `harness/run_lease.lease_name`: the lease is per prefix, so `x-3` and `x-4` share `runs:x`
     name = "runs:" + re.sub(r"-\d+$", "", run_id)
     conn = connect_readonly(runs_dir)
     if conn is None:
         return None
     try:
-        row = conn.execute("SELECT holder, expires_at FROM leases WHERE name = ?", (name,)).fetchone()
+        row = conn.execute("SELECT holder, expires_at, heartbeat_at FROM leases WHERE name = ?", (name,)).fetchone()
     except sqlite3.DatabaseError:
         return None
     finally:
         conn.close()
-    return None if row is None else (row[0], row[1])
+    return None if row is None else (row[0], row[1], row[2])
 
 
 def run_ids(runs_dir: Path) -> set[str]:
