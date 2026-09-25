@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import time
 from collections.abc import Sequence
 from pathlib import PurePath
 from typing import Any
@@ -31,6 +32,7 @@ __all__ = [
     "LAUNCH_ERROR",
     "approve_to_done",
     "arbitration_verdict",
+    "await_checks",
     "check_poll_result",
     "checks_argv",
     "gate_steps",
@@ -411,6 +413,24 @@ def unreadable_poll(errors: int, detail: str) -> tuple[int, str]:
     if errors < POLL_ERROR_LIMIT:
         return PENDING_RC, f"checks unreadable, retrying ({errors}/{POLL_ERROR_LIMIT}): {detail}"
     return 1, f"checks unreadable {errors} polls in a row: {detail}"
+
+
+def await_checks(poll, timeout_s: float = 180.0, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
+    """`poll() -> (returncode, output)` until green or failed. No check yet means not yet: retry every 15s for `timeout_s`."""
+    started, waiting = now(), False
+    while True:
+        rc, output = poll()
+        decision = wait_decision(rc, output, now() - started, timeout_s)
+        if decision == "retry":
+            if not waiting:
+                print(f"{output.strip()}; polling every 15s until they finish" if is_pending(rc)
+                      else f"no checks reported yet, waiting up to {timeout_s:.0f}s for the first one to appear")
+            waiting = True
+            sleep(15)
+        elif decision == "timeout":
+            return False, f"no checks reported within {timeout_s:.0f}s"
+        else:
+            return decision == "green", "green" if decision == "green" else output.strip()
 
 
 def issue_closes(issue: str | int | None) -> str | None:
