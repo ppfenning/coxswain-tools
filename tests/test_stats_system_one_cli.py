@@ -1,5 +1,6 @@
 import datetime
 import json
+import sqlite3
 
 import pytest
 
@@ -69,3 +70,39 @@ def test_propose_writes_a_file_for_a_ready_role_only_and_never_touches_the_profi
 def test_without_propose_nothing_is_written(ws):
     run(ws)
     assert not (ws[0] / "plans").exists()
+
+
+def seed_store(runs, run_id, calls):
+    """An ended `runs` row and one `node_calls` row per call, with no usage file."""
+    columns = (
+        "call_id", "run_id", "seq", "role", "task_id", "tier", "model_alias", "cost_usd", "ceiling_usd", "ceiling_source",
+        "turns", "duration_ms", "input_tokens", "cache_read_tokens", "cache_creation_tokens", "input_total", "output_tokens",
+        "ok", "ts", "decision_json",
+    )
+    conn = sqlite3.connect(runs / "cox.db")
+    conn.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, launched_at TEXT, ended_at TEXT)")
+    conn.execute("CREATE TABLE node_calls (" + ", ".join(columns) + ")")
+    conn.execute("INSERT INTO runs VALUES (?, ?, ?)", (run_id, "2026-09-01T00:00:00+00:00", "2026-09-01T01:00:00+00:00"))
+    for seq, c in enumerate(calls):
+        row = (f"{run_id}-{seq}", run_id, seq, c["role"], None, None, "haiku", 0.0, None, None, 1, 1, 0, 0, 0, 0, 0, 1, c["ts"], json.dumps(c["decision"]))
+        conn.execute("INSERT INTO node_calls VALUES (" + ", ".join("?" * len(columns)) + ")", row)
+    conn.commit()
+    conn.close()
+
+
+def test_a_store_only_run_prints_what_the_same_run_as_a_file_prints(tmp_path, monkeypatch, capsys):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("assume: a\n")
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
+    calls = [call(i) for i in range(100)]
+    as_file, as_store = tmp_path / "file", tmp_path / "store"
+    as_file.mkdir()
+    as_store.mkdir()
+    (as_file / "r1.usage.json").write_text(json.dumps({"calls": calls}))
+    seed_store(as_store, "r1", calls)
+    outs = []
+    for runs in (as_file, as_store):
+        assert main(["stats", "system-one", str(runs), "--plans-dir", str(tmp_path / "plans"), "--json"]) == 0
+        outs.append(capsys.readouterr().out)
+    assert outs[0] == outs[1]
+    assert "handoff" in outs[1]
