@@ -48,7 +48,8 @@ def _fresh_store_url():
     from agent_tools import run_store
 
     caches = (run_store._store_url_for, run_store._lease_table, run_store._traces_root_for,
-              run_store._harness_python_for, run_store._harness_dump, run_store._found_parquet_rows)
+              run_store._harness_python_for, run_store._harness_dump, run_store._found_parquet_rows,
+              run_store._store_ids_by_trace)
     for cache in caches:
         cache.cache_clear()
     yield
