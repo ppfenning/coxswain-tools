@@ -72,6 +72,7 @@ harness_dir: <checkout root>/agent-graphs
 workspace_dir: <checkout root>/workspace
 assume: a
 forge: local
+tracker: none
 ```
 
 `cartridges_dir` is where the TEAM's cartridge lives (the workspace's
@@ -84,7 +85,11 @@ task: `local` (the default when the key is absent) needs only git: the task's
 commit fast-forwards the default branch once the land's own checks pass, and is
 pushed when the repository has an `origin`. `github` opens a pull request,
 waits for its checks and squash-merges it through `gh`; `cox setup doctor`
-checks `gh auth status` only for that forge.
+checks `gh auth status` only for that forge. `tracker` is where `cox route
+sync` mirrors the work store: `none` (the default when the key is absent)
+mirrors nothing, and `github-projects` syncs a GitHub Project through `gh`. A
+run can pause sync by writing `runs/policy.tracker.json`, which wins over the
+profile.
 
 `--profile PATH` overrides the profile location for one command;
 `AGENT_TOOLS_PROFILE` overrides it for a shell.
