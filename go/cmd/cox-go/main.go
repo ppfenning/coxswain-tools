@@ -82,7 +82,7 @@ func usageAssess(args []string, getenv func(string) string, clock func() time.Ti
 	if rest, ok := strings.CutPrefix(path, "~/"); ok {
 		path = filepath.Join(getenv("HOME"), rest)
 	}
-	r := coxgo.Assess(*runsDir, path, now, coxgo.CcusageBlocks(getenv))
+	r := coxgo.Assess(*runsDir, path, now, coxgo.CachedBlocks(*runsDir, now, getenv, func() []byte { return coxgo.CcusageBlocks(getenv) }))
 	return r.Line() + "\n", "", r.Code
 }
 

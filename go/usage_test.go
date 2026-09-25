@@ -113,6 +113,126 @@ func TestCcusageBlocksIsSkippedByCoxNoCcusage(t *testing.T) {
 	}
 }
 
+var cacheNow = time.Date(2026, 9, 25, 10, 44, 12, 0, time.UTC)
+
+func noEnv(string) string { return "" }
+
+func writeCache(t *testing.T, dir, at, blocks string) string {
+	t.Helper()
+	path := filepath.Join(dir, ccusageCacheFile)
+	if err := os.WriteFile(path, []byte(`{"at":"`+at+`","blocks":`+blocks+`}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func countingRunner(out string, calls *int) func() []byte {
+	return func() []byte { *calls++; return []byte(out) }
+}
+
+func TestCachedBlocksSkipsCcusageForAFreshFile(t *testing.T) {
+	dir, calls := t.TempDir(), 0
+	writeCache(t, dir, "2026-09-25T10:44:02+00:00", `{"cached":true}`)
+	got := CachedBlocks(dir, cacheNow, noEnv, countingRunner(ccusageActive, &calls))
+	if string(got) != `{"cached":true}` || calls != 0 {
+		t.Fatalf("got %q after %d calls", got, calls)
+	}
+}
+
+func TestCachedBlocksRerunsAndRewritesA90SecondOldFile(t *testing.T) {
+	dir, calls := t.TempDir(), 0
+	path := writeCache(t, dir, "2026-09-25T10:42:42+00:00", `{"cached":true}`)
+	got := CachedBlocks(dir, cacheNow, noEnv, countingRunner(ccusageActive, &calls))
+	file, _ := os.ReadFile(path)
+	blocks, ok := cacheFresh(file, cacheNow)
+	if string(got) != ccusageActive || calls != 1 || !ok || string(blocks) != ccusageActive {
+		t.Fatalf("got %q after %d calls, file %q", got, calls, file)
+	}
+	if !strings.Contains(string(file), "2026-09-25T10:44:12.000000+00:00") {
+		t.Fatalf("at is not Python isoformat: %s", file)
+	}
+}
+
+func TestCacheFreshReadsPythonIsoformatAndSkipsWhatPythonSkips(t *testing.T) {
+	fresh := `{"at":"2026-09-25T10:44:12.123456+00:00","blocks":{"a":1}}`
+	if got, ok := cacheFresh([]byte(fresh), cacheNow.Add(time.Second)); !ok || string(got) != `{"a":1}` {
+		t.Fatalf("python-format at: %q %v", got, ok)
+	}
+	if _, ok := cacheFresh([]byte(fresh), cacheNow); ok {
+		t.Error("an at 123 ms in the future was fresh")
+	}
+	if _, ok := cacheFresh([]byte(fresh), cacheNow.Add(61*time.Second)); ok {
+		t.Error("an at older than 60 s was fresh")
+	}
+	for _, bad := range []string{
+		`{"at":"2026-09-25T10:44:02","blocks":{"a":1}}`,
+		`{"at":"2026-09-25T10:44:02+00:00","blocks":[1]}`,
+		`{"at":"2026-09-25T10:44:02+00:00","blocks":"x"}`,
+		`{"at":"2026-09-25T10:44:02+00:00","blocks":null}`,
+		`{"at":5,"blocks":{"a":1}}`,
+		`{"blocks":{"a":1}}`, `[]`, `not json`, ``,
+	} {
+		if _, ok := cacheFresh([]byte(bad), cacheNow); ok {
+			t.Errorf("%q was fresh", bad)
+		}
+	}
+}
+
+func TestCachedBlocksTreatsAnUnusableFileAsAbsent(t *testing.T) {
+	for name, at := range map[string]string{"naive": "2026-09-25T10:44:02", "future": "2026-09-25T10:50:00+00:00"} {
+		t.Run(name, func(t *testing.T) {
+			dir, calls := t.TempDir(), 0
+			writeCache(t, dir, at, `{"cached":true}`)
+			if got := CachedBlocks(dir, cacheNow, noEnv, countingRunner(ccusageActive, &calls)); string(got) != ccusageActive || calls != 1 {
+				t.Fatalf("got %q after %d calls", got, calls)
+			}
+		})
+	}
+	dir, calls := t.TempDir(), 0
+	CachedBlocks(dir, cacheNow, noEnv, countingRunner(ccusageActive, &calls))
+	if _, err := os.Stat(filepath.Join(dir, ccusageCacheFile)); calls != 1 || err != nil {
+		t.Fatalf("a missing file should run once and write: %d calls, %v", calls, err)
+	}
+}
+
+func TestCachedBlocksNoCcusageTouchesNoFile(t *testing.T) {
+	skip := func(k string) string {
+		if k == "COX_NO_CCUSAGE" {
+			return "1"
+		}
+		return ""
+	}
+	dir, calls := t.TempDir(), 0
+	if got := CachedBlocks(dir, cacheNow, skip, countingRunner(ccusageActive, &calls)); got != nil || calls != 0 {
+		t.Fatalf("got %q after %d calls", got, calls)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ccusageCacheFile)); err == nil {
+		t.Fatal("wrote a cache file")
+	}
+	path := writeCache(t, dir, "2026-09-25T10:44:02+00:00", `{"cached":true}`)
+	before, _ := os.ReadFile(path)
+	if got := CachedBlocks(dir, cacheNow, skip, countingRunner(ccusageActive, &calls)); got != nil || calls != 0 {
+		t.Fatalf("a fresh file was read: %q", got)
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Fatalf("file changed: %s", after)
+	}
+}
+
+func TestCachedBlocksCachesOnlyAParsedObjectAndIgnoresAFailedWrite(t *testing.T) {
+	dir, calls := t.TempDir(), 0
+	for _, out := range []string{"not json", "[]", ""} {
+		CachedBlocks(dir, cacheNow, noEnv, countingRunner(out, &calls))
+	}
+	if _, err := os.Stat(filepath.Join(dir, ccusageCacheFile)); err == nil || calls != 3 {
+		t.Fatalf("cached a bad run (%d calls): %v", calls, err)
+	}
+	missing := filepath.Join(dir, "no", "such")
+	if got := CachedBlocks(missing, cacheNow, noEnv, countingRunner(ccusageActive, &calls)); string(got) != ccusageActive {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestLoadPolicyFillsMissingKeysFromTheDefault(t *testing.T) {
 	def := defaultPolicy()
 	if got := loadPolicy([]byte("{}")); got.HardStop != def.HardStop || len(got.TierLadder) != 3 {
