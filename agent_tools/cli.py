@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import dataclasses
 import datetime
+import importlib.metadata
 import io
 import json
 import os
@@ -2523,6 +2524,12 @@ import json, os, sys
 cartridges_dir, team, *roots = sys.argv[1:]
 out = {"import": None, "load": None, "indexed": {}, "resolved": None, "skill_index": {}, "layers": None}
 try:
+    from importlib.metadata import entry_points
+    out["plugins"] = {g: sorted(ep.name for ep in entry_points(group=g))
+                      for g in ("coxswain.system_one", "coxswain.runners")}
+except Exception:
+    pass  # left unset: the doctor row reads "not checked", never an empty claim
+try:
     from core.cartridge import load
     from core.skills import index_from_roots
 except Exception as exc:
@@ -2593,6 +2600,8 @@ def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roo
              "skill_index": parsed.get("skill_index", {})}
     if "overlay_errors" in parsed:
         facts["overlay_errors"] = parsed["overlay_errors"]
+    if "plugins" in parsed:
+        facts["plugins_harness"] = parsed["plugins"]
     # Exactly one of `provenance`/`provenance_error` is set below, on every
     # path: a fact dict carrying neither would read as "nothing to report"
     # rather than "the walk never happened", which is the silent-mislabel
@@ -2661,6 +2670,14 @@ def _git_and_forge_facts(profile: dict) -> dict:
     return facts
 
 
+_TOOLS_PLUGIN_GROUPS = ("coxswain.sources", "coxswain.forges", "coxswain.trackers")
+
+
+def _tools_plugin_facts() -> dict:
+    """Entry-point names per group, read in tools' own environment. Listing only."""
+    return {g: sorted(ep.name for ep in importlib.metadata.entry_points(group=g)) for g in _TOOLS_PLUGIN_GROUPS}
+
+
 def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     """Gathers exactly the Facts keys `doctor.checks` reads; never refuses on
     a missing or unparseable profile, since reporting that is the doctor's
@@ -2672,6 +2689,7 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     except route.ProfileError:
         profile = None
     facts.update(_git_and_forge_facts(profile or {}))
+    facts["plugins_tools"] = _tools_plugin_facts()
     if profile is None:
         return facts
     singles = [profile.get(k, "") for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir")]

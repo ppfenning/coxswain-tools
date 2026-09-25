@@ -183,6 +183,29 @@ def _provider_row(facts: Mapping, cascade: bool) -> dict:
     return {"check": "provider", "ok": True, "detail": version}
 
 
+_TOOLS_PLUGIN_GROUPS = ("sources", "forges", "trackers")
+_HARNESS_PLUGIN_GROUPS = ("system_one", "runners")
+
+
+def _plugin_parts(found: Mapping | None, groups: tuple) -> list[str]:
+    """One `group: a, b` part per group: `none` when empty, `not checked` when
+    the whole fact is absent. Keys in `found` carry the `coxswain.` prefix."""
+    return [
+        f"{g}: not checked" if found is None
+        else f"{g}: " + (", ".join(found.get(f"coxswain.{g}") or ()) or "none")
+        for g in groups
+    ]
+
+
+def _plugins_row(facts: Mapping) -> dict:
+    """Informs, never judges: always ok, and never skipped by a profile failure."""
+    parts = [
+        *_plugin_parts(facts.get("plugins_tools"), _TOOLS_PLUGIN_GROUPS),
+        *_plugin_parts(facts.get("plugins_harness"), _HARNESS_PLUGIN_GROUPS),
+    ]
+    return {"check": "plugins", "ok": True, "detail": "; ".join(parts)}
+
+
 def _workspace_row(facts: Mapping, cascade: bool) -> dict:
     if cascade:
         return _skip("workspace")
@@ -227,8 +250,8 @@ def _cast_row(facts: Mapping, cascade: bool) -> dict:
 def checks(facts: Mapping) -> list[dict]:
     """Judge a Facts mapping. Returns rows `{"check", "ok", "detail"}` in a
     fixed check order: git, forge, profile, profile paths, harness venv, core
-    importable, cartridge, project overlay, skills, provider, workspace,
-    schema, cast. A fact that was never gathered fails as "not checked",
+    importable, cartridge, project overlay, skills, provider, plugins,
+    workspace, schema, cast. A fact that was never gathered fails as "not checked",
     except `cast` which passes when ungathered; a profile that fails to parse
     fails every row after it as "skipped: no profile"; an empty collection
     where paths, skill roots or workspace dirs belong fails naming that
@@ -245,6 +268,7 @@ def checks(facts: Mapping) -> list[dict]:
         _overlay_row(facts, cascade),
         _skills_row(facts, cascade, parsed),
         _provider_row(facts, cascade),
+        _plugins_row(facts),
         _workspace_row(facts, cascade),
         _schema_row(facts, cascade),
         _cast_row(facts, cascade),
