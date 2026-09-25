@@ -22,7 +22,7 @@ import tomllib
 import types
 import urllib.parse
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import yaml
@@ -48,6 +48,8 @@ from agent_tools import (
     provenance,
     records,
     remote_doctor,
+    remote_lane,
+    remote_launch,
     review_pr,
     route,
     route_sync,
@@ -1286,10 +1288,18 @@ def _sync_default_branch(repo: Path, default_branch: str) -> tuple[str, str]:
     return decision, f"{default_branch} fast-forwarded to {remote_ref} ({behind} commits)"
 
 
+def _run_id_of(name: str) -> str:
+    """`<id>.log`, `<id>.remote.json`, `<id>:<task>.json` and `<id>-trace` all belong to `<id>`."""
+    return re.split(r"[.:]", name, maxsplit=1)[0].removesuffix("-trace")
+
+
 def _taken_run_names(runs_dir: Path) -> list[str]:
-    """Edge. Names in `runs_dir` plus every run id in the store; empty for a runs dir that does not exist."""
+    """Edge. Names in `runs_dir`, the bare run id each belongs to, and every run id in the store.
+
+    A remote lane leaves only `<id>.remote.json`, which `next_run_id` does not read as an id; the bare ids let
+    both it and an exact `--run-id` check see that run as taken."""
     names = [p.name for p in runs_dir.iterdir()] if runs_dir.is_dir() else []
-    return [*names, *sorted(run_store.run_ids(runs_dir))]
+    return [*names, *sorted({_run_id_of(n) for n in names}), *sorted(run_store.run_ids(runs_dir))]
 
 
 def _runs_review(a: argparse.Namespace) -> int:
@@ -2454,6 +2464,9 @@ def _route_launch(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
         return rc
+    host, host_rc = _lane_host_or_refuse(a)
+    if host_rc is not None:
+        return host_rc
     harness_dir = profile.get("harness_dir", "")
     venv_rc = _harness_ready_or_refuse(harness_dir)
     if venv_rc is not None:
@@ -2525,7 +2538,14 @@ def _route_launch(a: argparse.Namespace) -> int:
         if already is not None:
             print(already)
             return 2
-        run_id = route.next_run_id(_taken_run_names(runs_dir), prefix)
+        if getattr(a, "run_id", None) is None:
+            run_id = route.next_run_id(_taken_run_names(runs_dir), prefix)
+        else:
+            taken = remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
+            if taken is not None:
+                print(taken)
+                return 2
+            run_id = a.run_id
         needs = {"initiative": a.initiative, "repo": repo}
         if a.fix_attempts is not None:
             needs["fix_attempts"] = a.fix_attempts
@@ -2595,6 +2615,9 @@ def _route_launch(a: argparse.Namespace) -> int:
         print(f"trace {trace_dir}")
         return 0
 
+    if host is not None:
+        return _route_launch_on_host(a, host, runs_dir, run_id)
+
     if overlaid_path is not None:
         overlaid_path.write_text(yaml.safe_dump(overlaid_provider_profile, sort_keys=True), encoding="utf-8")
         (runs_dir / f"{run_id}.ceiling.json").write_text(
@@ -2621,6 +2644,59 @@ def _route_launch(a: argparse.Namespace) -> int:
     print(f"run {run_id}")
     print(f"pid {pid_path}")
     print(f"log {log_path}")
+    return 0
+
+
+def _remote_edge(cwd: Path) -> tuple[Callable[[list[str]], int], Callable[[str], str] | None]:
+    """Edge: the one seam that runs rsync and ssh for `--on`; `cwd` is the workspace the `work/<id>` copy is relative to."""
+
+    def run(argv: list[str]) -> int:
+        try:
+            return subprocess.run(argv, cwd=cwd).returncode
+        except OSError as exc:
+            print(f"{argv[0]}: {exc}")
+            return 127
+
+    return run, None
+
+
+def _lane_host_or_refuse(a: argparse.Namespace) -> tuple[lane_hosts.LaneHost | None, int | None]:
+    """Exit code 2 after printing the refusal; no host when `--on` is absent."""
+    name = getattr(a, "on", None)
+    if name is None:
+        return None, None
+    # The remote command carries only the initiative, run id and label; a ceiling dropped silently would run uncapped.
+    dropped = [flag for flag, value in (
+        ("--tier-ceiling", getattr(a, "tier_ceiling", None)),
+        ("--effort-ceiling", getattr(a, "effort_ceiling", None)),
+        ("--fix-attempts", getattr(a, "fix_attempts", None)),
+    ) if value is not None]
+    if dropped:
+        print(f"routing: --on does not carry {', '.join(dropped)} to the host; launch without them")
+        return None, 2
+    hosts = _profile_lane_hosts(_read_text_or_none(_profile_path(a)) or "")
+    if isinstance(hosts, lane_hosts.LaneHostError):
+        print(f"routing: {hosts.message}")
+        return None, 2
+    host = lane_hosts.find_lane_host(hosts, name)
+    if host is None:
+        print(f"routing: unknown lane host: {name}")
+        print(f"configured: {', '.join(h.name for h in hosts) or 'none'}")
+        return None, 2
+    return host, None
+
+
+def _route_launch_on_host(a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str) -> int:
+    """Copies the initiative to `host` and starts the lane there; writes only `<run>.remote.json`, and only on success."""
+    run, locate = _remote_edge(runs_dir.parent)
+    launched_at = datetime.datetime.now(datetime.UTC).isoformat()
+    result = remote_launch.launch_on_host(host, Path(a.initiative).name, run_id, _holder_label(a), launched_at, run, locate)
+    if isinstance(result, remote_launch.LaunchError):
+        print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
+        return 2
+    remote_lane.remote_record_path(runs_dir, run_id).write_text(json.dumps(result), encoding="utf-8")
+    print(f"run {run_id}")
+    print(f"host {host.name}")
     return 0
 
 
@@ -2960,7 +3036,7 @@ def _parquet_traces_line(profile: dict | None) -> str | None:
 
 
 def _profile_lane_hosts(text: str) -> tuple[lane_hosts.LaneHost, ...] | lane_hosts.LaneHostError:
-    """Reads `lane_hosts` straight from the YAML text; `route.parse_profile` does not know the key yet."""
+    """Reads `lane_hosts` straight from the YAML text; `route.parse_profile` only skips the block."""
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -4312,6 +4388,8 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--repo",)),
                     commands.Arg(("--fix-attempts",), {"type": int, "default": None}),
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
+                    commands.Arg(("--run-id",), {"help": "use this run id instead of the next free one; refused when taken"}),
+                    commands.Arg(("--on",), {"help": "start the lane on this profile lane_hosts entry instead of locally"}),
                     commands.Arg(("--include-blocked",), {"action": "store_true", "help": "launch despite a ready task behind a blocked item (--force does not)"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
