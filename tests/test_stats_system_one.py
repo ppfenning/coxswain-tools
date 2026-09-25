@@ -85,9 +85,9 @@ def test_a_model_change_restarts_the_window():
     assert (s.shadow, s.model_id, s.costly) == (4, "new", 0)
 
 
-def test_a_claude_code_version_change_restarts_the_window():
+def test_a_claude_code_version_change_does_not_restart_the_window():
     calls = [call(i, version="1") for i in range(10)] + [call(i, version="2", day=2) for i in range(3)]
-    assert summary_of(calls).shadow == 3
+    assert summary_of(calls).shadow == 13
 
 
 def test_a_change_seen_only_on_a_non_shadow_row_still_restarts_the_window():
@@ -128,7 +128,7 @@ Proposal only. Nothing was edited. The maintainer approves and makes the change.
 
 ## Numbers
 
-Window 2026-09-01 to 2026-09-08 (7.0 days), model m1, claude_code v1. A change of either restarts the count.
+Window 2026-09-01 to 2026-09-08 (7.0 days), model m1. A model change restarts the count.
 
 - Shadow rows: 201 (bar 100)
 - Covered rows: 200 (99.5% of shadow)
