@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,32 @@ def storage_url(value: object, runs_dir: str | Path) -> str:
 def profile_store_url(profile: Mapping[str, Any], runs_dir: str | Path) -> str:
     """graphs `_storage_url`: the profile's `storage_url` key through storage_url."""
     return storage_url(profile.get("storage_url"), runs_dir)
+
+
+@dataclass(frozen=True)
+class TracesRoot:
+    """Where traces live: `url` as configured, `remote` True for object storage (s3://)."""
+
+    url: str
+    remote: bool
+
+
+def default_traces_root(runs_dir: str | Path) -> str:
+    """The local traces directory inside `runs_dir`. The directory is not created."""
+    return str(Path(runs_dir) / "traces")
+
+
+def traces_root(value: object, runs_dir: str | Path) -> TracesRoot:
+    """Like storage_url, a non-empty string is kept verbatim (no env, `~` or cwd resolution); anything else gives the local default."""
+    if isinstance(value, str) and value:
+        match = _SCHEME.match(value)
+        return TracesRoot(value, match is not None and match.group(0).lower() == "s3")
+    return TracesRoot(default_traces_root(runs_dir), False)
+
+
+def profile_traces_root(profile: Mapping[str, Any], runs_dir: str | Path) -> TracesRoot:
+    """The profile's `traces_url` key through traces_root."""
+    return traces_root(profile.get("traces_url"), runs_dir)
 
 
 def describe_store(url: str) -> str:
