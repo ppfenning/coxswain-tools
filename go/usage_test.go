@@ -48,6 +48,14 @@ func TestParseProfileReadsBothCeilingsAndRejectsWhatPythonRejects(t *testing.T) 
 	}
 }
 
+// route._KNOWN_KEYS includes `forge`; a stale key list would drop both ceilings on a real profile.
+func TestParseProfileKeepsTheCeilingsBesideAForgeKey(t *testing.T) {
+	c, err := parseProfile("team: x\nforge: github\nspend:\n  window_ceiling_usd: 20\n  weekly_ceiling_usd: 200\n")
+	if err != nil || c.Window == nil || *c.Window != 20 || c.Weekly == nil || *c.Weekly != 200 {
+		t.Fatalf("got %+v, %v", c, err)
+	}
+}
+
 func TestLoadPolicyFillsMissingKeysFromTheDefault(t *testing.T) {
 	def := defaultPolicy()
 	if got := loadPolicy([]byte("{}")); got.HardStop != def.HardStop || len(got.TierLadder) != 3 {

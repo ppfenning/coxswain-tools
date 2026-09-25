@@ -126,7 +126,7 @@ func stripComment(line string) string {
 func knownKey(key string) bool {
 	switch key {
 	case "team", "cartridges_dir", "skills_roots", "provider_profile", "harness_dir",
-		"workspace_dir", "assume", "router", "sources", "repo_map":
+		"workspace_dir", "assume", "router", "sources", "repo_map", "forge":
 		return true
 	default:
 		return false
