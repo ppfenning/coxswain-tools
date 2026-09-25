@@ -13,3 +13,17 @@ jobs:
         run: python3 .github/check_clean.py
       - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
         run: pip install ruff==0.16.6 && ruff check .
+  readme-commands:
+    # README.md's Commands block is rendered from this repo's command table by the umbrella's
+    # devtools, and the umbrella's CI checks it against this repo's main. Check it here too,
+    # so a new command cannot merge with a stale block.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # the umbrella's dev group installs coxswain-tools from ../coxswain-tools, which is this checkout
+      - run: git clone --depth 1 https://github.com/ppfenning/coxswain ../coxswain
+      - run: uv sync --group dev
+        working-directory: ../coxswain
+      - run: uv run pytest -q tests/devtools/test_commands_render.py
+        working-directory: ../coxswain
