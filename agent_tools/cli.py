@@ -1207,6 +1207,48 @@ def _repo_is_dirty(repo: Path) -> bool:
     return bool(status.stdout.strip())
 
 
+def sync_decision(has_origin: bool, behind: int, ahead: int) -> str:
+    """Pure. What to do with the local default branch: skip, current, fast_forward or refuse."""
+    if not has_origin:
+        return "skip"
+    if behind > 0 and ahead > 0:
+        return "refuse"
+    if behind > 0:
+        return "fast_forward"
+    return "current"
+
+
+def _sync_default_branch(repo: Path, default_branch: str) -> tuple[str, str]:
+    """Edge. Fast-forward the local default branch to origin's; HEAD and the tree stay put."""
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+
+    remotes = git("remote").stdout.split()
+    if "origin" not in remotes:
+        return sync_decision(False, 0, 0), ""
+    fetched = git("fetch", "origin", default_branch)
+    if fetched.returncode != 0:
+        return "refuse", fetched.stderr.strip()
+    remote_ref = f"origin/{default_branch}"
+    counted = git("rev-list", "--left-right", "--count", f"{default_branch}...{remote_ref}")
+    if counted.returncode != 0:
+        return "refuse", counted.stderr.strip()
+    ahead, behind = (int(n) for n in counted.stdout.split())
+    decision = sync_decision(True, behind, ahead)
+    if decision == "refuse":
+        return decision, f"{default_branch} has diverged from {remote_ref} ({ahead} ahead, {behind} behind); reconcile it first"
+    if decision != "fast_forward":
+        return decision, ""
+    if git("symbolic-ref", "--short", "-q", "HEAD").stdout.strip() == default_branch:
+        moved = git("merge", "--ff-only", remote_ref)
+    else:
+        old = git("rev-parse", f"refs/heads/{default_branch}").stdout.strip()
+        moved = git("update-ref", f"refs/heads/{default_branch}", remote_ref, old)
+    if moved.returncode != 0:
+        return "refuse", (moved.stderr or moved.stdout).strip()
+    return decision, f"{default_branch} fast-forwarded to {remote_ref} ({behind} commits)"
+
+
 def _taken_run_names(runs_dir: Path) -> list[str]:
     """Edge. Names in `runs_dir` plus every run id in the store; empty for a runs dir that does not exist."""
     names = [p.name for p in runs_dir.iterdir()] if runs_dir.is_dir() else []
@@ -1289,6 +1331,12 @@ def _runs_land(a: argparse.Namespace) -> int:
     print(f"forge: {forge_choice}")
     if _repo_is_dirty(repo):
         print(f"land: refusing, {repo} is dirty")
+        return 2
+    sync, sync_detail = _sync_default_branch(repo, default_branch)
+    if sync == "fast_forward":
+        print(f"land: {sync_detail}")
+    elif sync == "refuse":
+        print(f"land: refusing, {sync_detail}")
         return 2
     cherry_pick = next((s for s in steps if s["kind"] == "cherry_pick"), None)
     if cherry_pick is not None:
