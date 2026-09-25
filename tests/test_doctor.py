@@ -13,6 +13,7 @@ _CHECK_ORDER = (
     "project overlay",
     "skills",
     "provider",
+    "plugins",
     "workspace",
     "schema",
     "cast",
@@ -251,7 +252,7 @@ def test_render_lists_every_row_in_order_with_its_own_check_label():
     data_lines = lines[1 : 1 + len(rows)]
     labels = [re.split(r"\s{2,}", line.strip())[0] for line in data_lines]
     assert labels == list(_CHECK_ORDER)
-    assert lines[-1] == "doctor: 13 ok, 0 failing"
+    assert lines[-1] == "doctor: 14 ok, 0 failing"
 
 
 def test_render_marks_a_failing_row_as_fail_and_counts_it():
@@ -260,13 +261,13 @@ def test_render_marks_a_failing_row_as_fail_and_counts_it():
     rows = doctor.checks(facts)
     text = doctor.render(rows)
     assert "FAIL" in text
-    assert "doctor: 12 ok, 1 failing" in text
+    assert "doctor: 13 ok, 1 failing" in text
 
 
 def test_empty_facts_dict_yields_all_rows_not_checked_and_exit_one():
     rows = _rows_by_check(doctor.checks({}))
     assert all(r["ok"] is False and r["detail"] == "not checked"
-               for check, r in rows.items() if check not in ("cast", "schema"))
+               for check, r in rows.items() if check not in ("cast", "schema", "plugins"))
     assert rows["cast"] == {"check": "cast", "ok": True, "detail": "not gathered"}
     assert rows["schema"] == {"check": "schema", "ok": True, "detail": ""}
     assert doctor.exit_code(rows.values()) == 1
@@ -351,3 +352,43 @@ def test_render_adds_the_next_step_line_only_for_a_missing_profile():
     unparseable = _good_facts() | {"profile_text": "- not a mapping\n"}
     assert next_line not in doctor.render(doctor.checks(unparseable))
     assert next_line not in doctor.render(doctor.checks(_good_facts() | {"git_version": None}))
+
+
+_TOOLS = {"coxswain.sources": ["asana", "jira"], "coxswain.forges": [], "coxswain.trackers": []}
+_HARNESS = {"coxswain.system_one": ["jev"], "coxswain.runners": []}
+
+
+def test_plugins_row_lists_tools_groups_then_harness_groups_with_none_for_empty():
+    facts = _good_facts() | {"plugins_tools": _TOOLS, "plugins_harness": _HARNESS}
+    assert _rows_by_check(doctor.checks(facts))["plugins"] == {
+        "check": "plugins", "ok": True,
+        "detail": "sources: asana, jira; forges: none; trackers: none; system_one: jev; runners: none",
+    }
+
+
+def test_plugins_row_reads_not_checked_for_harness_groups_when_the_probe_reported_none():
+    facts = _good_facts() | {"plugins_tools": _TOOLS}
+    assert _rows_by_check(doctor.checks(facts))["plugins"]["detail"] == (
+        "sources: asana, jira; forges: none; trackers: none; system_one: not checked; runners: not checked")
+
+
+def test_plugins_row_is_ok_and_does_not_cascade_with_nothing_gathered_or_no_profile():
+    rows = _rows_by_check(doctor.checks({}))
+    assert rows["plugins"]["ok"] is True
+    assert "sources: not checked" in rows["plugins"]["detail"]
+    missing = _rows_by_check(doctor.checks(_good_facts() | {"profile_text": None}))
+    assert missing["plugins"]["ok"] is True
+    assert "skipped" not in missing["plugins"]["detail"]
+
+
+def test_gather_reads_tools_plugin_names_per_group_sorted(monkeypatch, tmp_path):
+    import importlib.metadata
+    from types import SimpleNamespace
+
+    from agent_tools.cli import _gather_doctor_facts
+    names = {"coxswain.sources": ["jira", "asana"], "coxswain.forges": [], "coxswain.trackers": ["linear"]}
+    monkeypatch.setattr(importlib.metadata, "entry_points",
+                        lambda group: [SimpleNamespace(name=n) for n in names[group]])
+    facts = _gather_doctor_facts(tmp_path / "absent.yaml", tmp_path)
+    assert facts["plugins_tools"] == {"coxswain.sources": ["asana", "jira"], "coxswain.forges": [],
+                                      "coxswain.trackers": ["linear"]}
