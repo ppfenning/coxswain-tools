@@ -189,8 +189,65 @@ Set it up in this order.
 The store lease enforces one live run per epic across machines, so a second
 machine cannot start an epic that the first is already running. Two things
 stay per machine for now (roadmap 0.18.0): traces, and the workspace. The
-workspace holds the work items and the task records under `runs/`, so land a
-lane from the machine that ran it.
+workspace holds the work items and the task records under `runs/`. Land a
+lane from the machine that ran it. A lane started with `--on` is the one
+exception. Fetch it to the chair first, as described below.
+
+### Launch from the chair
+
+The chair can start a lane on a second machine and land it afterwards. The
+lane runs on the other machine. The chair alone lands.
+
+Name each lane host in the routing profile under `lane_hosts`. Each entry has
+three fields.
+
+```yaml
+lane_hosts:
+  - name: big
+    ssh: big.example.net
+    workspace_dir: /home/me/workspace
+```
+
+`name` is what you pass to `--host` and `--on`. `ssh` is the destination that
+ssh is given. `workspace_dir` is an absolute path to the workspace on that
+machine. The profile holds no keys or passwords. Your ssh config resolves the
+destination. An entry with any other key is refused.
+
+Check the host first with `cox setup doctor --host <name>`. It runs the doctor
+on that lane host. `--json` is ignored with `--host`.
+
+Launch with `cox route launch epic --initiative work/<id> --on <name>`. It
+copies `work/<id>` to `workspace_dir` on the host and keeps the same
+`work/<id>` layout. It then starts the lane there over ssh. On success it
+writes one file on the chair, `runs/<run>.remote.json`. That file holds the
+host name and the launch time. When the copy or the start fails, nothing is
+recorded.
+
+`cox runs land` refuses a run that has only that file. It tells you to fetch.
+Wait until the lane has ended. Its lease must be released and it must have an
+`ended_at`. A lane that has not ended is refused before anything is copied.
+Then run `cox runs fetch <run>`. It copies the run directory and the log into
+the chair's `runs/`. It fetches the `agents/<run>/*` branches into each chair
+repo. A fetch that brings no branch is an error. So is a run whose task
+records name no repo.
+
+The repo path rule decides which chair repo to fetch into. A task record may
+hold a host path or a chair path, because the lane writes the path it saw. A
+path under the host `workspace_dir` maps to the same relative path under the
+chair workspace. A path outside both workspaces is the same path on both
+machines. Matching is on a whole path component, so `/ws-other` is not under
+`/ws`.
+
+After the fetch, `cox runs land` works unchanged. Its flags and gates are the
+same as for a local run.
+
+```bash
+cox setup doctor --host big
+cox route launch epic --initiative work/my-epic --on big
+# wait for the lane to end, then bring it home
+cox runs fetch run-7
+cox runs land run-7 --repo ~/repos/app
+```
 
 ## 9. Edit your cartridge
 
