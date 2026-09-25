@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import datetime
 import importlib.metadata
+import importlib.util
 import io
 import json
 import os
@@ -1448,12 +1449,45 @@ def _runs_land(a: argparse.Namespace) -> int:
     rc, reached, pr = _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module)
     task = record["task"] if record else None
     _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), a.run_id, task, reached, rc, pr))
+    _lake_after_land(a, runs_dir, rc, reached)
     return rc
 
 
 def _append_land_log(runs_dir: Path, row: dict) -> None:
     with (runs_dir / "land.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(row) + "\n")
+
+
+def should_sync_lake(rc: int, reached: Sequence[str], extra_imports: bool, config_resolved: bool,
+                     catalog_path: Path | None, catalog_exists: bool) -> bool:
+    """A land syncs the lake when it exited 0 having reached `mark_done`, the extra imports and the config resolved.
+
+    `catalog_path` is the SQLite catalog file, None for any other catalog; that file must already exist."""
+    return (rc == 0 and "mark_done" in reached and extra_imports and config_resolved
+            and (catalog_path is None or catalog_exists))
+
+
+def _lake_after_land(a: argparse.Namespace, runs_dir: Path, rc: int, reached: Sequence[str]) -> None:
+    """Edge. Sync a lake that already exists once a land has closed its item. Never changes the land's exit code."""
+    try:
+        # Imported here, as `_lake_doctor` does: the lake modules stay off cli.py's import path.
+        from agent_tools import lake_doctor
+
+        runs = runs_dir.resolve()
+        provider, problem = _lake_provider(a)
+        config = lake_config.resolve_lake(provider, runs)
+        catalog_path = lake_doctor.sqlite_catalog_path(config.catalog_uri)
+        extra = all(importlib.util.find_spec(name) is not None for name in ("pyiceberg", "pyarrow"))
+        exists = catalog_path is not None and catalog_path.exists()
+        if not should_sync_lake(rc, reached, extra, problem is None, catalog_path, exists):
+            return
+        root = store_url.profile_traces_root(provider, runs).url
+        root = root if "://" in root else str(Path(root).resolve())
+        report = _lake_real_run(config, store_url.profile_store_url(provider, runs), root)
+        rows = sum(t["rows_appended"] for t in report["tables"])
+        print(f"lake: +{rows} rows, +{report['traces']['registered']} trace files")
+    except Exception as exc:  # the land has already happened; a lake problem must not fail it
+        print(f"lake: sync skipped ({type(exc).__name__})")
 
 
 def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
