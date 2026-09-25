@@ -678,8 +678,31 @@ def _describe_initiative(i: dict) -> str:
     return f'{i["id"]} ({", ".join(bits) or "unlaunchable"})'
 
 
+def _local_hhmm(started) -> str:
+    """`started` (ISO, UTC) as HH:MM in the machine's local zone; text that is not an ISO time is shown as it came."""
+    try:
+        return datetime.datetime.fromisoformat(started).astimezone().strftime("%H:%M")
+    except (TypeError, ValueError):
+        return str(started)
+
+
+def _heartbeat_age(heartbeat_at, now) -> str | None:
+    """`Ns` under 60 s, else `Nm`, between two `YYYY-MM-DDTHH:MM:SSZ` times; None when either is missing or unreadable."""
+    try:
+        seconds = int((datetime.datetime.fromisoformat(now) - datetime.datetime.fromisoformat(heartbeat_at)).total_seconds())
+    except (TypeError, ValueError):
+        return None
+    return f"{max(seconds, 0)}s" if seconds < 60 else f"{seconds // 60}m"
+
+
+def _lane(run: dict, now: str | None) -> str:
+    age = _heartbeat_age(run.get("heartbeat"), now)
+    since = _local_hhmm(run["started"])
+    return f'{run["id"]} (pid {run["pid"]}, since {since})' if age is None else f'{run["id"]} (since {since}, heartbeat {age} ago)'
+
+
 def render_context(profile_or_none, intake: dict, runs, initiatives, problems: list | None = None,
-                   gate_level: str | None = None) -> str:
+                   gate_level: str | None = None, now: str | None = None) -> str:
     """The human-readable layout `agent-tools route context` prints, spec
     §2. `profile_or_none` is a parsed profile dict or None; `intake` is an
     `intake_groups` result; `runs` and `initiatives` are already-gathered
@@ -701,9 +724,7 @@ def render_context(profile_or_none, intake: dict, runs, initiatives, problems: l
     ]
     live = _alive_runs(runs)
     if live:
-        described = ", ".join(
-            f'{r["id"]} (pid {r["pid"]}, since {r["started"]})' for r in live
-        )
+        described = ", ".join(_lane(r, now) for r in live)
         lines.append(f"lanes: {len(live)} busy — {described}")
     else:
         lines.append("lanes: all clear")
@@ -1025,7 +1046,7 @@ def intake_groups(intake: list, initiatives: list) -> dict:
     }
 
 
-def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict) -> dict:
+def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict, heartbeats: dict) -> dict:
     stripped = pid_text.strip()
     pid = int(stripped) if stripped.isdigit() else None
     return {
@@ -1033,19 +1054,22 @@ def _run_entry(run_id: str, pid_text: str, alive: dict, started: dict) -> dict:
         "pid": pid,
         "alive": alive.get(run_id, False) if pid is not None else False,
         "started": started.get(run_id),
+        "heartbeat": heartbeats.get(run_id),
     }
 
 
-def run_entries(pids: dict, alive: dict, started: dict) -> list:
+def run_entries(pids: dict, alive: dict, started: dict, heartbeats: dict | None = None) -> list:
     """Rows for the runs list, the `runs` input `render_context` and
     `context_document` already accept: one `{"id", "pid", "alive",
-    "started"}` per run id in `pids` (pidfile text the caller already read),
-    sorted by id. A pidfile whose text is not a plain integer — a partial
+    "started", "heartbeat"}` per run id in `pids` (pidfile text the caller
+    already read), sorted by id. `heartbeats` maps a run id to its lease's
+    `heartbeat_at`, only for runs that hold their lease; any other run gets
+    `heartbeat` `None`. A pidfile whose text is not a plain integer — a partial
     write, a stray hand edit — is treated as unreadable: `pid` comes back
     `None` and `alive` comes back `False` regardless of what the caller
     passed in `alive` for that id.
     """
-    return [_run_entry(run_id, pids[run_id], alive, started) for run_id in sorted(pids)]
+    return [_run_entry(run_id, pids[run_id], alive, started, heartbeats or {}) for run_id in sorted(pids)]
 
 
 def _ready_unblocked(item: dict, done_ids: set) -> bool:

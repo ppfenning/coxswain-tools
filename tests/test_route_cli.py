@@ -142,6 +142,18 @@ def test_status_json_without_an_intake_dir_still_carries_problems(tmp_path, caps
     assert doc["problems"] == ["demo: 1-build/task.md: unknown state 'superseded'"]
 
 
+def test_context_carries_the_heartbeat_of_a_run_holding_its_lease_and_none_for_the_rest(tmp_path, capsys):
+    profile = _write_workspace(tmp_path)
+    leases_table(tmp_path / "workspace" / "runs", ("runs:run1", "run1", "2999-01-01T00:00:00Z", "2026-09-25T05:59:48Z"), ("runs:run2", "run1", "2999-01-01T00:00:00Z", "2026-09-25T05:59:48Z"))
+    assert main(["route", "context", "--profile", str(profile), "--json"]) == 0
+    runs = {row["id"]: row for row in json.loads(capsys.readouterr().out)["runs"]}
+    assert runs["run1"]["heartbeat"] == "2026-09-25T05:59:48Z"
+    assert runs["run2"]["heartbeat"] is None
+    assert main(["route", "context", "--profile", str(profile)]) == 0
+    lanes = next(l for l in capsys.readouterr().out.splitlines() if l.startswith("lanes:"))
+    assert "run1 (since " in lanes and ", heartbeat " in lanes and "pid" not in lanes
+
+
 def test_context_text_with_full_profile_lists_initiative_and_runs(tmp_path, capsys):
     profile = _write_workspace(tmp_path)
     rc = main(["route", "context", "--profile", str(profile)])

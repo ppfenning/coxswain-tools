@@ -1460,6 +1460,16 @@ def _mtime_iso(p: Path):
     return datetime.datetime.fromtimestamp(mtime, tz=datetime.UTC).isoformat()
 
 
+def _heartbeats(runs_dir: Path, run_ids) -> dict:
+    """Edge. `run id -> heartbeat_at` for each run that holds its own store lease."""
+    leases = {run_id: run_store.lease(runs_dir, run_id) for run_id in run_ids}
+    return {run_id: row[2] for run_id, row in leases.items() if row is not None and row[0] == run_id}
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _gather_context(profile_path: Path):
     """Read the profile and the workspace; return (profile_or_none, reason, intake, runs, initiatives, problems)."""
     text = _read_text_or_none(profile_path)
@@ -1482,7 +1492,7 @@ def _gather_context(profile_path: Path):
     items = _work_items(ws)
     return (profile, "",
             _intake_groups(ws, items),
-            route.run_entries(pids, alive, started),
+            route.run_entries(pids, alive, started, _heartbeats(ws / "runs", pids)),
             route.initiative_summaries(items),
             route.state_problems(items))
 
@@ -1522,7 +1532,7 @@ def _route_context(a: argparse.Namespace) -> int:
         print(f"{first_line} ({reason})")
     else:
         gate_level = _resolved_gate_level(Path(profile["workspace_dir"]).expanduser() / "runs")
-        print(f"{route.render_context(profile, intake, runs, initiatives, problems, gate_level=gate_level)}\nusage: {usage_reason}")
+        print(f"{route.render_context(profile, intake, runs, initiatives, problems, gate_level=gate_level, now=_now_iso())}\nusage: {usage_reason}")
     return 0
 
 
@@ -1578,7 +1588,7 @@ def _status_rows_for(runs_dir: Path) -> list:
     pids = {p.stem: t for p in sorted(runs_dir.glob("*.pid")) if (t := _read_text_or_none(p)) is not None}
     alive = {run_id: epic.run_live(route.parse_pid(t), runs_dir / f"{run_id}.pid") for run_id, t in pids.items()}
     started = {run_id: _mtime_iso(runs_dir / f"{run_id}.pid") for run_id in pids}
-    runs = route.run_entries(pids, alive, started)
+    runs = route.run_entries(pids, alive, started, _heartbeats(runs_dir, pids))
     summaries = {p.stem: epic.summarize_log(_read_text_or_none(p) or "") for p in runs_dir.glob("*.log")}
     return route.status_rows(route.status_entries(runs, summaries))
 
