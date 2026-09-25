@@ -1,0 +1,8 @@
+usage: cox lake doctor [-h] [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
+  --profile PROFILE    the routing profile naming the provider profile (default: ~/.config/agent-
+                       tools/profile.yaml or $AGENT_TOOLS_PROFILE)
+  --json
