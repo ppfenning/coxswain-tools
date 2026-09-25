@@ -545,6 +545,48 @@ def _dump_rows(stdout: str) -> list[dict]:
     return [{c: row[c] for c in _PARQUET_COLUMNS} for row in map(json.loads, filter(str.strip, stdout.splitlines()))]
 
 
+_TASK_RECORD_SCRIPT = """import json, sqlite3, sys
+url, *ids = sys.argv[1:]
+sql = "SELECT record_json FROM task_records WHERE run_id = {0} AND phase_id = {0} AND task_id = {0}"
+if url.startswith(("postgres:", "postgresql:")):
+    import psycopg
+    conn, mark = psycopg.connect(url), "%s"
+else:
+    path = url.removeprefix("sqlite:///")
+    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
+row = conn.execute(sql.format(mark), ids).fetchone()
+if row:
+    print(row[0] if isinstance(row[0], str) else json.dumps(row[0]))
+"""
+
+
+def _task_record_argv(python: str, url: str, run_id: str, phase_id: str, task_id: str) -> list[str]:
+    """Pure: the argv that prints one task record's `record_json`. The ids are bound parameters, never SQL text."""
+    return [python, "-c", _TASK_RECORD_SCRIPT, url, run_id, phase_id, task_id]
+
+
+def _task_record_from(stdout: str) -> dict | None:
+    """Pure: the record dict in the output, None when it is empty, not JSON, or not a JSON object."""
+    try:
+        record = json.loads(stdout.strip())
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def task_record(runs_dir: Path, run_id: str, phase_id: str, task_id: str) -> dict | None:
+    """Edge: one task's record from the store through the harness python, None when it cannot say (caller falls back to the file)."""
+    python = _harness_python()
+    if python is None:
+        return None
+    argv = _task_record_argv(str(python), _store_url(Path(runs_dir)), run_id, phase_id, task_id)
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _task_record_from(done.stdout) if done.returncode == 0 else None
+
+
 def _import_pyarrow() -> tuple[Any, Any]:
     """The only place pyarrow is imported: `(pyarrow.fs, pyarrow.parquet)`, else TracesUnavailable naming the extra."""
     try:

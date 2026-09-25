@@ -2,6 +2,7 @@ import dataclasses
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import types
 
@@ -623,3 +624,85 @@ def test_live_lanes_is_empty_with_no_store(tmp_path):
 def test_remote_lanes_drops_a_local_run_and_keeps_the_rest_in_order():
     a, b, c = (run_store.Lane(run, None, "t", "t") for run in ("a-1", "b-1", "c-1"))
     assert run_store.remote_lanes([a, b, c], {"b-1"}) == [a, c]
+
+
+def test_task_record_argv_binds_the_ids_as_arguments_after_the_script():
+    argv = run_store._task_record_argv("/h/python", "sqlite:///s.db", "r-1", "p1", "t1")
+    assert argv[:3] == ["/h/python", "-c", run_store._TASK_RECORD_SCRIPT]
+    assert argv[3:] == ["sqlite:///s.db", "r-1", "p1", "t1"]
+
+
+def test_task_record_script_selects_record_json_from_task_records_and_never_writes():
+    script = run_store._TASK_RECORD_SCRIPT
+    assert "SELECT record_json FROM task_records WHERE run_id = {0} AND phase_id = {0} AND task_id = {0}" in script
+    assert "INSERT" not in script and "UPDATE" not in script and "DELETE" not in script
+
+
+def test_task_record_from_a_json_object_is_the_dict():
+    assert run_store._task_record_from('{"task": "t1", "status": "done"}\n') == {"task": "t1", "status": "done"}
+
+
+@pytest.mark.parametrize("stdout", ["", "  \n", "not json", "[1, 2]", "3", "null"])
+def test_task_record_from_empty_or_non_object_output_is_none(stdout):
+    assert run_store._task_record_from(stdout) is None
+
+
+def stub_harness(monkeypatch, python="/h/python", result=None, error=None):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if error:
+            raise error
+        return result
+
+    monkeypatch.setattr(run_store, "_harness_python", lambda: python)
+    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: "sqlite:///s.db")
+    monkeypatch.setattr(run_store.subprocess, "run", run)
+    return calls
+
+
+def done(code, stdout=""):
+    return types.SimpleNamespace(returncode=code, stdout=stdout, stderr="")
+
+
+def test_task_record_runs_the_builders_argv_and_parses_the_output(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, result=done(0, '{"task": "t1"}\n'))
+    assert run_store.task_record(tmp_path, "r-1", "p1", "t1") == {"task": "t1"}
+    assert calls == [run_store._task_record_argv("/h/python", "sqlite:///s.db", "r-1", "p1", "t1")]
+
+
+def test_task_record_is_none_without_a_harness_python_and_runs_nothing(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, python=None)
+    assert run_store.task_record(tmp_path, "r-1", "p1", "t1") is None
+    assert calls == []
+
+
+@pytest.mark.parametrize("error", [OSError("gone"), subprocess.TimeoutExpired("x", 60)])
+def test_task_record_is_none_when_the_harness_cannot_run(tmp_path, monkeypatch, error):
+    stub_harness(monkeypatch, error=error)
+    assert run_store.task_record(tmp_path, "r-1", "p1", "t1") is None
+
+
+def test_task_record_is_none_on_a_nonzero_exit(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(1, '{"task": "t1"}'))
+    assert run_store.task_record(tmp_path, "r-1", "p1", "t1") is None
+
+
+def test_task_record_is_none_when_no_row_matches(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(0, ""))
+    assert run_store.task_record(tmp_path, "r-1", "p1", "t1") is None
+
+
+def test_the_task_record_script_reads_a_row_from_a_sqlite_store(tmp_path):
+    db = tmp_path / "s.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE task_records (run_id, phase_id, task_id, record_json)")
+    conn.execute("INSERT INTO task_records VALUES ('r-1', 'p1', 't1', '{\"task\": \"t1\"}')")
+    conn.commit()
+    conn.close()
+    argv = run_store._task_record_argv(sys.executable, str(db), "r-1", "p1", "t1")
+    hit = subprocess.run(argv, capture_output=True, text=True)
+    miss = subprocess.run(argv[:-1] + ["t2"], capture_output=True, text=True)
+    assert run_store._task_record_from(hit.stdout) == {"task": "t1"}
+    assert run_store._task_record_from(miss.stdout) is None
