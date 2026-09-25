@@ -1,5 +1,6 @@
 usage: cox runs [-h]
-                {usage,trace,clean,land,recover,series,events,top,bar,notify,detail,stranded,cause} ...
+                {usage,trace,clean,land,recover,series,events,top,bar,notify,detail,stranded,cause}
+                ...
 
 What a harness run recorded, and cleaning up after it.
 
