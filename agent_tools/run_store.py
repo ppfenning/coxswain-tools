@@ -10,8 +10,10 @@ creates, migrates or writes the store."""
 
 from __future__ import annotations
 
+import functools
 import io
 import json
+import os
 import re
 import sqlite3
 from collections.abc import Collection, Mapping, Sequence
@@ -19,6 +21,15 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import epic
+from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeholder
+from agent_tools.store_url import read_provider_profile, resolve_store_url
+
+try:
+    import psycopg
+
+    _DB_ERRORS: tuple[type[BaseException], ...] = (sqlite3.DatabaseError, psycopg.Error)
+except ImportError:
+    _DB_ERRORS = (sqlite3.DatabaseError,)
 
 __all__ = [
     "TracesUnavailable", "all_phase_manifests", "call_events", "call_from_row", "connect_readonly", "lease", "phase_manifests",
@@ -91,36 +102,72 @@ def call_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def connect_readonly(runs_dir: Path) -> sqlite3.Connection | None:
-    """None when `cox.db` is absent. Opened `mode=ro`, so it can never create the file."""
-    path = (Path(runs_dir) / STORE_FILENAME).resolve()
-    return sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) if path.exists() else None
+# mirrors cli.DEFAULT_PROFILE; cli imports this module, so it cannot be imported back
+_DEFAULT_PROFILE = "~/.config/agent-tools/profile.yaml"
+
+
+def _sql(template: str, token: str) -> str:
+    """Pure: `template` with each `{p}` marker replaced by the dialect's bind-parameter token."""
+    return template.replace("{p}", token)
+
+
+def _sqlite_path(url: str) -> Path:
+    return Path(url.removeprefix("sqlite:///") if url.startswith("sqlite:") else url)
+
+
+def _store_url(runs_dir: Path) -> str:
+    """Edge. The store URL: the provider profile named by the routing profile (`$AGENT_TOOLS_PROFILE` or the default), else `cox.db` in `runs_dir`."""
+    return _store_url_for(str(runs_dir), os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
+
+
+@functools.lru_cache(maxsize=32)
+def _store_url_for(runs_dir: str, routing_profile: str) -> str:
+    """Cached per process: liveness asks once per pidfile, and two YAML reads each time made `route context` slow."""
+    routing = read_provider_profile(routing_profile)
+    named = routing.get("provider_profile")
+    return resolve_store_url(named if isinstance(named, str) else "", runs_dir)
+
+
+def _open(runs_dir: Path) -> tuple[Any, str] | None:
+    """Edge. A read-only connection and its bind-parameter token; None when a SQLite store file is absent."""
+    url = _store_url(Path(runs_dir))
+    if not is_postgres(url) and not _sqlite_path(url).exists():
+        return None
+    return connect_readonly_url(url), placeholder(url)
+
+
+def connect_readonly(runs_dir: Path) -> Any | None:
+    """None when a SQLite store is absent. Opened read-only, so it can never create the file. Rows are addressable by column name."""
+    opened = _open(runs_dir)
+    return None if opened is None else opened[0]
 
 
 def lease(runs_dir: Path, run_id: str) -> tuple[str, str, str] | None:
     """Edge. The (holder, expires_at, heartbeat_at) of the store lease for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
     # mirrors graphs `harness/run_lease.lease_name`: the lease is per prefix, so `x-3` and `x-4` share `runs:x`
     name = "runs:" + re.sub(r"-\d+$", "", run_id)
-    conn = connect_readonly(runs_dir)
-    if conn is None:
+    opened = _open(runs_dir)
+    if opened is None:
         return None
+    conn, p = opened
     try:
-        row = conn.execute("SELECT holder, expires_at, heartbeat_at FROM leases WHERE name = ?", (name,)).fetchone()
-    except sqlite3.DatabaseError:
+        row = conn.execute(_sql("SELECT holder, expires_at, heartbeat_at FROM leases WHERE name = {p}", p), (name,)).fetchone()
+    except _DB_ERRORS:
         return None
     finally:
         conn.close()
-    return None if row is None else (row[0], row[1], row[2])
+    return None if row is None else (row["holder"], row["expires_at"], row["heartbeat_at"])
 
 
 def run_ids(runs_dir: Path) -> set[str]:
     """Edge. Every `run_id` in the store's `runs` table; empty with no store or an unreadable one."""
-    conn = connect_readonly(runs_dir)
-    if conn is None:
+    opened = _open(runs_dir)
+    if opened is None:
         return set()
+    conn, _ = opened
     try:
-        return {row[0] for row in conn.execute("SELECT run_id FROM runs")}
-    except sqlite3.DatabaseError:
+        return {row["run_id"] for row in conn.execute("SELECT run_id FROM runs")}
+    except _DB_ERRORS:
         return set()
     finally:
         conn.close()
@@ -183,17 +230,20 @@ def _run_ended(runs_dir: Path, run_id: str, ended_at: Any) -> bool:
 
 
 def _read_calls(runs_dir: Path, run_id: str) -> list[dict]:
-    conn = connect_readonly(runs_dir)
-    if conn is None:
+    opened = _open(runs_dir)
+    if opened is None:
         return []
-    conn.row_factory = sqlite3.Row
+    conn, p = opened
     try:
         rows = conn.execute(
-            "SELECT n.*, r.ended_at AS run_ended_at FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
-            "WHERE n.run_id = ? ORDER BY n.ts, n.seq",
+            _sql(
+                "SELECT n.*, r.ended_at AS run_ended_at FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
+                "WHERE n.run_id = {p} ORDER BY n.ts, n.seq",
+                p,
+            ),
             (run_id,),
         ).fetchall()
-    except sqlite3.DatabaseError:
+    except _DB_ERRORS:
         return []
     finally:
         conn.close()
@@ -218,23 +268,27 @@ def _store_usage(run_id: str, calls: list[dict]) -> dict:
 def _store_runs(runs_dir: Path, exclude: Collection[str] = (), since: str | None = None) -> dict[str, list[dict]]:
     """Every run with `node_calls` rows and a `runs` row that has ended (`ended_at` set, or no live pid), its calls ordered by ts then seq.
     Runs in `exclude` are dropped before any row becomes a call and before the pid check. With `since`, a run whose `ended_at` is set and earlier is dropped in SQL."""
-    conn = connect_readonly(runs_dir)
-    if conn is None:
+    opened = _open(runs_dir)
+    if opened is None:
         return {}
-    conn.row_factory = sqlite3.Row
-    where, params = ("WHERE r.ended_at IS NULL OR r.ended_at >= ? ", (since,)) if since is not None else ("", ())
+    conn, p = opened
+    where, params = ("WHERE r.ended_at IS NULL OR r.ended_at >= {p} ", (since,)) if since is not None else ("", ())
     try:
         rows = conn.execute(
-            "SELECT n.*, r.ended_at AS run_ended_at FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
-            f"{where}ORDER BY n.run_id, n.ts, n.seq",
+            _sql(
+                "SELECT n.*, r.ended_at AS run_ended_at FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
+                + where
+                + "ORDER BY n.run_id, n.ts, n.seq",
+                p,
+            ),
             params,
         ).fetchall()
-    except sqlite3.DatabaseError:
+    except _DB_ERRORS:
         return {}
     finally:
         conn.close()
     skip = frozenset(exclude)
-    grouped: dict[str, list[sqlite3.Row]] = {}
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
     for row in rows:
         if row["run_id"] not in skip:
             grouped.setdefault(row["run_id"], []).append(row)
@@ -285,21 +339,20 @@ def _manifest_record(record_json: Any) -> dict | None:
 
 def _store_manifests(runs_dir: Path) -> dict[str, list[dict]]:
     """Run id to the `manifest_record` of each of its `phases` rows, ended run or not, ordered by the row's ts."""
-    conn = connect_readonly(runs_dir)
-    if conn is None:
+    opened = _open(runs_dir)
+    if opened is None:
         return {}
+    conn, _ = opened
     try:
-        rows = conn.execute(
-            "SELECT run_id, record_json FROM phases ORDER BY run_id, ts"
-        ).fetchall()
-    except sqlite3.DatabaseError:
+        rows = conn.execute("SELECT run_id, record_json FROM phases ORDER BY run_id, ts").fetchall()
+    except _DB_ERRORS:
         return {}
     finally:
         conn.close()
     by_run: dict[str, list[dict]] = {}
-    for run_id, record_json in rows:
-        if (manifest := _manifest_record(record_json)) is not None:
-            by_run.setdefault(run_id, []).append(manifest)
+    for row in rows:
+        if (manifest := _manifest_record(row["record_json"])) is not None:
+            by_run.setdefault(row["run_id"], []).append(manifest)
     return by_run
 
 
@@ -317,16 +370,17 @@ def all_phase_manifests(runs_dir: Path) -> dict[str, list[dict]]:
 
 
 def _store_phase_names(runs_dir: Path, run_id: str) -> list[str]:
-    conn = connect_readonly(runs_dir)
-    if conn is None:
+    opened = _open(runs_dir)
+    if opened is None:
         return []
+    conn, p = opened
     try:
-        rows = conn.execute("SELECT phase_id FROM phases WHERE run_id = ? ORDER BY ts", (run_id,)).fetchall()
-    except sqlite3.DatabaseError:
+        rows = conn.execute(_sql("SELECT phase_id FROM phases WHERE run_id = {p} ORDER BY ts", p), (run_id,)).fetchall()
+    except _DB_ERRORS:
         return []
     finally:
         conn.close()
-    return [phase_id for (phase_id,) in rows]
+    return [row["phase_id"] for row in rows]
 
 
 def phase_names(runs_dir: Path, run_id: str) -> list[str]:
@@ -381,13 +435,14 @@ def call_events(runs_dir: Path, run_id: str, call: Mapping[str, Any]) -> list[di
 
 def run_started(runs_dir: Path, run_id: str) -> str | None:
     """The `launched_at` of the store's `runs` row, else None."""
-    conn = connect_readonly(Path(runs_dir))
-    if conn is None:
+    opened = _open(Path(runs_dir))
+    if opened is None:
         return None
+    conn, p = opened
     try:
-        row = conn.execute("SELECT launched_at FROM runs WHERE run_id = ?", (run_id,)).fetchone()
-    except sqlite3.DatabaseError:
+        row = conn.execute(_sql("SELECT launched_at FROM runs WHERE run_id = {p}", p), (run_id,)).fetchone()
+    except _DB_ERRORS:
         return None
     finally:
         conn.close()
-    return None if row is None else row[0]
+    return None if row is None else row["launched_at"]
