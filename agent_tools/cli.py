@@ -2708,12 +2708,44 @@ def _sync_skipped(a: argparse.Namespace) -> bool:
     return not isinstance(context, str) and context[1] == "none"
 
 
+def _only_item(items: list[route_sync.Item], item_id: str | None) -> tuple[list[route_sync.Item], str | None]:
+    """The items, narrowed to `item_id` when given, and a refusal line unless that leaves exactly one."""
+    if not item_id:
+        return items, None
+    kept = [item for item in items if item.id == item_id]
+    # Never fall through to the full listing: an unknown or shared id would run `item-list`.
+    if len(kept) != 1:
+        return kept, f"route sync: --item {item_id!r} matches {len(kept)} work-store items, expected exactly one"
+    return kept, None
+
+
+def _route_sync_registered(a: argparse.Namespace, name: str, mirror: object, workspace: str) -> int:
+    """Drive a registered tracker through `sync`; no `gh` call is made on this path."""
+    sync = getattr(mirror, "sync", None)
+    if not callable(sync):
+        print(f"route sync: tracker {name} has no sync(workspace, items, *, dry_run)")
+        return 2
+    items, refusal = _only_item(route_sync_gh.items_from_store(workspace), a.item)
+    if refusal:
+        print(refusal)
+        return 2
+    try:
+        ok, lines = sync(workspace, items, dry_run=a.dry_run)
+    except Exception as exc:
+        print(f"route sync: tracker {name} failed: {type(exc).__name__}: {exc}")
+        return 1
+    for line in lines:
+        print(line)
+    return 0 if ok else 1
+
+
 def _route_sync(a: argparse.Namespace) -> int:
     """Mirror the work store onto GitHub Projects: `--dry-run` renders the
     plan and touches nothing that outlives the run; otherwise `execute`
     runs it and stops at the first failed `gh` call. Refuses at once, exit
     2, when `gh` is not authenticated. The tracker is checked first: `none`
-    exits 0, and an unknown or non-built-in tracker exits 2, both before `gh`."""
+    exits 0, an unknown tracker exits 2, and a registered tracker is driven
+    through its own `sync`, never through `gh`."""
     context = _sync_context(a)
     if isinstance(context, str):
         print(f"route sync: {context}")
@@ -2728,19 +2760,14 @@ def _route_sync(a: argparse.Namespace) -> int:
         print(f"route sync: no tracker named {tracker_choice} (built in: none, github-projects)")
         return 2
     if mirror is not route_sync_gh:
-        # The sync below is gh and GitHub Projects throughout; a registered tracker must not fall into it.
-        print(f"route sync: tracker {tracker_choice} is installed, but route sync drives only github-projects")
-        return 2
+        return _route_sync_registered(a, tracker_choice, mirror, workspace)
     if not route_sync_gh.auth_ok(subprocess.run):
         print("route sync: gh is not authenticated; run `gh auth login`")
         return 2
-    items = route_sync_gh.items_from_store(workspace)
-    if a.item:
-        items = [item for item in items if item.id == a.item]
-        # Never fall through to the full listing: an unknown or shared id would run `item-list`.
-        if len(items) != 1:
-            print(f"route sync: --item {a.item!r} matches {len(items)} work-store items, expected exactly one")
-            return 2
+    items, refusal = _only_item(route_sync_gh.items_from_store(workspace), a.item)
+    if refusal:
+        print(refusal)
+        return 2
     project, rc = _resolve_sync_project(a, items, _route_sync_state_path(profile_path))
     if rc is not None:
         return rc

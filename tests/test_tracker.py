@@ -1,4 +1,5 @@
 import subprocess
+import types
 
 from agent_tools import cli, route, route_sync_gh, tracker
 
@@ -50,13 +51,6 @@ def test_a_registered_entry_point_resolves_by_name(monkeypatch):
     assert tracker.tracker_for("acme-board") is adapter
 
 
-def test_route_sync_refuses_a_registered_tracker_without_calling_gh(tmp_path, monkeypatch, capsys):
-    _register(monkeypatch, "acme-board", object())
-    _no_subprocess(monkeypatch)
-    assert _sync(tmp_path, "tracker: acme-board\n") == 2
-    assert "tracker acme-board is installed, but route sync drives only github-projects" in capsys.readouterr().out
-
-
 def _sync(tmp_path, tracker_line):
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path}\n{tracker_line}")
@@ -81,3 +75,41 @@ def test_route_sync_with_an_unknown_tracker_refuses_without_calling_gh(tmp_path,
     _no_subprocess(monkeypatch)
     assert _sync(tmp_path, "tracker: no-such-tracker\n") == 2
     assert "no tracker named no-such-tracker" in capsys.readouterr().out
+
+
+def test_route_sync_refuses_a_registered_tracker_without_sync(tmp_path, monkeypatch, capsys):
+    _register(monkeypatch, "acme-board", object())
+    _no_subprocess(monkeypatch)
+    assert _sync(tmp_path, "tracker: acme-board\n") == 2
+    assert "route sync: tracker acme-board has no sync(workspace, items, *, dry_run)" in capsys.readouterr().out
+
+
+def test_route_sync_calls_a_registered_trackers_sync_and_prints_its_lines(tmp_path, monkeypatch, capsys):
+    calls = []
+
+    def fake(*args, **kwargs):
+        calls.append((args, kwargs))
+        return True, ["created acme-1", "done"]
+
+    _register(monkeypatch, "acme-board", types.SimpleNamespace(sync=fake))
+    _no_subprocess(monkeypatch)
+    assert _sync(tmp_path, "tracker: acme-board\n") == 0
+    assert calls == [((str(tmp_path), []), {"dry_run": True})]
+    assert capsys.readouterr().out == "created acme-1\ndone\n"
+
+
+def test_route_sync_exits_1_when_a_registered_trackers_sync_is_not_ok(tmp_path, monkeypatch, capsys):
+    _register(monkeypatch, "acme-board", types.SimpleNamespace(sync=lambda *a, **kw: (False, ["board refused"])))
+    _no_subprocess(monkeypatch)
+    assert _sync(tmp_path, "tracker: acme-board\n") == 1
+    assert capsys.readouterr().out == "board refused\n"
+
+
+def test_route_sync_reports_a_registered_trackers_exception_and_exits_1(tmp_path, monkeypatch, capsys):
+    def boom(*args, **kwargs):
+        raise RuntimeError("board offline")
+
+    _register(monkeypatch, "acme-board", types.SimpleNamespace(sync=boom))
+    _no_subprocess(monkeypatch)
+    assert _sync(tmp_path, "tracker: acme-board\n") == 1
+    assert capsys.readouterr().out == "route sync: tracker acme-board failed: RuntimeError: board offline\n"
