@@ -1399,6 +1399,17 @@ def _land_item_facts(item_path: str | None) -> tuple[str | None, str | None]:
     return (str(item_id) if item_id else None), (str(issue) if issue else None)
 
 
+def _pr_url(detail: str) -> str | None:
+    """The `pr_create` detail as the PR, only when it is a URL; the local forge opens none."""
+    url = detail.strip()
+    return url if url.startswith(("http://", "https://")) else None
+
+
+def _landed_pr(kind: str, ok: bool, detail: str, prior: str) -> str:
+    """The land's `pr` after a step: `""`, never None, is "no PR", because the store's `--pr` argv takes a str."""
+    return (_pr_url(detail) or "") if kind == "pr_create" and ok else prior
+
+
 def _resolved_tracker(profile: dict, runs_dir: Path) -> str:
     """The policy file wins, then the profile's `tracker`, then `none`."""
     return tracker.tracker_name(profile, runs_dir)
@@ -1676,7 +1687,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
             steps = land.with_issue(steps, record, _land_item_facts(item_path)[1])
-        pr = detail if step["kind"] == "pr_create" and ok else pr
+        pr = _landed_pr(step["kind"], ok, detail, pr)
         if step["kind"] == "checks" and not ok and detail.startswith(_LAUNCH_ERROR):
             # A check whose executable `subprocess` can't find is a refusal,
             # not an ordinary failure, and it fires before `push` so a check
