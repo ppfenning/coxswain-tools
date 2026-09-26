@@ -424,8 +424,8 @@ def surface_candidates(body: str, repo: str) -> list[str]:
 
 def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
     """Build the harness command line, spec §4, from a parsed `profile`
-    and the graph-specific `needs` (`initiative`/`repo` for `epic`,
-    `idea`/`initiative_id` for `decompose`). Pure: no Popen, no env reads.
+    and the graph-specific `needs` (`initiative`/`repo` for `epic`, plus
+    `task` for `rescue`; `idea`/`initiative_id` for `decompose`). Pure: no Popen, no env reads.
     """
     harness_dir = profile["harness_dir"]
     workspace_dir = profile["workspace_dir"]
@@ -450,8 +450,10 @@ def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
         "--run-id",
         run_id,
     ]
-    if graph == "epic":
+    if graph in ("epic", "rescue"):
         argv += ["--initiative", needs["initiative"], "--repo", needs["repo"]]
+        if graph == "rescue":
+            argv += ["--task", needs["task"]]
         if needs.get("fix_attempts") is not None:
             argv += ["--fix-attempts", str(needs["fix_attempts"])]
     elif graph == "decompose":

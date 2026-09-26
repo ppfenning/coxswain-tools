@@ -1133,6 +1133,40 @@ def test_launch_decompose_dry_run_prints_the_initiative_path_and_writes_nothing(
     assert not (harness_dir / "recorded_argv.json").exists()
 
 
+def test_launch_rescue_dry_run_prints_argv_pid_log_and_trace(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    initiative_dir = ws / "work" / "demo"
+    initiative_dir.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main([
+        "route", "launch", "rescue", "--dry-run",
+        "--profile", str(profile),
+        "--initiative", str(initiative_dir),
+        "--task", "T1",
+        "--repo", str(repo),
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "rescue --team acme" in out
+    assert f"--initiative {initiative_dir} --repo {repo} --task T1" in out
+    assert f"pid {ws / 'runs' / 'demo-1.pid'}" in out
+    assert f"log {ws / 'runs' / 'demo-1.log'}" in out
+    assert f"trace {ws / 'runs' / 'demo-1-trace'}" in out
+    assert not (ws / "runs" / "demo-1.pid").exists()
+
+
+def test_launch_rescue_without_task_exits_2():
+    with pytest.raises(SystemExit) as exc:
+        main(["route", "launch", "rescue", "--initiative", "work/demo"])
+    assert exc.value.code == 2
+
+
 def test_launch_cos_dry_run_prints_argv_pid_log_and_trace(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"

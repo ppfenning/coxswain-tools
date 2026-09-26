@@ -3020,7 +3020,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             return 2
     runs_dir.mkdir(parents=True, exist_ok=True)
 
-    if a.graph == "epic":
+    if a.graph in ("epic", "rescue"):
         initiative_dir = Path(a.initiative).expanduser()
         initiative_md = initiative_dir / "initiative.md"
         text = _read_text_or_none(initiative_md)
@@ -3056,7 +3056,9 @@ def _route_launch(a: argparse.Namespace) -> int:
                 return 2
             run_id = a.run_id
         needs = {"initiative": str(initiative_dir), "repo": repo}
-        if a.fix_attempts is not None:
+        if a.graph == "rescue":
+            needs["task"] = a.task
+        elif a.fix_attempts is not None:
             needs["fix_attempts"] = a.fix_attempts
         env_repo = repo
     elif a.graph == "decompose":
@@ -5150,6 +5152,18 @@ ROUTE_COMMANDS = [
                     *_LAUNCH_SHARED_ARGS,
                 ),
                 _route_launch, False, (), defaults={"graph": "decompose"},
+            ),
+            commands.Command(
+                "rescue", "route", "launch the rescue graph against a task",
+                (
+                    commands.Arg(("--profile",)), commands.Arg(("--initiative",), {"required": True}),
+                    commands.Arg(("--task",), {"required": True}),
+                    commands.Arg(("--repo",)),
+                    commands.Arg(("--dry-run",), {"action": "store_true"}),
+                    commands.Arg(("--run-id",), {"help": "use this run id instead of the next free one; refused when taken"}),
+                    *_LAUNCH_SHARED_ARGS,
+                ),
+                _route_launch, False, (), defaults={"graph": "rescue"},
             ),
             commands.Command(
                 "cos", "route", "launch the cos graph",

@@ -382,6 +382,21 @@ def test_harness_argv_builds_the_decompose_command_line():
     ]
 
 
+def test_harness_argv_builds_the_rescue_command_line():
+    profile = route.parse_profile(VALID_PROFILE)
+    rescue = route.harness_argv(
+        profile, "rescue", "myinit-1", initiative="/work/myinit", repo="/repos/widget", task="T1",
+    )
+    epic = route.harness_argv(
+        profile, "epic", "myinit-1", initiative="/work/myinit", repo="/repos/widget",
+    )
+    assert rescue[2] == "rescue"
+    assert rescue[rescue.index("--initiative") + 1] == "/work/myinit"
+    assert rescue[rescue.index("--task") + 1] == "T1"
+    assert rescue[rescue.index("--repo") + 1] == "/repos/widget"
+    assert rescue[3:rescue.index("--initiative")] == epic[3:epic.index("--initiative")]
+
+
 def test_harness_argv_builds_the_cos_command_line():
     profile = route.parse_profile(VALID_PROFILE)
     argv = route.harness_argv(profile, "cos", "cos-1")
