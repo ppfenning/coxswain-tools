@@ -913,3 +913,23 @@ def test_the_task_record_phases_script_lists_each_phase_once_from_a_sqlite_store
     argv = run_store._task_record_phases_argv(sys.executable, str(db), "r-1", "t1")
     hit = subprocess.run(argv, capture_output=True, text=True)
     assert run_store._phases_from(hit.stdout) == ["a", "b"]
+
+
+def test_run_task_ids_runs_the_builders_argv_and_is_empty_on_a_nonzero_exit(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, result=done(0, "t1\n\nt2\n"))
+    assert run_store.run_task_ids(tmp_path, "r-1") == ["t1", "t2"]
+    assert calls == [run_store._run_task_ids_argv("/h/python", "sqlite:///s.db", "r-1")]
+    stub_harness(monkeypatch, result=done(1, "t1\n"))
+    assert run_store.run_task_ids(tmp_path, "r-1") == []
+
+
+def test_the_run_task_ids_script_lists_each_task_of_the_run_once_from_a_sqlite_store(tmp_path):
+    db = tmp_path / "s.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE task_records (run_id, phase_id, task_id, record_json)")
+    conn.executemany("INSERT INTO task_records VALUES (?, ?, ?, '{}')",
+                     [("r-1", "b", "t2"), ("r-1", "a", "t1"), ("r-1", "c", "t1"), ("r-2", "a", "t3")])
+    conn.commit()
+    conn.close()
+    hit = subprocess.run(run_store._run_task_ids_argv(sys.executable, str(db), "r-1"), capture_output=True, text=True)
+    assert run_store._phases_from(hit.stdout) == ["t1", "t2"]

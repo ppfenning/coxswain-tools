@@ -2,9 +2,13 @@ import json
 from pathlib import Path
 
 from agent_tools.remote_lane import (
+    all_landed,
     fetch_scope,
     fetched_record_path,
+    is_landed_elsewhere_marker,
     land_needs_fetch,
+    landed_elsewhere,
+    landed_elsewhere_marker,
     parse_remote_record,
     records_already_in_store,
     refuse_taken_run_id,
@@ -80,3 +84,41 @@ def test_fetch_scope_is_branches_when_the_store_is_complete():
 
 def test_fetch_scope_is_records_and_branches_when_the_store_is_incomplete():
     assert fetch_scope(False) == "records-and-branches"
+
+
+def test_all_landed_is_true_when_every_task_is_done():
+    assert all_landed({"t": "done"}) is True
+
+
+def test_all_landed_is_false_when_a_task_is_not_done():
+    assert all_landed({"t": "approved"}) is False
+
+
+def test_all_landed_is_false_with_no_tasks():
+    assert all_landed({}) is False
+
+
+def test_landed_elsewhere_holds_for_an_ended_run_whose_every_listed_task_is_stored_and_done():
+    assert landed_elsewhere({"a": "done", "b": "done"}, ["a", "b"], True) is True
+
+
+def test_landed_elsewhere_is_false_while_the_run_is_live():
+    assert landed_elsewhere({"a": "done"}, ["a"], False) is False
+
+
+def test_landed_elsewhere_is_false_when_the_remote_holds_a_task_the_store_lacks():
+    assert landed_elsewhere({"a": "done"}, ["a", "b"], True) is False
+
+
+def test_landed_elsewhere_is_false_when_the_remote_listing_failed():
+    assert landed_elsewhere({"a": "done"}, None, True) is False
+
+
+def test_the_landed_elsewhere_marker_is_recognised_and_a_plain_fetch_marker_is_not():
+    assert landed_elsewhere_marker("t") == {"fetched_at": "t", "repos": [], "landed_elsewhere": True}
+    assert is_landed_elsewhere_marker('{"fetched_at": "t", "repos": [], "landed_elsewhere": true}') is True
+    assert is_landed_elsewhere_marker('{"fetched_at": "t", "repos": ["/r"]}') is False
+
+
+def test_no_marker_text_and_broken_marker_text_are_not_the_landed_elsewhere_marker():
+    assert (is_landed_elsewhere_marker(None), is_landed_elsewhere_marker("{")) == (False, False)

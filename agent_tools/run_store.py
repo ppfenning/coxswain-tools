@@ -803,6 +803,38 @@ def task_record_phases(runs_dir: Path, run_id: str, task: str) -> list[str]:
     return _phases_from(done.stdout) if done.returncode == 0 else []
 
 
+_RUN_TASK_IDS_SCRIPT = """import sqlite3, sys
+url, *ids = sys.argv[1:]
+sql = "SELECT DISTINCT task_id FROM task_records WHERE run_id = {0} ORDER BY task_id"
+if url.startswith(("postgres:", "postgresql:")):
+    import psycopg
+    conn, mark = psycopg.connect(url), "%s"
+else:
+    path = url.removeprefix("sqlite:///")
+    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
+for row in conn.execute(sql.format(mark), ids).fetchall():
+    print(row[0])
+"""
+
+
+def _run_task_ids_argv(python: str, url: str, run_id: str) -> list[str]:
+    """Pure: the argv that prints each task id holding a record for the run. The run id is a bound parameter."""
+    return [python, "-c", _RUN_TASK_IDS_SCRIPT, url, run_id]
+
+
+def run_task_ids(runs_dir: Path, run_id: str) -> list[str]:
+    """Edge: the distinct task ids whose `task_records` rows name this run; empty with no store or on a failed read."""
+    python = _harness_python()
+    if python is None:
+        return []
+    argv = _run_task_ids_argv(str(python), _store_url(Path(runs_dir)), run_id)
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return _phases_from(done.stdout) if done.returncode == 0 else []
+
+
 _WORK_ITEMS_COLUMNS = ("initiative", "task_id", "phase", "state", "needs_json", "updated_at", "updated_by")
 
 _WORK_ITEMS_SCRIPT = """import json, sqlite3, sys

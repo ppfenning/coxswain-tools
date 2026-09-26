@@ -3277,10 +3277,32 @@ def _branch_only_repos(
     return list(dict.fromkeys(stored or recorded)) or None
 
 
+def _landed_elsewhere(
+    runs_dir: Path, host: lane_hosts.LaneHost, locate: Callable[[str], str] | None, run_id: str, ended: bool,
+) -> bool:
+    """Edge. `remote_lane.landed_elsewhere` for the run: the store is read only once it has ended, and the remote is
+    listed only once every stored task is done. A task whose initiative cannot be found counts as not done, and a
+    listing that fails is passed on as None, so the caller fetches as before."""
+    work_root = runs_dir.parent / "work"
+
+    def state(task: str) -> str | None:
+        initiative = _initiative_of(work_root, task)
+        return None if initiative is None else run_store.task_state_of(runs_dir, initiative, task)
+
+    states = {task: state(task) for task in run_store.run_task_ids(runs_dir, run_id)} if ended else {}
+    place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
+    tasks_dir = f"{host.workspace_dir.rstrip('/')}/runs/{run_id}/tasks/"
+    listing = _remote_capture(runs_dir.parent)(["rsync", "-r", "--list-only", place(tasks_dir)]) if remote_lane.all_landed(states) else None
+    listed = None if listing is None else [task for _, task in _task_pairs_from_listing(listing)]
+    return remote_lane.landed_elsewhere(states, listed, ended)
+
+
 def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files") -> tuple[str, list[str], str]:
     """Edge. (outcome, lines, host name) for one remote run; outcome is fetched, live or failed.
 
-    Under `mode` "store" the task records are not copied when the store already holds every one of them."""
+    Under `mode` "store" the task records are not copied when the store already holds every one of them.
+    An ended run whose stored tasks are all done, and whose remote lists no task the store lacks, is marked fetched
+    with nothing pulled. The remote is listed to check that, so an unreachable remote is fetched as before and fails there."""
     text = _read_text_or_none(remote_lane.remote_record_path(runs_dir, run_id))
     record = remote_lane.parse_remote_record(text) if text is not None else None
     if record is None:
@@ -3293,6 +3315,10 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files") -> tuple
                           f"configured: {', '.join(h.name for h in hosts) or 'none'}"], ""
     lease_released, ended_at = _remote_fetch_facts(runs_dir, run_id)
     run, locate = _remote_edge(runs_dir.parent)
+    ended = remote_fetch.refuse_unended(lease_released, ended_at) is None
+    if mode == "store" and _landed_elsewhere(runs_dir, host, locate, run_id, ended):
+        remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(remote_lane.landed_elsewhere_marker(_now_iso())))
+        return "fetched", [remote_lane.landed_elsewhere_line(run_id)], host.name
     recorded = [record["repo"]] if record.get("repo") else []
     only = _branch_only_repos(runs_dir, host, locate, run_id, recorded) if mode == "store" else None
     dest = f"{str(runs_dir).rstrip('/')}/{run_id}/"
@@ -3330,7 +3356,8 @@ def _runs_fetch_all(runs_dir: Path, hosts, mode: str = "files") -> int:
         if outcome == "live":
             print(f"{run_id}: still live on {host}")
         elif outcome == "fetched":
-            print(f"{run_id}: fetched from {host}")
+            marker = _read_text_or_none(remote_lane.fetched_record_path(runs_dir, run_id))
+            print(remote_lane.landed_elsewhere_line(run_id) if remote_lane.is_landed_elsewhere_marker(marker) else f"{run_id}: fetched from {host}")
         else:
             failed = True
             print("\n".join([f"{run_id}: {lines[0]}", *lines[1:]]))
