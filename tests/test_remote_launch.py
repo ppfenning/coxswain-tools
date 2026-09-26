@@ -45,6 +45,12 @@ def test_a_launch_copies_the_initiative_then_starts_the_lane_and_returns_the_rec
     assert result == remote_record("box", "2026-09-25T00:00:00Z")
 
 
+def test_a_launch_with_a_repo_returns_a_record_naming_it(tmp_path, monkeypatch):
+    host = _setup(tmp_path, monkeypatch)
+    result = launch_on_host(host, "init", "r1", "lbl", "t", _fake_run([], {"rsync": 0}), lambda p: p, repo="/r")
+    assert result == remote_record("box", "t", "/r")
+
+
 def test_a_failing_rsync_stops_before_the_ssh_step(tmp_path, monkeypatch):
     host, calls = _setup(tmp_path, monkeypatch), []
     result = launch_on_host(host, "init", "r1", "lbl", "t", _fake_run(calls, {"rsync": 1}), lambda p: p)

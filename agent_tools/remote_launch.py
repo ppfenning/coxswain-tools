@@ -26,6 +26,7 @@ def launch_on_host(
     launched_at: str,
     run: Callable[[list[str]], int],
     locate: Callable[[str], str] | None = None,
+    repo: str | None = None,
 ) -> dict | LaunchError:
     """rsync needs the parent of the destination to exist; the copy keeps the local work/<id> layout."""
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
@@ -37,4 +38,4 @@ def launch_on_host(
     started = run(ssh_argv(host.ssh, launch_argv(f"{host.workspace_dir.rstrip('/')}/{src}", run_id, label)))
     if started != 0:
         return LaunchError("ssh", f"starting the lane on {host.name} exited {started}")
-    return remote_record(host.name, launched_at)
+    return remote_record(host.name, launched_at, repo)

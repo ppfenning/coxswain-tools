@@ -7,8 +7,10 @@ import json
 from pathlib import Path
 
 
-def remote_record(host: str, launched_at: str) -> dict:
-    return {"host": host, "launched_at": launched_at}
+def remote_record(host: str, launched_at: str, repo: str | None = None) -> dict:
+    """`repo` is the chair repo the run was launched against; a record from before it was kept has none."""
+    base = {"host": host, "launched_at": launched_at}
+    return base if repo is None else {**base, "repo": repo}
 
 
 def remote_record_path(runs_dir: Path, run: str) -> Path:
@@ -21,7 +23,8 @@ def parse_remote_record(text: str) -> dict | None:
     except ValueError:
         return None
     if isinstance(parsed, dict) and "host" in parsed and "launched_at" in parsed:
-        return remote_record(parsed["host"], parsed["launched_at"])
+        repo = parsed.get("repo")
+        return remote_record(parsed["host"], parsed["launched_at"], repo if isinstance(repo, str) else None)
     return None
 
 
