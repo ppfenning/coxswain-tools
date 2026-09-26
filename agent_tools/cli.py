@@ -1613,12 +1613,23 @@ def _land_walked(a: argparse.Namespace, runs_dir: Path, mode: str, task: str | N
     return ran.value
 
 
+def _land_done_before_fetch(runs_dir: Path, task: str | None, mode: str) -> bool:
+    """Edge. True when work_state is store and the store already says `task` is done, so a fetch is pointless."""
+    if task is None or mode != "store":
+        return False
+    initiative = _initiative_of(runs_dir.parent / "work", task)
+    return initiative is not None and run_store.task_state_of(runs_dir, initiative, task) == "done"
+
+
 def _runs_land(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser()
     runs_dir, reason = _runs_dir_for_land(a)
     if runs_dir is None:
         print(f"land: {reason}")
         return 2
+    if a.task and _land_done_before_fetch(runs_dir, a.task, work_state.work_state_mode(_lake_provider(a)[0])):
+        print(_land_approval_stop("store", "done", None))
+        return 3
     # A remote run fetched before the marker existed has none, so land refuses with the fetch hint; a re-fetch is
     # idempotent (rsync -a and git fetch of the same refs).
     fetched = remote_lane.fetched_record_path(runs_dir, a.run_id).exists()
