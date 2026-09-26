@@ -2363,8 +2363,9 @@ def _resolve_profile_or_refuse(a: argparse.Namespace):
     return profile, None
 
 
-def _write_mapping(mapping: dict, ws: Path):
-    """Write `mapping` (relative path -> text) under `ws`; `None` on success, else the refusal to print."""
+def _write_mapping(mapping: dict, ws: Path, by: str = _UNLABELED):
+    """Write `mapping` (relative path -> text) under `ws`; `None` on success, else the refusal to print.
+    Each `work/<initiative>/<phase>/<task>.md` written with a `state:` is mirrored to the store, one call per file."""
     targets = {rel: ws / rel for rel in mapping}
     existing = [str(path) for path in targets.values() if path.exists()]
     if existing:
@@ -2373,7 +2374,20 @@ def _write_mapping(mapping: dict, ws: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(mapping[rel], encoding="utf-8")
         print(str(path))
+        _mirror_filed_state(rel, mapping[rel], ws / "runs", by)
     return None
+
+
+def _mirror_filed_state(rel: str, text: str, runs_dir: Path, by: str) -> None:
+    parts = Path(rel).parts
+    if len(parts) != 4 or parts[0] != "work":
+        return
+    fields = route.parse_frontmatter(text)[0]
+    if not fields.get("state"):
+        return
+    line = store_cli.mirror_state(runs_dir, parts[1], str(fields.get("id") or Path(rel).stem), fields["state"], by)
+    if line is not None:
+        print(line)
 
 
 def _sync_filed_items(mapping: dict, ws: Path, a: argparse.Namespace) -> None:
@@ -2431,7 +2445,7 @@ def _route_file_from_intake(a: argparse.Namespace, ws: Path, profile: dict) -> i
     )
     mapping[initiative_rel] = new_initiative_text
     mapping[f"intake/done/{intake_path.name}"] = new_intake_text
-    refusal = _write_mapping(mapping, ws)
+    refusal = _write_mapping(mapping, ws, by=_holder_label(a))
     if refusal:
         print(refusal)
         return 2
@@ -2469,7 +2483,7 @@ def _route_file(a: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"routing: {exc}")
         return 2
-    refusal = _write_mapping(mapping, ws)
+    refusal = _write_mapping(mapping, ws, by=_holder_label(a))
     if refusal:
         print(refusal)
         return 2
