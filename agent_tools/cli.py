@@ -242,10 +242,28 @@ def _stats_efficiency(a: argparse.Namespace) -> int:
     return 0
 
 
+def _print_gates(rows: list[dict], as_json: bool) -> None:
+    verdicts = [stats_gates.verdict_line(row) for row in rows]
+    print(json.dumps({"rows": rows, "verdicts": verdicts}, indent=2) if as_json else stats_query.render_gates(rows, verdicts))
+
+
+def _stats_gates_from_store(a: argparse.Namespace) -> int:
+    runs_dir = Path(a.runs_dir)
+    rows = stats_gates.gate_rows(run_store.task_verdict_rows(runs_dir, a.since), run_store.gate_call_rows(runs_dir, a.since))
+    if not rows:
+        window = f" on or after {a.since}" if a.since is not None else ""
+        print(f"no gate rows{window} in the run store under {a.runs_dir}", file=sys.stderr)
+        return 1
+    _print_gates(rows, a.json)
+    return 0
+
+
 def _stats_gates(a: argparse.Namespace) -> int:
     if a.since is not None and not _canonical_date(a.since):
         print(f"cox stats gates: --since must be a date as YYYY-MM-DD, got {a.since!r}", file=sys.stderr)
         return 2
+    if a.store:
+        return _stats_gates_from_store(a)
     hint = f"no gate rows in {a.db}: run cox stats ingest"
     # stats_schema.connect creates a missing db, so a missing file is checked before the open.
     if not Path(a.db).exists():
@@ -260,8 +278,7 @@ def _stats_gates(a: argparse.Namespace) -> int:
     if not rows:
         print(f"no gate rows on or after {a.since} in {a.db}: widen or drop --since" if in_db else hint, file=sys.stderr)
         return 1
-    verdicts = [stats_gates.verdict_line(row) for row in rows]
-    print(json.dumps({"rows": rows, "verdicts": verdicts}, indent=2) if a.json else stats_query.render_gates(rows, verdicts))
+    _print_gates(rows, a.json)
     return 0
 
 
@@ -4049,6 +4066,8 @@ STATS_COMMANDS = [
         (
             commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
             commands.Arg(("--since",), {"default": None, "help": "keep only rows dated on or after DATE (YYYY-MM-DD)"}),
+            commands.Arg(("--store",), {"action": "store_true", "help": "read task and call rows from the run store instead of stats.db"}),
+            commands.Arg(("--runs-dir",), {"default": "runs", "help": "the run store's directory, with --store"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
         _stats_gates, False, (),

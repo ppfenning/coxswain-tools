@@ -18,6 +18,7 @@ import re
 import sqlite3
 import subprocess
 import time
+from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,9 +37,9 @@ except ImportError:
 
 __all__ = [
     "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "build_counts",
-    "call_events", "call_from_row", "connect_readonly", "cost_since", "efficiency_rows", "harness_python", "lease",
-    "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
-    "run_started", "store_usages", "summarize", "usage", "usages",
+    "call_events", "call_from_row", "connect_readonly", "cost_since", "efficiency_rows", "gate_call_rows",
+    "harness_python", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
+    "run_started", "store_usages", "summarize", "task_verdict_rows", "usage", "usages",
 ]
 
 STORE_FILENAME = "cox.db"
@@ -272,6 +273,90 @@ def run_ids(runs_dir: Path) -> set[str]:
         return {row["run_id"] for row in conn.execute("SELECT run_id FROM runs")}
     except _DB_ERRORS:
         return set()
+    finally:
+        conn.close()
+
+
+_GATE_FACTS = ("handoff_verdict", "charter_verdict", "adversary_verdict", "arbiter_verdict", "fix_loop_attempts",
+               "fix_loop_stopped", "plan_gate_verdict")
+
+
+def _task_verdict_row(record: Mapping[str, Any], run_id: str, task_id: str) -> dict[str, Any]:
+    """Pure: one task record as a `stats_gates` task row, through the `gate_facts` the stats.db ingest uses."""
+    # stats_ingest imports run_store at module level, so this import waits until call time to avoid the cycle.
+    from agent_tools.stats_ingest import gate_facts
+
+    facts = gate_facts(record)
+    plan_gate = record.get("plan_gate")
+    ran = isinstance(plan_gate, Mapping) and plan_gate.get("ran") is True
+    return {
+        "run_id": run_id,
+        "task_id": task_id,
+        **{key: facts[key] for key in _GATE_FACTS},
+        "plan_gate_verdict": facts["plan_gate_verdict"] or ("pass" if ran else None),
+        "outcome": "landed" if record.get("landed") is True else None,
+    }
+
+
+def _one_per_key(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Pure: one row per (run_id, task_id); a key held by records in two phases states no verdict, never one of the two."""
+    counts = Counter((row["run_id"], row["task_id"]) for row in rows)
+    silent = dict.fromkeys((*_GATE_FACTS, "outcome"))
+    return [
+        dict(row) if counts[key] == 1 else {"run_id": key[0], "task_id": key[1], **silent}
+        for key, row in {(r["run_id"], r["task_id"]): r for r in rows}.items()
+    ]
+
+
+def _record_of(raw: Any) -> Mapping[str, Any] | None:
+    """Pure: a `record_json` cell as a dict, from SQLite text or a decoded Postgres value; None when it is not a JSON object."""
+    if isinstance(raw, str):
+        try:
+            return _record_of(json.loads(raw))
+        except ValueError:
+            return None
+    return raw if isinstance(raw, Mapping) else None
+
+
+# node_calls.task_id is the bare task id, shared by every run that retries it, while task_records key on
+# (run_id, phase_id, task_id). Joining on task_id alone would lend a retried task's verdicts to every run's calls,
+# so both row kinds carry run_id and `stats_gates.gate_rows` joins on (run_id, task_id). The gate rows carry no
+# phase, so records of one task id in two phases of one run collapse to a row with no verdict (`_one_per_key`).
+# `since` is one rule for both: a call counts when its ts is at or after it, and a task record counts when its run
+# has such a call. task_records has no timestamp, and a run launched before `since` can still call after it.
+_SINCE_CALLS = " WHERE ts >= {p}"
+_SINCE_TASKS = " WHERE run_id IN (SELECT run_id FROM node_calls WHERE ts >= {p})"
+
+
+def task_verdict_rows(runs_dir: Path, since: str | None) -> list[dict[str, Any]]:
+    """Edge. One `stats_gates` task row per (run_id, task_id) in `task_records`; empty with no store or an unreadable one."""
+    opened = _open(runs_dir)
+    if opened is None:
+        return []
+    conn, p = opened
+    where, params = ("", ()) if since is None else (_SINCE_TASKS, (since,))
+    try:
+        cursor = conn.execute(_sql("SELECT run_id, task_id, record_json FROM task_records" + where, p), params)
+        rows = [(r["run_id"], r["task_id"], _record_of(r["record_json"])) for r in cursor.fetchall()]
+    except _DB_ERRORS:
+        return []
+    finally:
+        conn.close()
+    return _one_per_key([_task_verdict_row(record, run_id, task_id) for run_id, task_id, record in rows if record is not None])
+
+
+def gate_call_rows(runs_dir: Path, since: str | None) -> list[dict[str, Any]]:
+    """Edge. `stats_gates` call rows (role, run_id, task_id, cost_usd), `since` as above; empty with no store or an unreadable one."""
+    opened = _open(runs_dir)
+    if opened is None:
+        return []
+    conn, p = opened
+    where, params = ("", ()) if since is None else (_SINCE_CALLS, (since,))
+    try:
+        rows = conn.execute(_sql("SELECT role, run_id, task_id, cost_usd FROM node_calls" + where, p), params).fetchall()
+        return [{c: r[c] for c in ("role", "run_id", "task_id", "cost_usd")} for r in rows]
+    except _DB_ERRORS:
+        return []
     finally:
         conn.close()
 
