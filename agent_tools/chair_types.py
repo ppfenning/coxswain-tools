@@ -89,6 +89,7 @@ class Action(TypedDict, total=False):
     task_id: str
     repo: str
     initiative: str
+    cause: str
     intake_ids: list[str]
 
 
