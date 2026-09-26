@@ -82,14 +82,23 @@ def quarantine_cost_by_cause(items: Iterable[Mapping], usage_calls: Iterable[Map
 
 
 def catalog_prices(catalog: object) -> dict[str, dict[str, float]]:
-    """model -> price mapping from a parsed catalog; entries without a `price` mapping are dropped."""
+    """model -> price from a parsed catalog whose `models` is a name mapping or a list keyed by `id` and every alias; entries without a `price` mapping are dropped."""
     models = catalog.get("models", catalog) if isinstance(catalog, Mapping) else {}
-    entries = models.items() if isinstance(models, Mapping) else []
+    if isinstance(models, list):
+        entries = [(name, entry) for entry in models if isinstance(entry, Mapping) and entry.get("id") is not None for name in _entry_names(entry)]
+    else:
+        entries = list(models.items()) if isinstance(models, Mapping) else []
     return {
         str(name): dict(entry["price"])
         for name, entry in entries
         if isinstance(entry, Mapping) and isinstance(entry.get("price"), Mapping)
     }
+
+
+def _entry_names(entry: Mapping) -> list[object]:
+    """The `id` of a list-shaped catalog entry followed by its aliases; a non-list `aliases` adds none."""
+    aliases = entry.get("aliases")
+    return [entry["id"], *(aliases if isinstance(aliases, list) else [])]
 
 
 def lines_since(lines: Iterable[str], since: str | None) -> list[str]:

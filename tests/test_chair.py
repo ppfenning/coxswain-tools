@@ -116,6 +116,12 @@ def test_claude_session_from_env_reads_the_variable_and_never_fails():
     assert chair.claude_session_from_env({"CLAUDE_SESSION_ID": ""}) is None
 
 
+def test_claude_session_from_env_prefers_claude_code_session_id():
+    assert chair.claude_session_from_env({"CLAUDE_CODE_SESSION_ID": "s1"}) == "s1"
+    assert chair.claude_session_from_env({"CLAUDE_CODE_SESSION_ID": "s1", "CLAUDE_SESSION_ID": "old"}) == "s1"
+    assert chair.claude_session_from_env({"CLAUDE_CODE_SESSION_ID": "", "CLAUDE_SESSION_ID": "old"}) == "old"
+
+
 def test_beat_loop_writes_the_claude_session_from_environ_to_disk(tmp_path):
     session, pid, host = "chair-test", 4321, socket.gethostname()
     record, _ = chair.take(None, session, pid, host, _NOW, 10, False)

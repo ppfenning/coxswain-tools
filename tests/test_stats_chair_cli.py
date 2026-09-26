@@ -102,3 +102,10 @@ def test_since_after_every_file_date_leaves_nothing_in_the_window(shape, capsys)
     assert main([*shape, "--json", "--since", "2999-01-01"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert (report["harness_prs"], report["harness_usd"], report["chair_usd"]) == (0, 0, 0)
+
+
+def test_a_catalog_beside_the_provider_profile_prices_the_chair_and_wins_over_cartridges_dir(shape, tmp_path, capsys):
+    _write(tmp_path / "prov" / "catalog.yaml", "models:\n  - id: claude-opus-5-5\n    aliases: [opus]\n    price: {input: 8.0, output: 40.0, cache_write: 10.0, cache_read: 0.8}\n")
+    _write(tmp_path / "profile.yaml", f"cartridges_dir: {tmp_path / 'cartridges'}\nprovider_profile: {tmp_path / 'prov' / 'provider.yaml'}\n")
+    assert main([*shape, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["chair_usd"] == pytest.approx(2 * (0.212528 + 2.0))

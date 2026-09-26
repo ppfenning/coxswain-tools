@@ -369,14 +369,18 @@ def _json_or(text: str | None, default):
 
 
 def _chair_catalog_prices(a: argparse.Namespace) -> dict:
-    """model -> price from `<cartridges_dir>/providers/catalog.yaml`, read as data; {} when the profile or catalog is unreadable."""
+    """model -> price from `catalog.yaml` beside the profile's `provider_profile`, else `<cartridges_dir>/providers/catalog.yaml`, read as data; {} when the profile or both catalogs are unreadable."""
     text = _read_text_or_none(_profile_path(a))
     try:
         profile = route.parse_profile(text) if text is not None else {}
     except route.ProfileError:
         profile = {}
-    cartridges_dir = profile.get("cartridges_dir")
-    catalog_text = _read_text_or_none(Path(cartridges_dir).expanduser() / "providers" / "catalog.yaml") if cartridges_dir else None
+    provider_profile, cartridges_dir = profile.get("provider_profile"), profile.get("cartridges_dir")
+    candidates = [
+        *([Path(provider_profile).expanduser().parent / "catalog.yaml"] if provider_profile else []),
+        *([Path(cartridges_dir).expanduser() / "providers" / "catalog.yaml"] if cartridges_dir else []),
+    ]
+    catalog_text = next((t for p in candidates if (t := _read_text_or_none(p)) is not None), None)
     try:
         return stats_chair.catalog_prices(yaml.safe_load(catalog_text) if catalog_text is not None else None)
     except yaml.YAMLError:

@@ -102,8 +102,8 @@ def take(
 
 
 def claude_session_from_env(environ: Mapping[str, str]) -> str | None:
-    """Edge helper. The chair's Claude session id, or None when unset or empty; absence never fails."""
-    return environ.get("CLAUDE_SESSION_ID") or None
+    """Edge helper. The chair's Claude session id from CLAUDE_CODE_SESSION_ID, else CLAUDE_SESSION_ID, else None; absence never fails."""
+    return environ.get("CLAUDE_CODE_SESSION_ID") or environ.get("CLAUDE_SESSION_ID") or None
 
 
 def beat(
