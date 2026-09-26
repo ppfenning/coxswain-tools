@@ -26,6 +26,7 @@ def test_launch_argv_places_each_value_after_its_flag():
         "--initiative", "init-x",
         "--run-id", "run-7",
         "--label", "lane-a",
+        "--no-claim",
     ]
 
 
