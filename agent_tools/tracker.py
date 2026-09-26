@@ -2,8 +2,8 @@
 
 A tracker is a module. `github-projects` is `agent_tools.route_sync_gh`;
 `none` mirrors nothing and is the default. A package can register more under
-the `coxswain.trackers` entry-point group; such a tracker resolves here, but
-`route sync` refuses it, because the sync it runs is gh and GitHub Projects.
+the `coxswain.trackers` entry-point group; such a tracker resolves here and
+`route sync` drives it through `Tracker.sync`.
 
 The name comes from `<runs_dir>/policy.tracker.json` when present, because a
 run drops one there to pause sync. Otherwise it is the profile's `tracker` key,
@@ -16,13 +16,25 @@ import importlib
 import importlib.metadata
 import json
 import types
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Protocol
+
+from agent_tools import route_sync
 
 DEFAULT = "none"
 ENTRY_POINT_GROUP = "coxswain.trackers"
 
 _NONE = types.SimpleNamespace()
+
+
+class Tracker(Protocol):
+    """A registered tracker, driven by `route sync` through `sync`.
+
+    It returns ok and the lines to print, and writes nothing when `dry_run` is true.
+    """
+
+    def sync(self, workspace: str, items: Sequence[route_sync.Item], *, dry_run: bool) -> tuple[bool, list[str]]: ...
 
 
 def _policy_tracker(runs_dir: Path) -> str | None:
