@@ -795,6 +795,11 @@ def _work_items_from(stdout: str) -> list[dict]:
     return [row for row in parsed if row is not None]
 
 
+def task_state(rows: list[dict], initiative: str, task: str) -> str | None:
+    """Pure: the `state` of the row for this initiative and task, or None when no row matches."""
+    return next((row.get("state") for row in rows if row.get("initiative") == initiative and row.get("task_id") == task), None)
+
+
 def work_items(runs_dir: Path, initiative: str | None = None) -> list[dict]:
     """Edge: `work_items` rows through the harness python, optionally for one initiative.
 
@@ -808,6 +813,11 @@ def work_items(runs_dir: Path, initiative: str | None = None) -> list[dict]:
     except (OSError, subprocess.SubprocessError):
         return []
     return _work_items_from(done.stdout) if done.returncode == 0 else []
+
+
+def task_state_of(runs_dir: Path, initiative: str, task: str) -> str | None:
+    """Edge: one task's state from the store, None when the reader finds nothing, so it never raises."""
+    return task_state(work_items(runs_dir, initiative), initiative, task)
 
 
 def _import_pyarrow() -> tuple[Any, Any]:

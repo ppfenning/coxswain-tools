@@ -827,6 +827,40 @@ def test_work_items_is_empty_for_an_unreadable_store(tmp_path, monkeypatch):
     assert run_store.work_items(tmp_path) == []
 
 
+def test_task_state_is_the_state_of_the_matching_row():
+    rows = [{"initiative": "wsts", "task_id": "b", "state": "open"}, {"initiative": "wsts", "task_id": "a", "state": "done"}]
+    assert run_store.task_state(rows, "wsts", "a") == "done"
+
+
+def test_task_state_is_none_when_no_row_matches():
+    rows = [{"initiative": "wsts", "task_id": "a", "state": "done"}]
+    assert run_store.task_state(rows, "wsts", "zzz") is None
+    assert run_store.task_state([], "wsts", "a") is None
+
+
+def test_task_state_ignores_the_same_task_under_another_initiative():
+    other = {"initiative": "other", "task_id": "a", "state": "open"}
+    assert run_store.task_state([other], "wsts", "a") is None
+    assert run_store.task_state([other, {"initiative": "wsts", "task_id": "a", "state": "done"}], "wsts", "a") == "done"
+
+
+def test_task_state_of_reads_the_initiative_rows_and_applies_task_state(tmp_path, monkeypatch):
+    asked = []
+
+    def fake(runs_dir, initiative=None):
+        asked.append((runs_dir, initiative))
+        return [{"initiative": "wsts", "task_id": "a", "state": "done"}]
+
+    monkeypatch.setattr(run_store, "work_items", fake)
+    assert run_store.task_state_of(tmp_path, "wsts", "a") == "done"
+    assert asked == [(tmp_path, "wsts")]
+
+
+def test_task_state_of_is_none_when_the_reader_is_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: [])
+    assert run_store.task_state_of(tmp_path, "wsts", "a") is None
+
+
 def test_the_work_items_script_reads_rows_from_a_sqlite_store_and_fails_without_the_table(tmp_path):
     db = tmp_path / "s.db"
     conn = sqlite3.connect(db)
