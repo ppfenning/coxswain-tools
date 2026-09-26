@@ -44,6 +44,23 @@ def test_a_missing_token_field_counts_as_zero():
     assert chair_cost([line], _PRICES) == pytest.approx(20.0)
 
 
+def _tagged(message_id: str | None, request_id: str | None) -> str:
+    entry = json.loads(_TWO_LINES[0])
+    return json.dumps({**entry, **({"requestId": request_id} if request_id else {}), "message": {**entry["message"], **({"id": message_id} if message_id else {})}})
+
+
+def test_two_lines_with_the_same_message_id_cost_the_same_as_one():
+    assert chair_cost([_tagged("m1", None), _tagged("m1", None)], _PRICES) == pytest.approx(0.152488)
+
+
+def test_two_different_message_ids_cost_twice_one():
+    assert chair_cost([_tagged("m1", None), _tagged("m2", None)], _PRICES) == pytest.approx(0.304976)
+
+
+def test_a_line_with_no_message_id_dedupes_on_its_request_id():
+    assert chair_cost([_tagged(None, "r1"), _tagged(None, "r1"), _tagged(None, "r2")], _PRICES) == pytest.approx(0.304976)
+
+
 def _call(task_id, run, cost):
     return {"role": "build", "task_id": task_id, "cost_usd": cost, "model": "haiku", "tier": "cheap", "run": run}
 
