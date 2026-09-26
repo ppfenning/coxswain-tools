@@ -242,8 +242,8 @@ def _stats_efficiency(a: argparse.Namespace) -> int:
     return 0
 
 
-def _print_gates(rows: list[dict], as_json: bool) -> None:
-    verdicts = [stats_gates.verdict_line(row) for row in rows]
+def _print_gates(rows: list[dict], as_json: bool, min_sample: int) -> None:
+    verdicts = [stats_gates.verdict_line(row, min_sample) for row in rows]
     print(json.dumps({"rows": rows, "verdicts": verdicts}, indent=2) if as_json else stats_query.render_gates(rows, verdicts))
 
 
@@ -254,7 +254,7 @@ def _stats_gates_from_store(a: argparse.Namespace) -> int:
         window = f" on or after {a.since}" if a.since is not None else ""
         print(f"no gate rows{window} in the run store under {a.runs_dir}", file=sys.stderr)
         return 1
-    _print_gates(rows, a.json)
+    _print_gates(rows, a.json, a.min_sample)
     return 0
 
 
@@ -278,7 +278,7 @@ def _stats_gates(a: argparse.Namespace) -> int:
     if not rows:
         print(f"no gate rows on or after {a.since} in {a.db}: widen or drop --since" if in_db else hint, file=sys.stderr)
         return 1
-    _print_gates(rows, a.json)
+    _print_gates(rows, a.json, a.min_sample)
     return 0
 
 
@@ -4068,6 +4068,7 @@ STATS_COMMANDS = [
             commands.Arg(("--since",), {"default": None, "help": "keep only rows dated on or after DATE (YYYY-MM-DD)"}),
             commands.Arg(("--store",), {"action": "store_true", "help": "read task and call rows from the run store instead of stats.db"}),
             commands.Arg(("--runs-dir",), {"default": "runs", "help": "the run store's directory, with --store"}),
+            commands.Arg(("--min-sample",), {"type": int, "default": stats_gates.MIN_SAMPLE, "help": "decided tasks a role needs before it is judged, else 'not enough data' (default %(default)s)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
         _stats_gates, False, (),

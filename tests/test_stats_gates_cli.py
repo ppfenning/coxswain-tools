@@ -52,7 +52,16 @@ def test_text_output_has_one_row_per_gate_role_present(tmp_path, capsys):
     out = capsys.readouterr().out
     assert list(_table(out)) == ["handoff", "review_charter", "validate_chunk"]
     assert _table(out)["review_charter"][1:4] == ["2", "0.7500", "0.3750"]
-    assert "review_charter: the step is earning its cost." in out.split("\n\n")[1]
+    assert "review_charter: not enough data (2 decided tasks, need 50)" in out.split("\n\n")[1]
+
+
+def test_min_sample_passes_through_to_the_verdict_and_decided_is_in_the_json(tmp_path, capsys):
+    _seed(tmp_path / "s.db")
+    assert main(["stats", "gates", "--db", str(tmp_path / "s.db"), "--min-sample", "2"]) == 0
+    assert "review_charter: the step is earning its cost." in capsys.readouterr().out.split("\n\n")[1]
+    assert main(["stats", "gates", "--db", str(tmp_path / "s.db"), "--json"]) == 0
+    rows = {r["role"]: r for r in json.loads(capsys.readouterr().out)["rows"]}
+    assert (rows["review_charter"]["decided"], rows["validate_chunk"]["decided"]) == (2, 0)
 
 
 def test_a_value_of_none_prints_a_dash_never_zero(tmp_path, capsys):
