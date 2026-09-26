@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import dataclasses
 import datetime
@@ -31,6 +32,10 @@ import yaml
 
 from agent_tools import (
     chair,
+    chair_exec,
+    chair_facts,
+    chair_report,
+    chair_run,
     cleanup,
     commands,
     courier,
@@ -4793,6 +4798,9 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("route")
     commands.build_parser(rows, [group], sub)
 
+    group, rows = _table_entry("chair")
+    commands.build_parser(rows, [group], sub)
+
     group, rows = _table_entry("courier")
     commands.build_parser(rows, [group], sub)
 
@@ -5165,6 +5173,112 @@ SETUP_COMMANDS = [
 ]
 
 
+@dataclasses.dataclass(frozen=True)
+class _ChairUnwired:
+    """A reader or recorder with no edge yet; `_chair_run` refuses to start while any field of either bundle holds one."""
+
+    source: str
+
+    def __call__(self, *_args: object) -> object:
+        raise RuntimeError(f"chair run: the {self.source} source is not wired to a reader yet")
+
+
+def _chair_unwired_sources(deps: chair_run.RunDeps) -> list[str]:
+    """Named unwired fields of the facts and exec bundles, in field order."""
+    return [
+        v.source
+        for bundle in (deps.facts_deps, deps.exec_deps)
+        for f in dataclasses.fields(bundle)
+        if isinstance(v := getattr(bundle, f.name), _ChairUnwired)
+    ]
+
+
+def _chair_once_exit(last_line: str) -> int:
+    """1 when the status line has the shape `chair_run.error_line` prints; a test builds one with it, so a format change fails there."""
+    return 1 if "| tick error: " in last_line else 0
+
+
+def _chair_run_deps(
+    runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None]
+) -> chair_run.RunDeps:
+    """Wires existing readers only; a source with no reader is `_ChairUnwired`, not invented here. A dry run never beats the lease."""
+    holder = chair.lease_holder(session, pid, host)
+
+    def now() -> datetime.datetime:
+        return datetime.datetime.now(datetime.UTC)
+
+    def epoch() -> int:
+        lease = chair._read_lease(runs_dir, holder)
+        return lease["epoch"] if lease is not None else -1  # no lease matches no action's epoch, so all are fenced
+
+    facts_deps = chair_facts.FactsDeps(
+        lease=_ChairUnwired("lease"),
+        window=lambda: usage_window.gather(runs_dir, now(), ceiling_usd=profile.get("window_ceiling_usd")),
+        weekly=lambda: usage_window.gather_weekly(runs_dir, now(), profile.get("weekly_ceiling_usd")),
+        policy=lambda: _resolved_pacing_policy(runs_dir),
+        docket=_ChairUnwired("docket"), approved=_ChairUnwired("approved"), quarantined=_ChairUnwired("quarantined"),
+        stranded=_ChairUnwired("stranded"), attempts=_ChairUnwired("attempts"),
+        live_initiatives=_ChairUnwired("live_initiatives"), intake=_ChairUnwired("intake"),
+        work_store_ready=_ChairUnwired("work_store_ready"), sources_configured=_ChairUnwired("sources_configured"),
+        session=session, pid=pid, host=host,
+    )
+    exec_deps = chair_exec.edge_deps(
+        runs_dir, session, pid,
+        run_id=_ChairUnwired("run_id"), repo_for=lambda action: action.get("repo", ""), record=_ChairUnwired("record"),
+    )
+    return chair_run.RunDeps(
+        facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
+        beat=(lambda: "") if dry_run else (lambda: chair.renew_lease(runs_dir, session, pid, host)), current_epoch=epoch,
+        holds=lambda: chair._read_lease(runs_dir, holder) is not None,
+        release=lambda: chair.release_lease(runs_dir, session, pid, host), sleep=time.sleep, now=now,
+    )
+
+
+def _chair_run(a: argparse.Namespace) -> int:
+    """Refuses before any beat while a fact source or recorder is unwired, so a chair that cannot act never holds the lease."""
+    profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    last: collections.deque[str] = collections.deque([""], maxlen=1)
+
+    def echo(line: str) -> None:
+        print(line)
+        last.append(line)
+
+    deps = _chair_run_deps(runs_dir, profile, _holder_label(a), os.getpid(), socket.gethostname(), a.dry_run, echo)
+    missing = _chair_unwired_sources(deps)
+    if missing:
+        print(f"chair run: refusing to start, no lease taken; not wired: {', '.join(missing)}")
+        return 2
+    chair_run.run(a.once, a.interval, a.dry_run, deps)
+    if a.once and deps.holds():  # a one-shot process exits here, so its lease must not outlive it
+        deps.release()
+    return _chair_once_exit(last[0]) if a.once else 0
+
+
+CHAIR_GROUP = commands.Group(
+    name="chair", help="the chair loop that runs the landing and launch ticks itself",
+    description="The chair loop that runs the landing and launch ticks itself.",
+    epilog="examples:\n  cox chair run --once --dry-run\n  cox chair run --interval 30",
+)
+CHAIR_COMMANDS = [
+    commands.Command(
+        "run", "chair", "beat, gather, plan, perform and report every tick until interrupted",
+        (
+            commands.Arg(("--once",), {"action": "store_true", "help": "run one tick, release the lease, exit 1 if the tick errored"}),
+            commands.Arg(("--interval",), {"type": float, "default": chair_run.DEFAULT_INTERVAL, "help": "seconds between ticks (default: 60)"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "plan and report each tick without taking the lease or performing any action"}),
+        ),
+        _chair_run, False, (),
+        defaults={"profile": None},
+        description=(
+            "Each tick beats the chair lease, gathers facts, plans, performs and reports one status line.\n"
+            "It yields to `cox route chair take --steal`: actions planned under a lost lease are fenced.\n"
+            "It hard-stops at the profile's weekly_hard_stop_fraction of the weekly ceiling."
+        ),
+    ),
+]
+
 ROUTER_GROUP = commands.Group(
     name="router", help="the routing-profile flag and the tier decision it gates",
     description="The routing-profile flag and the tier decision it gates.",
@@ -5213,6 +5327,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (PLAN_GROUP, PLAN_COMMANDS),
     (EPIC_GROUP, EPIC_COMMANDS),
     (ROUTE_GROUP, ROUTE_COMMANDS),
+    (CHAIR_GROUP, CHAIR_COMMANDS),
     (ROUTER_GROUP, ROUTER_COMMANDS),
     (STEWARD_GROUP, STEWARD_COMMANDS),
     (SETUP_GROUP, SETUP_COMMANDS),
