@@ -91,6 +91,8 @@ class Action(TypedDict, total=False):
     initiative: str
     cause: str
     intake_ids: list[str]
+    holder: str
+    host: str
 
 
 class PlanLands(Protocol):
