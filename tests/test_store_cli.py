@@ -89,6 +89,11 @@ def test_lease_exit_0_with_null_epoch_and_holder_is_released():
     assert store_cli.parse_lease(0, '{"epoch": null, "holder": null, "ok": true}') == LeaseReleased()
 
 
+def test_lease_renew_reads_graphs_null_epoch_and_holder_as_granted_at_the_callers_epoch(monkeypatch, tmp_path):
+    monkeypatch.setattr(store_cli, "_run", lambda build: (0, '{"epoch": null, "holder": null, "ok": true}'))
+    assert store_cli.lease_renew(tmp_path, "chair", "me", 4, 60) == LeaseGranted(4, "me")
+
+
 def test_lease_exit_0_is_released_only_with_both_keys_present_and_null():
     bare = '{"ok": true}'
     mixed = '{"epoch": null, "holder": "me", "ok": true}'

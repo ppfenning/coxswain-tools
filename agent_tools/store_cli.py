@@ -219,7 +219,12 @@ def lease_acquire(runs_dir: Path, name: str, holder: str, ttl: int) -> LeaseResu
 def lease_renew(runs_dir: Path, name: str, holder: str, epoch: int, ttl: int) -> LeaseResult:
     url = _store_url(Path(runs_dir))
     ran = _run(lambda python: lease_renew_argv(python, name, holder, epoch, ttl, url))
-    return NotAvailable() if ran is None else parse_lease(*ran)
+    if ran is None:
+        return NotAvailable()
+    parsed = parse_lease(*ran)
+    # graphs' harness/store_cli_lease.lease_renew answers `{"ok": true, "epoch": null, "holder": null}`, the release
+    # shape, because a renew keeps the epoch. So a renew that reads as released is granted at the caller's epoch.
+    return LeaseGranted(epoch, holder) if isinstance(parsed, LeaseReleased) else parsed
 
 
 def lease_release(runs_dir: Path, name: str, holder: str, epoch: int) -> LeaseResult:
