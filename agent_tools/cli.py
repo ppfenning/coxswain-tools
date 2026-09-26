@@ -34,6 +34,16 @@ from agent_tools import (
     chair,
     chair_exec,
     chair_facts,
+    chair_read_approved,
+    chair_read_attempts,
+    chair_read_docket,
+    chair_read_intake,
+    chair_read_lease,
+    chair_read_live,
+    chair_read_quarantined,
+    chair_read_record,
+    chair_read_run_id,
+    chair_read_stranded,
     chair_report,
     chair_run,
     cleanup,
@@ -4118,7 +4128,8 @@ def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
     absent, unreadable, or not a mapping — same skip-not-raise contract as
     `records.ceiling_for`'s own `<run_id>.ceiling.json` handling. A key the
     file omits falls back to the matching `DEFAULT_POLICY` field, not to a
-    guess."""
+    guess. The file's `max_in_flight` is not a `Policy` field: `chair run`
+    reads it as its lane cap (`_chair_max_in_flight`, one lane when absent)."""
     default = usage_window.DEFAULT_POLICY
     text = _read_text_or_none(runs_dir / "policy.pacing.json")
     if text is None:
@@ -5225,37 +5236,94 @@ def _chair_once_exit(last_line: str) -> int:
     return 1 if "| tick error: " in last_line else 0
 
 
+# Fail closed: one lane until `policy.pacing.json` names more. Nothing else sets the chair's launch cap.
+_CHAIR_MAX_IN_FLIGHT = 1
+
+
+def _chair_max_in_flight(runs_dir: Path) -> int:
+    """Edge. `max_in_flight` from `<runs_dir>/policy.pacing.json`; a missing, invalid or non-positive value is one lane."""
+    text = _read_text_or_none(runs_dir / "policy.pacing.json")
+    try:
+        raw = json.loads(text) if text is not None else {}
+    except json.JSONDecodeError:
+        raw = {}
+    value = raw.get("max_in_flight") if isinstance(raw, dict) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else _CHAIR_MAX_IN_FLIGHT
+
+
+def _chair_stranded_inputs(ws: Path, mode: str) -> tuple[list[dict], list[dict]]:
+    """Edge. The inputs of `runs_stranded.stranded`. Item states come from the store under mode "store", as the docket's do."""
+    task_records = []
+    for path in sorted((ws / "runs").glob("*/tasks/*/*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record.setdefault("run", path.parent.parent.parent.name)
+        record.setdefault("task", path.stem)
+        record.setdefault("phase", path.parent.name)
+        task_records.append(record)
+    initiative_texts = _initiative_texts(ws)
+    items = [
+        {**item, "repo": route.parse_frontmatter(initiative_texts.get(item["initiative"], ""))[0].get("repo")}
+        for item in _stored_work_items(ws, mode)
+    ]
+    return task_records, items
+
+
 def _chair_run_deps(
-    runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None]
+    runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
+    profile_path: Path, mode: str,
 ) -> chair_run.RunDeps:
-    """Wires existing readers only; a source with no reader is `_ChairUnwired`, not invented here. A dry run never beats the lease."""
+    """Every source has an edge reader; `_ChairUnwired` stays for a source that loses one. A dry run never beats the lease."""
     holder = chair.lease_holder(session, pid, host)
+    ws = runs_dir.parent
 
     def now() -> datetime.datetime:
         return datetime.datetime.now(datetime.UTC)
+
+    def now_text() -> str:
+        return now().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    snapshot: list[dict] = []  # edge state: `beat` empties it, so one tick's three docket readers share one read
+
+    def docket() -> dict:
+        if not snapshot:
+            snapshot.append(chair_read_docket.read_docket(ws, mode, _chair_max_in_flight(runs_dir)))
+        return snapshot[0]
+
+    def beat() -> object:
+        snapshot.clear()
+        return "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
+
+    def live_initiatives() -> list[str]:
+        return chair_read_live.read_live_initiatives(runs_dir, [row["id"] for row in docket()["initiatives"]], now_text())
 
     def epoch() -> int:
         lease = chair._read_lease(runs_dir, holder)
         return lease["epoch"] if lease is not None else -1  # no lease matches no action's epoch, so all are fenced
 
     facts_deps = chair_facts.FactsDeps(
-        lease=_ChairUnwired("lease"),
+        lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
         window=lambda: usage_window.gather(runs_dir, now(), ceiling_usd=profile.get("window_ceiling_usd")),
         weekly=lambda: usage_window.gather_weekly(runs_dir, now(), profile.get("weekly_ceiling_usd")),
         policy=lambda: _resolved_pacing_policy(runs_dir),
-        docket=_ChairUnwired("docket"), approved=_ChairUnwired("approved"), quarantined=_ChairUnwired("quarantined"),
-        stranded=_ChairUnwired("stranded"), attempts=_ChairUnwired("attempts"),
-        live_initiatives=_ChairUnwired("live_initiatives"), intake=_ChairUnwired("intake"),
-        work_store_ready=_ChairUnwired("work_store_ready"), sources_configured=_ChairUnwired("sources_configured"),
+        docket=docket,
+        approved=lambda: chair_read_approved.read_approved(ws, mode),
+        quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode),
+        stranded=lambda: chair_read_stranded.read_stranded(*_chair_stranded_inputs(ws, mode)),
+        attempts=lambda: chair_read_attempts.read_attempts(ws),
+        live_initiatives=live_initiatives,
+        intake=lambda: chair_read_intake.read_intake(ws),
+        work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
+        sources_configured=lambda: chair_read_intake.read_sources_configured(profile_path),
         session=session, pid=pid, host=host,
     )
     exec_deps = chair_exec.edge_deps(
         runs_dir, session, pid,
-        run_id=_ChairUnwired("run_id"), repo_for=lambda action: action.get("repo", ""), record=_ChairUnwired("record"),
+        run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=lambda action: action.get("repo", ""),
+        record=chair_read_record.recorder(runs_dir, epoch, now_text),
     )
     return chair_run.RunDeps(
         facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
-        beat=(lambda: "") if dry_run else (lambda: chair.renew_lease(runs_dir, session, pid, host)), current_epoch=epoch,
+        beat=beat, current_epoch=epoch,
         holds=lambda: chair._read_lease(runs_dir, holder) is not None,
         release=lambda: chair.release_lease(runs_dir, session, pid, host), sleep=time.sleep, now=now,
     )
@@ -5272,7 +5340,14 @@ def _chair_run(a: argparse.Namespace) -> int:
         print(line)
         last.append(line)
 
-    deps = _chair_run_deps(runs_dir, profile, _holder_label(a), os.getpid(), socket.gethostname(), a.dry_run, echo)
+    provider, problem = _lake_provider(a)
+    if problem:  # an unreadable provider profile would read as mode "files" and relaunch landed work
+        print(f"chair run: refusing to start, no lease taken; lake: {problem}")
+        return 2
+    deps = _chair_run_deps(
+        runs_dir, profile, _holder_label(a), os.getpid(), socket.gethostname(), a.dry_run, echo,
+        _profile_path(a), work_state.work_state_mode(provider),
+    )
     missing = _chair_unwired_sources(deps)
     if missing:
         print(f"chair run: refusing to start, no lease taken; not wired: {', '.join(missing)}")
