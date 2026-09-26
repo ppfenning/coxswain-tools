@@ -877,3 +877,39 @@ def test_the_work_items_script_reads_rows_from_a_sqlite_store_and_fails_without_
     sqlite3.connect(bare).close()
     absent = subprocess.run(run_store._work_items_argv(sys.executable, str(bare), None), capture_output=True, text=True)
     assert absent.returncode != 0 and run_store._work_items_from(absent.stdout) == []
+
+
+def test_task_record_phases_runs_the_builders_argv_and_reads_one_phase_per_line(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, result=done(0, "p1\n\np2\n"))
+    assert run_store.task_record_phases(tmp_path, "r-1", "t1") == ["p1", "p2"]
+    assert calls == [run_store._task_record_phases_argv("/h/python", "sqlite:///s.db", "r-1", "t1")]
+
+
+def test_task_record_phases_is_empty_without_a_harness_python_and_runs_nothing(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, python=None)
+    assert run_store.task_record_phases(tmp_path, "r-1", "t1") == []
+    assert calls == []
+
+
+@pytest.mark.parametrize("error", [OSError("gone"), subprocess.TimeoutExpired("x", 60)])
+def test_task_record_phases_is_empty_when_the_harness_cannot_run(tmp_path, monkeypatch, error):
+    stub_harness(monkeypatch, error=error)
+    assert run_store.task_record_phases(tmp_path, "r-1", "t1") == []
+
+
+def test_task_record_phases_is_empty_on_a_nonzero_exit(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(1, "p1\n"))
+    assert run_store.task_record_phases(tmp_path, "r-1", "t1") == []
+
+
+def test_the_task_record_phases_script_lists_each_phase_once_from_a_sqlite_store(tmp_path):
+    db = tmp_path / "s.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE task_records (run_id, phase_id, task_id, record_json)")
+    conn.executemany("INSERT INTO task_records VALUES (?, ?, ?, '{}')",
+                     [("r-1", "b", "t1"), ("r-1", "a", "t1"), ("r-1", "a", "t1"), ("r-2", "c", "t1"), ("r-1", "d", "t2")])
+    conn.commit()
+    conn.close()
+    argv = run_store._task_record_phases_argv(sys.executable, str(db), "r-1", "t1")
+    hit = subprocess.run(argv, capture_output=True, text=True)
+    assert run_store._phases_from(hit.stdout) == ["a", "b"]

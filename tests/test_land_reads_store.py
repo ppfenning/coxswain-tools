@@ -50,5 +50,47 @@ def test_land_load_finds_nothing_and_skips_the_store_when_no_file_matches(tmp_pa
         raise AssertionError("store must not be asked")
 
     monkeypatch.setattr(run_store, "task_record", boom)
+    monkeypatch.setattr(run_store, "task_record_phases", lambda *a: [])
+    record, _, count, source = cli._land_load(tmp_path, "epic-x-5", "t1")
+    assert (record, count, source) == (None, 0, None)
+
+
+def test_land_load_with_no_file_and_one_stored_phase_loads_the_record_from_the_store(tmp_path, monkeypatch):
+    asked = []
+
+    def fake(runs_dir, run_id, phase_id, task_id):
+        asked.append((run_id, phase_id, task_id))
+        return {"branch": "from-store"}
+
+    monkeypatch.setattr(run_store, "task_record_phases", lambda runs_dir, run_id, task: ["seams"])
+    monkeypatch.setattr(run_store, "task_record", fake)
+    record, where, count, source = cli._land_load(tmp_path, "epic-x-5", "t1")
+    assert asked == [("epic-x-5", "seams", "t1")]
+    assert record == {"run": "epic-x-5", "task": "t1", "phase": "seams", "branch": "from-store"}
+    assert (where, count, source) == (str(tmp_path / "epic-x-5" / "tasks" / "seams" / "t1.json"), 1, "store")
+    assert not Path(where).exists()
+
+
+def test_land_load_with_no_file_and_no_stored_row_keeps_the_zero_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_store, "task_record_phases", lambda *a: [])
+    monkeypatch.setattr(run_store, "task_record", lambda *a: {"branch": "unreachable"})
+    record, where, count, source = cli._land_load(tmp_path, "epic-x-5", "t1")
+    assert (record, count, source) == (None, 0, None)
+    assert where == str((tmp_path / "epic-x-5" / "tasks").resolve())
+
+
+def test_land_load_with_no_file_and_a_phase_whose_record_is_gone_keeps_the_zero_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_store, "task_record_phases", lambda *a: ["seams"])
+    monkeypatch.setattr(run_store, "task_record", lambda *a: None)
+    record, _, count, source = cli._land_load(tmp_path, "epic-x-5", "t1")
+    assert (record, count, source) == (None, 0, None)
+
+
+def test_land_load_with_no_file_and_two_stored_phases_keeps_the_refusal_and_reads_no_record(tmp_path, monkeypatch):
+    def boom(*a):
+        raise AssertionError("no record may be read when the phase is ambiguous")
+
+    monkeypatch.setattr(run_store, "task_record_phases", lambda *a: ["other", "seams"])
+    monkeypatch.setattr(run_store, "task_record", boom)
     record, _, count, source = cli._land_load(tmp_path, "epic-x-5", "t1")
     assert (record, count, source) == (None, 0, None)

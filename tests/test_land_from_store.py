@@ -81,13 +81,15 @@ def store(monkeypatch):
 
 
 def _land(repo, tmp_path, monkeypatch, store, *, work_state="store", fail_at=None, raise_at=None, extra=(), item_text=_APPROVED,
-          phase=False):
+          phase=False, filed=True):
     """Land `seams-task` with every step stubbed except mark_done. Returns the exit code and the step kinds run.
 
-    `item_text` None leaves the work item file missing. `phase` sets up a phase land, whose items are already done."""
+    `item_text` None leaves the work item file missing. `phase` sets up a phase land, whose items are already done.
+    `filed` False leaves the task record file unwritten."""
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"
     task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_RECORD), encoding="utf-8")
+    if filed:
+        (task_dir / "seams-task.json").write_text(json.dumps(_RECORD), encoding="utf-8")
     if phase:
         (tmp_path / "runs/epic-x-5:seams.json").write_text(json.dumps({"phase_verdict": {"reasoning": "solid"}}), encoding="utf-8")
         item_text = _APPROVED.replace("approved", "done")
@@ -237,3 +239,17 @@ def test_files_mode_reads_no_task_state_and_takes_no_lease_and_sets_no_expectati
     assert store.calls == [("set_state", "x", "seams-task", "done", None)]  # the existing unconditional mirror, no --expect
     assert "state: done" in store.item.read_text(encoding="utf-8")
     assert "land: state from" not in capsys.readouterr().err
+
+
+def test_a_record_only_in_the_store_lands_and_mark_done_writes_the_file_from_it(repo, tmp_path, monkeypatch, store, capsys):
+    stored = {k: v for k, v in _RECORD.items() if k not in ("run", "task", "phase")}
+    monkeypatch.setattr(run_store, "task_record_phases", lambda runs_dir, run_id, task: ["seams"])
+    monkeypatch.setattr(run_store, "task_record", lambda runs_dir, run_id, phase, task: stored)
+    mirrored = []
+    monkeypatch.setattr(cli, "_mirror_landed", mirrored.append)
+    path = tmp_path / "runs/epic-x-5/tasks/seams/seams-task.json"
+    rc, ran = _land(repo, tmp_path, monkeypatch, store, filed=False, extra=("--task", "seams-task"))
+    assert (rc, ran[-1]) == (0, "mark_done")
+    assert "land: record from store" in capsys.readouterr().err
+    assert json.loads(path.read_text(encoding="utf-8")) == {**_RECORD, "landed": True}
+    assert [(m["run"], m["phase"], m["task"]) for m in mirrored] == [("epic-x-5", "seams", "seams-task")]
