@@ -475,7 +475,7 @@ def land_log_row(ts: str, run: str, task: str | None, steps_reached: Sequence[st
     return {"ts": ts, "run": run, "task": task, "steps_reached": list(steps_reached), "exit": exit_code, "pr": pr or None}
 
 
-_READY_MERGED_NOTE = "land: work item was ready (its run also quarantined); merged, so done"
+_READY_MERGED_NOTE = "land: work item was still ready (quarantined after approval, or run on another machine); merged, so done"
 
 
 def approve_to_done(text: str, *, merged: bool = False) -> tuple[str | None, str | None]:
@@ -487,7 +487,7 @@ def approve_to_done(text: str, *, merged: bool = False) -> tuple[str | None, str
     Only the `---`-delimited header is searched for `state:`, so a body line
     that happens to start with `state:` is never mistaken for the field.
     With `merged` True a `ready` item also moves to `done`, paired with a
-    one-line note: its run quarantined after approval, and the merge landed it."""
+    one-line note: it was quarantined after approval, or its run was on another machine, and the merge landed it."""
     if not text.startswith("---\n"):
         return None, "land: work item has no state field"
     close = text.find("\n---\n", 4)
