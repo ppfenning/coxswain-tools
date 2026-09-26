@@ -104,6 +104,7 @@ cox route chair chat [TEXT] [--profile PROFILE] [--read] [--since SINCE] [--json
 cox route sync [--profile PROFILE] [--item ITEM] [--project PROJECT] [--workspace WORKSPACE] [--dry-run]   mirror the work store onto the profile's tracker
 cox route launch epic [--profile PROFILE] --initiative INITIATIVE [--repo REPO] [--fix-attempts FIX_ATTEMPTS] [--dry-run] [--run-id RUN_ID] [--on ON] [--include-blocked] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the epic graph against a filed initiative
 cox route launch decompose [--profile PROFILE] --idea IDEA --initiative-id INITIATIVE_ID [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the decompose graph against an idea
+cox route launch rescue [--profile PROFILE] --initiative INITIATIVE --task TASK [--repo REPO] [--dry-run] [--run-id RUN_ID] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the rescue graph against a task
 cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the cos graph
 cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
 cox chair run [--once] [--interval INTERVAL] [--dry-run]   beat, gather, plan, perform and report every tick until interrupted
