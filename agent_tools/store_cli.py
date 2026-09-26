@@ -15,6 +15,9 @@ so both sides use one store (without it the harness falls back to a `cox.db` in 
         exit 0 -> {"ok": true, "epoch": null, "holder": null} when a release finds no holder
         exit 3 -> {"ok": false, "epoch": <int or null>, "holder": "<current holder or null>"}
 
+    set-state <initiative> <task> <state> --by <who>
+        exit 0 -> the task record as a JSON object; exit 3 -> a refused precondition
+
 Exit 3 is a result, not an error. The lease name is the caller's value.
 """
 
@@ -68,11 +71,22 @@ class LeaseError:
 
 
 @dataclass(frozen=True)
+class StateSet:
+    record: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class StateRefused:
+    detail: str
+
+
+@dataclass(frozen=True)
 class NotAvailable:
     pass
 
 
 MarkLandedResult = Landed | NotInStore | Failed | NotAvailable
+SetStateResult = StateSet | StateRefused | Failed | NotAvailable
 LeaseResult = LeaseGranted | LeaseReleased | LeaseRefused | LeaseError | NotAvailable
 
 _MODULE = ["-m", "harness.store_cli"]
@@ -84,6 +98,10 @@ def _store(store_url: str | None) -> list[str]:
 
 def mark_landed_argv(python: str, run_id: str, phase: str, task: str, pr: str, at: str, store_url: str | None = None) -> list[str]:
     return [python, *_MODULE, "mark-landed", run_id, phase, task, "--pr", pr, "--at", at, *_store(store_url)]
+
+
+def set_state_argv(python: str, initiative: str, task: str, state: str, by: str, store_url: str | None = None) -> list[str]:
+    return [python, *_MODULE, "set-state", initiative, task, state, "--by", by, *_store(store_url)]
 
 
 def lease_acquire_argv(python: str, name: str, holder: str, ttl: int, store_url: str | None = None) -> list[str]:
@@ -116,6 +134,17 @@ def parse_mark_landed(code: int, stdout: str) -> Landed | NotInStore | Failed:
     return Failed(code, stdout.strip() or "no JSON object on stdout")
 
 
+def parse_set_state(code: int, stdout: str, stderr: str = "") -> StateSet | StateRefused | Failed:
+    """Exit 3 is a refused precondition; exit 0 with a JSON object is the record; every other outcome fails with its detail."""
+    record = _json_object(stdout)
+    detail = stdout.strip() or stderr.strip()
+    if code == 3:
+        return StateRefused(detail)
+    if code == 0 and record is not None:
+        return StateSet(record)
+    return Failed(code, detail or "no JSON object on stdout")
+
+
 def parse_lease(code: int, stdout: str) -> LeaseGranted | LeaseReleased | LeaseRefused | LeaseError:
     """Exit 0 is granted, or released when epoch and holder are both present and null; exit 3 is refused; the rest are errors."""
     body = _json_object(stdout)
@@ -146,6 +175,29 @@ def mark_landed(runs_dir: Path, run_id: str, phase: str, task: str, pr: str, at:
     url = _store_url(Path(runs_dir))
     ran = _run(lambda python: mark_landed_argv(python, run_id, phase, task, pr, at, url))
     return NotAvailable() if ran is None else parse_mark_landed(*ran)
+
+
+def set_state(runs_dir: Path, initiative: str, task: str, state: str, by: str) -> SetStateResult:
+    url = _store_url(Path(runs_dir))
+    ran = _run(lambda python: set_state_argv(python, initiative, task, state, by, url))
+    return NotAvailable() if ran is None else parse_set_state(*ran)
+
+
+def _warning(initiative: str, task: str, state: str, reason: str) -> str:
+    return " ".join(f"warning: store did not record {initiative}/{task} as {state}: {reason}".split())
+
+
+def mirror_state(runs_dir: Path, initiative: str, task: str, state: str, by: str) -> str | None:
+    """Never raises. None when the store took the state or is absent; else one `warning:` line for the caller to print."""
+    try:
+        result = set_state(runs_dir, initiative, task, state, by)
+    except Exception as exc:
+        return _warning(initiative, task, state, f"{type(exc).__name__}: {exc}")
+    if isinstance(result, StateRefused):
+        return _warning(initiative, task, state, f"refused: {result.detail or 'no detail'}")
+    if isinstance(result, Failed):
+        return _warning(initiative, task, state, f"exit {result.code}: {result.detail}")
+    return None
 
 
 def lease_acquire(runs_dir: Path, name: str, holder: str, ttl: int) -> LeaseResult:
