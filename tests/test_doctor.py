@@ -419,6 +419,24 @@ def test_store_row_fails_with_the_no_store_yet_message():
     assert row["detail"] == "no store yet (it is created by the first run)"
 
 
+def test_store_row_is_ok_with_no_runs_yet_for_a_fresh_postgres_store():
+    row = _store_row_for({"kind": "postgresql", "reachable": False, "runs": None, "fresh": True,
+                          "error": "the store answers but has no runs table yet (it is created by the first run)"})
+    assert row == {"check": "store", "ok": True, "detail": "postgresql, no runs yet (the first run creates it)"}
+
+
+def test_store_row_is_ok_with_no_runs_yet_for_a_fresh_sqlite_store():
+    row = _store_row_for({"kind": "sqlite", "reachable": False, "runs": None, "fresh": True,
+                          "error": "no store yet (it is created by the first run)"})
+    assert row == {"check": "store", "ok": True, "detail": "sqlite, no runs yet (the first run creates it)"}
+
+
+def test_store_row_still_fails_for_an_unreachable_store_that_is_not_fresh():
+    row = _store_row_for({"kind": "sqlite", "reachable": False, "runs": None, "fresh": False,
+                          "error": "the store did not answer (OperationalError)"})
+    assert row == {"check": "store", "ok": False, "detail": "the store did not answer (OperationalError)"}
+
+
 def test_store_row_cascades_with_the_profile_and_reads_not_checked_when_ungathered():
     assert _rows_by_check(doctor.checks(_good_facts() | {"profile_text": None}))["store"]["detail"] == "skipped: no profile"
     facts = {k: v for k, v in _good_facts().items() if k != "store"}
@@ -446,7 +464,7 @@ def test_gather_reports_the_run_count_of_a_sqlite_store_and_never_the_url(tmp_pa
     conn.commit()
     conn.close()
     store = _gather_doctor_facts(profile, tmp_path)["store"]
-    assert store == {"kind": "sqlite", "reachable": True, "error": None, "runs": 3}
+    assert store == {"kind": "sqlite", "reachable": True, "error": None, "runs": 3, "fresh": False}
     assert "sqlite:" not in str(store) and str(db) not in str(store)
 
 
@@ -455,7 +473,7 @@ def test_gather_reports_no_store_yet_without_creating_the_file(tmp_path):
     profile = _store_profile(tmp_path, "command: x\n")
     store = _gather_doctor_facts(profile, tmp_path)["store"]
     assert store == {"kind": "sqlite", "reachable": False,
-                     "error": "no store yet (it is created by the first run)", "runs": None}
+                     "error": "no store yet (it is created by the first run)", "runs": None, "fresh": True}
     assert not (tmp_path / "workspace" / "runs" / "cox.db").exists()
 
 
@@ -468,7 +486,7 @@ def test_gather_reports_a_postgres_store_without_the_driver_as_unreachable(tmp_p
     url = "postgresql://user:secret@db.example:5432/cox"
     profile = _store_profile(tmp_path, f"command: x\nstorage_url: {url}\n")
     store = _gather_doctor_facts(profile, tmp_path)["store"]
-    assert store == {"kind": "postgresql", "reachable": False, "error": MISSING_PSYCOPG, "runs": None}
+    assert store == {"kind": "postgresql", "reachable": False, "error": MISSING_PSYCOPG, "runs": None, "fresh": False}
     assert "secret" not in str(store)
 
 
@@ -486,7 +504,7 @@ def test_gather_keeps_every_fragment_of_the_url_out_of_a_driver_error(tmp_path, 
     profile = _store_profile(tmp_path, f"command: x\nstorage_url: {url}\n")
     store = _gather_doctor_facts(profile, tmp_path)["store"]
     assert store == {"kind": "postgresql", "reachable": False,
-                     "error": "the store did not answer (OSError)", "runs": None}
+                     "error": "the store did not answer (OSError)", "runs": None, "fresh": False}
     assert all(fragment not in str(store) for fragment in ("ZZecret", "dbuser", "db.example", "sslmode", "5432"))
     assert seen == [url + "&connect_timeout=5"]
 
@@ -534,7 +552,8 @@ def test_gather_says_a_store_with_no_runs_table_answers_but_is_empty_of_schema(t
     sqlite3.connect(tmp_path / "workspace" / "runs" / "cox.db").close()
     store = _gather_doctor_facts(profile, tmp_path)["store"]
     assert store == {"kind": "sqlite", "reachable": False, "runs": None,
-                     "error": "the store answers but has no runs table yet (it is created by the first run)"}
+                     "error": "the store answers but has no runs table yet (it is created by the first run)",
+                     "fresh": True}
 
 
 def test_gather_says_the_same_for_a_postgres_server_with_no_runs_table(tmp_path, monkeypatch):
@@ -564,4 +583,4 @@ def test_a_bare_path_store_reads_as_other_and_still_answers(tmp_path):
     conn.commit()
     conn.close()
     profile = _store_profile(tmp_path, f"command: x\nstorage_url: {db}\n")
-    assert _gather_doctor_facts(profile, tmp_path)["store"] == {"kind": "other", "reachable": True, "error": None, "runs": 0}
+    assert _gather_doctor_facts(profile, tmp_path)["store"] == {"kind": "other", "reachable": True, "error": None, "runs": 0, "fresh": False}

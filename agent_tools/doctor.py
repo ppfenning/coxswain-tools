@@ -214,6 +214,8 @@ def _store_row(facts: Mapping, cascade: bool) -> dict:
         return _not_checked("store")
     if store.get("reachable"):
         return {"check": "store", "ok": True, "detail": f"{store.get('kind')}, {store.get('runs')} runs"}
+    if store.get("fresh"):
+        return {"check": "store", "ok": True, "detail": f"{store.get('kind')}, no runs yet (the first run creates it)"}
     return {"check": "store", "ok": False, "detail": store.get("error") or "the store did not answer"}
 
 
