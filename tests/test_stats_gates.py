@@ -78,7 +78,7 @@ def test_a_silent_objection_is_excluded_and_the_other_tasks_still_rate():
     calls = [_call("review_charter", 1, t["task_id"]) for t in tasks]
     row = _row("review_charter", tasks, calls)
     assert (row["verdict_tasks"], row["excluded"], row["changed"], row["changed_rate"]) == (31, 1, 0, 0.0)
-    assert "cheaper tier" in verdict_line(row)
+    assert (row["decided"], "cheaper tier" in verdict_line(row, min_sample=30)) == (30, True)
 
 
 def test_changed_rate_is_over_the_tasks_with_a_known_outcome():
@@ -97,7 +97,7 @@ def test_objections_that_are_all_silent_on_the_fix_loop_report_no_outcome_and_ar
     calls = [_call("review_charter", 1, t["task_id"]) for t in tasks]
     row = _row("review_charter", tasks, calls)
     assert (row["changed"], row["changed_rate"], row["caught"], row["cost_per_changed"]) == (None, None, None, None)
-    assert "no outcome data" in verdict_line(row)
+    assert (row["decided"], "no outcome data" in verdict_line(row)) == (0, True)
 
 
 def test_an_unknown_plan_gate_verdict_yields_no_changed_fact():
@@ -112,7 +112,7 @@ def test_plan_attack_and_plan_competition_share_one_outcome_and_one_verdict_line
     attack, competition = rows["plan_attack"], rows["plan_competition"]
     assert (attack["changed"], competition["changed"]) == (1, 1)
     assert (attack["cost_per_changed"], competition["cost_per_changed"]) == (2.0, 4.0)
-    assert verdict_line(attack).split(": ")[1] == verdict_line(competition).split(": ")[1]
+    assert verdict_line(attack, 1).split(": ")[1] == verdict_line(competition, 1).split(": ")[1]
 
 
 def test_caught_counts_changed_tasks_that_landed():
@@ -161,14 +161,29 @@ def test_rows_follow_role_order_and_omit_roles_without_calls():
     assert [r["role"] for r in gate_rows([], calls)] == ["handoff", "arbitrate", "plan_competition"]
 
 
-def test_verdict_line_flags_a_rate_under_five_percent():
-    line = verdict_line({"role": "review_charter", "changed_rate": 0.04})
-    assert "review_charter" in line and "cheaper tier" in line and "small tasks" in line
+def test_verdict_line_says_not_enough_data_under_the_minimum_sample():
+    row = {"role": "review_charter", "changed_rate": 0.0, "decided": 49}
+    assert verdict_line(row) == "review_charter: not enough data (49 decided tasks, need 50)"
+
+
+def test_verdict_line_flags_a_low_rate_at_the_minimum_sample():
+    line = verdict_line({"role": "review_charter", "changed_rate": 0.04, "decided": 50})
+    assert line == "review_charter: candidate for a cheaper tier or for skipping on small tasks."
+
+
+def test_verdict_line_credits_a_healthy_rate_at_the_minimum_sample():
+    assert verdict_line({"role": "review_charter", "changed_rate": 0.5, "decided": 50}) == "review_charter: the step is earning its cost."
 
 
 def test_verdict_line_does_not_flag_a_rate_of_exactly_five_percent():
-    assert verdict_line({"role": "review_charter", "changed_rate": 0.05}) == "review_charter: the step is earning its cost."
+    assert verdict_line({"role": "review_charter", "changed_rate": 0.05, "decided": 50}) == "review_charter: the step is earning its cost."
+
+
+def test_verdict_line_takes_the_minimum_from_the_caller():
+    row = {"role": "review_charter", "changed_rate": 0.0, "decided": 3}
+    assert verdict_line(row, min_sample=4) == "review_charter: not enough data (3 decided tasks, need 4)"
+    assert "cheaper tier" in verdict_line(row, min_sample=3)
 
 
 def test_verdict_line_says_the_record_has_no_outcome_data_when_the_rate_is_none():
-    assert "no outcome data" in verdict_line({"role": "validate_chunk", "changed_rate": None})
+    assert "no outcome data" in verdict_line({"role": "validate_chunk", "changed_rate": None, "decided": 0})

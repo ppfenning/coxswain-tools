@@ -49,6 +49,7 @@ VERDICTS: Mapping[str, tuple[frozenset[str], frozenset[str]]] = {
 
 REVIEW_ROLES = ("review_charter", "review_adversary")
 LOW_VALUE_RATE = 0.05
+MIN_SAMPLE = 50  # decided tasks a role needs before it is judged
 
 Task = Mapping[str, Any]
 
@@ -115,6 +116,7 @@ def _role_row(role: str, calls: Sequence[Task], tasks_by_key: Mapping[tuple[Any,
         "changed": len(changed) if decided else None,
         "verdict_tasks": len(with_verdict),
         "excluded": len(with_verdict) - len(decided),
+        "decided": len(decided),
         "changed_rate": rate,
         "caught": sum(1 for t in changed if t.get("outcome") == "landed") if decided else None,
         "agreed": len(both_approved) if role in REVIEW_ROLES and with_verdict else None,
@@ -129,10 +131,12 @@ def gate_rows(tasks: Sequence[Task], calls: Sequence[Task]) -> list[dict[str, An
     return [_role_row(role, by_role[role], tasks_by_key) for role in GATE_ROLES if by_role[role]]
 
 
-def verdict_line(row: Task) -> str:
+def verdict_line(row: Task, min_sample: int = MIN_SAMPLE) -> str:
     rate = row["changed_rate"]
     if rate is None:
         return f"{row['role']}: the record carries no outcome data."
+    if row["decided"] < min_sample:
+        return f"{row['role']}: not enough data ({row['decided']} decided tasks, need {min_sample})"
     if rate < LOW_VALUE_RATE:
         return f"{row['role']}: candidate for a cheaper tier or for skipping on small tasks."
     return f"{row['role']}: the step is earning its cost."
