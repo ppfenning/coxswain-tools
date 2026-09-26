@@ -1225,7 +1225,10 @@ def _generate_and_amend(wt: Path, umbrella: str | None, echo: Callable[[str], No
     outside_venv = ["--", ".", ":(exclude).venv"]
     if not _git_out(wt, "status", "--porcelain", *outside_venv):
         return True, ""
-    staged = subprocess.run(["git", "-C", str(wt), "add", "-A", *outside_venv], capture_output=True, text=True)
+    # Not `add -A` with the exclude: git 2.55 refuses an exclude pathspec that names an ignored path. Stage all,
+    # then take the linked `.venv` back out, which covers a git that ignores the symlink and one that does not.
+    staged = subprocess.run(["git", "-C", str(wt), "add", "-A", "--", "."], capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(wt), "reset", "-q", "--", ".venv"], capture_output=True, text=True)
     changed = (_git_out(wt, "diff", "--cached", "--name-only") or "").split()
     amend = subprocess.run(["git", "-C", str(wt), "commit", "--amend", "--no-edit"], capture_output=True, text=True)
     failed = next((r for r in (staged, amend) if r.returncode != 0), None)
