@@ -93,6 +93,21 @@ def test_on_copies_the_initiative_starts_the_lane_and_writes_only_the_remote_rec
     assert _run_files(ws) == ["demo-1.remote.json"]
 
 
+def test_on_dry_run_prints_the_rsync_and_ssh_argvs_and_starts_nothing(tmp_path, monkeypatch, capsys):
+    ws, _, argv = _setup(tmp_path)
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    _no_local_process(monkeypatch)
+    rc = main([*argv, "--on", "box", "--no-claim", "--dry-run"])
+    lines = capsys.readouterr().out.splitlines()
+    assert rc == 0
+    assert [line.split()[1] for line in lines if line.startswith("dry-run: ")] == ["rsync", "ssh"]
+    assert "host box" in lines
+    assert not [line for line in lines if line.split(" ")[0] in {"pid", "log", "trace"}]
+    assert calls == []
+    assert _run_files(ws) == []
+
+
 def test_on_an_unknown_host_exits_non_zero_and_writes_nothing(tmp_path, monkeypatch, capsys):
     ws, _, argv = _setup(tmp_path)
     calls = []

@@ -6,7 +6,7 @@ import pytest
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import launch_argv, ssh_argv
 from agent_tools.remote_lane import remote_record
-from agent_tools.remote_launch import LaunchError, launch_on_host
+from agent_tools.remote_launch import LaunchError, launch_on_host, launch_plan
 
 needs_rsync = pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync is not installed")
 
@@ -69,3 +69,22 @@ def test_the_default_location_is_the_ssh_destination_and_path(tmp_path, monkeypa
     host, calls = _setup(tmp_path, monkeypatch), []
     launch_on_host(host, "init", "r1", "lbl", "t", _fake_run(calls, {"rsync": 0}))
     assert calls[0][-1] == f"me@box:{tmp_path}/remote/work/init/"
+
+
+def test_launch_plan_is_the_rsync_argv_then_the_ssh_argv():
+    host = LaneHost("box2", "me@box2", "/ws")
+    assert launch_plan(host, "init-x", "init-x-1", "l") == [
+        ["rsync", "-a", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        [
+            "ssh",
+            "me@box2",
+            "cox route launch epic --initiative /ws/work/init-x --run-id init-x-1 --label l --no-claim",
+        ],
+    ]
+
+
+def test_launch_on_host_runs_the_planned_argvs_in_order():
+    host, calls = LaneHost("box2", "me@box2", "/ws"), []
+    result = launch_on_host(host, "init-x", "init-x-1", "l", "t", lambda argv: calls.append(argv) or 0)
+    assert calls == launch_plan(host, "init-x", "init-x-1", "l")
+    assert result == remote_record("box2", "t")
