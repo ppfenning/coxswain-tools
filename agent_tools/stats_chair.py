@@ -44,20 +44,35 @@ def _parse(line: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _line_cost(line: str, prices: Mapping[str, Mapping[str, float]]) -> float:
-    """0.0 for a line that is not an assistant usage block or names a model with no price."""
+def _usage_key(entry: dict, message: dict, line: str) -> str:
+    """The message id, else the requestId, else the line itself."""
+    for candidate in (message.get("id"), entry.get("requestId")):
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return line
+
+
+def _priced_line(line: str, prices: Mapping[str, Mapping[str, float]]) -> tuple[str, float] | None:
+    """(dedupe key, dollars) for a priced assistant usage block; None for any other line."""
     entry = _parse(line)
     message = entry.get("message") if entry is not None and entry.get("type") == "assistant" else None
     usage = message.get("usage") if isinstance(message, dict) else None
     price = prices.get(message.get("model")) if isinstance(usage, dict) else None
-    if not isinstance(usage, dict) or price is None:
-        return 0.0
-    return sum((usage.get(field) or 0) * price.get(key, 0.0) for field, key in _USAGE_TO_PRICE) / _PER_MILLION
+    if entry is None or not isinstance(usage, dict) or price is None:
+        return None
+    cost = sum((usage.get(field) or 0) * price.get(key, 0.0) for field, key in _USAGE_TO_PRICE) / _PER_MILLION
+    return _usage_key(entry, message, line), cost
 
 
 def chair_cost(transcript_lines: Iterable[str], prices: Mapping[str, Mapping[str, float]]) -> float:
-    """Dollars for the assistant usage blocks in `transcript_lines`; `prices` is $ per million tokens by model."""
-    return sum(_line_cost(line, prices) for line in transcript_lines)
+    """Dollars for `transcript_lines`; `prices` is $ per million tokens by model.
+
+    Claude Code writes one line per content block and each repeats the message's usage,
+    so a message counts once, keyed by message id, else requestId, else the line.
+    """
+    priced = [pair for pair in (_priced_line(line, prices) for line in transcript_lines) if pair is not None]
+    # First line seen wins per key; only priced usage lines claim a key.
+    return sum(dict(reversed(priced)).values())
 
 
 def _attempt_causes(items: Iterable[Mapping]) -> dict[tuple[str, str], str | None]:
