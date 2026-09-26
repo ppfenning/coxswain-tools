@@ -131,8 +131,26 @@ def test_land_of_a_remote_run_with_no_task_records_says_to_fetch_first(tmp_path,
     assert capsys.readouterr().out.strip() == f"land: {RUN} is a remote run; run cox runs fetch {RUN}, then cox runs land {RUN} again"
 
 
+def test_land_of_a_remote_run_with_tasks_but_no_fetched_marker_says_to_fetch_first(tmp_path, monkeypatch, capsys):
+    ws, profile, chair_repo = _world(tmp_path, monkeypatch)
+    (ws / "runs" / RUN / "tasks" / "p1").mkdir(parents=True)
+    rc = main(["runs", "land", RUN, "--repo", str(chair_repo), "--profile", str(profile)])
+    assert rc == 2
+    assert capsys.readouterr().out.strip() == f"land: {RUN} is a remote run; run cox runs fetch {RUN}, then cox runs land {RUN} again"
+
+
+@needs_tools
+def test_fetch_writes_the_marker_last_with_fetched_at_and_repos(tmp_path, monkeypatch):
+    ws, profile, chair_repo = _world(tmp_path, monkeypatch, lease_expires="2026-09-25T04:59:30Z")
+    main(["runs", "fetch", RUN, "--profile", str(profile)])
+    marker = json.loads((ws / "runs" / f"{RUN}.fetched.json").read_text())
+    assert sorted(marker) == ["fetched_at", "repos"]
+    assert marker["repos"] == [str(chair_repo)]
+
+
 def test_land_of_a_remote_run_whose_task_records_are_here_carries_on(tmp_path, monkeypatch, capsys):
     ws, profile, chair_repo = _world(tmp_path, monkeypatch)
+    (ws / "runs" / f"{RUN}.fetched.json").write_text("{}")
     task = ws / "runs" / RUN / "tasks" / "p1" / "t.json"
     task.parent.mkdir(parents=True)
     task.write_text(json.dumps({"repo": str(chair_repo), "initiative": "demo", "phase": "p1", "task": "t", "run": RUN}))

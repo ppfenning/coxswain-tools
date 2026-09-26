@@ -6,19 +6,19 @@ from agent_tools import cli, remote_fetch, remote_lane
 from agent_tools.cli import main
 
 
-def test_unfetched_keeps_the_order_and_drops_runs_with_a_tasks_directory():
+def test_unfetched_keeps_the_order_and_drops_fetched_runs():
     assert remote_lane.unfetched(["a", "b", "c"], {"b"}) == ["a", "c"]
 
 
 def _world(tmp_path, monkeypatch, runs, fetched=()):
-    """A chair runs dir with a `.remote.json` per run, a local tasks directory for `fetched`, and a fetch edge that records its calls."""
+    """A chair runs dir with a `.remote.json` per run, a `.fetched.json` marker for `fetched`, and a fetch edge that records its calls."""
     ws = tmp_path / "chair"
     runs_dir = ws / "runs"
     runs_dir.mkdir(parents=True)
     for run in runs:
         (runs_dir / f"{run}.remote.json").write_text(json.dumps({"host": "box", "launched_at": "2026-09-25T04:00:00Z"}))
     for run in fetched:
-        (runs_dir / run / "tasks").mkdir(parents=True)
+        remote_lane.fetched_record_path(runs_dir, run).write_text("{}")
     profile = tmp_path / "profile.yaml"
     profile.write_text(
         f"team: acme\nharness_dir: /opt/harness\nworkspace_dir: {ws}\n"
@@ -47,6 +47,20 @@ def test_all_fetches_the_ended_run_skips_the_live_one_and_leaves_the_fetched_one
     assert rc == 0
     assert calls == ["done-1", "live-1"]
     assert capsys.readouterr().out.splitlines() == ["done-1: fetched from box", "live-1: still live on box"]
+
+
+def test_all_lists_a_run_with_tasks_but_no_marker_as_still_to_fetch(tmp_path, monkeypatch, capsys):
+    profile, calls = _world(tmp_path, monkeypatch, ["half-1"])
+    (tmp_path / "chair" / "runs" / "half-1" / "tasks").mkdir(parents=True)
+    assert main(["runs", "fetch", "--all", "--profile", str(profile)]) == 0
+    assert calls == ["half-1"]
+    assert (tmp_path / "chair" / "runs" / "half-1.fetched.json").exists()
+
+
+def test_all_writes_no_marker_for_a_live_or_failed_run(tmp_path, monkeypatch):
+    profile, _ = _world(tmp_path, monkeypatch, ["live-1", "bad-1"])
+    main(["runs", "fetch", "--all", "--profile", str(profile)])
+    assert list((tmp_path / "chair" / "runs").glob("*.fetched.json")) == []
 
 
 def test_all_exits_2_when_a_fetch_fails_and_still_fetches_the_rest(tmp_path, monkeypatch, capsys):
