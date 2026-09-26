@@ -143,6 +143,12 @@ def test_catalog_prices_reads_models_with_a_price_and_drops_the_rest():
     assert catalog_prices(None) == {}
 
 
+def test_catalog_prices_keys_a_list_entry_by_id_and_every_alias():
+    catalog = {"models": [{"id": "m1", "aliases": ["a1"], "price": {"input": 1.0}}, {"id": "no-price"}, {"price": {"input": 9.0}}]}
+    assert catalog_prices(catalog) == {"m1": {"input": 1.0}, "a1": {"input": 1.0}}
+    assert catalog_prices({"models": [{"id": "m2", "aliases": "x", "price": {"input": 2.0}}]}) == {"m2": {"input": 2.0}}
+
+
 def test_lines_since_keeps_lines_dated_on_or_after_the_date():
     new = _assistant("m", 1, 0, 0, 1)
     old = new.replace("2026-09-24", "2026-09-01")
