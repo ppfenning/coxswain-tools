@@ -2026,7 +2026,7 @@ def _efficiency(runs_dir: Path, now: str) -> str | None:
     return route.efficiency_line(spend, len(landed), rate, measured)
 
 
-def _gather_context(profile_path: Path):
+def _gather_context(profile_path: Path, mode: str = "files"):
     """Read the profile and the workspace; return (profile_or_none, reason, intake, runs, initiatives, problems, efficiency)."""
     text = _read_text_or_none(profile_path)
     if text is None:
@@ -2045,7 +2045,7 @@ def _gather_context(profile_path: Path):
     started = {rid: _mtime_iso(ws / "runs" / f"{rid}.pid") for rid in pids}
     # the initiative id is the DIRECTORY name: work/<initiative>/<phase>/<task>.md;
     # the edge only reads and names the path parts — route.work_item normalises
-    items = _work_items(ws)
+    items = _stored_work_items(ws, mode)
     return (profile, "",
             _intake_groups(ws, items),
             _with_remote_lanes(ws / "runs", route.run_entries(pids, alive, started, _heartbeats(ws / "runs", pids))),
@@ -2061,7 +2061,7 @@ def _route_context(a: argparse.Namespace) -> int:
     # gatherer, per charter A6, so a bug in the usage assessment surfaces
     # instead of erasing an otherwise-good docket (run tools-pacing-7).
     try:
-        profile, reason, intake, runs, initiatives, problems, efficiency = _gather_context(_profile_path(a))
+        profile, reason, intake, runs, initiatives, problems, efficiency = _gather_context(_profile_path(a), work_state.work_state_mode(_lake_provider(a)[0]))
     except Exception as exc:
         print(f"routing: context unavailable ({type(exc).__name__}: {exc})")
         return 0
@@ -2119,6 +2119,12 @@ def _work_items(ws: Path) -> list:
     ]
 
 
+def _stored_work_items(ws: Path, mode: str) -> list:
+    """Edge. `_work_items` with each state from the store under mode "store"; the store is not read under "files"."""
+    items = _work_items(ws)
+    return route.with_store_states(items, run_store.work_items(ws / "runs") if mode == "store" else [], mode)
+
+
 def _initiative_texts(ws: Path) -> dict:
     return {
         p.name: _read_text_or_none(p / "initiative.md") or ""
@@ -2137,9 +2143,9 @@ def _intake_groups(ws: Path, items: list) -> dict:
     return route.intake_groups(route.intake_entries(files), initiatives)
 
 
-def _intake_groups_for(ws: Path):
+def _intake_groups_for(ws: Path, items: list):
     """`_intake_groups` from disk, or `None` with no `intake/` dir."""
-    return _intake_groups(ws, _work_items(ws)) if (ws / "intake").is_dir() else None
+    return _intake_groups(ws, items) if (ws / "intake").is_dir() else None
 
 
 def _status_rows_for(runs_dir: Path) -> list:
@@ -2199,8 +2205,9 @@ def _route_status(a: argparse.Namespace) -> int:
     try:
         ws = Path(workspace).expanduser()
         rows = _status_rows_for(ws / "runs")
-        groups = _intake_groups_for(ws)
-        problems = route.state_problems(_work_items(ws))
+        items = _stored_work_items(ws, work_state.work_state_mode(_lake_provider(a)[0]))
+        groups = _intake_groups_for(ws, items)
+        problems = route.state_problems(items)
         if a.json:
             # The bare rows list is the shape older callers read; it stays when there
             # is nothing else to say. A problem is never dropped for lack of an intake dir.
