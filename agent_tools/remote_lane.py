@@ -17,6 +17,10 @@ def remote_record_path(runs_dir: Path, run: str) -> Path:
     return runs_dir / f"{run}.remote.json"
 
 
+def fetched_record_path(runs_dir: Path, run: str) -> Path:
+    return runs_dir / f"{run}.fetched.json"
+
+
 def parse_remote_record(text: str) -> dict | None:
     try:
         parsed = json.loads(text)
@@ -34,8 +38,8 @@ def refuse_taken_run_id(run_id: str, taken: set[str] | frozenset[str]) -> str | 
     return None
 
 
-def land_needs_fetch(has_remote_record: bool, has_task_records: bool) -> bool:
-    return has_remote_record and not has_task_records
+def land_needs_fetch(has_remote_record: bool, fetched: bool) -> bool:
+    return has_remote_record and not fetched
 
 
 def unfetched(remote_runs: list[str], fetched: set[str] | frozenset[str]) -> list[str]:

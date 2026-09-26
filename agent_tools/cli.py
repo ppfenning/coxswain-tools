@@ -1519,8 +1519,10 @@ def _runs_land(a: argparse.Namespace) -> int:
     if runs_dir is None:
         print(f"land: {reason}")
         return 2
-    has_task_records = any((runs_dir / a.run_id / "tasks").glob("*/*.json"))
-    if remote_lane.land_needs_fetch(remote_lane.remote_record_path(runs_dir, a.run_id).exists(), has_task_records):
+    # A remote run fetched before the marker existed has none, so land refuses with the fetch hint; a re-fetch is
+    # idempotent (rsync -a and git fetch of the same refs).
+    fetched = remote_lane.fetched_record_path(runs_dir, a.run_id).exists()
+    if remote_lane.land_needs_fetch(remote_lane.remote_record_path(runs_dir, a.run_id).exists(), fetched):
         print(f"land: {a.run_id} is a remote run; run cox runs fetch {a.run_id}, then cox runs land {a.run_id} again")
         return 2
     if a.apply:
@@ -3071,14 +3073,16 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str) -> tuple[str, list[str], str]
     if isinstance(result, remote_fetch.FetchError):
         detail = f"{run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message
         return ("live" if result.step == "refuse" else "failed"), [f"fetch: {result.step}: {detail}"], host.name
+    marker = {"fetched_at": _now_iso(), "repos": list(result)}
+    remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(marker))
     return "fetched", [f"run {run_id}", f"host {host.name}", "\n".join(f"repo {repo}" for repo in result)], host.name
 
 
 def _runs_fetch_all(runs_dir: Path, hosts) -> int:
-    """Fetches every remote run with no local tasks directory; a live run is skipped, a failed fetch makes the exit 2."""
+    """Fetches every remote run with no `.fetched.json` marker; a live run is skipped, a failed fetch makes the exit 2."""
     suffix = ".remote.json"
     remote_runs = [p.name[: -len(suffix)] for p in sorted(runs_dir.glob(f"*{suffix}"))]
-    fetched = {run for run in remote_runs if (runs_dir / run / "tasks").is_dir()}
+    fetched = {run for run in remote_runs if remote_lane.fetched_record_path(runs_dir, run).exists()}
     todo = remote_lane.unfetched(remote_runs, fetched)
     if not todo:
         print("nothing to fetch")
