@@ -34,6 +34,7 @@ class Command:
     sub_dest: str | None = None
     sub_required: bool = False
     defaults: dict = field(default_factory=dict)
+    description: str = ""  # shown by `<group> <name> --help`, one line per statement
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,8 @@ def _bare_group(parser: argparse.ArgumentParser) -> Callable[[argparse.Namespace
 
 def _add_row(sub: argparse._SubParsersAction, row: Command) -> None:
     """One subparser for `row`; a row with `subcommands` recurses into its own."""
-    rp = sub.add_parser(row.name, help=row.summary)
+    formatter = argparse.RawDescriptionHelpFormatter if row.description else argparse.HelpFormatter
+    rp = sub.add_parser(row.name, help=row.summary, description=row.description or None, formatter_class=formatter)
     for arg in row.args:
         rp.add_argument(*arg.flags, **arg.kwargs)
     if row.subcommands:

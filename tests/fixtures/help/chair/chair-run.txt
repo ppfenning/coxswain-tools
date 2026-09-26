@@ -1,0 +1,11 @@
+usage: cox chair run [-h] [--once] [--interval INTERVAL] [--dry-run]
+
+Each tick beats the chair lease, gathers facts, plans, performs and reports one status line.
+It yields to `cox route chair take --steal`: actions planned under a lost lease are fenced.
+It hard-stops at the profile's weekly_hard_stop_fraction of the weekly ceiling.
+
+options:
+  -h, --help           show this help message and exit
+  --once               run one tick, release the lease, exit 1 if the tick errored
+  --interval INTERVAL  seconds between ticks (default: 60)
+  --dry-run            plan and report each tick without taking the lease or performing any action
