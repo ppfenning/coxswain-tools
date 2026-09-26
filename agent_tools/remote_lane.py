@@ -4,7 +4,7 @@ network access: the edge passes host, launched_at and the taken ids in."""
 from __future__ import annotations
 
 import json
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 
@@ -50,6 +50,37 @@ def unfetched(remote_runs: list[str], fetched: set[str] | frozenset[str]) -> lis
 def records_already_in_store(expected: Collection[str], in_store: Collection[str]) -> bool:
     """An empty `expected` is False: an unknown listing never counts as complete."""
     return bool(expected) and all(task in in_store for task in expected)
+
+
+def all_landed(states: Mapping[str, str | None]) -> bool:
+    """An empty `states` is False: a run with no known tasks never counts as landed."""
+    return bool(states) and all(state == "done" for state in states.values())
+
+
+def landed_elsewhere(states: Mapping[str, str | None], listed: Collection[str] | None, ended: bool) -> bool:
+    """`listed` is the remote's task ids, None when the listing failed. The store only names tasks that reported, so a
+    live run, a remote task the store lacks, or a remote that cannot be listed vetoes the skip: absence of a listing is not
+    an empty listing.
+
+    A task is done per initiative, not per run, so a retry under another run id also counts; the ticket accepts that."""
+    return ended and listed is not None and all_landed(states) and all(task in states for task in listed)
+
+
+def landed_elsewhere_line(run: str) -> str:
+    return f"{run}: every task is done in the store; landed on another machine, nothing to fetch"
+
+
+def landed_elsewhere_marker(fetched_at: str) -> dict:
+    return {"fetched_at": fetched_at, "repos": [], "landed_elsewhere": True}
+
+
+def is_landed_elsewhere_marker(text: str | None) -> bool:
+    """True when the `.fetched.json` text was written by the landed-elsewhere skip; None or unreadable text is False."""
+    try:
+        parsed = json.loads(text) if text is not None else None
+    except ValueError:
+        return False
+    return isinstance(parsed, dict) and parsed.get("landed_elsewhere") is True
 
 
 def fetch_scope(store_complete: bool) -> str:
