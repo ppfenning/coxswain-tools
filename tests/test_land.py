@@ -781,7 +781,7 @@ _READY = "---\nid: t\nstate: ready\n---\n\nBody.\n"
 def test_approve_to_done_moves_ready_to_done_with_a_note_when_merged():
     assert land.approve_to_done(_READY, merged=True) == (
         "---\nid: t\nstate: done\n---\n\nBody.\n",
-        "land: work item was ready (its run also quarantined); merged, so done",
+        "land: work item was still ready (quarantined after approval, or run on another machine); merged, so done",
     )
 
 
