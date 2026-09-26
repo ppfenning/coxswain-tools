@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from agent_tools.remote_lane import (
+    fetched_record_path,
     land_needs_fetch,
     parse_remote_record,
     refuse_taken_run_id,
@@ -45,7 +46,11 @@ def test_refuse_taken_run_id_names_the_id_only_when_it_is_taken():
     assert refuse_taken_run_id("r8", {"r6", "r7"}) is None
 
 
-def test_land_needs_fetch_is_true_only_with_a_record_and_no_task_records():
+def test_fetched_record_path_sits_beside_the_remote_record():
+    assert fetched_record_path(Path("/w/runs"), "r7") == Path("/w/runs/r7.fetched.json")
+
+
+def test_land_needs_fetch_is_true_only_with_a_record_and_no_fetched_marker():
     assert land_needs_fetch(True, False) is True
     assert land_needs_fetch(True, True) is False
     assert land_needs_fetch(False, False) is False
