@@ -11,6 +11,7 @@ import re
 from collections.abc import Collection, Mapping, Sequence
 from typing import NamedTuple
 
+from agent_tools import run_store
 from agent_tools.pacing import Assessment
 
 __all__ = [
@@ -1241,6 +1242,14 @@ def state_problems(items: list) -> list[str]:
         key=lambda item: (item["initiative"], item["file"]),
     )
     return [f"{item['initiative']}: {item['file']}: unknown state {item['state']!r}" for item in bad]
+
+
+def with_store_states(items: list, rows: list[dict], mode: str) -> list:
+    """Under mode "store", each item's `state` is the store row's; an item with no row keeps its file state. Any other mode returns `items` as given."""
+    if mode != "store":
+        return items
+    stored = [(item, run_store.task_state(rows, item["initiative"], item["id"])) for item in items]
+    return [item if state is None else {**item, "state": state} for item, state in stored]
 
 
 def _initiative_summary(initiative_id: str, own_items: list):
