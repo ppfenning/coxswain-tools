@@ -88,7 +88,8 @@ def test_on_copies_the_initiative_starts_the_lane_and_writes_only_the_remote_rec
     assert (remote / "work" / "demo" / "p1" / "t.md").exists()
     assert calls[1][0] == "ssh" and "--run-id demo-1" in calls[1][2] and "--label lbl" in calls[1][2]
     record = json.loads((ws / "runs" / "demo-1.remote.json").read_text())
-    assert set(record) == {"host", "launched_at"} and record["host"] == "box"
+    assert set(record) == {"host", "launched_at", "repo"} and record["host"] == "box"
+    assert record["repo"] == argv[argv.index("--repo") + 1]
     assert _run_files(ws) == ["demo-1.remote.json"]
 
 

@@ -33,7 +33,7 @@ def _store(runs_dir, ended_at=ENDED, lease_expires=None):
     conn.close()
 
 
-def _world(tmp_path, monkeypatch, *, remote_record=True, host_in_profile=True, **store):
+def _world(tmp_path, monkeypatch, *, remote_record=True, host_in_profile=True, task_repo=True, **store):
     """A chair workspace and a host directory that is a local path; the host has `repo` with branch `agents/demo-1/t`."""
     ws, host_ws = tmp_path / "chair", tmp_path / "host"
     (ws / "runs").mkdir(parents=True)
@@ -47,7 +47,7 @@ def _world(tmp_path, monkeypatch, *, remote_record=True, host_in_profile=True, *
     _git(host_repo, "branch", f"agents/{RUN}/t")
     task = host_ws / "runs" / RUN / "tasks" / "p1" / "t.json"
     task.parent.mkdir(parents=True)
-    task.write_text(json.dumps({"repo": str(host_repo)}))
+    task.write_text(json.dumps({"repo": str(host_repo)} if task_repo else {}))
     (host_ws / "runs" / f"{RUN}.log").write_text("log")
     if remote_record:
         (ws / "runs" / f"{RUN}.remote.json").write_text(json.dumps({"host": "box", "launched_at": "2026-09-25T04:00:00Z"}))
@@ -72,6 +72,33 @@ def test_fetch_prints_what_arrived_and_brings_the_run_and_its_branch(tmp_path, m
     assert (ws / "runs" / RUN / "tasks" / "p1" / "t.json").exists()
     assert (ws / "runs" / f"{RUN}.log").read_text() == "log"
     assert f"agents/{RUN}/t" in _git(chair_repo, "branch", "--list")
+
+
+def _fetch_git_targets(ws, profile, monkeypatch, record_repo):
+    """Repos the fetch's git step targeted when the remote record names `record_repo`; rsync runs for real, git is faked."""
+    record = ws / "runs" / f"{RUN}.remote.json"
+    record.write_text(json.dumps({**json.loads(record.read_text()), "repo": record_repo}))
+    argvs = []
+
+    def run(argv):
+        argvs.append(argv)
+        return subprocess.run(argv).returncode if argv[0] == "rsync" else 0
+
+    monkeypatch.setattr(cli, "_remote_edge", lambda cwd: (run, lambda path: path))
+    assert main(["runs", "fetch", RUN, "--profile", str(profile)]) == 0
+    return [argv[2] for argv in argvs if argv[0] == "git" and "fetch" in argv]
+
+
+@needs_tools
+def test_fetch_targets_the_record_repo_when_no_task_record_names_one(tmp_path, monkeypatch):
+    ws, profile, chair_repo = _world(tmp_path, monkeypatch, task_repo=False, lease_expires="2026-09-25T04:59:30Z")
+    assert _fetch_git_targets(ws, profile, monkeypatch, str(chair_repo)) == [str(chair_repo)]
+
+
+@needs_tools
+def test_fetch_prefers_the_task_record_repo_over_the_record_repo(tmp_path, monkeypatch):
+    ws, profile, chair_repo = _world(tmp_path, monkeypatch, lease_expires="2026-09-25T04:59:30Z")
+    assert _fetch_git_targets(ws, profile, monkeypatch, "/elsewhere") == [str(chair_repo)]
 
 
 def test_fetch_with_no_remote_record_exits_non_zero_and_names_the_file(tmp_path, monkeypatch, capsys):

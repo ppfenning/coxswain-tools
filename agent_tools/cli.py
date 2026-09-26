@@ -2947,7 +2947,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         return 0
 
     if host is not None:
-        return _route_launch_on_host(a, host, runs_dir, run_id)
+        return _route_launch_on_host(a, host, runs_dir, run_id, env_repo or None)
 
     if overlaid_path is not None:
         overlaid_path.write_text(yaml.safe_dump(overlaid_provider_profile, sort_keys=True), encoding="utf-8")
@@ -3017,11 +3017,13 @@ def _lane_host_or_refuse(a: argparse.Namespace) -> tuple[lane_hosts.LaneHost | N
     return host, None
 
 
-def _route_launch_on_host(a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str) -> int:
+def _route_launch_on_host(
+    a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
+) -> int:
     """Copies the initiative to `host` and starts the lane there; writes only `<run>.remote.json`, and only on success."""
     run, locate = _remote_edge(runs_dir.parent)
     launched_at = datetime.datetime.now(datetime.UTC).isoformat()
-    result = remote_launch.launch_on_host(host, Path(a.initiative).name, run_id, _holder_label(a), launched_at, run, locate)
+    result = remote_launch.launch_on_host(host, Path(a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo)
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
         return 2
@@ -3052,7 +3054,8 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str) -> tuple[str, list[str], str]
                           f"configured: {', '.join(h.name for h in hosts) or 'none'}"], ""
     lease_released, ended_at = _remote_fetch_facts(runs_dir, run_id)
     run, locate = _remote_edge(runs_dir.parent)
-    result = remote_fetch.fetch_run(host, run_id, runs_dir, remote_fetch.task_repos, run, locate,
+    recorded = [record["repo"]] if record.get("repo") else []
+    result = remote_fetch.fetch_run(host, run_id, runs_dir, lambda d: remote_fetch.task_repos(d) or recorded, run, locate,
                                     lease_released=lease_released, ended_at=ended_at)
     if isinstance(result, remote_fetch.FetchError):
         detail = f"{run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message

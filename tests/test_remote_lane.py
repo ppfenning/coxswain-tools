@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from agent_tools.remote_lane import (
@@ -16,6 +17,11 @@ def test_remote_record_holds_the_host_and_the_launched_at_it_was_given():
     }
 
 
+def test_remote_record_names_the_repo_only_when_given():
+    assert remote_record("box2", "t", "/r") == {"host": "box2", "launched_at": "t", "repo": "/r"}
+    assert "repo" not in remote_record("box2", "t")
+
+
 def test_remote_record_path_is_the_run_name_with_a_remote_json_suffix():
     assert remote_record_path(Path("runs"), "r7") == Path("runs/r7.remote.json")
 
@@ -25,6 +31,13 @@ def test_parse_remote_record_returns_none_on_bad_json_or_a_missing_key():
     assert parse_remote_record(good) == {"host": "box-1", "launched_at": "2026-09-25T10:00:00Z"}
     assert parse_remote_record("{not json") is None
     assert parse_remote_record('{"host": "box-1"}') is None
+
+
+def test_parse_remote_record_round_trips_a_record_with_a_repo_and_without_one():
+    with_repo, without = remote_record("box2", "t", "/r"), remote_record("box2", "t")
+    assert parse_remote_record(json.dumps(with_repo)) == with_repo
+    assert parse_remote_record(json.dumps(without)) == without
+    assert parse_remote_record('{"host": "b", "launched_at": "t", "repo": 7}') == {"host": "b", "launched_at": "t"}
 
 
 def test_refuse_taken_run_id_names_the_id_only_when_it_is_taken():
