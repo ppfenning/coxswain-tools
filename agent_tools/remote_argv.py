@@ -18,6 +18,7 @@ def launch_argv(initiative: str, run_id: str, label: str) -> list[str]:
         "--initiative", initiative,
         "--run-id", run_id,
         "--label", label,
+        "--no-claim",
     ]
 
 
