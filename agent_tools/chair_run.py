@@ -1,0 +1,86 @@
+"""The chair tick loop: beat, gather, plan, perform, report and sleep, all through injected deps."""
+from __future__ import annotations
+
+import contextlib
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+
+from agent_tools import chair_exec, chair_report
+from agent_tools.chair_exec import Result
+from agent_tools.chair_facts import FactsDeps, gather_facts
+from agent_tools.chair_plan import plan_tick
+from agent_tools.chair_report import EASTERN, format_status, write_status
+from agent_tools.chair_types import Action, Facts, PlanTick
+
+__all__ = ["DEFAULT_INTERVAL", "RunDeps", "error_line", "run", "tick"]
+
+DEFAULT_INTERVAL = 60.0
+
+Gather = Callable[[FactsDeps, datetime], Facts]
+Perform = Callable[[list[Action], chair_exec.Deps, Callable[[], int], bool], list[Result]]
+
+
+@dataclass(frozen=True)
+class RunDeps:
+    """`beat` renews the store lease; a lost renewal reaches the tick through the lease that `gather` reads next."""
+
+    facts_deps: FactsDeps
+    exec_deps: chair_exec.Deps
+    report_deps: chair_report.Deps
+    beat: Callable[[], object]
+    current_epoch: Callable[[], int]
+    holds: Callable[[], bool]
+    release: Callable[[], None]
+    sleep: Callable[[float], None]
+    now: Callable[[], datetime]
+    gather: Gather = gather_facts
+    plan: PlanTick = plan_tick
+    perform: Perform = chair_exec.perform
+
+
+def error_line(exc: Exception, now: datetime, results: Sequence[Result] = ()) -> str:
+    """Eastern time, as `format_status` prints it; results already performed are named so none go unreported."""
+    done = ", ".join(f"{r['action'].get('kind')}:{r['status']}" for r in results)
+    tail = f" | performed: {done}" if done else ""
+    return f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z} | tick error: {type(exc).__name__}: {exc}{tail}"
+
+
+def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
+    """Beat first, then gather, plan, perform and format; a failure after perform still names what was performed."""
+    deps.beat()
+    facts = deps.gather(deps.facts_deps, now)
+    actions = deps.plan(facts)
+    results = deps.perform(actions, deps.exec_deps, deps.current_epoch, dry_run)
+    try:
+        return format_status(facts, actions, results, now)
+    except Exception as exc:  # the actions already ran; report them rather than drop them
+        return error_line(exc, now, results)
+
+
+def _attempt(deps: RunDeps, dry_run: bool) -> None:
+    """One guarded tick and its write; nothing raised here leaves the loop."""
+    now = deps.now()
+    try:
+        line = tick(deps, dry_run, now)
+    except Exception as exc:  # one bad tick must not stop the loop
+        line = error_line(exc, now)
+    try:
+        write_status(line, deps.report_deps)
+    except Exception as exc:  # a failed notify or echo must not stop the loop either
+        # A broken echo leaves nowhere to write, so the loop goes on silent rather than dying.
+        with contextlib.suppress(Exception):
+            deps.report_deps.echo(error_line(exc, now))
+
+
+def run(once: bool, interval: float, dry_run: bool, deps: RunDeps) -> None:
+    """Ticks until interrupted, or once; a KeyboardInterrupt releases the lease only if this process holds it."""
+    try:
+        while True:
+            _attempt(deps, dry_run)
+            if once:
+                return
+            deps.sleep(interval)
+    except KeyboardInterrupt:
+        if deps.holds():
+            deps.release()
