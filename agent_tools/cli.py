@@ -32,6 +32,7 @@ import yaml
 
 from agent_tools import (
     chair,
+    chair_cap,
     chair_exec,
     chair_facts,
     chair_read_approved,
@@ -4129,7 +4130,7 @@ def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
     `records.ceiling_for`'s own `<run_id>.ceiling.json` handling. A key the
     file omits falls back to the matching `DEFAULT_POLICY` field, not to a
     guess. The file's `max_in_flight` is not a `Policy` field: `chair run`
-    reads it as its lane cap (`_chair_max_in_flight`, one lane when absent)."""
+    reads it as its lane cap after the team cartridge's (`_chair_max_in_flight`, 3 when absent)."""
     default = usage_window.DEFAULT_POLICY
     text = _read_text_or_none(runs_dir / "policy.pacing.json")
     if text is None:
@@ -5236,12 +5237,32 @@ def _chair_once_exit(last_line: str) -> int:
     return 1 if "| tick error: " in last_line else 0
 
 
-# Fail closed: one lane until `policy.pacing.json` names more. Nothing else sets the chair's launch cap.
-_CHAIR_MAX_IN_FLIGHT = 1
+# The graphs dispatch loop's default (`_DEFAULT_MAX_IN_FLIGHT` in harness/cos.py), used when no cartridge or policy file names a cap.
+_CHAIR_MAX_IN_FLIGHT = 3
 
 
-def _chair_max_in_flight(runs_dir: Path) -> int:
-    """Edge. `max_in_flight` from `<runs_dir>/policy.pacing.json`; a missing, invalid or non-positive value is one lane."""
+def _cartridge_cap(cartridges_dir: Path, team: str) -> int | None:
+    """Edge. The first `policy.dispatch.max_in_flight` along the team cartridge and its `extends` chain, all read from `cartridges_dir`."""
+    pending, seen = [team], set()
+    while pending:
+        name = pending.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
+        text = _read_text_or_none(cartridges_dir / name / "cartridge.yaml")
+        cap = chair_cap.cap_from_cartridge(text)
+        if cap is not None:
+            return cap
+        pending.extend(chair_cap.extends_of(text))
+    return None
+
+
+def _chair_max_in_flight(runs_dir: Path, profile: dict) -> int:
+    """Edge. The lane cap: the team cartridge's `policy.dispatch.max_in_flight`, else its `extends` chain's, else `<runs_dir>/policy.pacing.json`'s, else 3."""
+    cartridges_dir, team = profile.get("cartridges_dir"), profile.get("team")
+    from_cartridge = _cartridge_cap(Path(cartridges_dir).expanduser(), team) if cartridges_dir and isinstance(team, str) and team else None
+    if from_cartridge is not None:
+        return from_cartridge
     text = _read_text_or_none(runs_dir / "policy.pacing.json")
     try:
         raw = json.loads(text) if text is not None else {}
@@ -5286,7 +5307,7 @@ def _chair_run_deps(
 
     def docket() -> dict:
         if not snapshot:
-            snapshot.append(chair_read_docket.read_docket(ws, mode, _chair_max_in_flight(runs_dir)))
+            snapshot.append(chair_read_docket.read_docket(ws, mode, _chair_max_in_flight(runs_dir, profile)))
         return snapshot[0]
 
     def beat() -> object:

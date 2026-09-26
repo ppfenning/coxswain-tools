@@ -116,12 +116,12 @@ def _tick_facts(runs_dir, policy_text: str | None):
     return chair_facts.gather_facts(deps.facts_deps, datetime.datetime.now(datetime.UTC))
 
 
-def test_the_launch_cap_is_one_lane_unless_the_policy_file_names_more(tmp_path) -> None:
+def test_the_launch_cap_is_three_lanes_unless_the_policy_file_names_a_valid_other(tmp_path) -> None:
     configured = _tick_facts(tmp_path / "a", json.dumps({"max_in_flight": 2}))["dispatch"]["max_in_flight"]
     absent = _tick_facts(tmp_path / "b", None)["dispatch"]["max_in_flight"]
     invalid = _tick_facts(tmp_path / "c", json.dumps({"max_in_flight": 0}))["dispatch"]["max_in_flight"]
     garbled = _tick_facts(tmp_path / "d", "{")["dispatch"]["max_in_flight"]
-    assert (configured, absent, invalid, garbled) == (2, 1, 1, 1)
+    assert (configured, absent, invalid, garbled) == (2, 3, 3, 3)
 
 
 def test_a_beat_ends_the_docket_snapshot_so_each_tick_reads_it_once(monkeypatch, tmp_path) -> None:
@@ -157,7 +157,7 @@ def test_each_fact_reader_reaches_its_own_module_with_the_workspace_and_mode(mon
     ) == (
         ("approved", tmp_path, "store"), ("quarantined", tmp_path, "store"), ("attempts", tmp_path), ("intake", tmp_path),
         ("sources_configured", profile_path), ("lease", runs_dir), "stranded",
-        (tmp_path, "store", 1), (runs_dir, ["i1"]), True, ("run_id", runs_dir),
+        (tmp_path, "store", 3), (runs_dir, ["i1"]), True, ("run_id", runs_dir),
     )
 
 
