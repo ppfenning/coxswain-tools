@@ -2,9 +2,11 @@ import json
 from pathlib import Path
 
 from agent_tools.remote_lane import (
+    fetch_scope,
     fetched_record_path,
     land_needs_fetch,
     parse_remote_record,
+    records_already_in_store,
     refuse_taken_run_id,
     remote_record,
     remote_record_path,
@@ -54,3 +56,27 @@ def test_land_needs_fetch_is_true_only_with_a_record_and_no_fetched_marker():
     assert land_needs_fetch(True, False) is True
     assert land_needs_fetch(True, True) is False
     assert land_needs_fetch(False, False) is False
+
+
+def test_records_already_in_store_is_true_when_every_expected_id_is_present():
+    assert records_already_in_store(["t1", "t2"], ["t1", "t2"]) is True
+
+
+def test_records_already_in_store_is_false_when_one_expected_id_is_missing():
+    assert records_already_in_store(["t1", "t2"], ["t1"]) is False
+
+
+def test_records_already_in_store_is_false_when_nothing_is_expected():
+    assert records_already_in_store([], ["t1"]) is False
+
+
+def test_records_already_in_store_ignores_store_ids_that_are_not_expected():
+    assert records_already_in_store(["t1"], ["t1", "t9"]) is True
+
+
+def test_fetch_scope_is_branches_when_the_store_is_complete():
+    assert fetch_scope(True) == "branches"
+
+
+def test_fetch_scope_is_records_and_branches_when_the_store_is_incomplete():
+    assert fetch_scope(False) == "records-and-branches"

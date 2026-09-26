@@ -4,6 +4,7 @@ network access: the edge passes host, launched_at and the taken ids in."""
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from pathlib import Path
 
 
@@ -44,3 +45,14 @@ def land_needs_fetch(has_remote_record: bool, fetched: bool) -> bool:
 
 def unfetched(remote_runs: list[str], fetched: set[str] | frozenset[str]) -> list[str]:
     return [run for run in remote_runs if run not in fetched]
+
+
+def records_already_in_store(expected: Collection[str], in_store: Collection[str]) -> bool:
+    """An empty `expected` is False: an unknown listing never counts as complete."""
+    return bool(expected) and all(task in in_store for task in expected)
+
+
+def fetch_scope(store_complete: bool) -> str:
+    if store_complete:
+        return "branches"
+    return "records-and-branches"
