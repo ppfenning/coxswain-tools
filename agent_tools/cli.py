@@ -1343,7 +1343,7 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         line = _mirror_landed(step)
         if line:
             print(line)
-        _close_approved_item(step.get("item"), merged=True)
+        _close_approved_item(step.get("item"), runs_dir=record_path.resolve().parents[3], by=step.get("by", _UNLABELED), merged=True)
         return True, f"{step['task']} marked landed at {record_path}"
     if kind == "route_sync":
         # A failed sync is reported, never a failed land: after the merge nothing is undone,
@@ -1403,20 +1403,28 @@ def _resolved_tracker(profile: dict, runs_dir: Path) -> str:
     return tracker.tracker_name(profile, runs_dir)
 
 
-def _close_approved_item(item_path: str | None, *, merged: bool = False) -> None:
-    """Moves the work item at `item_path` to `done` by `land.approve_to_done`
-    and prints its message. Pass `merged` only after a merge step succeeded:
-    recover's already_recovered path is not evidence of a merge."""
+_UNLABELED = "unlabeled"
+
+
+def _close_approved_item(item_path: str | None, *, runs_dir: Path, by: str, merged: bool = False) -> None:
+    """Moves the item to `done` and mirrors any item left `done`, rerun or not, to the store; `merged` only after a merge step succeeded."""
     if item_path is None:
         return
     item = Path(item_path)
     if not item.exists():
         return
-    new_text, message = land.approve_to_done(item.read_text(encoding="utf-8"), merged=merged)
+    text = item.read_text(encoding="utf-8")
+    new_text, message = land.approve_to_done(text, merged=merged)
     if new_text is not None:
         item.write_text(new_text, encoding="utf-8")
     if message:
         print(message)
+    if new_text is None and message is not None:
+        return
+    task = str(route.parse_frontmatter(new_text or text)[0].get("id") or item.stem)
+    line = store_cli.mirror_state(runs_dir, item.absolute().parents[1].name, task, "done", by)
+    if line is not None:
+        print(line)
 
 
 _await_checks = land.await_checks
@@ -1586,7 +1594,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         steps = land.resume_steps(steps, decision, cherry_pick["onto"])
         planned = land.resume_steps(planned, decision, cherry_pick["onto"])
     # Steps start here: every return from now on is logged. Earlier returns are not.
-    rc, reached, pr = _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module)
+    rc, reached, pr = _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a))
     task = record["task"] if record else None
     _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), a.run_id, task, reached, rc, pr))
     _lake_after_land(a, runs_dir, rc, reached)
@@ -1631,20 +1639,20 @@ def _lake_after_land(a: argparse.Namespace, runs_dir: Path, rc: int, reached: Se
 
 
 def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
-                  level: str, no_merge: bool, forge_module=forge_github) -> tuple[int, list[str], str]:
+                  level: str, no_merge: bool, forge_module=forge_github, by: str = _UNLABELED) -> tuple[int, list[str], str]:
     """Walk `steps`; return the exit code, the step kinds run in order, and the PR url ("" when none opened).
 
     A pr branch's land worktree is dropped before `merge` and on every stop; the branch itself stays."""
     built: list[str] = []
     try:
-        return _land_walk(repo, steps, planned, record, item_path, level, no_merge, forge_module, built)
+        return _land_walk(repo, steps, planned, record, item_path, level, no_merge, forge_module, built, by=by)
     finally:
         for branch in built:
             _remove_land_worktree(repo, branch)
 
 
 def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
-               level: str, no_merge: bool, forge_module, built: list[str]) -> tuple[int, list[str], str]:
+               level: str, no_merge: bool, forge_module, built: list[str], by: str = _UNLABELED) -> tuple[int, list[str], str]:
     pr = ""
     reached: list[str] = []
     for i in range(len(steps)):
@@ -1662,7 +1670,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             for branch in built:
                 _remove_land_worktree(repo, branch)
         if step["kind"] == "mark_done":
-            step = _mark_done_facts(step, pr, datetime.datetime.now(datetime.UTC).isoformat())
+            step = {**_mark_done_facts(step, pr, datetime.datetime.now(datetime.UTC).isoformat()), "by": by}
         ok, detail = _execute_land_step(repo, step, forge_module)
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
@@ -1729,7 +1737,7 @@ def _runs_recover(a: argparse.Namespace) -> int:
         if a.dry_run:
             print(json.dumps(mark_done_step))
             return 0
-        _close_approved_item(item_path)
+        _close_approved_item(item_path, runs_dir=runs_dir, by=_holder_label(a))
         return 0
     if step["kind"] == "refuse":
         print(f"refused: {step['reason']}")
@@ -1758,7 +1766,7 @@ def _runs_recover(a: argparse.Namespace) -> int:
     diff = subprocess.run(["git", "-C", str(repo), "diff", "--stat", before, after], capture_output=True, text=True)
     print(f"recover: {target} {before[:8]} -> {after[:8]}")
     print(diff.stdout.strip())
-    _close_approved_item(item_path)
+    _close_approved_item(item_path, runs_dir=runs_dir, by=_holder_label(a))
     return 0
 
 
@@ -2096,7 +2104,7 @@ def _leader_read_or_refuse(runs_dir: Path):
 
 
 def _holder_label(a: argparse.Namespace) -> str:
-    return getattr(a, "label", None) or os.environ.get("COX_SESSION_LABEL") or "unlabeled"
+    return getattr(a, "label", None) or os.environ.get("COX_SESSION_LABEL") or _UNLABELED
 
 
 def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool, claim: bool = False) -> int | None:
