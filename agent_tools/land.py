@@ -24,17 +24,19 @@ import json
 import re
 import shlex
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import PurePath
 from typing import Any
 
 __all__ = [
     "LAUNCH_ERROR",
     "approve_to_done",
+    "approved_state",
     "arbitration_verdict",
     "await_checks",
     "check_poll_result",
     "checks_argv",
+    "close_to_done",
     "gate_steps",
     "gate_stop",
     "is_pending",
@@ -49,6 +51,7 @@ __all__ = [
     "recover_plan",
     "recover_record",
     "rest_checks_argvs",
+    "set_state_stop",
     "unreadable_poll",
     "wait_decision",
 ]
@@ -505,3 +508,37 @@ def approve_to_done(text: str, *, merged: bool = False) -> tuple[str | None, str
             return None, f"land: work item state is {state!r}, not moving to done"
         return text.replace(line, line.replace("approved", "done", 1), 1), None
     return None, "land: work item has no state field"
+
+
+def approved_state(mode: str, store_state: str | None, file_state: str | None) -> str | None:
+    """The state the approved check reads: the store's when `mode` is `store` and it has a row, else the file's."""
+    return store_state if mode == "store" and store_state is not None else file_state
+
+
+_LANDED_ELSEWHERE = "land: another machine landed this task; the store state is no longer approved"
+
+
+def set_state_stop(result: Any) -> str | None:
+    """None to continue, else the reason to stop. Matches the store_cli result by class name, so land imports no store_cli.
+    A refused precondition means another machine landed the task; not-available stops too, since a compare-and-set that could not run proves nothing."""
+    kind = type(result).__name__
+    if kind == "StateSet":
+        return None
+    if kind == "StateRefused":
+        current = getattr(result, "current", None)
+        return f"{_LANDED_ELSEWHERE} (now {current!r})" if current else _LANDED_ELSEWHERE
+    if kind == "Failed":
+        return f"land: store set-state failed: exit {result.code}: {result.detail}"
+    return "land: store not available; cannot compare-and-set the task to done"
+
+
+def close_to_done(
+    text: str, *, mode: str, merged: bool, set_state: Callable[[str], Any]
+) -> tuple[str | None, str | None]:
+    """`approve_to_done` under `mode`. `files` is `approve_to_done` unchanged and never calls `set_state`.
+    `store` calls `set_state(expected)` for `done --expect approved` only when the item would move; a stop comes back as `(None, reason)`, so the file is never rewritten."""
+    new_text, message = approve_to_done(text, merged=merged)
+    if mode != "store" or new_text is None:
+        return new_text, message
+    stop = set_state_stop(set_state("approved"))
+    return (None, stop) if stop is not None else (new_text, message)
