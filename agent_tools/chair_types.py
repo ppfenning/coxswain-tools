@@ -56,6 +56,8 @@ class QuarantineFacts(TypedDict):
     initiative: str
     cause: str
     harness_failures: int  # counted from run history by the edge
+    has_patch: bool  # the task record in the store holds a non-blank build.patch
+    rescue_failed: bool  # an earlier rescue_failed attempt exists for this task on the current ticket version
 
 
 class Facts(TypedDict):
@@ -77,6 +79,7 @@ ActionKind = Literal[
     "clear_branches",
     "relaunch",
     "retry",
+    "rescue",
     "needs_chair",
     "launch_epic",
     "launch_decompose",
@@ -89,7 +92,7 @@ class Action(TypedDict, total=False):
     epoch: int
     task_id: str
     repo: str
-    initiative: str
+    initiative: str  # retry and rescue carry initiative and task_id
     cause: str
     intake_ids: list[str]
     holder: str
@@ -104,7 +107,7 @@ class PlanLands(Protocol):
 
 class PlanRecover(Protocol):
     def __call__(self, facts: Facts) -> list[Action]:
-        """plan_recover(facts) -> list[action]: relaunch, retry and needs_chair for quarantines."""
+        """plan_recover(facts) -> list[action]: relaunch, retry, rescue and needs_chair for quarantines."""
         ...
 
 
