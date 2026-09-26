@@ -3174,8 +3174,74 @@ def _remote_fetch_facts(runs_dir: Path, run: str) -> tuple[bool, str | None]:
     return run not in live, ended.get(run)
 
 
-def _fetch_one(runs_dir: Path, hosts, run_id: str) -> tuple[str, list[str], str]:
-    """Edge. (outcome, lines, host name) for one remote run; outcome is fetched, live or failed."""
+def _remote_capture(cwd: Path) -> Callable[[list[str]], str | None]:
+    """Edge: runs an argv and returns its stdout, None when it cannot run or exits non-zero."""
+
+    def capture(argv: list[str]) -> str | None:
+        try:
+            done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+        except OSError:
+            return None
+        return done.stdout if done.returncode == 0 else None
+
+    return capture
+
+
+def _task_pairs_from_listing(text: str) -> list[tuple[str, str]]:
+    """Pure: (phase, task) for each `<phase>/<task>.json` file in an `rsync -r --list-only` listing of a run's `tasks/`."""
+    fields = (line.split(None, 4) for line in text.splitlines())
+    paths = (f[4].split("/") for f in fields if len(f) == 5 and f[0].startswith("-"))
+    return [(path[0], path[1].removesuffix(".json")) for path in paths if len(path) == 2 and path[1].endswith(".json")]
+
+
+def _store_holds_every_record(pairs: list[tuple[str, str]], read: Callable[[str, str], dict | None]) -> bool:
+    """Pure: True when `read` finds a record for every (phase, task) pair; no pairs is False."""
+    held = {task for phase, task in pairs if read(phase, task) is not None}
+    return remote_lane.records_already_in_store([task for _, task in pairs], held)
+
+
+def _without_task_records(argv: list[str], run_dest: str) -> list[str]:
+    """Pure: the run-directory rsync (the one landing at `run_dest`) with `tasks/` excluded; any other argv is unchanged."""
+    if argv[:1] == ["rsync"] and argv[-1] == run_dest:
+        return [*argv[:2], "--exclude=/tasks/", *argv[2:]]
+    return argv
+
+
+def _store_task_records(runs_dir: Path, run_id: str, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict | None]:
+    """Edge: each pair's task record from the store; a pair the store cannot read maps to None."""
+
+    def read(phase: str, task: str) -> dict | None:
+        try:
+            return run_store.task_record(runs_dir, run_id, phase, task)
+        except (OSError, ValueError):
+            return None
+
+    return {(phase, task): read(phase, task) for phase, task in pairs}
+
+
+def _branch_only_repos(
+    runs_dir: Path, host: lane_hosts.LaneHost, locate: Callable[[str], str] | None, run_id: str, recorded: list[str],
+) -> list[str] | None:
+    """Edge. The repos to fetch branches for when the store holds every task record of the remote run, else None.
+
+    The records are not copied, so the repos come from the store records, then from the remote record. With neither the
+    branch fetch has nowhere to go, and the caller copies the records as before."""
+    place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
+    tasks_dir = f"{host.workspace_dir.rstrip('/')}/runs/{run_id}/tasks/"
+    listing = _remote_capture(runs_dir.parent)(["rsync", "-r", "--list-only", place(tasks_dir)])
+    pairs = _task_pairs_from_listing(listing or "")
+    records = _store_task_records(runs_dir, run_id, pairs)
+    complete = _store_holds_every_record(pairs, lambda phase, task: records[(phase, task)])
+    if remote_lane.fetch_scope(complete) != "branches":
+        return None
+    stored = [r["repo"] for r in records.values() if r is not None and isinstance(r.get("repo"), str) and r["repo"]]
+    return list(dict.fromkeys(stored or recorded)) or None
+
+
+def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files") -> tuple[str, list[str], str]:
+    """Edge. (outcome, lines, host name) for one remote run; outcome is fetched, live or failed.
+
+    Under `mode` "store" the task records are not copied when the store already holds every one of them."""
     text = _read_text_or_none(remote_lane.remote_record_path(runs_dir, run_id))
     record = remote_lane.parse_remote_record(text) if text is not None else None
     if record is None:
@@ -3189,17 +3255,28 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str) -> tuple[str, list[str], str]
     lease_released, ended_at = _remote_fetch_facts(runs_dir, run_id)
     run, locate = _remote_edge(runs_dir.parent)
     recorded = [record["repo"]] if record.get("repo") else []
-    result = remote_fetch.fetch_run(host, run_id, runs_dir, lambda d: remote_fetch.task_repos(d) or recorded, run, locate,
+    only = _branch_only_repos(runs_dir, host, locate, run_id, recorded) if mode == "store" else None
+    dest = f"{str(runs_dir).rstrip('/')}/{run_id}/"
+
+    def run_cmd(argv: list[str]) -> int:
+        return run(argv if only is None else _without_task_records(argv, dest))
+
+    def repo_paths(run_dir: Path) -> list[str]:
+        return (remote_fetch.task_repos(run_dir) or recorded) if only is None else only
+
+    result = remote_fetch.fetch_run(host, run_id, runs_dir, repo_paths, run_cmd, locate,
                                     lease_released=lease_released, ended_at=ended_at)
     if isinstance(result, remote_fetch.FetchError):
         detail = f"{run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message
         return ("live" if result.step == "refuse" else "failed"), [f"fetch: {result.step}: {detail}"], host.name
     marker = {"fetched_at": _now_iso(), "repos": list(result)}
     remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(marker))
+    if only is not None:
+        print(f"{run_id}: task records skipped, the store holds them")
     return "fetched", [f"run {run_id}", f"host {host.name}", "\n".join(f"repo {repo}" for repo in result)], host.name
 
 
-def _runs_fetch_all(runs_dir: Path, hosts) -> int:
+def _runs_fetch_all(runs_dir: Path, hosts, mode: str = "files") -> int:
     """Fetches every remote run with no `.fetched.json` marker; a live run is skipped, a failed fetch makes the exit 2."""
     suffix = ".remote.json"
     remote_runs = [p.name[: -len(suffix)] for p in sorted(runs_dir.glob(f"*{suffix}"))]
@@ -3210,7 +3287,7 @@ def _runs_fetch_all(runs_dir: Path, hosts) -> int:
         return 0
     failed = False
     for run_id in todo:
-        outcome, lines, host = _fetch_one(runs_dir, hosts, run_id)
+        outcome, lines, host = _fetch_one(runs_dir, hosts, run_id, mode)
         if outcome == "live":
             print(f"{run_id}: still live on {host}")
         elif outcome == "fetched":
@@ -3231,9 +3308,10 @@ def _runs_fetch(a: argparse.Namespace) -> int:
         print(f"fetch: {reason}")
         return 2
     hosts = _profile_lane_hosts(_read_text_or_none(_profile_path(a)) or "")
+    mode = work_state.work_state_mode(_lake_provider(a)[0])
     if a.all:
-        return _runs_fetch_all(runs_dir, hosts)
-    outcome, lines, _ = _fetch_one(runs_dir, hosts, a.run_id)
+        return _runs_fetch_all(runs_dir, hosts, mode)
+    outcome, lines, _ = _fetch_one(runs_dir, hosts, a.run_id, mode)
     print("\n".join(lines))
     return 0 if outcome == "fetched" else 2
 
