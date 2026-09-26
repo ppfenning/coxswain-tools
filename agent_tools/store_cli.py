@@ -15,10 +15,11 @@ so both sides use one store (without it the harness falls back to a `cox.db` in 
         exit 0 -> {"ok": true, "epoch": null, "holder": null} when a release finds no holder
         exit 3 -> {"ok": false, "epoch": <int or null>, "holder": "<current holder or null>"}
 
-    set-state <initiative> <task> <state> --by <who>
+    set-state <initiative> <task> <state> --by <who> [--expect <state>]
         exit 0 -> the task record as a JSON object; exit 3 -> a refused precondition
+        exit 3 may carry the store's current state under "state"; the key is assumed, not yet confirmed
 
-Exit 3 is a result, not an error. The lease name is the caller's value.
+Exit 3 is a result, not an error. Lease names are the caller's value, except a land lease, named by land_lease_name.
 """
 
 from __future__ import annotations
@@ -78,6 +79,7 @@ class StateSet:
 @dataclass(frozen=True)
 class StateRefused:
     detail: str
+    current: str | None = None
 
 
 @dataclass(frozen=True)
@@ -100,8 +102,15 @@ def mark_landed_argv(python: str, run_id: str, phase: str, task: str, pr: str, a
     return [python, *_MODULE, "mark-landed", run_id, phase, task, "--pr", pr, "--at", at, *_store(store_url)]
 
 
-def set_state_argv(python: str, initiative: str, task: str, state: str, by: str, store_url: str | None = None) -> list[str]:
-    return [python, *_MODULE, "set-state", initiative, task, state, "--by", by, *_store(store_url)]
+def set_state_argv(
+    python: str, initiative: str, task: str, state: str, by: str, store_url: str | None = None, expected: str | None = None
+) -> list[str]:
+    expect = ["--expect", expected] if expected is not None else []
+    return [python, *_MODULE, "set-state", initiative, task, state, "--by", by, *expect, *_store(store_url)]
+
+
+def land_lease_name(task: str) -> str:
+    return f"land:{task}"
 
 
 def lease_acquire_argv(python: str, name: str, holder: str, ttl: int, store_url: str | None = None) -> list[str]:
@@ -139,7 +148,8 @@ def parse_set_state(code: int, stdout: str, stderr: str = "") -> StateSet | Stat
     record = _json_object(stdout)
     detail = stdout.strip() or stderr.strip()
     if code == 3:
-        return StateRefused(detail)
+        current = record.get("state") if record is not None else None
+        return StateRefused(detail, current if isinstance(current, str) else None)
     if code == 0 and record is not None:
         return StateSet(record)
     return Failed(code, detail or "no JSON object on stdout")
@@ -177,9 +187,9 @@ def mark_landed(runs_dir: Path, run_id: str, phase: str, task: str, pr: str, at:
     return NotAvailable() if ran is None else parse_mark_landed(*ran)
 
 
-def set_state(runs_dir: Path, initiative: str, task: str, state: str, by: str) -> SetStateResult:
+def set_state(runs_dir: Path, initiative: str, task: str, state: str, by: str, expected: str | None = None) -> SetStateResult:
     url = _store_url(Path(runs_dir))
-    ran = _run(lambda python: set_state_argv(python, initiative, task, state, by, url))
+    ran = _run(lambda python: set_state_argv(python, initiative, task, state, by, url, expected))
     return NotAvailable() if ran is None else parse_set_state(*ran)
 
 

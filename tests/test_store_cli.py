@@ -11,6 +11,8 @@ from agent_tools.store_cli import (
     LeaseReleased,
     NotAvailable,
     NotInStore,
+    StateRefused,
+    StateSet,
 )
 
 PY = "/h/.venv/bin/python"
@@ -92,3 +94,44 @@ def test_lease_exit_0_is_released_only_with_both_keys_present_and_null():
     mixed = '{"epoch": null, "holder": "me", "ok": true}'
     assert store_cli.parse_lease(0, bare) == LeaseError(f"exit 0: {bare}")
     assert store_cli.parse_lease(0, mixed) == LeaseError(f"exit 0: {mixed}")
+
+
+def test_set_state_argv_without_expect_has_no_expect_flag():
+    assert store_cli.set_state_argv(PY, "i", "t", "done", "me") == [*HEAD, "set-state", "i", "t", "done", "--by", "me"]
+
+
+def test_set_state_argv_with_expect_appends_the_flag():
+    assert store_cli.set_state_argv(PY, "i", "t", "done", "me", "sqlite:///s.db", "review") == [
+        *HEAD, "set-state", "i", "t", "done", "--by", "me", "--expect", "review", "--store-url", "sqlite:///s.db"]
+
+
+def test_set_state_exit_0_is_the_record():
+    assert store_cli.parse_set_state(0, '{"state": "done"}') == StateSet({"state": "done"})
+
+
+def test_set_state_exit_3_is_a_precondition_failure_with_the_current_state():
+    body = '{"ok": false, "state": "review"}'
+    assert store_cli.parse_set_state(3, body) == StateRefused(body, "review")
+
+
+def test_set_state_exit_2_is_an_error():
+    assert store_cli.parse_set_state(2, "unreadable store") == Failed(2, "unreadable store")
+
+
+def test_land_lease_name():
+    assert store_cli.land_lease_name("t1") == "land:t1"
+
+
+def test_edge_set_state_with_expect_returns_a_precondition_failure_without_raising(monkeypatch, tmp_path):
+    seen = []
+    body = '{"ok": false, "state": "review"}'
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 3, stdout=body, stderr="")
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(PY))
+    monkeypatch.setattr(store_cli.subprocess, "run", fake_run)
+    assert store_cli.set_state(tmp_path, "i", "t", "done", "me", expected="review") == StateRefused(body, "review")
+    assert seen == [[*HEAD, "set-state", "i", "t", "done", "--by", "me", "--expect", "review",
+                     "--store-url", store_cli._store_url(tmp_path)]]
