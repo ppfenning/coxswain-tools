@@ -9,13 +9,33 @@ from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import launch_argv, rsync_push_argv, ssh_argv
 from agent_tools.remote_lane import remote_record
 
-__all__ = ["LaunchError", "launch_on_host"]
+__all__ = ["LaunchError", "launch_on_host", "launch_plan"]
 
 
 @dataclass(frozen=True)
 class LaunchError:
     step: str
     message: str
+
+
+def launch_plan(
+    host: LaneHost,
+    initiative: str,
+    run_id: str,
+    label: str,
+    locate: Callable[[str], str] | None = None,
+) -> list[list[str]]:
+    """The rsync argv, then the ssh argv, that `launch_on_host` runs in that order.
+
+    rsync needs the parent of the destination to exist; the copy keeps the local work/<id> layout.
+    `route launch` reads --initiative as a path from its cwd, and an ssh command starts in the home directory."""
+    place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
+    src = f"work/{initiative}"
+    remote_dir = f"{host.workspace_dir.rstrip('/')}/{src}"
+    return [
+        rsync_push_argv(src, place(remote_dir)),
+        ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label)),
+    ]
 
 
 def launch_on_host(
@@ -28,14 +48,11 @@ def launch_on_host(
     locate: Callable[[str], str] | None = None,
     repo: str | None = None,
 ) -> dict | LaunchError:
-    """rsync needs the parent of the destination to exist; the copy keeps the local work/<id> layout."""
-    place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
-    src = f"work/{initiative}"
-    pushed = run(rsync_push_argv(src, place(f"{host.workspace_dir.rstrip('/')}/{src}")))
+    rsync_argv, ssh_cmd = launch_plan(host, initiative, run_id, label, locate)
+    pushed = run(rsync_argv)
     if pushed != 0:
-        return LaunchError("rsync", f"rsync of {src} to {host.name} exited {pushed}")
-    # `route launch` reads --initiative as a path from its cwd, and an ssh command starts in the home directory.
-    started = run(ssh_argv(host.ssh, launch_argv(f"{host.workspace_dir.rstrip('/')}/{src}", run_id, label)))
+        return LaunchError("rsync", f"rsync of work/{initiative} to {host.name} exited {pushed}")
+    started = run(ssh_cmd)
     if started != 0:
         return LaunchError("ssh", f"starting the lane on {host.name} exited {started}")
     return remote_record(host.name, launched_at, repo)

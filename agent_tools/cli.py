@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -2951,6 +2952,12 @@ def _route_launch(a: argparse.Namespace) -> int:
     pid_path = runs_dir / f"{run_id}.pid"
     trace_dir = runs_dir / f"{run_id}-trace"
     env = route.child_env(dict(os.environ), harness_dir=harness_dir, repo=env_repo, trace_dir=str(trace_dir))
+
+    if host is not None and a.dry_run:
+        for remote_argv in remote_launch.launch_plan(host, Path(a.initiative).name, run_id, _holder_label(a)):
+            print(f"dry-run: {shlex.join(remote_argv)}")
+        print(f"host {host.name}")
+        return 0
 
     if a.dry_run:
         print(f"dry-run: {' '.join(argv)}")
