@@ -43,6 +43,7 @@ from agent_tools import (
     install_exec,
     lake_config,
     land,
+    land_lease,
     lane_hosts,
     leader_chat,
     notify,
@@ -88,6 +89,7 @@ from agent_tools import (
     store_url,
     tracker,
     usage_window,
+    work_state,
 )
 from agent_tools import runs as runs_module
 
@@ -1349,7 +1351,10 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         line = _mirror_landed(step)
         if line:
             print(line)
-        _close_approved_item(step.get("item"), runs_dir=record_path.resolve().parents[3], by=step.get("by", _UNLABELED), merged=True)
+        stop = _close_approved_item(step.get("item"), runs_dir=record_path.resolve().parents[3], by=step.get("by", _UNLABELED),
+                                    merged=True, mode=step.get("mode", "files"))
+        if stop is not None:
+            return False, stop
         return True, f"{step['task']} marked landed at {record_path}"
     if kind == "route_sync":
         # A failed sync is reported, never a failed land: after the merge nothing is undone,
@@ -1423,25 +1428,33 @@ def _resolved_tracker(profile: dict, runs_dir: Path) -> str:
 _UNLABELED = "unlabeled"
 
 
-def _close_approved_item(item_path: str | None, *, runs_dir: Path, by: str, merged: bool = False) -> None:
-    """Moves the item to `done` and mirrors any item left `done`, rerun or not, to the store; `merged` only after a merge step succeeded."""
+def _close_approved_item(item_path: str | None, *, runs_dir: Path, by: str, merged: bool = False, mode: str = "files") -> str | None:
+    """Moves the item to `done` and mirrors any item left `done`, rerun or not, to the store; `merged` only after a merge step succeeded.
+
+    Under `store` the store moves first, as `set-state done --expect approved`, whatever the local file says or even
+    when it is missing; a refusal comes back as the reason, with the item untouched. Else None."""
     if item_path is None:
-        return
+        return None
     item = Path(item_path)
+    if mode == "store":
+        stop = land.set_state_stop(store_cli.set_state(runs_dir, item.absolute().parents[1].name, item.stem, "done", by, expected="approved"))
+        if stop is not None:
+            return stop
     if not item.exists():
-        return
+        return None
     text = item.read_text(encoding="utf-8")
     new_text, message = land.approve_to_done(text, merged=merged)
     if new_text is not None:
         item.write_text(new_text, encoding="utf-8")
     if message:
         print(message)
-    if new_text is None and message is not None:
-        return
+    if mode == "store" or (new_text is None and message is not None):
+        return None
     task = str(route.parse_frontmatter(new_text or text)[0].get("id") or item.stem)
     line = store_cli.mirror_state(runs_dir, item.absolute().parents[1].name, task, "done", by)
     if line is not None:
         print(line)
+    return None
 
 
 _await_checks = land.await_checks
@@ -1518,6 +1531,79 @@ def _runs_review(a: argparse.Namespace) -> int:
     return review_pr.run_review(a.pr, profile, run_id, lambda argv: subprocess.run(argv, capture_output=True, text=True))
 
 
+_LAND_LEASE_TTL_SECONDS = 3600
+_GUARDED_STEPS = ("merge", "mark_done")
+
+
+def _land_approval_stop(mode: str, store_state: str | None, file_state: str | None) -> str | None:
+    """Pure. None when the state the approved check reads is `approved`, else the reason to stop, naming that state."""
+    state = land.approved_state(mode, store_state, file_state)
+    if state == "approved":
+        return None
+    if state == "done":
+        return "land: task is already done; another machine landed it, so nothing is merged"
+    return f"land: task state is {state!r}, not approved; nothing is merged"
+
+
+def _land_store_stop(runs_dir: Path, record: dict, item_path: str | None) -> str | None:
+    """Edge. The store's state and the item's, through the approved check; prints which of the two decided.
+
+    `task_state_of` reads a missing row and a failed read alike as None, so the file line names both causes."""
+    if item_path is None:
+        return "land: refusing, the record names no initiative, so work_state store has no task to check or lease"
+    initiative, task = record["initiative"], record["task"]
+    store_state = run_store.task_state_of(runs_dir, initiative, task)
+    text = _read_text_or_none(Path(item_path))
+    file_state = route.parse_frontmatter(text)[0].get("state") if text else None
+    source = "store" if store_state is not None else f"file (the store returned no row for {initiative}/{task}: none recorded, or the read failed)"
+    print(f"land: state from {source}", file=sys.stderr)
+    return _land_approval_stop("store", store_state, file_state)
+
+
+def _lease_kept(runs_dir: Path, task: str, holder: str, epoch: int, kind: str) -> str | None:
+    """Edge. None when the `land:<task>` lease renews at `epoch` before a guarded step, else the reason to stop."""
+    if kind not in _GUARDED_STEPS:
+        return None
+    result = store_cli.lease_renew(runs_dir, store_cli.land_lease_name(task), holder, epoch, _LAND_LEASE_TTL_SECONDS)
+    if isinstance(result, store_cli.LeaseGranted):
+        return None
+    lost = f"held by {result.holder} at epoch {result.epoch}" if isinstance(result, store_cli.LeaseRefused) else (
+        result.detail if isinstance(result, store_cli.LeaseError) else "the store is not available")
+    return f"land: refusing {kind}, the land lease for {task} could not be renewed: {lost}"
+
+
+_LandWalk = Callable[[Callable[[str], str | None] | None], tuple[int, list[str], str]]
+
+
+def _land_walked(a: argparse.Namespace, runs_dir: Path, mode: str, task: str | None, recheck: Callable[[], str | None],
+                 walk: _LandWalk) -> tuple[int, list[str], str] | None:
+    """`walk(None)` under `files`. Under `store` `recheck` runs again inside the `land:<task>` lease, and
+    the walk renews the lease before `merge` and `mark_done`; the lease is released on every exit.
+
+    None when the lease was refused or could not be taken, or the check under it stopped: the reason is printed and no step ran."""
+    if mode != "store" or task is None:
+        return walk(None)
+    holder = chair.lease_holder(_holder_label(a), os.getpid(), socket.gethostname())
+
+    def body(epoch: int) -> tuple[int, list[str], str] | str:
+        stop = recheck()
+        return stop if stop is not None else walk(lambda kind: _lease_kept(runs_dir, task, holder, epoch, kind))
+
+    ran = land_lease.run_under_land_lease(runs_dir, task, holder, _LAND_LEASE_TTL_SECONDS, body)
+    if isinstance(ran, land_lease.Refused):
+        print(f"land: refusing, {task} is being landed by {ran.holder} (lease epoch {ran.epoch})")
+        return None
+    if isinstance(ran, land_lease.Unavailable):
+        print(f"land: refusing, could not take the land lease for {task}: {ran.detail}")
+        return None
+    if ran.warning:
+        print(ran.warning)
+    if isinstance(ran.value, str):
+        print(ran.value)
+        return None
+    return ran.value
+
+
 def _runs_land(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser()
     runs_dir, reason = _runs_dir_for_land(a)
@@ -1543,7 +1629,8 @@ def _runs_land(a: argparse.Namespace) -> int:
     default_branch = "main"
     repo_facts = {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists()}
     phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, a.run_id))
-    record, item_path = None, None
+    land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
+    record, item_path, lease_task = None, None, None
     if phase:
         phase_record, task_records, task_paths, searched = _land_phase_record(runs_dir, a.run_id, phase)
         if phase_record is None:
@@ -1559,12 +1646,14 @@ def _runs_land(a: argparse.Namespace) -> int:
                                     items=items, task_records=task_records)
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths,
                               umbrella=profile.get("umbrella_dir"))
+        lease_task = f"phase:{initiative}/{phase}"
     else:
         record, searched, count, source = _land_load(runs_dir, a.run_id, a.task)
         if record is None:
             print(f"land: looked in {searched}, found {count} task records, expected 1")
             return 2
         print(f"land: record from {source}", file=sys.stderr)
+        lease_task = record["task"]
         branches = _land_branches(repo, record, default_branch)
         item_path = (str(runs_dir.parent / "work" / record["initiative"] / record["phase"] / f"{record['task']}.md")
                      if record.get("initiative") else None)
@@ -1591,6 +1680,13 @@ def _runs_land(a: argparse.Namespace) -> int:
         print(f"land: refusing, forge {forge_choice} does not accept {', '.join(stale)}; see agent_tools/forge.py")
         return 2
     print(f"forge: {forge_choice}")
+    if land_mode == "store" and record is not None:
+        stop = _land_store_stop(runs_dir, record, item_path)
+        if stop is not None:
+            print(stop)
+            return 2
+    elif land_mode == "store":
+        print(f"land: work_state store leases the phase as {lease_task}; its items are already done, so there is no approved check")
     if _repo_is_dirty(repo):
         print(f"land: refusing, {repo} is dirty")
         return 2
@@ -1613,7 +1709,12 @@ def _runs_land(a: argparse.Namespace) -> int:
         steps = land.resume_steps(steps, decision, cherry_pick["onto"])
         planned = land.resume_steps(planned, decision, cherry_pick["onto"])
     # Steps start here: every return from now on is logged. Earlier returns are not.
-    rc, reached, pr = _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a))
+    def walk(guard):
+        return _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a),
+                             mode=land_mode, guard=guard)
+
+    walked = _land_walked(a, runs_dir, land_mode, lease_task, lambda: _land_store_stop(runs_dir, record, item_path) if record else None, walk)
+    rc, reached, pr = walked if walked is not None else (2, [], "")  # a refused lease stops before any step, and is logged too
     task = record["task"] if record else None
     _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), a.run_id, task, reached, rc, pr))
     _lake_after_land(a, runs_dir, rc, reached)
@@ -1658,20 +1759,24 @@ def _lake_after_land(a: argparse.Namespace, runs_dir: Path, rc: int, reached: Se
 
 
 def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
-                  level: str, no_merge: bool, forge_module=forge_github, by: str = _UNLABELED) -> tuple[int, list[str], str]:
+                  level: str, no_merge: bool, forge_module=forge_github, by: str = _UNLABELED,
+                  mode: str = "files", guard: Callable[[str], str | None] | None = None) -> tuple[int, list[str], str]:
     """Walk `steps`; return the exit code, the step kinds run in order, and the PR url ("" when none opened).
 
-    A pr branch's land worktree is dropped before `merge` and on every stop; the branch itself stays."""
+    A pr branch's land worktree is dropped before `merge` and on every stop; the branch itself stays.
+    `guard(kind)`, when given, runs before each step; a reason back stops the land with exit 2 before that step."""
     built: list[str] = []
     try:
-        return _land_walk(repo, steps, planned, record, item_path, level, no_merge, forge_module, built, by=by)
+        return _land_walk(repo, steps, planned, record, item_path, level, no_merge, forge_module, built, by=by, mode=mode,
+                          guard=guard)
     finally:
         for branch in built:
             _remove_land_worktree(repo, branch)
 
 
 def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
-               level: str, no_merge: bool, forge_module, built: list[str], by: str = _UNLABELED) -> tuple[int, list[str], str]:
+               level: str, no_merge: bool, forge_module, built: list[str], by: str = _UNLABELED,
+               mode: str = "files", guard: Callable[[str], str | None] | None = None) -> tuple[int, list[str], str]:
     pr = ""
     reached: list[str] = []
     for i in range(len(steps)):
@@ -1681,6 +1786,11 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             return 2, reached, pr
         if step["kind"] == "note":
             continue
+        held = guard(step["kind"]) if guard is not None else None
+        if held is not None:
+            print(held)
+            print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
+            return 2, reached, pr
         reached.append(step["kind"])
         if step["kind"] in ("cherry_pick", "reuse_branch"):
             built.append(step.get("onto") or step["branch"])
@@ -1689,7 +1799,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             for branch in built:
                 _remove_land_worktree(repo, branch)
         if step["kind"] == "mark_done":
-            step = {**_mark_done_facts(step, pr, datetime.datetime.now(datetime.UTC).isoformat()), "by": by}
+            step = {**_mark_done_facts(step, pr, datetime.datetime.now(datetime.UTC).isoformat()), "by": by, "mode": mode}
         ok, detail = _execute_land_step(repo, step, forge_module)
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
