@@ -766,6 +766,43 @@ def task_record(runs_dir: Path, run_id: str, phase_id: str, task_id: str) -> dic
     return _task_record_from(done.stdout) if done.returncode == 0 else None
 
 
+_TASK_RECORD_PHASES_SCRIPT = """import sqlite3, sys
+url, *ids = sys.argv[1:]
+sql = "SELECT DISTINCT phase_id FROM task_records WHERE run_id = {0} AND task_id = {0} ORDER BY phase_id"
+if url.startswith(("postgres:", "postgresql:")):
+    import psycopg
+    conn, mark = psycopg.connect(url), "%s"
+else:
+    path = url.removeprefix("sqlite:///")
+    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
+for row in conn.execute(sql.format(mark), ids).fetchall():
+    print(row[0])
+"""
+
+
+def _task_record_phases_argv(python: str, url: str, run_id: str, task_id: str) -> list[str]:
+    """Pure: the argv that prints each phase holding a record for the run and task. The ids are bound parameters."""
+    return [python, "-c", _TASK_RECORD_PHASES_SCRIPT, url, run_id, task_id]
+
+
+def _phases_from(stdout: str) -> list[str]:
+    """Pure: the non-blank lines of the output, in order."""
+    return [line.strip() for line in stdout.splitlines() if line.strip()]
+
+
+def task_record_phases(runs_dir: Path, run_id: str, task: str) -> list[str]:
+    """Edge: the distinct phases whose `task_records` rows name this run and task; empty with no store or on a failed read."""
+    python = _harness_python()
+    if python is None:
+        return []
+    argv = _task_record_phases_argv(str(python), _store_url(Path(runs_dir)), run_id, task)
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return _phases_from(done.stdout) if done.returncode == 0 else []
+
+
 _WORK_ITEMS_COLUMNS = ("initiative", "task_id", "phase", "state", "needs_json", "updated_at", "updated_by")
 
 _WORK_ITEMS_SCRIPT = """import json, sqlite3, sys

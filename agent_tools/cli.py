@@ -974,9 +974,18 @@ def _choose_record(stored: dict | None, filed: dict | None) -> tuple[dict | None
 def _land_load(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | None, str, int, str | None]:
     """Edge: `(record, where, count, source)`, the store first and the file when the store says None.
 
-    The store is asked only when exactly one file names the task, whose parent dir is the phase and stem the task.
+    The store is asked by phase when exactly one file names the task, whose parent dir is the phase and stem the task.
+    With no file and a task given, it is asked which phases hold the task; exactly one phase names a record
+    that has no file yet, and `where` is the path that file would have.
     """
     filed, where, count = _land_record(runs_dir, run_id, task)
+    if count == 0 and task:
+        phases = run_store.task_record_phases(runs_dir, run_id, task)
+        held = run_store.task_record(runs_dir, run_id, phases[0], task) if len(phases) == 1 else None
+        if held is not None:
+            path = runs_dir / run_id / "tasks" / phases[0] / f"{task}.json"
+            return {"run": run_id, "task": task, "phase": phases[0], **held}, str(path), 1, "store"
+        return None, where, count, None
     path = Path(where)
     stored = run_store.task_record(runs_dir, run_id, path.parent.name, path.stem) if count == 1 else None
     if stored is not None:
@@ -1799,6 +1808,10 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             for branch in built:
                 _remove_land_worktree(repo, branch)
         if step["kind"] == "mark_done":
+            if record is not None and not Path(step["path"]).exists():
+                # The store copy is written out as the record file, so the path-derived run, phase and runs_dir below keep working.
+                Path(step["path"]).parent.mkdir(parents=True, exist_ok=True)
+                Path(step["path"]).write_text(json.dumps(record, indent=2), encoding="utf-8")
             step = {**_mark_done_facts(step, pr, datetime.datetime.now(datetime.UTC).isoformat()), "by": by, "mode": mode}
         ok, detail = _execute_land_step(repo, step, forge_module)
         if step.get("before") == "pr_create":
