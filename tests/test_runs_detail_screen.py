@@ -43,6 +43,14 @@ def test_facts_for_is_empty_record_and_tail_with_no_task_or_trace(tmp_path):
     assert facts["alive"] is False
 
 
+def test_facts_for_counts_a_run_alive_when_a_live_lease_names_it_and_no_pidfile_exists(tmp_path):
+    assert facts_for(tmp_path, "r-1", live_runs=lambda: {"r-1"})["alive"] is True
+
+
+def test_facts_for_is_not_alive_with_no_pidfile_and_no_live_lease(tmp_path):
+    assert facts_for(tmp_path, "r-1", live_runs=set)["alive"] is False
+
+
 def test_facts_for_returns_an_empty_record_for_a_torn_write_not_a_raise(tmp_path):
     _write(tmp_path / "r1.pid", "123")
     _write(tmp_path / "r1.log", "n1 verdict: land\n")

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from agent_tools import run_store, runs_top_screen
@@ -61,11 +63,20 @@ def _tail(root: Path, run: str) -> list[str]:
     return _tool_names(events or [])[-3:]
 
 
-def facts_for(runs_dir, run: str, now_alive=None) -> dict:
-    """`now_alive` is the same pid-probe seam as `runs_top_screen.facts`."""
+def _live_runs(root: Path) -> set[str]:
+    """Edge. Runs a live `runs:` lease names, read as of now."""
+    now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {lane.run for lane in run_store.live_lanes(root, now)}
+
+
+def facts_for(runs_dir, run: str, now_alive=None, *, live_runs: Callable[[], set[str]] | None = None) -> dict:
+    """`now_alive` is the same pid-probe seam as `runs_top_screen.facts`. With no pidfile, a live lease naming the run counts it alive; `live_runs` is that seam."""
     root = Path(runs_dir)
     pid = runs_top_screen._read_pid(root / f"{run}.pid")
-    alive = pid is not None and runs_top_screen.is_alive(now_alive, pid, root / f"{run}.pid")
+    if pid is None:
+        alive = run in (live_runs or (lambda: _live_runs(root)))()
+    else:
+        alive = runs_top_screen.is_alive(now_alive, pid, root / f"{run}.pid")
     fact = runs_top_screen._fact(root, run, alive)
     return {
         "run": run,
