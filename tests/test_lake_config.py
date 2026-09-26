@@ -3,7 +3,15 @@ import sys
 
 import pytest
 
-from agent_tools.lake_config import LakeConfig, LakeUnavailable, load_catalog, redact, resolve_lake, resolve_lake_at
+from agent_tools.lake_config import (
+    LakeConfig,
+    LakeUnavailable,
+    iceberg_properties,
+    load_catalog,
+    redact,
+    resolve_lake,
+    resolve_lake_at,
+)
 
 
 def test_both_keys_absent_gives_a_sqlite_catalog_and_a_file_warehouse_in_the_runs_dir():
@@ -58,3 +66,35 @@ def test_load_catalog_returns_a_coxswain_sql_catalog_on_a_temporary_sqlite_file(
     uri = f"sqlite:///{tmp_path / 'lake-catalog.db'}"
     catalog = load_catalog(resolve_lake({"lake_catalog_url": uri, "lake_url": f"file://{tmp_path / 'lake'}"}, tmp_path))
     assert (catalog.name, catalog.properties["uri"]) == ("coxswain", uri)
+
+
+BLOCK = {"endpoint": "http://minio:9000", "region": "us-east-1", "access_key_env": "LAKE_KEY", "secret_key_env": "LAKE_SECRET"}
+
+
+def test_a_block_gives_exactly_the_pyiceberg_s3_properties():
+    assert iceberg_properties(BLOCK, {"LAKE_KEY": "k", "LAKE_SECRET": "s"}) == {
+        "s3.endpoint": "http://minio:9000",
+        "s3.region": "us-east-1",
+        "s3.access-key-id": "k",
+        "s3.secret-access-key": "s",
+        "s3.force-virtual-addressing": "false",
+    }
+
+
+def test_a_named_env_var_that_is_unset_raises_naming_it():
+    with pytest.raises(ValueError, match="LAKE_SECRET"):
+        iceberg_properties(BLOCK, {"LAKE_KEY": "k"})
+
+
+def test_a_literal_secret_in_the_block_is_refused():
+    with pytest.raises(ValueError, match="secret_key"):
+        iceberg_properties({**BLOCK, "secret_key": "hunter2"}, {"LAKE_KEY": "k", "LAKE_SECRET": "s"})
+
+
+def test_no_block_gives_no_properties_and_the_default_local_warehouse_is_unchanged():
+    config = resolve_lake({}, "/runs")
+    assert (iceberg_properties(config.object_store, {}), config.warehouse) == ({}, "file:///runs/lake")
+
+
+def test_the_block_is_carried_as_given_on_the_config():
+    assert resolve_lake({"object_store": BLOCK}, "/runs").object_store == BLOCK
