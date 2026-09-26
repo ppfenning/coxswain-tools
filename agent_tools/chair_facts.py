@@ -95,6 +95,7 @@ def limits_facts(
         "hard_stop_fraction": policy.weekly_hard_stop_fraction,
         "launch_cap": max_in_flight if assessment.verdict in LAUNCHING_VERDICTS else 0,
         "go_degraded": assessment.verdict == "go_degraded",
+        "five_hour_fraction": assessment.spent_fraction,
     }
 
 

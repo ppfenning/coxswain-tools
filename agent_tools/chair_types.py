@@ -23,6 +23,7 @@ class LimitsFacts(TypedDict):
     hard_stop_fraction: float
     launch_cap: int
     go_degraded: bool
+    five_hour_fraction: float | None
 
 
 class DispatchFacts(TypedDict):
