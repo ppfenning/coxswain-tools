@@ -11,7 +11,15 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("pyiceberg_core")
 
 from agent_tools.lake_config import LakeConfig, load_catalog
-from agent_tools.lake_doctor import Check, _fail, _table_checks, run_checks, sqlite_catalog_path, verdict
+from agent_tools.lake_doctor import (
+    Check,
+    _fail,
+    _object_store_check,
+    _table_checks,
+    run_checks,
+    sqlite_catalog_path,
+    verdict,
+)
 from agent_tools.lake_sync import HISTORY, sync
 from agent_tools.lake_tables import TABLES, ensure_tables
 
@@ -153,3 +161,15 @@ def test_a_missing_local_warehouse_fails(config, tmp_path):
     ensure_tables(load_catalog(config))
     shutil.rmtree(tmp_path / "wh")
     assert by_name(run_checks(config))["warehouse"].status == "fail"
+
+
+def test_the_object_store_row_names_the_endpoint_and_which_env_vars_are_set_and_never_a_value(config):
+    block = {"endpoint": "http://minio:9000", "access_key_env": "LAKE_KEY", "secret_key_env": "LAKE_SECRET"}
+    cfg = LakeConfig(config.catalog_uri, config.warehouse, block)
+    assert _object_store_check(cfg, {"LAKE_KEY": "abc123"}) == [
+        Check("object store", "warn", "endpoint http://minio:9000; LAKE_KEY set; LAKE_SECRET unset")
+    ]
+
+
+def test_no_object_store_block_gives_no_row(config):
+    assert _object_store_check(config, {}) == []
