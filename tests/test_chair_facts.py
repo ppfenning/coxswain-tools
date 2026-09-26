@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 from agent_tools import pacing
 from agent_tools.chair import lease_holder
-from agent_tools.chair_facts import FactsDeps, gather_facts, harness_failures, lease_facts
+from agent_tools.chair_facts import FactsDeps, gather_facts, harness_failures, lease_facts, limits_facts
 from agent_tools.chair_plan_recover import plan_recover
 from agent_tools.chair_types import Facts
 
@@ -66,7 +66,13 @@ def test_weekly_spend_of_85_percent_is_a_hard_stop_with_no_launches():
         "hard_stop_fraction": 0.85,
         "launch_cap": 0,
         "go_degraded": False,
+        "five_hour_fraction": 0.01,
     }
+
+
+def test_five_hour_fraction_is_the_assessments_spent_fraction():
+    assessment = pacing.Assessment(0.42, 0.5, 42.0, 10.0, "go", "deep", "high", None, "on pace")
+    assert limits_facts(assessment, POLICY, _window(10.0, 168), 2)["five_hour_fraction"] == 0.42
 
 
 def test_weekly_spend_under_the_fraction_launches_up_to_max_in_flight():
