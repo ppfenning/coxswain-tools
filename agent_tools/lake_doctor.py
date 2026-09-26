@@ -6,7 +6,8 @@ Module level imports no pyiceberg: the lake extra is optional and `run_checks` s
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import os
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -96,8 +97,28 @@ def sqlite_catalog_path(uri: str) -> Path | None:
     return Path(path) if path and path != ":memory:" else None
 
 
-def run_checks(config: LakeConfig) -> list[Check]:
-    """Edge. Every check for `config`; it returns early where nothing further is reachable."""
+def _object_store_check(config: LakeConfig, env: Mapping[str, str]) -> list[Check]:
+    """One row for the object_store block: the endpoint and whether each named env var is set. No block gives no row.
+
+    Only names and set/unset reach the detail; no value is read into it."""
+    block = config.object_store
+    if not block:
+        return []
+    endpoint = block.get("endpoint")
+    names = [n for key in ("access_key_env", "secret_key_env") if isinstance(n := block.get(key), str) and n]
+    states = [f"{n} {'set' if env.get(n) else 'unset'}" for n in names]
+    shown = f"endpoint {redact(endpoint)}" if isinstance(endpoint, str) and endpoint else "no endpoint"
+    unset = any(not env.get(n) for n in names)
+    return [Check("object store", WARN if unset else OK, "; ".join([shown, *states]))]
+
+
+def run_checks(config: LakeConfig, env: Mapping[str, str] = os.environ) -> list[Check]:
+    """Edge. The object store row, then every lake check for `config`."""
+    return [*_object_store_check(config, env), *_lake_checks(config, env)]
+
+
+def _lake_checks(config: LakeConfig, env: Mapping[str, str]) -> list[Check]:
+    """Edge. Every lake check for `config`; it returns early where nothing further is reachable."""
     try:
         # Imported before the catalog-file guard: a missing extra must fail, not read as "no catalog yet".
         from pyiceberg.catalog.sql import SqlCatalog  # noqa: F401
@@ -110,7 +131,7 @@ def run_checks(config: LakeConfig) -> list[Check]:
     if file is not None and not file.exists():
         return [Check("catalog", WARN, f"no catalog yet; {_SYNC_HINT}")]
     try:
-        catalog = load_catalog(config)
+        catalog = load_catalog(config, env)
         namespaces = catalog.list_namespaces()
     except LakeUnavailable as err:
         return [Check("lake extra", FAIL, str(err))]
