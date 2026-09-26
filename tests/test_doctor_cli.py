@@ -357,13 +357,12 @@ def _fake_schema_package(tmp_path, monkeypatch, *, cartridges, graphs):
     monkeypatch.delitem(sys.modules, "harness", raising=False)
 
 
-def test_a_fresh_install_fails_only_the_store_row_until_the_first_run_creates_the_store(tmp_path, monkeypatch, capsys):
+def test_a_fresh_install_passes_the_store_row_with_no_runs_yet(tmp_path, monkeypatch, capsys):
     profile, *_ = _good_setup(tmp_path, monkeypatch)
     (tmp_path / "workspace" / "runs" / "cox.db").unlink()
     rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
-    failing = {name: r["detail"] for name, r in _rows(capsys).items() if not r["ok"]}
-    assert rc == 1
-    assert failing == {"store": "no store yet (it is created by the first run)"}
+    assert _rows(capsys)["store"] == {"check": "store", "ok": True, "detail": "sqlite, no runs yet (the first run creates it)"}
+    assert rc == 0
 
 
 def test_a_malformed_storage_url_fails_the_store_row_without_echoing_it(tmp_path, monkeypatch, capsys):

@@ -3336,19 +3336,20 @@ def _store_facts(provider_profile: str, workspace_dir: str) -> dict:
     try:
         postgres = store_dialect.is_postgres(url)
     except ValueError:  # urlsplit rejects e.g. an unclosed `[`; the message would quote the URL
-        return {"kind": kind, "reachable": False, "runs": None, "error": "storage_url is not a valid URL"}
+        return {"kind": kind, "reachable": False, "runs": None, "fresh": False, "error": "storage_url is not a valid URL"}
     # `other` is a bare path with no scheme, which `connect_readonly_url` opens as a SQLite file.
     if not postgres and kind not in ("sqlite", "other"):
-        return {"kind": kind, "reachable": False, "runs": None,
+        return {"kind": kind, "reachable": False, "runs": None, "fresh": False,
                 "error": f"unsupported store scheme {kind}: storage_url must be a postgresql:// or sqlite:/// URL"}
     if not postgres and not _sqlite_store_file(url).exists():
-        return {"kind": kind, "reachable": False, "error": _NO_STORE_YET, "runs": None}
+        return {"kind": kind, "reachable": False, "error": _NO_STORE_YET, "runs": None, "fresh": True}
     try:
         with contextlib.closing(store_dialect.connect_readonly_url(_with_connect_timeout(url) if postgres else url)) as conn:
             runs = int(conn.execute("SELECT count(*) AS n FROM runs").fetchone()["n"])
     except Exception as exc:  # any driver failure is the answer this row reports
-        return {"kind": kind, "reachable": False, "error": _store_error(exc), "runs": None}
-    return {"kind": kind, "reachable": True, "error": None, "runs": runs}
+        error = _store_error(exc)
+        return {"kind": kind, "reachable": False, "error": error, "runs": None, "fresh": error == _NO_RUNS_TABLE}
+    return {"kind": kind, "reachable": True, "error": None, "runs": runs, "fresh": False}
 
 
 def _workspace_facts(workspace_dir: str) -> dict:
