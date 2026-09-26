@@ -760,3 +760,86 @@ def test_the_task_record_script_reads_a_row_from_a_sqlite_store(tmp_path):
     miss = subprocess.run(argv[:-1] + ["t2"], capture_output=True, text=True)
     assert run_store._task_record_from(hit.stdout) == {"task": "t1"}
     assert run_store._task_record_from(miss.stdout) is None
+
+
+def test_work_items_argv_without_a_filter_is_the_python_the_script_and_the_url():
+    assert run_store._work_items_argv("/h/python", "sqlite:///s.db", None) == ["/h/python", "-c", run_store._WORK_ITEMS_SCRIPT, "sqlite:///s.db"]
+
+
+def test_work_items_argv_with_a_filter_ends_in_the_initiative_as_an_argument():
+    assert run_store._work_items_argv("/h/python", "sqlite:///s.db", "wsts")[3:] == ["sqlite:///s.db", "wsts"]
+
+
+def test_work_items_script_selects_the_seven_columns_from_work_items_and_never_writes():
+    script = run_store._WORK_ITEMS_SCRIPT
+    assert "SELECT initiative, task_id, phase, state, needs_json, updated_at, updated_by FROM work_items" in script
+    assert "initiative = {0}" in script
+    assert "INSERT" not in script and "UPDATE" not in script and "DELETE" not in script
+
+
+def test_work_items_from_two_json_lines_is_two_dicts():
+    assert run_store._work_items_from('{"task_id": "a"}\n{"task_id": "b"}\n') == [{"task_id": "a"}, {"task_id": "b"}]
+
+
+def test_work_items_from_keeps_an_extra_column():
+    assert run_store._work_items_from('{"task_id": "a", "extra": 1}') == [{"task_id": "a", "extra": 1}]
+
+
+def test_work_items_from_skips_blank_non_json_and_non_object_lines():
+    assert run_store._work_items_from('\nnot json\n[1]\n3\n{"task_id": "a"}\n') == [{"task_id": "a"}]
+
+
+def test_work_items_from_empty_output_is_empty():
+    assert run_store._work_items_from("") == []
+
+
+def test_work_items_runs_the_builders_argv_and_parses_the_output(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, result=done(0, '{"task_id": "a", "state": "done"}\n'))
+    assert run_store.work_items(tmp_path) == [{"task_id": "a", "state": "done"}]
+    assert calls == [run_store._work_items_argv("/h/python", "sqlite:///s.db", None)]
+
+
+def test_work_items_passes_the_initiative_filter_to_the_argv(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, result=done(0, ""))
+    run_store.work_items(tmp_path, "wsts")
+    assert calls == [run_store._work_items_argv("/h/python", "sqlite:///s.db", "wsts")]
+
+
+def test_work_items_is_empty_for_a_store_without_the_table(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=types.SimpleNamespace(returncode=1, stdout="", stderr="sqlite3.OperationalError: no such table: work_items"))
+    assert run_store.work_items(tmp_path) == []
+
+
+def test_work_items_is_empty_without_a_harness_python_and_runs_nothing(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, python=None)
+    assert run_store.work_items(tmp_path) == []
+    assert calls == []
+
+
+@pytest.mark.parametrize("error", [OSError("gone"), subprocess.TimeoutExpired("x", 60)])
+def test_work_items_is_empty_when_the_harness_cannot_run(tmp_path, monkeypatch, error):
+    stub_harness(monkeypatch, error=error)
+    assert run_store.work_items(tmp_path) == []
+
+
+def test_work_items_is_empty_for_an_unreadable_store(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=types.SimpleNamespace(returncode=1, stdout="", stderr="sqlite3.OperationalError: unable to open database file"))
+    assert run_store.work_items(tmp_path) == []
+
+
+def test_the_work_items_script_reads_rows_from_a_sqlite_store_and_fails_without_the_table(tmp_path):
+    db = tmp_path / "s.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE work_items (initiative, task_id, phase, state, needs_json, updated_at, updated_by, extra)")
+    conn.execute("INSERT INTO work_items VALUES ('wsts', 't1', 'p1', 'done', '[]', '2026-09-25', 'me', 'x')")
+    conn.execute("INSERT INTO work_items VALUES ('other', 't2', 'p1', 'open', '[]', '2026-09-25', 'me', 'y')")
+    conn.commit()
+    conn.close()
+    every = subprocess.run(run_store._work_items_argv(sys.executable, str(db), None), capture_output=True, text=True)
+    one = subprocess.run(run_store._work_items_argv(sys.executable, str(db), "wsts"), capture_output=True, text=True)
+    assert [r["task_id"] for r in run_store._work_items_from(every.stdout)] == ["t1", "t2"]
+    assert [r["task_id"] for r in run_store._work_items_from(one.stdout)] == ["t1"]
+    bare = tmp_path / "bare.db"
+    sqlite3.connect(bare).close()
+    absent = subprocess.run(run_store._work_items_argv(sys.executable, str(bare), None), capture_output=True, text=True)
+    assert absent.returncode != 0 and run_store._work_items_from(absent.stdout) == []

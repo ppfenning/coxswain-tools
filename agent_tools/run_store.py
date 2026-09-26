@@ -763,6 +763,50 @@ def task_record(runs_dir: Path, run_id: str, phase_id: str, task_id: str) -> dic
     return _task_record_from(done.stdout) if done.returncode == 0 else None
 
 
+_WORK_ITEMS_COLUMNS = ("initiative", "task_id", "phase", "state", "needs_json", "updated_at", "updated_by")
+
+_WORK_ITEMS_SCRIPT = """import json, sqlite3, sys
+url, *want = sys.argv[1:]
+sql = "SELECT {columns} FROM work_items" + (" WHERE initiative = {0}" if want else "")
+if url.startswith(("postgres:", "postgresql:")):
+    import psycopg
+    conn, mark = psycopg.connect(url), "%s"
+else:
+    path = url.removeprefix("sqlite:///")
+    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
+cur = conn.execute(sql.format(mark), want)
+names = [d[0] for d in cur.description]
+for row in cur.fetchall():
+    print(json.dumps(dict(zip(names, row)), default=str))
+""".replace("{columns}", ", ".join(_WORK_ITEMS_COLUMNS))
+
+
+def _work_items_argv(python: str, url: str, initiative: str | None) -> list[str]:
+    """Pure: the argv that prints `work_items` rows as JSON lines. The initiative is a bound argument, never SQL text."""
+    return [python, "-c", _WORK_ITEMS_SCRIPT, url, *([] if initiative is None else [initiative])]
+
+
+def _work_items_from(stdout: str) -> list[dict]:
+    """Pure: the JSON-object lines of the output whole, so extra columns pass through. Anything else is skipped."""
+    parsed = map(_task_record_from, stdout.splitlines())
+    return [row for row in parsed if row is not None]
+
+
+def work_items(runs_dir: Path, initiative: str | None = None) -> list[dict]:
+    """Edge: `work_items` rows through the harness python, optionally for one initiative.
+
+    Empty when the table, the harness or the store is missing or unreadable, so an old store reads as an empty one."""
+    python = _harness_python()
+    if python is None:
+        return []
+    argv = _work_items_argv(str(python), _store_url(Path(runs_dir)), initiative)
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return _work_items_from(done.stdout) if done.returncode == 0 else []
+
+
 def _import_pyarrow() -> tuple[Any, Any]:
     """The only place pyarrow is imported: `(pyarrow.fs, pyarrow.parquet)`, else TracesUnavailable naming the extra."""
     try:
