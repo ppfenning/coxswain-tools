@@ -94,6 +94,7 @@ cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [
 cox route pull [--profile PROFILE] [--source SOURCE] [--dry-run]   file intake tickets from a source, once per link
 cox route lint INITIATIVE_DIR [--repo REPO]   static ticket lint over a filed initiative, work-shape.md §3
 cox route groups [--profile PROFILE]   print the newest plans/intake-groups/<date>.md file, work-shape.md §5
+cox route drift [--profile PROFILE] [--json]   items whose store state and file state differ
 cox route chair take [--profile PROFILE] [--label LABEL] [--pid PID] [--steal]   take the chair lock if no live chair holds it
 cox route chair beat [--profile PROFILE] [--label LABEL] [--pid PID] [--run RUN]   refresh the chair lock's heartbeat
 cox route chair release [--profile PROFILE] [--label LABEL] [--pid PID]   release the chair lock this session holds

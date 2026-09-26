@@ -55,6 +55,7 @@ from agent_tools import (
     remote_launch,
     review_pr,
     route,
+    route_drift,
     route_sync,
     route_sync_gh,
     router,
@@ -2020,6 +2021,33 @@ def _status_rows_for(runs_dir: Path) -> list:
     runs = _with_remote_lanes(runs_dir, route.run_entries(pids, alive, started, _heartbeats(runs_dir, pids)))
     summaries = {p.stem: epic.summarize_log(_read_text_or_none(p) or "") for p in runs_dir.glob("*.log")}
     return _with_lane_fields(route.status_rows(route.status_entries(runs, summaries)), runs, _now_iso())
+
+
+def _route_drift(a: argparse.Namespace) -> int:
+    """Report only: exits 0 whether or not the store and the files disagree."""
+    profile_path = _profile_path(a)
+    text = _read_text_or_none(profile_path)
+    if text is None:
+        print(f"routing: no profile at {profile_path}")
+        return 2
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError as exc:
+        print(f"routing: profile unreadable: {exc}")
+        return 2
+    workspace = profile.get("workspace_dir", "")
+    if not workspace:
+        print(f"routing: workspace_dir not set in profile {profile_path}")
+        return 2
+    ws = Path(workspace).expanduser()
+    rows = run_store.work_items(ws / "runs")
+    if not rows:
+        print("store has no work_items")
+        return 0
+    files = [(item["initiative"], item["id"], item["state"]) for item in _work_items(ws)]
+    found = route_drift.drift(files, rows)
+    print(route_drift.format_json(found) if a.json else route_drift.format_text(found))
+    return 0
 
 
 def _route_status(a: argparse.Namespace) -> int:
@@ -4706,6 +4734,11 @@ ROUTE_COMMANDS = [
         "groups", "route", "print the newest plans/intake-groups/<date>.md file, work-shape.md §5",
         (commands.Arg(("--profile",)),),
         _route_groups, False, (),
+    ),
+    commands.Command(
+        "drift", "route", "items whose store state and file state differ",
+        (commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"})),
+        _route_drift, False, (),
     ),
     commands.Command(
         "chair", "route", "the chair lock for the landing loop (runs/chair.json)", (), None, False, (),
