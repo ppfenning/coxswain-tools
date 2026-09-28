@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime
 
-from agent_tools import cli, host_cmd
+from agent_tools import cli, host_cmd, run_store
 from agent_tools.lane_hosts import LaneHost
 
 NOW = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
@@ -27,6 +27,34 @@ def test_a_host_that_never_beat_reads_never_and_login_unknown():
 
 def test_versions_report_keeps_a_missing_claude_as_null():
     assert host_cmd.versions_report("0.20.0", "v1", "v2", None, None)["claude"] is None
+
+
+def test_a_draining_host_with_no_live_lane_reads_drained():
+    row = {**HOST_A, "state": "draining"}
+    assert host_cmd.format_host_list([row], NOW, {"host-a": 0}) == ["host-a  drained  cap 8  beat 2m ago  login ok"]
+
+
+def test_a_draining_host_with_a_live_lane_still_reads_draining():
+    row = {**HOST_A, "state": "draining"}
+    assert host_cmd.format_host_list([row], NOW, {"host-a": 1}) == ["host-a  draining  cap 8  beat 2m ago  login ok"]
+
+
+def test_an_active_host_is_unaffected_by_live_by_host():
+    assert host_cmd.format_host_list([HOST_A], NOW, {"host-a": 0}) == ["host-a  active  cap 8  beat 2m ago  login ok"]
+
+
+def test_a_draining_row_is_never_a_lane_host_no_matter_how_many_lanes_it_still_has():
+    # host_rows_to_lane_hosts takes no live-lane count: a draining row is dropped on `state` alone,
+    # the guarantee that already keeps a draining host from receiving new lanes.
+    row = {**HOST_A, "state": "draining"}
+    assert host_cmd.host_rows_to_lane_hosts([row]) == ()
+
+
+def test_the_host_list_counts_this_machines_own_lanes_under_its_own_row_name():
+    lanes = [run_store.Lane("r1", None, "t", "t"), run_store.Lane("r2", "host-a", "t", "t"), run_store.Lane("r3", "pi", "t", "t")]
+    live = cli._live_by_host_name(lanes, "host-a")
+    assert live == {"host-a": 2, "pi": 1}
+    assert host_cmd.format_host_list([{**HOST_A, "state": "draining"}], NOW, live) == ["host-a  draining  cap 8  beat 2m ago  login ok"]
 
 
 def test_a_gather_that_cannot_run_is_null_and_never_raises():
