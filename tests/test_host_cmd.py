@@ -43,6 +43,25 @@ def test_add_argv_carries_weight_and_capabilities_the_same_way_capacity_does():
     ]
 
 
+def test_capacity_upsert_argv_changes_only_capacity_and_never_sends_a_state():
+    row = {"name": "host-a", "ssh": "host-a.tail", "state": "draining", "weight": 5, "capabilities": ["go", "rust"]}
+    assert host_cmd.capacity_upsert_argv(row, 0, "chair") == [
+        "host", "upsert", "host-a", "--ssh", "host-a.tail", "--capacity", "0",
+        "--weight", "5", "--capabilities", "go,rust", "--by", "chair",
+    ]
+
+
+def test_local_host_missing_is_true_only_when_no_row_names_the_host():
+    assert host_cmd.local_host_missing([], "host-b") is True
+    assert host_cmd.local_host_missing([{"name": "host-b"}], "host-b") is False
+
+
+def test_local_host_add_argv_uses_the_hostname_as_its_own_ssh_destination():
+    assert host_cmd.local_host_add_argv("host-b", 8, "chair") == [
+        "host", "upsert", "host-b", "--ssh", "host-b", "--capacity", "8", "--by", "chair",
+    ]
+
+
 def test_a_host_that_never_beat_reads_never_and_login_unknown():
     row = {**HOST_A, "beat_at": None, "versions_json": None}
     assert host_cmd.format_host_list([row], NOW) == ["host-a  active  cap 8  beat never  login ?"]
