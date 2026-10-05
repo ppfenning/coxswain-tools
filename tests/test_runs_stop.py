@@ -9,6 +9,9 @@ from agent_tools.runs_stop import stop_kill_argv, stop_run
 def test_stop_kill_argv_literal():
     assert stop_kill_argv("host-a.tail", "/home/x/ws/runs/r-1.pid") == [
         "ssh",
+        "-o", "ConnectTimeout=30",
+        "-o", "ServerAliveInterval=10",
+        "-o", "ServerAliveCountMax=3",
         "host-a.tail",
         "sh -c 'kill -TERM $(cat /home/x/ws/runs/r-1.pid)'",
     ]
