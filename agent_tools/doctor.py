@@ -4,11 +4,11 @@ phase) builds a Facts mapping and hands it to `checks`."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from agent_tools import records, route, schema
 
-__all__ = ["checks", "exit_code", "parquet_line", "render"]
+__all__ = ["checks", "exit_code", "freshness_rows", "parquet_line", "render"]
 
 _MISSING = object()
 _SKIPPED = "skipped: no profile"
@@ -306,6 +306,27 @@ def checks(facts: Mapping) -> list[dict]:
         _schema_row(facts, cascade),
         _cast_row(facts, cascade),
     ]
+
+
+_FRESHNESS_CHECK = "model freshness"
+_FRESHNESS_SKIPPED = "skipped: cartridges core too old for the model freshness check"
+
+
+def _warn_row(detail: str) -> dict:
+    return {"check": _FRESHNESS_CHECK, "ok": True, "warn": True, "detail": detail}
+
+
+def freshness_rows(
+    profile: Mapping,
+    catalog: Mapping,
+    vendor_ids: list[str] | None,
+    freshness_fn: Callable[..., list[str]] | None,
+) -> list[dict]:
+    """Warning rows keep `ok` True so `exit_code` ignores them; a None `freshness_fn` gives one skip row."""
+    if freshness_fn is None:
+        return [_warn_row(_FRESHNESS_SKIPPED)]
+    lines = freshness_fn(profile, catalog) if vendor_ids is None else freshness_fn(profile, catalog, vendor_ids)
+    return [_warn_row(line) for line in lines]
 
 
 def exit_code(rows: list[dict]) -> int:
