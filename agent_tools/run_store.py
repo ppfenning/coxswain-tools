@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_tools import epic
+from agent_tools import analytics_snapshot, epic
 from agent_tools.lake_config import _LITERAL_SECRETS, _from_env
 from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeholder
 from agent_tools.store_url import TracesRoot, profile_traces_root, read_provider_profile, resolve_store_url
@@ -601,6 +601,17 @@ def rescue_failures(runs_dir: Path) -> list[dict[str, Any]]:
         conn.close()
 
 
+_SPANS_SQL = (
+    "SELECT run_id, launched_at, ended_at FROM runs "
+    "WHERE launched_at IS NOT NULL AND (ended_at IS NULL OR ended_at >= {p}) ORDER BY launched_at, run_id"
+)
+
+
+def _snapshot_max_age() -> int:
+    """Edge. `analytics.snapshot_max_age_s` of the routing profile (`$AGENT_TOOLS_PROFILE` or the default); 300 when unset."""
+    return analytics_snapshot.max_age_s(read_provider_profile(os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE))
+
+
 def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
     """Edge. (run_id, launched_at, ended_at) of runs still open or ended at or after `since`, by launch time; empty with no store or an unreadable one.
 
@@ -617,22 +628,29 @@ def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
         except _db_errors():
             return None
 
+    def candidates() -> list[tuple]:
+        rows = conn.execute(_sql(_SPANS_SQL, p), (since,)).fetchall()
+        return [(r["run_id"], r["launched_at"], r["ended_at"]) for r in rows]
+
     spans = []
     try:
-        rows = conn.execute(
-            _sql(
-                "SELECT run_id, launched_at, ended_at FROM runs "
-                "WHERE launched_at IS NOT NULL AND (ended_at IS NULL OR ended_at >= {p}) ORDER BY launched_at",
-                p,
-            ),
+        # Only this summary read goes to the snapshot; liveness (`_run_ended`) and `last_call` stay on the live store.
+        rows = analytics_snapshot.query(
+            _sql(_SPANS_SQL, "?"),
             (since,),
-        ).fetchall()
-        for row in rows:
-            run_id, launched_at, ended_at = row["run_id"], row["launched_at"], row["ended_at"]
-            if ended_at is None and _run_ended(Path(runs_dir), run_id, None):
+            runs_dir=Path(runs_dir),
+            store_url=_store_url(Path(runs_dir)),
+            now=time.time(),
+            max_age_s=_snapshot_max_age(),
+            fallback=candidates,
+        )
+        for run_id, launched_at, stamped in rows:
+            if stamped is None and _run_ended(Path(runs_dir), run_id, None):
                 ended_at = last_call(run_id) or launched_at
                 if ended_at < since:
                     continue
+            else:
+                ended_at = stamped
             spans.append((run_id, launched_at, ended_at))
     except _db_errors():
         return []
