@@ -1092,6 +1092,68 @@ def task_state_of(runs_dir: Path, initiative: str, task: str) -> str | None:
     return task_state(work_items(runs_dir, initiative), initiative, task)
 
 
+@dataclass(frozen=True)
+class Landed:
+    rows: tuple[dict[str, str], ...]  # run_id, task_id, ts; one per (run_id, task_id)
+    source: str  # "work_items" or "land_records"
+
+
+def _one_land_per_key(rows: Sequence[Mapping[str, str]]) -> tuple[dict[str, str], ...]:
+    """Pure: one row per (run_id, task_id), keeping the earliest ts, ordered by (ts, run_id, task_id)."""
+    first = {}
+    for row in sorted(rows, key=lambda r: (r["ts"], r["run_id"], r["task_id"]), reverse=True):
+        first[(row["run_id"], row["task_id"])] = dict(row)
+    return tuple(sorted(first.values(), key=lambda r: (r["ts"], r["run_id"], r["task_id"])))
+
+
+def _done_work_item_lands(conn: Any, token: str, since: str, until: str) -> list[dict[str, str]]:
+    """Edge. Done work items stamped `since <= updated_at < until`."""
+    # A work item carries no run_id, so its initiative stands in as run_id; (initiative, task_id) is the table's own key.
+    sql = _sql("SELECT initiative, task_id, updated_at FROM work_items WHERE state = {p} AND updated_at >= {p} AND updated_at < {p}", token)
+    rows = conn.execute(sql, ("done", since, until)).fetchall()
+    return [{"run_id": r["initiative"], "task_id": r["task_id"], "ts": r["updated_at"]} for r in rows if r["updated_at"]]
+
+
+def _land_record_row(line: str, since: str, until: str) -> dict[str, str] | None:
+    """Pure: a `land.jsonl` line as run_id, task_id and ts when it merged (exit 0, `mark_done` reached, a task) inside the window."""
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(row, dict) or row.get("exit") != 0 or "mark_done" not in (row.get("steps_reached") or []):
+        return None
+    run, task, ts = row.get("run"), row.get("task"), row.get("ts")
+    if not (task and isinstance(run, str) and isinstance(ts, str) and since <= ts < until):
+        return None
+    return {"run_id": run, "task_id": str(task), "ts": ts}
+
+
+def _land_record_lands(runs_dir: Path, since: str, until: str) -> list[dict[str, str]]:
+    """Edge. Merged lands in `runs_dir/land.jsonl` inside the window; empty when the file is absent."""
+    try:
+        lines = (Path(runs_dir) / "land.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return [row for row in (_land_record_row(line, since, until) for line in lines) if row is not None]
+
+
+def landed_tasks(runs_dir: Path, since: str, until: str) -> Landed:
+    """Edge. Tasks landed in `since <= ts < until` (ISO text): done work items, else `land.jsonl` lands; never both."""
+    opened = _open(runs_dir)
+    done: list[dict[str, str]] = []
+    if opened is not None:
+        conn, token = opened
+        try:
+            done = _done_work_item_lands(conn, token, since, until)
+        except _db_errors():
+            done = []
+        finally:
+            conn.close()
+    if done:
+        return Landed(_one_land_per_key(done), "work_items")
+    return Landed(_one_land_per_key(_land_record_lands(runs_dir, since, until)), "land_records")
+
+
 _QUEUE_COLUMNS = ("kind", "initiative", "task_id", "phase", "state", "needs", "title", "surfaces", "body", "extra")
 _CLAIM_KEYS = ("holder", "epoch", "expires_at")
 _HELD_EXIT = 4
