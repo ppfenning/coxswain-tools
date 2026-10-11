@@ -175,6 +175,51 @@ def _read_checks(repo: Path, ref: str = "HEAD"):
     return True, tuple(bodies)
 
 
+def _suite_row(suite: dict, run: dict) -> dict:
+    """A suite has no page url of its own, so its checks page is built from the repository url, head sha and suite id."""
+    repo_url, sha, sid = (suite.get("repository") or {}).get("html_url"), suite.get("head_sha"), suite.get("id")
+    page = f"{repo_url}/commit/{sha}/checks?check_suite_id={sid}" if repo_url and sha and sid is not None else None
+    return {"workflow": run.get("name") or (suite.get("app") or {}).get("name"),
+            "conclusion": suite.get("conclusion") or None,
+            "url": run.get("html_url") or page}
+
+
+def parse_check_suites(suites, runs) -> tuple[dict, ...]:
+    """Workflow name and run url come from the run sharing `check_suite_id`, else the suite's app name and checks page."""
+    rows = runs.get("workflow_runs") if isinstance(runs, dict) else None
+    by_suite = {r["check_suite_id"]: r for r in rows or [] if isinstance(r, dict) and r.get("check_suite_id") is not None}
+    listed = suites.get("check_suites") if isinstance(suites, dict) else None
+    return tuple(_suite_row(s, by_suite.get(s.get("id"), {})) for s in listed or [] if isinstance(s, dict))
+
+
+def check_suites_argvs(sha: str) -> tuple[list[str], list[str]]:
+    root = "repos/{owner}/{repo}"
+    return (["gh", "api", "--paginate", f"{root}/commits/{sha}/check-suites?per_page=100"],
+            ["gh", "api", "--paginate", f"{root}/actions/runs?head_sha={sha}&per_page=100"])
+
+
+def _read_pages(argv: list[str], repo: Path, key: str) -> dict:
+    out = _gh_run(argv, repo, timeout=READ_TIMEOUT_S).stdout or ""
+    body = land.merge_pages(out, key)
+    if body is None:
+        raise ForgeError(f"unreadable output from {argv[-1]}: {out.strip()}")
+    return body
+
+
+def _read_runs(argv: list[str], repo: Path) -> dict | None:
+    """None when the runs cannot be read; each suite then falls back to its app name and checks page."""
+    try:
+        return _read_pages(argv, repo, "workflow_runs")
+    except ForgeError:
+        return None
+
+
+def read_check_suites(repo: Path, sha: str) -> tuple[dict, ...]:
+    """`read_check_suites`: every page of `sha`'s check suites as `parse_check_suites` rows; ForgeError when the suites cannot be read."""
+    suites_argv, runs_argv = check_suites_argvs(sha)
+    return parse_check_suites(_read_pages(suites_argv, repo, "check_suites"), _read_runs(runs_argv, repo))
+
+
 def _loads(stdout: str):
     try:
         return json.loads(stdout)
