@@ -301,6 +301,16 @@ def _read_required(repo: Path, ref: str) -> tuple[str, ...] | None:
 
 def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic, *, ref: str = "HEAD") -> tuple[bool, str]:
     required = _read_required(repo, ref)
+    started = now()
+
+    def suites() -> tuple[dict, ...]:
+        """The check suites of `ref`'s head, or none when they cannot be read: the poll then follows the check runs alone."""
+        try:
+            head = _run(["git", "-C", str(repo), "rev-parse", ref], timeout=READ_TIMEOUT_S)
+            return read_check_suites(repo, head.stdout.strip()) if head.returncode == 0 else ()
+        except ForgeError:
+            return ()
+
     # Edge bend (A2): a count of consecutive unreadable polls, reset by any readable one.
     errors = 0
     # Edge bend (A2): `rerun_of` holds the failed check run ids once gh accepted every rerun, and a newer failure is final.
@@ -326,7 +336,10 @@ def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monoton
         ok, value = _read_checks(repo, ref)
         errors = 0 if ok else errors + 1
         if ok:
-            result = land.check_poll_result(*value, required)
+            bound = {"elapsed_s": now() - started, "timeout_s": timeout_s}
+            result = land.check_poll_result(*value, required, suites=suites() if land.needs_suites(*value, required) else (), **bound)
+            if result[1].startswith(land.WORKFLOW_ISSUE):
+                return result  # a startup failure is final: no rerun is tried
             failed = failed_check_run_ids(value[0])
             if result[0] == 0 or not failed:
                 return result
