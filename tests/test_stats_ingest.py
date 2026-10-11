@@ -507,6 +507,31 @@ def test_a_store_only_ended_run_is_discovered_and_ingested_with_its_calls_and_ph
     assert team == ("pat",)
 
 
+def test_bindable_turns_a_list_or_dict_into_sorted_json_and_passes_scalars_through():
+    assert stats_ingest.bindable([1, 2]) == "[1, 2]"
+    assert stats_ingest.bindable({"b": 2, "a": 1}) == '{"a": 1, "b": 2}'
+    assert stats_ingest.bindable({"b": [1], "a": {"d": 1, "c": 2}}) == '{"a": {"c": 2, "d": 1}, "b": [1]}'
+    assert [stats_ingest.bindable(v) for v in (None, "x", 3, 1.5, True)] == [None, "x", 3, 1.5, True]
+
+
+def test_ingest_stores_a_list_valued_store_column_as_json_text(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_store(runs_dir, "sr1", roles=("build",), phases=("build",))
+    record = {"manifest_record": {"run_id": "sr1:build", "principal": ["pat", "agent"], "human_minutes": 1.0}}
+    store = sqlite3.connect(runs_dir / "cox.db")
+    store.execute("UPDATE phases SET record_json = ?", (json.dumps(record),))
+    store.commit()
+    store.close()
+
+    stats_ingest.ingest(runs_dir, tmp_path / "stats.db")
+
+    conn = connect(tmp_path / "stats.db")
+    principal = conn.execute("SELECT principal FROM runs WHERE run_id = 'sr1'").fetchone()
+    conn.close()
+    assert principal == ('["pat", "agent"]',)
+
+
 def test_a_node_call_with_a_model_id_lands_with_that_id_and_its_alias_still_in_model(tmp_path):
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()

@@ -790,6 +790,15 @@ def load_run(
     }
 
 
+def bindable(value: Any) -> Any:
+    """sqlite binds only None, str, int, float and bytes; a list or dict is stored as sorted-key JSON text."""
+    return json.dumps(value, sort_keys=True, default=str) if isinstance(value, (list, dict)) else value
+
+
+def bindable_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: bindable(value) for key, value in row.items()}
+
+
 def _upsert(
     conn: sqlite3.Connection,
     run_id: str,
@@ -800,19 +809,23 @@ def _upsert(
     """Replaces this run_id's rows in all three tables, so ingesting the same directory twice is a no-op."""
     run_cols = ", ".join(c.name for c in RUNS_COLUMNS)
     run_placeholders = ", ".join(f":{c.name}" for c in RUNS_COLUMNS)
-    conn.execute(f"INSERT OR REPLACE INTO runs ({run_cols}) VALUES ({run_placeholders})", run)
+    conn.execute(f"INSERT OR REPLACE INTO runs ({run_cols}) VALUES ({run_placeholders})", bindable_row(run))
 
     conn.execute("DELETE FROM calls WHERE run_id = ?", (run_id,))
     call_cols = ", ".join(c.name for c in CALLS_COLUMNS)
     call_placeholders = ", ".join(f":{c.name}" for c in CALLS_COLUMNS)
     if calls:
-        conn.executemany(f"INSERT INTO calls ({call_cols}) VALUES ({call_placeholders})", calls)
+        conn.executemany(
+            f"INSERT INTO calls ({call_cols}) VALUES ({call_placeholders})", [bindable_row(c) for c in calls]
+        )
 
     conn.execute("DELETE FROM tasks WHERE run_id = ?", (run_id,))
     task_cols = ", ".join(c.name for c in TASKS_COLUMNS)
     task_placeholders = ", ".join(f":{c.name}" for c in TASKS_COLUMNS)
     if tasks:
-        conn.executemany(f"INSERT INTO tasks ({task_cols}) VALUES ({task_placeholders})", tasks)
+        conn.executemany(
+            f"INSERT INTO tasks ({task_cols}) VALUES ({task_placeholders})", [bindable_row(t) for t in tasks]
+        )
 
 
 def ingest(
