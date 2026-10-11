@@ -457,6 +457,8 @@ def relaunch_loop_keys(actions: Sequence[Row]) -> list[str]:
 
 
 LAND_REFUSAL_HORIZON = timedelta(hours=24)
+# Wrong belief: every unlanded land is recorded `refused` or `failed`; an exit-0 land with no merge is `not_landed`.
+LAND_UNLANDED_STATUSES = ("refused", "failed", "not_landed")
 
 
 def _within_horizon(ts: object, now: datetime, horizon: timedelta) -> bool:
@@ -471,7 +473,7 @@ def _within_horizon(ts: object, now: datetime, horizon: timedelta) -> bool:
 def land_refusals_from_actions(
     actions: Sequence[Row], now: datetime | None = None, horizon: timedelta = LAND_REFUSAL_HORIZON
 ) -> list[LandRefusal]:
-    """Per (initiative, phase, run), the refused or failed land_phase rows after its last landed row and inside (now - horizon, now]; a key with none is left out. With no `now` the horizon is not applied."""
+    """Per (initiative, phase, run), the refused, failed or not_landed land_phase rows after its last landed row and inside (now - horizon, now]; a key with none is left out. With no `now` the horizon is not applied."""
     docs = sorted((_action_doc(row) for row in actions), key=lambda d: str(d.get("ts") or ""))
     lands = [d for d in docs if d.get("kind") == "land_phase" and d.get("initiative") and d.get("phase") and d.get("run")]
     keys = dict.fromkeys((d["initiative"], d["phase"], d["run"]) for d in lands)
@@ -482,7 +484,7 @@ def land_refusals_from_actions(
         failed = [
             d
             for d in rows[last_landed + 1 :]
-            if d.get("status") in ("refused", "failed") and (now is None or _within_horizon(d.get("ts"), now, horizon))
+            if d.get("status") in LAND_UNLANDED_STATUSES and (now is None or _within_horizon(d.get("ts"), now, horizon))
         ]
         if not failed:
             return None
@@ -821,11 +823,12 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     # back to its file reader.
     rows = list(deps.queue()) if deps.queue is not None else []
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    ready = docket_from_rows(rows, now_iso) if rows else docket["initiatives"]
+    items = list(deps.tickets()) if deps.tickets is not None else []
+    # `items` carry the store's `updated_at`, which the queue rows lack, so the docket's age tie-break holds here too.
+    ready = docket_from_rows(rows, now_iso, items) if rows else docket["initiatives"]
     dispatch = deps.dispatch(docket) if deps.dispatch else dispatch_facts(docket, [], {"": int(docket["busy_lanes"])})
     live = set(deps.live_initiatives())
     approved = approved_facts(deps.approved())
-    items = list(deps.tickets()) if deps.tickets is not None else []
     repos = dict(deps.repos()) if deps.repos is not None else {}
     ready_ids = {i["id"]: {t["id"] for t in i["ready_tasks"]} for i in ready}
     initiatives = initiative_facts(

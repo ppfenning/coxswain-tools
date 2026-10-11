@@ -15,6 +15,14 @@ ROWS = [
 ]
 
 
+def test_a_skipped_live_lane_fetch_exit_is_not_counted_but_a_failed_one_is():
+    rows = [
+        {"ts": "2026-10-04T07:00:00Z", "kind": "fetch_exit", "status": "skipped"},
+        {"ts": "2026-10-04T08:00:00Z", "kind": "fetch_exit", "status": "failed"},
+    ]
+    assert chair_today(rows, 0, NOW, OFFSET)["refused_or_failed"] == 1
+
+
 def test_counts_only_rows_since_local_midnight():
     assert chair_today(ROWS, 3, NOW, OFFSET) == {
         "lands": 1, "launches": 1, "refused_or_failed": 2, "needs_chair_open": 3,

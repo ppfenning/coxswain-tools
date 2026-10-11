@@ -66,14 +66,42 @@ def _priority(item: Row) -> int:
         return 0
 
 
-def _initiative_priority(initiative: str, items: Sequence[Row]) -> int:
-    """The highest priority among `initiative`'s ready items, 0 when it has none."""
-    return max((_priority(i) for i in items if i["initiative"] == initiative and i["state"] == "ready"), default=0)
+def _launchable(row: Row, items: Sequence[Row]) -> list[Row]:
+    """The items behind `row`'s `ready_tasks`: ready, needs landed, not held, not leased."""
+    ids = {t["id"] for t in row["ready_tasks"]}
+    return [i for i in items if i["initiative"] == row["id"] and i["id"] in ids]
+
+
+def _initiative_priority(row: Row, items: Sequence[Row]) -> int:
+    """The highest priority among `row`'s launchable items, 0 when it has none."""
+    return max((_priority(i) for i in _launchable(row, items)), default=0)
+
+
+def _age(value: object) -> datetime | None:
+    """An `updated_at` as an aware UTC datetime; naive reads as UTC, and anything unparseable reads as None."""
+    if isinstance(value, datetime):
+        parsed: datetime | None = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            parsed = None
+    else:
+        parsed = None
+    return None if parsed is None else (parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC))
+
+
+def _ready_age(row: Row, items: Sequence[Row]) -> datetime | None:
+    """The earliest `updated_at` among `row`'s launchable items, None when none has one."""
+    return min((a for i in _launchable(row, items) if (a := _age(i.get("updated_at"))) is not None), default=None)
+
+
+_NO_AGE = datetime.max.replace(tzinfo=UTC)
 
 
 def _by_priority(rows: Sequence[Row], items: Sequence[Row]) -> list[dict[str, Any]]:
-    """`rows` by initiative priority descending, then id ascending. The docket rows carry no age, so there is no age tie-break."""
-    return sorted(rows, key=lambda r: (-_initiative_priority(r["id"], items), r["id"]))
+    """`rows` by priority descending, then oldest launchable task first with no age last, then id ascending."""
+    return sorted(rows, key=lambda r: (-_initiative_priority(r, items), _ready_age(r, items) or _NO_AGE, r["id"]))
 
 
 def _initiative_rows(summaries: Sequence[Row], items: Sequence[Row]) -> list[dict[str, Any]]:
@@ -110,15 +138,25 @@ def _item_of(row: Row) -> dict[str, Any]:
         "id": row["task_id"], "initiative": row["initiative"], "phase": row["phase"], "state": row["state"],
         "needs": list(row["needs"]), "requires": queue_rows.row_requires(row),
         "priority": row.get("priority", (row.get("extra") or {}).get("priority")),
+        "updated_at": row.get("updated_at"),
     }
 
 
-def docket_from_rows(rows: Sequence[Row], now: str) -> list[dict[str, Any]]:
-    """The builder's `initiatives` over the task rows, less each task a live lease holds (`holder` set, `expires_at` after ISO `now`)."""
+def _with_item_ages(items: Sequence[Row], aged: Sequence[Row]) -> list[dict[str, Any]]:
+    """`items` lacking `updated_at` take it from the `aged` work item with the same initiative and id."""
+    ages = {(a["initiative"], a["id"]): a.get("updated_at") for a in aged}
+    return [{**i, "updated_at": i.get("updated_at") or ages.get((i["initiative"], i["id"]))} for i in items]
+
+
+def docket_from_rows(rows: Sequence[Row], now: str, aged: Sequence[Row] = ()) -> list[dict[str, Any]]:
+    """The builder's `initiatives` over the task rows, less each task a live lease holds (`holder` set, `expires_at` after ISO `now`).
+
+    Queue rows carry no `updated_at` (`run_store._QUEUE_COLUMNS`), so ages come from `aged`, the `_work_items` rows,
+    unless a queue row supplies one. Ordering runs after the lease filter, so a leased task never sets an age."""
     tasks = [r for r in rows if r["kind"] == "task"]
-    items = [_item_of(r) for r in tasks]
+    items = _with_item_ages([_item_of(r) for r in tasks], aged)
     claimed = {(r["initiative"], r["task_id"]) for r in tasks if _claimed(r, now)}
-    return [
+    unclaimed = [
         {
             **i,
             "ready_tasks": [t for t in i["ready_tasks"] if (i["id"], t["id"]) not in claimed],
@@ -126,6 +164,7 @@ def docket_from_rows(rows: Sequence[Row], now: str) -> list[dict[str, Any]]:
         }
         for i in _initiative_rows(route.initiative_summaries(items), items)
     ]
+    return _by_priority(unclaimed, items)
 
 
 def _text(p: Path) -> str | None:
@@ -133,6 +172,12 @@ def _text(p: Path) -> str | None:
         return p.read_text()
     except OSError:
         return None
+
+
+def _with_store_ages(items: Sequence[Row], rows: Sequence[Row]) -> list[dict[str, Any]]:
+    """`items` with `updated_at` from the store row for the same initiative and task; an item with no row keeps its own."""
+    ages = {(r.get("initiative"), r.get("task_id")): r.get("updated_at") for r in rows}
+    return [{**i, "updated_at": ages.get((i["initiative"], i["id"])) or i.get("updated_at")} for i in items]
 
 
 def _work_items(
@@ -151,7 +196,7 @@ def _work_items(
         if p.name != "initiative.md"
     ]
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
-    return route.with_store_states(items, rows, mode)
+    return _with_store_ages(route.with_store_states(items, rows, mode), rows)
 
 
 def local_runs(runs_dir: Path, now: str) -> tuple[int, set[str]]:

@@ -8255,6 +8255,27 @@ def _host_beat(a: argparse.Namespace) -> int:
     return _host_store_write(a, host_cmd.beat_argv(a.name or socket.gethostname(), versions))
 
 
+def _parse_login_ok(text: str) -> bool | None:
+    """`true`, `false` or `none`, any case; the one place the login verb's tri-state is read."""
+    value = {"true": True, "false": False, "none": None}
+    if text.strip().lower() not in value:
+        raise argparse.ArgumentTypeError(f"login_ok must be true, false or none, not {text!r}")
+    return value[text.strip().lower()]
+
+
+def _host_login_argv(name: str, login_ok: bool | None, reason: str | None, failures: int, by: str) -> list[str]:
+    """The store_cli argv that stores login state and never stamps `beat_at`; `none` is spelled out, never omitted."""
+    ok = "none" if login_ok is None else json.dumps(login_ok)
+    return ["host", "login", name, "--login-ok", ok, *(["--reason", reason] if reason else []), "--failures", str(failures), "--by", by]
+
+
+def _host_login(a: argparse.Namespace) -> int:
+    """Stores login_ok, reason and the consecutive-failure count on the host's row and leaves `beat_at` as stored,
+    so a host that failed its check is not made to look freshly beaten. `host beat` stays the writer of `beat_at`.
+    Needs `harness.store_cli host login` (another repo); until it exists the store refuses and this exits 1."""
+    return _host_store_write(a, _host_login_argv(a.name, a.login_ok, a.reason, a.failures, _holder_label(a)))
+
+
 def _host_ssh(a: argparse.Namespace, profile: Mapping, runs_dir: Path) -> lane_hosts.LaneHost | None:
     """The named host from the table (any state), else from the profile's `lane_hosts`."""
     row = next((r for r in run_store.hosts(runs_dir) if r["name"] == a.name), None)
@@ -8334,6 +8355,16 @@ HOST_COMMANDS = [
     commands.Command(
         "beat", "host", "record this machine's versions and claude login in the table",
         (commands.Arg(("name",), {"nargs": "?", "help": "default: this machine's hostname"}),), "agent_tools.cli:_host_beat", False, (),
+    ),
+    commands.Command(
+        "login", "host", "store a host's login state without touching its beat time",
+        (
+            commands.Arg(("name",)),
+            commands.Arg(("login_ok",), {"type": _parse_login_ok, "metavar": "{true,false,none}"}),
+            commands.Arg(("--reason",), {"default": None, "help": "why the check failed"}),
+            commands.Arg(("--failures",), {"type": int, "default": 0, "help": "consecutive failed checks"}),
+        ),
+        "agent_tools.cli:_host_login", False, (),
     ),
     commands.Command("doctor", "host", "the table's line for a host, then its doctor over ssh", (commands.Arg(("name",)),), "agent_tools.cli:_host_doctor", False, ()),
     commands.Command(
