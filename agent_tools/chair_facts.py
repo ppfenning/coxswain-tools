@@ -823,11 +823,12 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     # back to its file reader.
     rows = list(deps.queue()) if deps.queue is not None else []
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    ready = docket_from_rows(rows, now_iso) if rows else docket["initiatives"]
+    items = list(deps.tickets()) if deps.tickets is not None else []
+    # `items` carry the store's `updated_at`, which the queue rows lack, so the docket's age tie-break holds here too.
+    ready = docket_from_rows(rows, now_iso, items) if rows else docket["initiatives"]
     dispatch = deps.dispatch(docket) if deps.dispatch else dispatch_facts(docket, [], {"": int(docket["busy_lanes"])})
     live = set(deps.live_initiatives())
     approved = approved_facts(deps.approved())
-    items = list(deps.tickets()) if deps.tickets is not None else []
     repos = dict(deps.repos()) if deps.repos is not None else {}
     ready_ids = {i["id"]: {t["id"] for t in i["ready_tasks"]} for i in ready}
     initiatives = initiative_facts(
