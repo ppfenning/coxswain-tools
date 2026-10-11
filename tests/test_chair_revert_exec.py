@@ -2,6 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 from agent_tools.chair_land_backoff import backoff_for
 from agent_tools.chair_revert_exec import (
+    UNSETTLED,
+    RerunRecord,
     RevertFailure,
     RevertResult,
     attempt_revert,
@@ -9,6 +11,8 @@ from agent_tools.chair_revert_exec import (
     perform_revert,
     record_failure,
     record_success,
+    reran_commits,
+    rerun_reds,
     revert_due,
 )
 from agent_tools.land import pr_footer
@@ -165,18 +169,157 @@ class RaisingForge(FakeForge):
         return super().wait_checks(pr)
 
 
+def no_pr(repo: str, pr: int) -> None:
+    return None
+
+
+def no_stale(repo: str, branch: str, pr_open: bool) -> list[str]:
+    return []
+
+
 def test_each_raising_step_is_a_failure_with_one_needs_chair() -> None:
     for step in ("revert", "push", "open_pr", "wait"):
-        result, rows, ask = attempt_revert("r", 7, "abc", "red", RaisingGit([], step), RaisingForge([], step), [], T0)
+        git, forge = RaisingGit([], step), RaisingForge([], step)
+        result, rows, ask = attempt_revert(
+            "r", 7, "abc", "red", git, forge, [], T0, find_open_pr=no_pr, clear_stale=no_stale
+        )
         assert result.status == "errored"
         assert rows == [RevertFailure("abc", 1, T0.isoformat())]
         assert ask is True
-        _, rows, ask = attempt_revert("r", 7, "abc", "red", RaisingGit([], step), RaisingForge([], step), rows, T0)
+        _, rows, ask = attempt_revert(
+            "r", 7, "abc", "red", git, forge, rows, T0, find_open_pr=no_pr, clear_stale=no_stale
+        )
         assert (rows[0].attempts, ask) == (2, False)
 
 
 def test_non_merged_status_fails_and_merge_clears() -> None:
-    _, rows, ask = attempt_revert("r", 7, "abc", "red", FakeGit([], ["a.py"]), FakeForge([], []), [], T0)
+    git, forge = FakeGit([], ["a.py"]), FakeForge([], [])
+    _, rows, ask = attempt_revert("r", 7, "abc", "red", git, forge, [], T0, find_open_pr=no_pr, clear_stale=no_stale)
     assert (rows[0].attempts, ask) == (1, True)
-    result, rows, ask = attempt_revert("r", 7, "abc", "red", FakeGit([], []), FakeForge([], []), rows, T0)
+    git = FakeGit([], [])
+    result, rows, ask = attempt_revert(
+        "r", 7, "abc", "red", git, forge, rows, T0, find_open_pr=no_pr, clear_stale=no_stale
+    )
     assert (result.status, rows, ask) == ("merged", [], False)
+
+
+RED = {
+    "kind": "revert_land",
+    "initiative": "i",
+    "phase": "p",
+    "repo": "r",
+    "pr": 7,
+    "commit": "abc",
+    "reason": "old log",
+}
+
+
+class FakeRerun:
+    def __init__(self, result: tuple[str, str, int | None] | Exception) -> None:
+        self.result, self.calls = result, []
+
+    def __call__(self, *args: object) -> tuple[str, str, int | None]:
+        self.calls.append(args)
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def test_flaky_red_that_reruns_green_plans_no_revert_and_records_one_rerun() -> None:
+    rerun, read = FakeRerun(("green", "", 5)), FakeRerun(("red", "", 5))
+    out = rerun_reds([RED, {"kind": "needs_chair"}], {"abc": 5}, rerun, read, set(), [], T0)
+    assert [a["kind"] for a in out.actions] == ["needs_chair"]
+    assert (rerun.calls, read.calls) == ([("r", 5, "abc")], [])
+    assert out.recorded == [RerunRecord("abc", 5, "green", T0.isoformat())]
+
+
+def test_rerun_that_fails_again_keeps_the_revert_land_with_the_new_log() -> None:
+    out = rerun_reds([RED], {"abc": 5}, FakeRerun(("red", "new log", 5)), FakeRerun(("green", "", 5)), set(), [], T0)
+    assert out.actions == [{**RED, "reason": "new log"}]
+    assert len(out.recorded) == 1 and out.failures == [] and out.asks == []
+
+
+def test_second_tick_after_a_rerun_reads_ci_and_does_not_rerun_again() -> None:
+    first = rerun_reds([RED], {"abc": 5}, FakeRerun(("red", "log", 5)), FakeRerun(("red", "", 5)), set(), [], T0)
+    rerun, read = FakeRerun(("green", "", 5)), FakeRerun(("red", "still red", 5))
+    second = rerun_reds([RED], {"abc": 5}, rerun, read, reran_commits(first.recorded), [], T0)
+    assert (rerun.calls, read.calls) == ([], [("r", "abc")])
+    assert second.actions == [{**RED, "reason": "still red"}] and second.recorded == []
+
+
+def test_red_without_a_run_id_passes_through_unrerun() -> None:
+    rerun = FakeRerun(("green", "", 5))
+    assert rerun_reds([RED], {}, rerun, rerun, set(), [], T0).actions == [RED]
+    assert rerun.calls == []
+
+
+def test_rerun_that_fails_the_wait_is_recorded_backs_off_and_is_never_reissued() -> None:
+    out = rerun_reds(
+        [RED], {"abc": 5}, FakeRerun(TimeoutError("watch timed out")), FakeRerun(("red", "", 5)), set(), [], T0
+    )
+    assert out.actions == [] and out.recorded == [RerunRecord("abc", 5, UNSETTLED, T0.isoformat())]
+    assert out.failures == [RevertFailure("abc", 1, T0.isoformat())] and out.asks == ["abc"]
+    later = T0 + timedelta(minutes=15)
+    rerun, read = FakeRerun(("green", "", 5)), FakeRerun(TimeoutError("x"))
+    again = rerun_reds([RED], {"abc": 5}, rerun, read, reran_commits(out.recorded), out.failures, later)
+    assert (rerun.calls, read.calls) == ([], [("r", "abc")])
+    assert (again.failures[0].attempts, again.asks, again.recorded) == (2, [], [])
+
+
+def test_rerun_left_pending_is_a_recorded_failed_attempt() -> None:
+    out = rerun_reds([RED], {"abc": 5}, FakeRerun(("pending", "", 5)), FakeRerun(("red", "", 5)), set(), [], T0)
+    assert out.actions == [] and out.failures[0].attempts == 1 and out.recorded[0].state == UNSETTLED
+
+
+def test_a_commit_backing_off_is_neither_rerun_nor_read_nor_reverted() -> None:
+    rows = [RevertFailure("abc", 1, T0.isoformat())]
+    rerun, read = FakeRerun(("red", "", 5)), FakeRerun(("red", "", 5))
+    out = rerun_reds([RED], {"abc": 5}, rerun, read, set(), rows, T0 + timedelta(minutes=14))
+    assert (out.actions, rerun.calls, read.calls, out.failures) == ([], [], [], rows)
+
+
+def test_green_rerun_clears_the_commits_failure_streak() -> None:
+    rows = [RevertFailure("abc", 2, (T0 - timedelta(days=1)).isoformat())]
+    out = rerun_reds([RED], {"abc": 5}, FakeRerun(("green", "", 5)), FakeRerun(("red", "", 5)), set(), rows, T0)
+    assert out.failures == []
+
+
+def test_open_revert_pr_is_reused_and_no_second_pr_is_made() -> None:
+    calls: list = []
+    looked: list = []
+
+    def find(repo: str, pr: int) -> str | None:
+        looked.append((repo, pr))
+        return URL
+
+    def clear(repo: str, branch: str, pr_open: bool) -> list[str]:
+        calls.append(("clear", repo, branch, pr_open))
+        return []
+
+    result = perform_revert("r", 7, "abc", "red", FakeGit(calls, []), FakeForge(calls, []), find, clear)
+    assert looked == [("r", 7)]
+    assert [c[0] for c in calls] == ["wait", "merge"]
+    assert result == RevertResult("merged", URL, "")
+
+
+def test_no_open_pr_clears_the_stale_branch_before_the_revert() -> None:
+    calls: list = []
+
+    def clear(repo: str, branch: str, pr_open: bool) -> list[str]:
+        calls.append(("clear", repo, branch, pr_open))
+        return []
+
+    perform_revert("r", 7, "abc", "red", FakeGit(calls, []), FakeForge(calls, []), lambda repo, pr: None, clear)
+    assert [c[0] for c in calls] == ["fetch", "clear", "revert", "push", "open", "wait", "merge"]
+    assert calls[1] == ("clear", "r", "revert/7", False)
+
+
+def test_reused_pr_with_failing_checks_backs_off_through_attempt_revert() -> None:
+    forge = FakeForge([], ["lint"])
+    git = FakeGit([], [])
+    result, rows, ask = attempt_revert(
+        "r", 7, "abc", "red", git, forge, [], T0, find_open_pr=lambda r, p: URL, clear_stale=no_stale
+    )
+    assert git.calls == []
+    assert (result.status, result.pr, ask) == ("checks_failed", URL, True)
+    assert rows == [RevertFailure("abc", 1, T0.isoformat())]
