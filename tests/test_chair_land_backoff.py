@@ -26,3 +26,13 @@ def test_a_different_run_id_is_never_suppressed():
     now = T0 + timedelta(minutes=1)
     assert suppressing([_refusal()], "i", "p", "i-2", now) is None
     assert suppressing([_refusal()], "i", "p", "i-1", now) == _refusal()
+
+
+def test_backoff_stays_at_the_cap_for_any_attempt_count():
+    """1267 recorded refusals once raised OverflowError in planning, killing every tick; the cap must hold for any count."""
+    assert backoff_for(1267) == timedelta(hours=2)
+    assert backoff_for(10**6) == timedelta(hours=2)
+    stamp = datetime(2026, 10, 11, 14, 0, tzinfo=UTC).isoformat()
+    refusal = LandRefusal(initiative="i", phase="p", run="i-2", attempts=1267, last_refused_at=stamp)
+    assert suppressed(refusal, datetime(2026, 10, 11, 15, 0, tzinfo=UTC))
+    assert not suppressed(refusal, datetime(2026, 10, 11, 16, 1, tzinfo=UTC))
