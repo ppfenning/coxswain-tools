@@ -2,28 +2,27 @@
 
 import json
 import os
-import statistics
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
+
+from tests.startup_timing import STARTUP_MULTIPLE, check_ceiling, time_baseline, time_command
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 HEAVY_MODULES = ("psycopg", "duckdb", "pyarrow")
 
-# Ceilings for the median wall time of one `cox` process, in seconds.
+# Local targets for the median wall time of one `cox` process, in seconds.
 # Measured on the finished code (two sessions, 7 timed runs each, macOS, warm cache):
 #   cox --help                  median 49 ms  (about 72 ms before the command modules went lazy)
 #   cox route chair status      median 55 ms
-# Ceilings are about 5x the measured medians, so a slow CI runner passes and a return to eager
-# heavy imports does not.
-HELP_CEILING_S = 0.25
-CHAIR_STATUS_CEILING_S = 0.30
+# These are never asserted. They are passed to check_ceiling so a failure message prints them.
+# The pass condition is the cox median relative to a `python -c pass` baseline (STARTUP_MULTIPLE).
+HELP_TARGET_S = 0.25
+CHAIR_STATUS_TARGET_S = 0.30
 
-WARMUP_RUNS = 1
 TIMED_RUNS = 7
 
 _ISOLATION_SNIPPET = (
@@ -45,21 +44,6 @@ def _cox(*args: str) -> list[str]:
     return [sys.executable, "-m", "agent_tools.cli", *args]
 
 
-def _median_seconds(argv: list[str], runs: int) -> float:
-    """Median wall time of `runs` invocations after discarded warm-up runs; any non-zero exit fails."""
-
-    def timed() -> float:
-        start = time.perf_counter()
-        proc = _run(argv)
-        elapsed = time.perf_counter() - start
-        assert proc.returncode == 0, f"{argv} exited {proc.returncode}: {proc.stderr}{proc.stdout}"
-        return elapsed
-
-    for _ in range(WARMUP_RUNS):
-        timed()
-    return statistics.median(timed() for _ in range(runs))
-
-
 def test_cli_import_does_not_load_heavy_modules() -> None:
     proc = _run([sys.executable, "-c", _ISOLATION_SNIPPET])
     assert proc.returncode == 0, proc.stderr
@@ -76,14 +60,16 @@ def profile(tmp_path: Path) -> Path:
     return path
 
 
-def test_help_startup_under_ceiling() -> None:
-    median = _median_seconds(_cox("--help"), TIMED_RUNS)
-    assert median < HELP_CEILING_S, f"cox --help median {median:.3f}s, ceiling {HELP_CEILING_S}s"
+def _assert_relative_startup(argv: list[str], absolute_target: float) -> None:
+    baseline = time_baseline(_env(), TIMED_RUNS, REPO_ROOT)
+    cox = time_command(argv, _env(), TIMED_RUNS, REPO_ROOT)
+    result = check_ceiling(cox, baseline, STARTUP_MULTIPLE, absolute_target)
+    assert result.ok, result.message
 
 
-def test_route_chair_status_startup_under_ceiling(profile: Path) -> None:
-    argv = _cox("route", "chair", "status", "--profile", str(profile))
-    median = _median_seconds(argv, TIMED_RUNS)
-    assert median < CHAIR_STATUS_CEILING_S, (
-        f"cox route chair status median {median:.3f}s, ceiling {CHAIR_STATUS_CEILING_S}s"
-    )
+def test_help_startup_relative_to_baseline() -> None:
+    _assert_relative_startup(_cox("--help"), HELP_TARGET_S)
+
+
+def test_route_chair_status_startup_relative_to_baseline(profile: Path) -> None:
+    _assert_relative_startup(_cox("route", "chair", "status", "--profile", str(profile)), CHAIR_STATUS_TARGET_S)
