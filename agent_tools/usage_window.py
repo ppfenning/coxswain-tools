@@ -27,7 +27,7 @@ from agent_tools.pacing import Policy, Window
 __all__ = [
     "CCUSAGE_CACHE_S", "DEFAULT_POLICY", "WeeklyReset", "block_remaining", "ceiling_remaining",
     "gather", "gather_weekly", "parse_weekly_reset", "read_usage", "usage_cost_usd",
-    "weekly_window_from", "weekly_window_start", "window_from",
+    "weekly_start_from_reset", "weekly_window_from", "weekly_window_start", "window_from",
 ]
 
 # Every pacing check shells out to ccusage (a ~2.5 s Node process) and they run
@@ -293,16 +293,33 @@ def weekly_window_start(now: datetime, reset: WeeklyReset | None) -> datetime:
     return candidate.astimezone(now.tzinfo)
 
 
+def weekly_start_from_reset(
+    resets_at: datetime | None, configured: datetime | None, now: datetime,
+) -> datetime:
+    """Pure. Start of the current weekly window, in `now`'s tzinfo because the store compares it as ISO text:
+    `resets_at` minus 7 days, else `configured`, shifted by whole weeks to at most `now` and under 7 days old;
+    with neither, `now` minus 7 days."""
+    week = timedelta(days=7)
+    if resets_at is not None:
+        base = resets_at - week
+    elif configured is not None:
+        base = configured
+    else:
+        return now - week
+    return (base + ((now - base) // week) * week).astimezone(now.tzinfo)
+
+
 def weekly_window_from(
     usage_files: list[tuple[datetime, dict[str, Any]]],
     now: datetime,
     ceiling_usd: float | None = None,
     reset: WeeklyReset | None = None,
+    start: datetime | None = None,
 ) -> Window:
     """Pure. Same reader as `window_from`'s fallback path, the weekly window
-    anchored at `reset` (a rolling 7-day cutoff with none) instead of the
-    block start."""
-    start = weekly_window_start(now, reset)
+    anchored at `start`, else at `reset` (a rolling 7-day cutoff with neither),
+    instead of the block start."""
+    start = weekly_window_start(now, reset) if start is None else start
     in_window = [usage for ts, usage in usage_files if start <= ts <= now]
     spent_usd = sum(usage_cost_usd(u) for u in in_window)
     elapsed_hours = max((now - start).total_seconds() / 3600, 1e-9)
@@ -315,10 +332,11 @@ def weekly_window_from(
 
 def weekly_window_from_spend(
     spent_usd: float, now: datetime, ceiling_usd: float | None, reset: WeeklyReset | None = None,
+    start: datetime | None = None,
 ) -> Window:
-    """Pure. The `Window` anchored at `reset` for a spend already summed;
-    `runs_in_flight` is 0, the store does not count runs."""
-    start = weekly_window_start(now, reset)
+    """Pure. The `Window` anchored at `start`, else at `reset`, for a spend already
+    summed; `runs_in_flight` is 0, the store does not count runs."""
+    start = weekly_window_start(now, reset) if start is None else start
     elapsed_hours = max((now - start).total_seconds() / 3600, 1e-9)
     return Window(
         start=start, end=now,
@@ -334,15 +352,18 @@ def gather_weekly(
     usage: list[tuple[datetime, dict[str, Any]]] | None = None,
     store_spend: Callable[[str], float | None] | None = None,
     reset: WeeklyReset | None = None,
+    start: datetime | None = None,
 ) -> Window:
     """Impure edge. The store wins when `store_spend`, given the ISO text of the anchored
     window start, returns a number; otherwise the usage files win, the same reader as
     `gather` (or the given `usage`), folded through `weekly_window_from`. Either path's
-    `Window.start` reflects `reset`."""
-    since = weekly_window_start(now, reset)
+    `Window.start` is `start` when given, else reflects `reset`."""
+    since = weekly_window_start(now, reset) if start is None else start
     spent = None if store_spend is None else store_spend(since.isoformat())
     if spent is not None:
-        return weekly_window_from_spend(spent, now, weekly_ceiling_usd, reset)
+        return weekly_window_from_spend(spent, now, weekly_ceiling_usd, reset, start)
     return weekly_window_from(
-        read_usage(runs_dir, now, reset) if usage is None else usage, now, weekly_ceiling_usd, reset,
+        (read_usage(runs_dir, now, reset) if start is None else _read_usage_files(runs_dir, now, since=start))
+        if usage is None else usage,
+        now, weekly_ceiling_usd, reset, start,
     )
