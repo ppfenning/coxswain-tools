@@ -16,9 +16,14 @@ class LandRefusal(TypedDict):
     last_refused_at: str  # ISO UTC
 
 
+# 2 ** 3 * BASE already reaches CAP; a larger exponent only risks the timedelta overflow a run with
+# 1267 recorded refusals produced on 2026-10-11 (every tick died in planning, before any action).
+_MAX_DOUBLINGS = 8
+
+
 def backoff_for(attempts: int) -> timedelta:
-    """15 minutes for the first refusal, doubling per attempt, never more than 2 hours."""
-    return min(CAP, BASE * 2 ** max(0, attempts - 1))
+    """15 minutes for the first refusal, doubling per attempt, never more than 2 hours; any attempt count is safe."""
+    return min(CAP, BASE * 2 ** min(_MAX_DOUBLINGS, max(0, attempts - 1)))
 
 
 def aligned(stamp: str, now: datetime) -> datetime:
