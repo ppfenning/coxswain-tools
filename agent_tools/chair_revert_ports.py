@@ -7,6 +7,8 @@ Nothing here spawns a process; the caller injects the runner that does.
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 from collections.abc import Callable
 
 __all__ = [
@@ -15,9 +17,13 @@ __all__ = [
     "GhForgePort",
     "GitRevertPort",
     "Runner",
+    "backup_ref",
     "bounded",
+    "find_open_revert_pr",
     "main_ci",
+    "main_ci_run",
     "parent_count",
+    "rerun_failed",
 ]
 
 Runner = Callable[[list[str]], tuple[int, str]]
@@ -26,11 +32,24 @@ LOG_TAIL_LINES = 40
 # The longest a revert port waits on any one command, `gh pr checks --watch` being the slow one.
 CI_WATCH_TIMEOUT_SECONDS = 30 * 60
 _PENDING_STATUSES = frozenset({"queued", "in_progress", "waiting", "requested", "pending"})
+# Names tried for one backup ref before giving up; each try finds the previous name taken.
+_BACKUP_TRIES = 50
 
 
 def parent_count(rev_list_line: str) -> int:
     """Parents named on a `git rev-list --parents -n 1` line, whose first hash is the commit itself."""
     return max(len(rev_list_line.split()) - 1, 0)
+
+
+def backup_ref(branch: str, tip: str, attempt: int) -> str:
+    """Where a stale branch's tip is kept; `attempt` makes the name distinct from earlier backups of the same tip."""
+    return f"refs/backup/{branch}/{tip[:12]}-{attempt}"
+
+
+def _remote_tip(ls_remote_output: str, branch: str) -> str:
+    """Hash of `refs/heads/<branch>` on a `git ls-remote` listing, or "" when the listing does not carry it."""
+    rows = [line.split() for line in ls_remote_output.splitlines()]
+    return next((row[0] for row in rows if len(row) == 2 and row[1] == f"refs/heads/{branch}"), "")
 
 
 def bounded(run: Callable[..., tuple[int, str]], timeout: int = CI_WATCH_TIMEOUT_SECONDS) -> Runner:
@@ -50,33 +69,99 @@ def _checked(runner: Runner, argv: list[str]) -> str:
 
 
 class GitRevertPort:
-    def __init__(self, runner: Runner) -> None:
+    """Reverts in a throwaway worktree, so the shared checkout is never switched, reset or left on a branch."""
+
+    def __init__(self, runner: Runner, mkdtemp: Callable[[], str] = lambda: tempfile.mkdtemp(prefix="revert-")) -> None:
         self._run = runner
+        self._mkdtemp = mkdtemp
+        # Branch to (worktree, temp dir) for a clean revert awaiting its push, which removes both.
+        self._trees: dict[str, tuple[str, str]] = {}
 
     def fetch_main(self, repo: str) -> None:
         _checked(self._run, ["git", "-C", repo, "fetch", "origin", "main"])
 
+    def _release(self, repo: str, branch: str, tree: tuple[str, str], drop_branch: bool) -> None:
+        worktree, tmp = tree
+        self._run(["git", "-C", repo, "worktree", "remove", "--force", worktree])
+        if drop_branch:
+            # Only after the worktree is gone: git refuses to delete a branch a worktree has checked out.
+            self._run(["git", "-C", repo, "branch", "-D", branch])
+        shutil.rmtree(tmp, ignore_errors=True)
+
     def revert_onto_branch(self, repo: str, branch: str, commit: str) -> list[str]:
-        git = ["git", "-C", repo]
-        parents = parent_count(_checked(self._run, [*git, "rev-list", "--parents", "-n", "1", commit]))
-        _checked(self._run, [*git, "checkout", "-b", branch, "origin/main"])
-        merge_flags = ["-m", "1"] if parents == 2 else []
-        code, output = self._run([*git, "revert", "--no-edit", *merge_flags, commit])
-        if code == 0:
-            return []
-        _, unmerged = self._run([*git, "diff", "--name-only", "--diff-filter=U"])
-        self._run([*git, "revert", "--abort"])
-        # Drop the branch so a retry's `checkout -b` does not collide with it.
-        self._run([*git, "checkout", "--detach", "origin/main"])
-        self._run([*git, "branch", "-D", branch])
+        parents = parent_count(_checked(self._run, ["git", "-C", repo, "rev-list", "--parents", "-n", "1", commit]))
+        tmp = self._mkdtemp()
+        tree = (f"{tmp}/wt", tmp)
+        try:
+            _checked(self._run, ["git", "-C", repo, "worktree", "add", "-b", branch, tree[0], "origin/main"])
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        git = ["git", "-C", tree[0]]
+        try:
+            merge_flags = ["-m", "1"] if parents == 2 else []
+            code, output = self._run([*git, "revert", "--no-edit", *merge_flags, commit])
+            if code == 0:
+                self._trees[branch] = tree
+                return []
+            _, unmerged = self._run([*git, "diff", "--name-only", "--diff-filter=U"])
+            self._run([*git, "revert", "--abort"])
+        except BaseException:
+            self._release(repo, branch, tree, drop_branch=True)
+            raise
+        self._release(repo, branch, tree, drop_branch=True)
         files = _lines(unmerged)
         if not files:
             # A failed revert with no unmerged files is not a conflict; [] would read as a clean revert.
             raise RuntimeError(f"git revert {commit} exited {code} with no conflicts: {output.strip()}")
         return files
 
+    def _tip(self, argv: list[str]) -> str:
+        """Hash a read-only rev-parse prints, or "" when the ref is not there."""
+        code, output = self._run(argv)
+        return output.strip() if code == 0 else ""
+
+    def _backup(self, repo: str, branch: str, tip: str) -> str:
+        for attempt in range(1, _BACKUP_TRIES + 1):
+            ref = backup_ref(branch, tip, attempt)
+            if not self._tip(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref]):
+                _checked(self._run, ["git", "-C", repo, "update-ref", ref, tip])
+                return ref
+        raise RuntimeError(f"no free backup ref for {branch} at {tip[:12]} after {_BACKUP_TRIES} tries")
+
+    def clear_stale_branch(self, repo: str, branch: str, pr_open: bool) -> list[str]:
+        """Back up and delete a local or remote `branch` no open PR uses; returns the backup refs written.
+
+        Every backup is written before either delete. Only ref commands run: the checkout is never switched.
+        Run it before `revert_onto_branch`, whose `worktree add -b` recreates the branch from origin/main.
+        """
+        if pr_open:
+            return []
+        git = ["git", "-C", repo]
+        local = self._tip([*git, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"])
+        # ls-remote, not the tracking ref: `fetch_main` fetches main only, so origin/<branch> may lag.
+        listing = _checked(self._run, [*git, "ls-remote", "--heads", "origin", f"refs/heads/{branch}"])
+        remote = _remote_tip(listing, branch)
+        if remote:
+            # The remote tip must be a local object before update-ref can point at it.
+            _checked(self._run, [*git, "fetch", "origin", branch])
+        backups = [self._backup(repo, branch, tip) for tip in (local, remote) if tip]
+        if local:
+            _checked(self._run, [*git, "branch", "-D", branch])
+        if remote:
+            _checked(self._run, [*git, "push", "origin", "--delete", branch])
+        return backups
+
     def push(self, repo: str, branch: str) -> None:
-        _checked(self._run, ["git", "-C", repo, "push", "origin", branch])
+        tree = self._trees.pop(branch, None)
+        if tree is None:
+            _checked(self._run, ["git", "-C", repo, "push", "origin", branch])
+            return
+        try:
+            _checked(self._run, ["git", "-C", tree[0], "push", "origin", branch])
+        finally:
+            # The remote branch is what the PR needs; the worktree has done its job whether or not the push landed.
+            self._release(repo, branch, tree, drop_branch=False)
 
 
 class GhForgePort:
@@ -108,8 +193,18 @@ class GhForgePort:
         _checked(self._run, ["gh", "pr", "merge", pr, "--squash"])
 
 
-def main_ci(runner: Runner, repo: str, commit: str) -> tuple[str, str]:
-    """State of main's first workflow run for the commit: pending, green or red, with the failing log tail."""
+def find_open_revert_pr(runner: Runner, repo: str, pr: int | str) -> str | None:
+    """URL of the open PR whose head branch is `revert/<pr>`, else None. A failed lookup raises, never reads as None."""
+    head = f"revert/{pr}"
+    listed = _checked(
+        runner,
+        ["gh", "pr", "list", "--repo", repo, "--state", "open", "--head", head, "--json", "number,url,headRefName"],
+    )
+    return next((p["url"] for p in json.loads(listed or "[]") if p.get("headRefName") == head), None)
+
+
+def main_ci_run(runner: Runner, repo: str, commit: str) -> tuple[str, str, int | None]:
+    """`main_ci` plus the id of the run it judged, which `rerun_failed` takes; None when no run exists yet."""
     listed = _checked(
         runner,
         [
@@ -119,16 +214,33 @@ def main_ci(runner: Runner, repo: str, commit: str) -> tuple[str, str]:
     )  # fmt: skip
     runs = json.loads(listed or "[]")
     if not runs:
-        return "pending", ""
+        return "pending", "", None
     run = runs[0]
+    run_id = run["databaseId"]
     if run.get("status") in _PENDING_STATUSES:
-        return "pending", ""
+        return "pending", "", run_id
     conclusion = run.get("conclusion")
     if conclusion == "success":
-        return "green", ""
+        return "green", "", run_id
     if conclusion != "failure":
         # Cancelled, skipped, neutral and the rest are not evidence that main is red.
-        return "pending", f"run concluded {conclusion}"
-    code, log = runner(["gh", "run", "view", str(run["databaseId"]), "--repo", repo, "--log-failed"])
+        return "pending", f"run concluded {conclusion}", run_id
+    code, log = runner(["gh", "run", "view", str(run_id), "--repo", repo, "--log-failed"])
     tail = "\n".join(log.splitlines()[-LOG_TAIL_LINES:])
-    return "red", tail if code == 0 else f"failing log unavailable, gh run view exited {code}: {tail}"
+    return "red", tail if code == 0 else f"failing log unavailable, gh run view exited {code}: {tail}", run_id
+
+
+def main_ci(runner: Runner, repo: str, commit: str) -> tuple[str, str]:
+    """State of main's first workflow run for the commit: pending, green or red, with the failing log tail."""
+    state, output, _ = main_ci_run(runner, repo, commit)
+    return state, output
+
+
+def rerun_failed(runner: Runner, repo: str, run_id: int, commit: str) -> tuple[str, str, int | None]:
+    """Rerun the failed jobs of `run_id`, wait for it to settle, and read main CI again for `commit`.
+
+    The wait is as bounded as `runner` is (see `bounded`): an expired wait is a non-zero exit and raises.
+    """
+    _checked(runner, ["gh", "run", "rerun", str(run_id), "--repo", repo, "--failed"])
+    _checked(runner, ["gh", "run", "watch", str(run_id), "--repo", repo])
+    return main_ci_run(runner, repo, commit)

@@ -2412,6 +2412,50 @@ def _lease_kept(runs_dir: Path, task: str, holder: str, epoch: int, kind: str) -
     return f"land: refusing {kind}, the land lease for {task} could not be renewed: {lost}"
 
 
+_REPO_LEASE_TTL_SECONDS = 1200  # keep equal to the ttl `_land` passes to land_repo_lease.acquire; each renew restarts it
+
+
+def _repo_lease_stop(repo: str, kind: str, result: store_cli.LeaseResult, renewed_at: float, now: float, ttl: int) -> str | None:
+    """None when the repo lease renewed, else the reason to stop before `kind`. Clock values are seconds on one clock."""
+    if isinstance(result, store_cli.LeaseGranted):
+        return None
+    if isinstance(result, store_cli.LeaseRefused):
+        late = f", {int(now - renewed_at)}s since the last renewal against a {ttl}s ttl" if now - renewed_at > ttl else ""
+        return f"land: refusing {kind}, the repo lease for {repo} was lost: held by {result.holder} at epoch {result.epoch}{late}"
+    if isinstance(result, store_cli.LeaseError):
+        why = result.detail
+    elif isinstance(result, store_cli.NotAvailable):
+        why = result.reason or "the store is not available"
+    else:
+        why = "it was released"
+    return f"land: refusing {kind}, the repo lease for {repo} could not be renewed: {why}"
+
+
+def _repo_lease_guard(repo: str, renew: Callable[[], store_cli.LeaseResult], clock: Callable[[], float], ttl: int,
+                      lost: list[str]) -> Callable[[str], str | None]:
+    """Edge. A walk guard that renews the repo lease before every step, not only the guarded ones.
+
+    A refusal means another holder owns the lease: it is appended to `lost` so the caller does not release it."""
+    renewed = [clock()]
+
+    def guard(kind: str) -> str | None:
+        now = clock()
+        result = renew()
+        stop = _repo_lease_stop(repo, kind, result, renewed[0], now, ttl)
+        if stop is None:
+            renewed[0] = now
+        elif isinstance(result, store_cli.LeaseRefused):
+            lost.append(stop)
+        return stop
+
+    return guard
+
+
+def _first_stop(first: Callable[[str], str | None], then: Callable[[str], str | None] | None) -> Callable[[str], str | None]:
+    """A guard that asks `first`, and asks `then` only when `first` lets the step run."""
+    return lambda kind: first(kind) or (then(kind) if then is not None else None)
+
+
 _LandWalk = Callable[[Callable[[str], str | None] | None], tuple[int, list[str], str]]
 
 
@@ -2572,7 +2616,14 @@ def _runs_land(a: argparse.Namespace) -> int:
         steps = land.resume_steps(steps, decision, cherry_pick["onto"])
         planned = land.resume_steps(planned, decision, cherry_pick["onto"])
     # Steps start here: every return from now on is logged. Earlier returns are not.
-    def walk(guard):
+    repo_lost: list[str] = []
+
+    def walk(task_guard):
+        repo_guard = _repo_lease_guard(
+            str(repo), lambda: land_repo_lease.renew(runs_dir, str(repo), repo_holder, got.epoch, _REPO_LEASE_TTL_SECONDS),
+            time.monotonic, _REPO_LEASE_TTL_SECONDS, repo_lost) if isinstance(got, store_cli.LeaseGranted) else None
+        # The repo lease is checked first: a lost repo lease stops the walk before the task lease is renewed.
+        guard = task_guard if repo_guard is None else _first_stop(repo_guard, task_guard)
         # The leftover rebuild deletes a branch, so it runs only once the repo lease is held: a concurrent
         # land mid-walk owns that branch, and the lease is what refuses this one before it touches it.
         failed = ("no repo lease to rebuild under" if not leased else _land_rebuild(repo, cherry_pick["onto"], rebuild)) if rebuild else None
@@ -2597,7 +2648,8 @@ def _runs_land(a: argparse.Namespace) -> int:
             walked = _land_walked(a, runs_dir, land_mode, lease_task,
                                    lambda: _land_store_stop(runs_dir, record, item_path) if record else None, walk)
         finally:
-            land_repo_lease.release(runs_dir, str(repo), repo_holder, got.epoch)
+            if not repo_lost:  # a refused renew means another land holds it now; releasing would not be ours to do
+                land_repo_lease.release(runs_dir, str(repo), repo_holder, got.epoch)
     else:
         # A store outage (NotAvailable/LeaseError) must not block a land: walk without the repo lease.
         walked = _land_walked(a, runs_dir, land_mode, lease_task,
@@ -8203,6 +8255,27 @@ def _host_beat(a: argparse.Namespace) -> int:
     return _host_store_write(a, host_cmd.beat_argv(a.name or socket.gethostname(), versions))
 
 
+def _parse_login_ok(text: str) -> bool | None:
+    """`true`, `false` or `none`, any case; the one place the login verb's tri-state is read."""
+    value = {"true": True, "false": False, "none": None}
+    if text.strip().lower() not in value:
+        raise argparse.ArgumentTypeError(f"login_ok must be true, false or none, not {text!r}")
+    return value[text.strip().lower()]
+
+
+def _host_login_argv(name: str, login_ok: bool | None, reason: str | None, failures: int, by: str) -> list[str]:
+    """The store_cli argv that stores login state and never stamps `beat_at`; `none` is spelled out, never omitted."""
+    ok = "none" if login_ok is None else json.dumps(login_ok)
+    return ["host", "login", name, "--login-ok", ok, *(["--reason", reason] if reason else []), "--failures", str(failures), "--by", by]
+
+
+def _host_login(a: argparse.Namespace) -> int:
+    """Stores login_ok, reason and the consecutive-failure count on the host's row and leaves `beat_at` as stored,
+    so a host that failed its check is not made to look freshly beaten. `host beat` stays the writer of `beat_at`.
+    Needs `harness.store_cli host login` (another repo); until it exists the store refuses and this exits 1."""
+    return _host_store_write(a, _host_login_argv(a.name, a.login_ok, a.reason, a.failures, _holder_label(a)))
+
+
 def _host_ssh(a: argparse.Namespace, profile: Mapping, runs_dir: Path) -> lane_hosts.LaneHost | None:
     """The named host from the table (any state), else from the profile's `lane_hosts`."""
     row = next((r for r in run_store.hosts(runs_dir) if r["name"] == a.name), None)
@@ -8282,6 +8355,16 @@ HOST_COMMANDS = [
     commands.Command(
         "beat", "host", "record this machine's versions and claude login in the table",
         (commands.Arg(("name",), {"nargs": "?", "help": "default: this machine's hostname"}),), "agent_tools.cli:_host_beat", False, (),
+    ),
+    commands.Command(
+        "login", "host", "store a host's login state without touching its beat time",
+        (
+            commands.Arg(("name",)),
+            commands.Arg(("login_ok",), {"type": _parse_login_ok, "metavar": "{true,false,none}"}),
+            commands.Arg(("--reason",), {"default": None, "help": "why the check failed"}),
+            commands.Arg(("--failures",), {"type": int, "default": 0, "help": "consecutive failed checks"}),
+        ),
+        "agent_tools.cli:_host_login", False, (),
     ),
     commands.Command("doctor", "host", "the table's line for a host, then its doctor over ssh", (commands.Arg(("name",)),), "agent_tools.cli:_host_doctor", False, ()),
     commands.Command(

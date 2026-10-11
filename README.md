@@ -147,6 +147,7 @@ cox host remove NAME [--dry-run]   delete a drained idle host from the hosts tab
 cox host activate NAME   make a host a lane host again
 cox host capacity NAME N [--json]   change only a host's capacity, leaving ssh, weight and capabilities as they are
 cox host beat [NAME]   record this machine's versions and claude login in the table
+cox host login NAME {true,false,none} [--reason REASON] [--failures FAILURES]   store a host's login state without touching its beat time
 cox host doctor NAME   the table's line for a host, then its doctor over ssh
 cox host sync NAME   git pull --ff-only in the harness, cartridges and tools checkouts on a host
 cox router select --role ROLE [--db DB] [--profile PROFILE] [--json]   the effective tier for a role under the profile's router: off|shadow|on flag

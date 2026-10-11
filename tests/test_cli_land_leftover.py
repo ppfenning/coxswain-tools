@@ -70,6 +70,7 @@ def _land(repo, tmp_path, monkeypatch, lease, prs=()):
     monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch, _forge=None: list(prs))
     monkeypatch.setattr(land_repo_lease, "acquire", lambda *_args: lease)
     monkeypatch.setattr(land_repo_lease, "release", lambda *_args: None)
+    monkeypatch.setattr(land_repo_lease, "renew", lambda *_args: lease)
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs"), "--gate", "full"])
     return rc, ran
 
