@@ -25,7 +25,9 @@ from agent_tools.land import _approved as land_approved
 Row = Mapping[str, Any]
 
 LIMIT = 30
-STOPPED_STATUSES = ("stopped", "budget")
+STOPPED_STATUSES = ("stopped", "budget", "paused")
+# The harness exits with these when a run builds nothing because an approved task is waiting for its land: a clean end.
+IDLE_STATUSES = ("awaiting_land",)
 CRASHED_STATUSES = ("error", "failed", "never_recorded")
 
 
@@ -103,7 +105,7 @@ def _cause(outcome: str, run: Row, run_tasks: Sequence[Row]) -> str:
 
 def run_outcome(run: Row, run_tasks: Sequence[Row]) -> str:
     """The one outcome rule. A store status of landed, approved or quarantined wins; then what the records built: landed, approved,
-    a quarantine cause; then the recorded blocked, refused or waiting outcome; then stopped; crashed for an error status, or a
+    a quarantine cause; then the recorded blocked, refused or waiting outcome; then stopped (stopped, budget, paused); idle for awaiting_land; crashed for an error status, or a
     missing/unknown one with no records; else idle."""
     status = run.get("status")
     if status in ("landed", "approved", "quarantined"):
@@ -118,6 +120,8 @@ def run_outcome(run: Row, run_tasks: Sequence[Row]) -> str:
         return label
     if status in STOPPED_STATUSES:
         return "stopped"
+    if status in IDLE_STATUSES:
+        return "idle"
     if status in CRASHED_STATUSES or (status != "ok" and not run_tasks):
         return "crashed"
     return "idle"

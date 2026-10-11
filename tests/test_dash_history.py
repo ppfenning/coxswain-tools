@@ -127,3 +127,12 @@ def test_a_run_with_no_recorded_outcome_keeps_its_label_from_status():
     rows = build_history(runs, [], [])
     assert [row["outcome"] for row in rows] == ["idle", "crashed"] and all("cause" not in row for row in rows)
     assert _recorded_row("ok", blocked=[])["outcome"] == "idle"
+
+
+def test_a_run_that_exits_awaiting_land_is_idle_and_a_paused_run_is_stopped():
+    """2026-10-11: two runs that exited awaiting_land (an approved task waiting for its land) showed as crashed."""
+    from agent_tools.dash_history import run_outcome
+
+    assert run_outcome({"status": "awaiting_land", "record_json": {}}, []) == "idle"
+    assert run_outcome({"status": "paused", "record_json": {}}, []) == "stopped"
+    assert run_outcome({"status": "error", "record_json": {}}, []) == "crashed"
