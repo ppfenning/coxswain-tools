@@ -7,6 +7,8 @@ Nothing here spawns a process; the caller injects the runner that does.
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 from collections.abc import Callable
 
 __all__ = [
@@ -50,25 +52,47 @@ def _checked(runner: Runner, argv: list[str]) -> str:
 
 
 class GitRevertPort:
-    def __init__(self, runner: Runner) -> None:
+    """Reverts in a throwaway worktree, so the shared checkout is never switched, reset or left on a branch."""
+
+    def __init__(self, runner: Runner, mkdtemp: Callable[[], str] = lambda: tempfile.mkdtemp(prefix="revert-")) -> None:
         self._run = runner
+        self._mkdtemp = mkdtemp
+        # Branch to (worktree, temp dir) for a clean revert awaiting its push, which removes both.
+        self._trees: dict[str, tuple[str, str]] = {}
 
     def fetch_main(self, repo: str) -> None:
         _checked(self._run, ["git", "-C", repo, "fetch", "origin", "main"])
 
+    def _release(self, repo: str, branch: str, tree: tuple[str, str], drop_branch: bool) -> None:
+        worktree, tmp = tree
+        self._run(["git", "-C", repo, "worktree", "remove", "--force", worktree])
+        if drop_branch:
+            # Only after the worktree is gone: git refuses to delete a branch a worktree has checked out.
+            self._run(["git", "-C", repo, "branch", "-D", branch])
+        shutil.rmtree(tmp, ignore_errors=True)
+
     def revert_onto_branch(self, repo: str, branch: str, commit: str) -> list[str]:
-        git = ["git", "-C", repo]
-        parents = parent_count(_checked(self._run, [*git, "rev-list", "--parents", "-n", "1", commit]))
-        _checked(self._run, [*git, "checkout", "-b", branch, "origin/main"])
-        merge_flags = ["-m", "1"] if parents == 2 else []
-        code, output = self._run([*git, "revert", "--no-edit", *merge_flags, commit])
-        if code == 0:
-            return []
-        _, unmerged = self._run([*git, "diff", "--name-only", "--diff-filter=U"])
-        self._run([*git, "revert", "--abort"])
-        # Drop the branch so a retry's `checkout -b` does not collide with it.
-        self._run([*git, "checkout", "--detach", "origin/main"])
-        self._run([*git, "branch", "-D", branch])
+        parents = parent_count(_checked(self._run, ["git", "-C", repo, "rev-list", "--parents", "-n", "1", commit]))
+        tmp = self._mkdtemp()
+        tree = (f"{tmp}/wt", tmp)
+        try:
+            _checked(self._run, ["git", "-C", repo, "worktree", "add", "-b", branch, tree[0], "origin/main"])
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        git = ["git", "-C", tree[0]]
+        try:
+            merge_flags = ["-m", "1"] if parents == 2 else []
+            code, output = self._run([*git, "revert", "--no-edit", *merge_flags, commit])
+            if code == 0:
+                self._trees[branch] = tree
+                return []
+            _, unmerged = self._run([*git, "diff", "--name-only", "--diff-filter=U"])
+            self._run([*git, "revert", "--abort"])
+        except BaseException:
+            self._release(repo, branch, tree, drop_branch=True)
+            raise
+        self._release(repo, branch, tree, drop_branch=True)
         files = _lines(unmerged)
         if not files:
             # A failed revert with no unmerged files is not a conflict; [] would read as a clean revert.
@@ -76,7 +100,15 @@ class GitRevertPort:
         return files
 
     def push(self, repo: str, branch: str) -> None:
-        _checked(self._run, ["git", "-C", repo, "push", "origin", branch])
+        tree = self._trees.pop(branch, None)
+        if tree is None:
+            _checked(self._run, ["git", "-C", repo, "push", "origin", branch])
+            return
+        try:
+            _checked(self._run, ["git", "-C", tree[0], "push", "origin", branch])
+        finally:
+            # The remote branch is what the PR needs; the worktree has done its job whether or not the push landed.
+            self._release(repo, branch, tree, drop_branch=False)
 
 
 class GhForgePort:
