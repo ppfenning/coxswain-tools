@@ -13,7 +13,10 @@ HELP_TARGET_S = 0.25
 CHAIR_STATUS_TARGET_S = 0.30
 
 # Measured cox/python -c pass ratio 4.6x to 5.8x (4 rounds of 21 runs, 2026-10-11, Linux, py3.14); 8.0x is 1.5x the clean ratio for noise and under 3x it (13.7x), so a 3x regression (~16x) fails.
-STARTUP_MULTIPLE = 8.0
+# Python 3.15 (the prerelease CI job) starts cox relatively slower: a clean cox --help measured 8.6-8.8x the baseline
+# under the load fixture on 2026-10-11 (tools main red from #1497 on), while the injected 3x regression lands near 26x
+# there; on 3.14 that regression measures about 8.2x locally. So 3.14 keeps 8x and 3.15+ gets 12x.
+STARTUP_MULTIPLE = 12.0 if sys.version_info >= (3, 15) else 8.0
 
 
 @dataclass(frozen=True)
