@@ -99,6 +99,25 @@ def test_a_fetch_exit_that_exits_nonzero_applies_nothing_and_fails(tmp_path, mon
     assert "run" not in results[0] and "host" not in results[0]
 
 
+LIVE_REFUSAL = "fetch: refuse: r-1 is still live on host-a: the lane has not ended"
+
+
+def test_a_fetch_exit_refused_because_the_run_is_live_is_skipped_with_its_reason_unchanged(tmp_path, monkeypatch) -> None:
+    calls: list = []
+    monkeypatch.setattr(chair_exec.chair_apply_fetch, "apply_fetched_approvals", lambda *a: calls.append(a) or [])
+    deps = replace(_deps([], code=2, output=LIVE_REFUSAL), runs_dir=tmp_path, work_dir=tmp_path)
+    results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
+    assert calls == []
+    assert (results[0]["status"], results[0]["reason"]) == ("skipped", LIVE_REFUSAL)
+
+
+def test_a_fetch_exit_whose_fetch_errors_still_fails_with_its_reason_unchanged(tmp_path) -> None:
+    output = "fetch: ssh: connection refused"
+    deps = replace(_deps([], code=2, output=output), runs_dir=tmp_path, work_dir=tmp_path)
+    results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
+    assert (results[0]["status"], results[0]["reason"]) == ("failed", output)
+
+
 WIDEN = {
     "kind": "widen_ticket", "initiative": "i", "task_id": "t1",
     "paths": ["src/app.rs"], "additions": ["accessor"], "reason": "handoff", "epoch": 1,
