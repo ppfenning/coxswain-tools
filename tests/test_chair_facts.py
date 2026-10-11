@@ -12,6 +12,7 @@ from agent_tools.chair_facts import (
     gather_facts,
     harness_failures,
     idle_stall_inputs,
+    land_refusals_from_actions,
     lease_facts,
     limits_facts,
     new_missing_repos,
@@ -613,3 +614,41 @@ def test_a_claimed_task_is_absent_from_the_ready_facts():
     deps = replace(_deps(), queue=lambda: rows)
     facts = gather_facts(deps, NOW)
     assert [t["id"] for t in facts["initiatives"][0]["ready_tasks"]] == ["b"]
+
+
+def _stamp(at: datetime) -> str:
+    return at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _refusal(at: datetime, status: str = "refused") -> dict:
+    return {"ts": _stamp(at), "kind": "land_phase", "status": status, "initiative": "i", "phase": "p", "run": "i-1"}
+
+
+def test_attempts_count_only_the_refusals_inside_the_last_24_hours():
+    offsets = [n * 272 for n in range(1267)]
+    rows = [_refusal(NOW - timedelta(seconds=s)) for s in offsets]
+    [refusal] = land_refusals_from_actions(rows, NOW)
+    assert refusal["attempts"] == sum(1 for s in offsets if s < 86400) == 318
+    assert refusal["last_refused_at"] == _stamp(NOW)
+
+
+def test_a_refusal_exactly_at_the_horizon_is_dropped_and_one_second_inside_is_kept():
+    rows = [
+        _refusal(NOW - timedelta(hours=24)),
+        _refusal(NOW - timedelta(hours=24) + timedelta(seconds=1)),
+        _refusal(NOW + timedelta(seconds=1), "failed"),
+    ]
+    [refusal] = land_refusals_from_actions(rows, NOW)
+    assert refusal["attempts"] == 1
+    assert land_refusals_from_actions(rows[:1], NOW) == []
+
+
+def test_a_landed_row_inside_the_horizon_still_resets_the_count():
+    rows = [
+        _refusal(NOW - timedelta(hours=5)),
+        _refusal(NOW - timedelta(hours=4), "landed"),
+        _refusal(NOW - timedelta(hours=3), "failed"),
+    ]
+    [refusal] = land_refusals_from_actions(rows, NOW)
+    assert refusal["attempts"] == 1
+    assert refusal["last_refused_at"] == _stamp(NOW - timedelta(hours=3))
