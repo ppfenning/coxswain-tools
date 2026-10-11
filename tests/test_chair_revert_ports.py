@@ -4,11 +4,25 @@ import json
 
 import pytest
 
+from agent_tools.chair_revert_exec import CHECKS_FAILED, CONFLICT, MERGED, perform_revert
 from agent_tools.chair_revert_ports import GhForgePort, GitRevertPort, main_ci, parent_count
 
 G = ["git", "-C", "/r"]
+TMP = "/nonexistent-revert-tmp"
+W = f"{TMP}/wt"
+GW = ["git", "-C", W]
 PROBE = [*G, "rev-list", "--parents", "-n", "1", "abc"]
-CHECKOUT = [*G, "checkout", "-b", "revert/7", "origin/main"]
+WORKTREE_ADD = [*G, "worktree", "add", "-b", "revert/7", W, "origin/main"]
+WORKTREE_REMOVE = [*G, "worktree", "remove", "--force", W]
+BRANCH_DROP = [*G, "branch", "-D", "revert/7"]
+PR_URL = "https://github.com/o/r/pull/9"
+GREEN = "ci\tpass\t1s\thttp://x\n"
+CREATED = f"Creating pull request\n{PR_URL}\n"
+MOVERS = ("checkout", "switch", "reset")
+
+
+def _git(run: Recorder) -> GitRevertPort:
+    return GitRevertPort(run, mkdtemp=lambda: TMP)
 
 
 class Recorder:
@@ -36,54 +50,153 @@ def test_fetch_main_argv() -> None:
     assert run.calls == [[*G, "fetch", "origin", "main"]]
 
 
-def test_clean_revert_issues_checkout_revert_push_in_order() -> None:
+class SharedCheckout(Recorder):
+    """Recorder that also tracks the branch the shared checkout /r reports, as a real checkout would."""
+
+    def __init__(self, script: dict[tuple[str, ...], tuple[int, str]] | None = None) -> None:
+        super().__init__({("git", "-C", "/r", "rev-list"): (0, "abc p1\n"), **(script or {})})
+        self.head = "main"
+
+    def __call__(self, argv: list[str]) -> tuple[int, str]:
+        if argv[:3] == G and argv[3] in MOVERS:
+            self.head = argv[-1]
+        return super().__call__(argv)
+
+
+def _assert_shared_checkout_untouched(calls: list[list[str]]) -> None:
+    assert [c for c in calls if c[:3] == G and c[3] in MOVERS] == []
+
+
+def _assert_clean(run: SharedCheckout) -> None:
+    _assert_shared_checkout_untouched(run.calls)
+    assert run.head == "main"
+    assert WORKTREE_REMOVE in run.calls
+
+
+def _drive(run: SharedCheckout) -> str:
+    return perform_revert("/r", 7, "abc", "main red", _git(run), GhForgePort(run)).status
+
+
+def test_clean_revert_works_in_a_worktree_and_push_removes_it() -> None:
     run = Recorder({("git", "-C", "/r", "rev-list"): (0, "abc p1\n")})
-    port = GitRevertPort(run)
+    port = _git(run)
     assert port.revert_onto_branch("/r", "revert/7", "abc") == []
     port.push("/r", "revert/7")
     assert run.calls == [
         PROBE,
-        CHECKOUT,
-        [*G, "revert", "--no-edit", "abc"],
-        [*G, "push", "origin", "revert/7"],
+        WORKTREE_ADD,
+        [*GW, "revert", "--no-edit", "abc"],
+        [*GW, "push", "origin", "revert/7"],
+        WORKTREE_REMOVE,
     ]
 
 
 def test_two_parent_commit_adds_m_1() -> None:
     run = Recorder({("git", "-C", "/r", "rev-list"): (0, "abc p1 p2\n")})
-    GitRevertPort(run).revert_onto_branch("/r", "revert/7", "abc")
-    assert run.calls[-1] == [*G, "revert", "--no-edit", "-m", "1", "abc"]
+    _git(run).revert_onto_branch("/r", "revert/7", "abc")
+    assert run.calls[-1] == [*GW, "revert", "--no-edit", "-m", "1", "abc"]
 
 
-def test_conflict_returns_unmerged_files_and_aborts() -> None:
+def test_conflict_returns_unmerged_files_and_drops_the_worktree_and_branch() -> None:
     run = Recorder(
         {
             ("git", "-C", "/r", "rev-list"): (0, "abc p1\n"),
-            ("git", "-C", "/r", "revert", "--no-edit"): (1, "CONFLICT"),
-            ("git", "-C", "/r", "diff"): (0, "a.py\nb/c.py\n"),
+            ("git", "-C", W, "revert", "--no-edit"): (1, "CONFLICT"),
+            ("git", "-C", W, "diff"): (0, "a.py\nb/c.py\n"),
         }
     )
-    assert GitRevertPort(run).revert_onto_branch("/r", "revert/7", "abc") == ["a.py", "b/c.py"]
+    assert _git(run).revert_onto_branch("/r", "revert/7", "abc") == ["a.py", "b/c.py"]
     assert run.calls[-4:] == [
-        [*G, "diff", "--name-only", "--diff-filter=U"],
-        [*G, "revert", "--abort"],
-        [*G, "checkout", "--detach", "origin/main"],
-        [*G, "branch", "-D", "revert/7"],
+        [*GW, "diff", "--name-only", "--diff-filter=U"],
+        [*GW, "revert", "--abort"],
+        WORKTREE_REMOVE,
+        BRANCH_DROP,
     ]
+    _assert_shared_checkout_untouched(run.calls)
 
 
-def test_failed_revert_without_conflicts_raises() -> None:
+def test_failed_revert_without_conflicts_raises_and_drops_the_worktree() -> None:
     run = Recorder(
-        {("git", "-C", "/r", "rev-list"): (0, "abc p1\n"), ("git", "-C", "/r", "revert", "--no-edit"): (1, "empty")}
+        {("git", "-C", "/r", "rev-list"): (0, "abc p1\n"), ("git", "-C", W, "revert", "--no-edit"): (1, "empty")}
     )
     with pytest.raises(RuntimeError, match="no conflicts"):
-        GitRevertPort(run).revert_onto_branch("/r", "revert/7", "abc")
+        _git(run).revert_onto_branch("/r", "revert/7", "abc")
+    assert WORKTREE_REMOVE in run.calls
+    assert BRANCH_DROP in run.calls
 
 
-def test_push_failure_raises() -> None:
+def test_failed_worktree_add_raises_without_deleting_a_branch() -> None:
+    run = Recorder(
+        {("git", "-C", "/r", "rev-list"): (0, "abc p1\n"), ("git", "-C", "/r", "worktree", "add"): (128, "exists")}
+    )
+    with pytest.raises(RuntimeError, match="exists"):
+        _git(run).revert_onto_branch("/r", "revert/7", "abc")
+    assert BRANCH_DROP not in run.calls
+
+
+def test_push_failure_raises_and_still_removes_the_worktree() -> None:
+    run = Recorder({("git", "-C", "/r", "rev-list"): (0, "abc p1\n"), ("git", "-C", W, "push"): (1, "rejected")})
+    port = _git(run)
+    port.revert_onto_branch("/r", "revert/7", "abc")
+    with pytest.raises(RuntimeError, match="rejected"):
+        port.push("/r", "revert/7")
+    assert run.calls[-1] == WORKTREE_REMOVE
+
+
+def test_push_without_a_worktree_pushes_from_the_checkout() -> None:
     run = Recorder({("git",): (1, "rejected")})
     with pytest.raises(RuntimeError, match="rejected"):
-        GitRevertPort(run).push("/r", "revert/7")
+        _git(run).push("/r", "revert/7")
+    assert run.calls == [[*G, "push", "origin", "revert/7"]]
+
+
+def test_success_leaves_the_shared_checkout_alone() -> None:
+    run = SharedCheckout({("gh", "pr", "create"): (0, CREATED), ("gh", "pr", "checks"): (0, GREEN)})
+    assert _drive(run) == MERGED
+    _assert_clean(run)
+
+
+def test_conflict_leaves_the_shared_checkout_alone() -> None:
+    run = SharedCheckout({("git", "-C", W, "revert"): (1, "CONFLICT"), ("git", "-C", W, "diff"): (0, "a.py\n")})
+    assert _drive(run) == CONFLICT
+    _assert_clean(run)
+    assert BRANCH_DROP in run.calls
+
+
+def test_push_failure_leaves_the_shared_checkout_alone() -> None:
+    run = SharedCheckout({("git", "-C", W, "push"): (1, "rejected")})
+    with pytest.raises(RuntimeError, match="rejected"):
+        _drive(run)
+    _assert_clean(run)
+
+
+def test_open_pr_failure_leaves_the_shared_checkout_alone() -> None:
+    run = SharedCheckout({("gh", "pr", "create"): (1, "boom")})
+    with pytest.raises(RuntimeError, match="boom"):
+        _drive(run)
+    _assert_clean(run)
+
+
+def test_wait_raise_leaves_the_shared_checkout_alone() -> None:
+    run = SharedCheckout({("gh", "pr", "create"): (0, CREATED), ("gh", "pr", "checks"): (1, "")})
+    with pytest.raises(RuntimeError, match="no failing check"):
+        _drive(run)
+    _assert_clean(run)
+
+
+def test_wait_timeout_raises_and_leaves_the_shared_checkout_alone() -> None:
+    expired = "gh pr checks timed out after 1800s"
+    run = SharedCheckout({("gh", "pr", "create"): (0, CREATED), ("gh", "pr", "checks"): (124, expired)})
+    with pytest.raises(RuntimeError, match="timed out after 1800s"):
+        _drive(run)
+    _assert_clean(run)
+
+
+def test_failing_checks_are_a_checks_failed_result() -> None:
+    fail = "t\tfail\t1m\thttp://y\n"
+    run = SharedCheckout({("gh", "pr", "create"): (0, CREATED), ("gh", "pr", "checks"): (1, fail)})
+    assert _drive(run) == CHECKS_FAILED
+    _assert_clean(run)
 
 
 def test_open_pr_returns_the_url() -> None:
