@@ -52,6 +52,7 @@ def store(monkeypatch):
         # an absolute path, so `land:/` distinguishes it from the task/phase names below ("land:seams-task",
         # "land:phase:x/seams") without needing the `repo` fixture wired into this one.
         repo_acquire=store_cli.LeaseGranted(1, "repo-holder"), repo_release=store_cli.LeaseReleased(),
+        repo_renew=store_cli.LeaseGranted(1, "repo-holder"), repo_renews=[],
         item=None, seen_at_release=None, set_result=store_cli.StateSet({"state": "done"}), real_set_state=store_cli.set_state,
     )
 
@@ -64,6 +65,9 @@ def store(monkeypatch):
         return fake.repo_acquire if name.startswith("land:/") else fake.acquire
 
     def renew(runs_dir, name, holder, epoch, ttl):
+        if name.startswith("land:/"):  # the repo lease renews before every step; kept out of `calls` so the task-lease order stays readable
+            fake.repo_renews.append((name, epoch))
+            return fake.repo_renew
         fake.calls.append(("renew", name, epoch))
         return fake.renew
 
@@ -375,3 +379,17 @@ def test_a_record_only_in_the_store_lands_and_mark_done_writes_the_file_from_it(
     assert "land: record from store" in capsys.readouterr().err
     assert json.loads(path.read_text(encoding="utf-8")) == {**_RECORD, "landed": True}
     assert [(m["run"], m["phase"], m["task"]) for m in mirrored] == [("epic-x-5", "seams", "seams-task")]
+
+
+def test_the_repo_lease_is_renewed_before_every_step_of_a_land(repo, tmp_path, monkeypatch, store):
+    rc, ran = _land(repo, tmp_path, monkeypatch, store)
+    assert rc == 0 and ran
+    assert store.repo_renews == [(f"land:{repo}", 1)] * len(ran)
+
+
+def test_a_repo_lease_lost_mid_land_stops_the_walk_and_is_not_released(repo, tmp_path, monkeypatch, store, capsys):
+    store.repo_renew = store_cli.LeaseRefused(5, "other@host:2")
+    rc, ran = _land(repo, tmp_path, monkeypatch, store)
+    assert (rc, ran) == (2, [])
+    assert f"the repo lease for {repo} was lost: held by other@host:2 at epoch 5" in capsys.readouterr().out
+    assert ("release", f"land:{repo}", 1) not in store.calls
