@@ -612,3 +612,48 @@ def test_a_bare_path_store_reads_as_other_and_still_answers(tmp_path):
     conn.close()
     profile = _store_profile(tmp_path, f"command: x\nstorage_url: {db}\n")
     assert _gather_doctor_facts(profile, tmp_path)["store"] == {"kind": "other", "reachable": True, "error": None, "runs": 0, "fresh": False}
+
+
+_PROFILE = {"team": "pat", "tiers": {"fast": "model-a"}}
+_CATALOG = {"model-a": {"released": "2025-01-01"}}
+_STALE = "tier fast pins model-a, newer model-b is available"
+
+
+def test_a_fresh_profile_gives_no_freshness_rows():
+    assert doctor.freshness_rows(_PROFILE, _CATALOG, ["model-a"], lambda p, c, v: []) == []
+
+
+def test_a_stale_tier_gives_one_warning_row_and_leaves_exit_code_unchanged():
+    base = doctor.checks(_good_facts())
+    rows = doctor.freshness_rows(_PROFILE, _CATALOG, ["model-a"], lambda p, c, v: [_STALE])
+    assert rows == [{"check": "model freshness", "ok": True, "warn": True, "detail": _STALE}]
+    assert doctor.exit_code(base + rows) == doctor.exit_code(base) == 0
+    failing = doctor.checks({})
+    assert doctor.exit_code(failing + rows) == doctor.exit_code(failing) == 1
+
+
+def test_a_none_freshness_fn_gives_one_skip_row_and_leaves_exit_code_unchanged():
+    base = doctor.checks(_good_facts())
+    rows = doctor.freshness_rows(_PROFILE, _CATALOG, None, None)
+    assert len(rows) == 1
+    assert rows[0]["detail"] == "skipped: cartridges core too old for the model freshness check"
+    assert doctor.exit_code(base + rows) == 0
+
+
+def test_freshness_fn_gets_vendor_ids_only_when_given():
+    calls = []
+
+    def stub(*args):
+        calls.append(args)
+        return []
+
+    doctor.freshness_rows(_PROFILE, _CATALOG, None, stub)
+    doctor.freshness_rows(_PROFILE, _CATALOG, ["model-a"], stub)
+    assert calls == [(_PROFILE, _CATALOG), (_PROFILE, _CATALOG, ["model-a"])]
+
+
+def test_render_shows_warn_and_counts_warnings_apart_from_ok_and_failing():
+    rows = doctor.checks(_good_facts()) + doctor.freshness_rows(_PROFILE, _CATALOG, None, lambda p, c: [_STALE])
+    text = doctor.render(rows)
+    assert re.search(r"model freshness\s+warn\s+" + re.escape(_STALE), text)
+    assert text.splitlines()[-1] == "doctor: 15 ok, 0 failing, 1 warning"
