@@ -1,0 +1,10 @@
+usage: cox host login [-h] [--reason REASON] [--failures FAILURES] name {true,false,none}
+
+positional arguments:
+  name
+  {true,false,none}
+
+options:
+  -h, --help           show this help message and exit
+  --reason REASON      why the check failed
+  --failures FAILURES  consecutive failed checks
