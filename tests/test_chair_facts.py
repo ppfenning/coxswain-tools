@@ -1,9 +1,12 @@
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from agent_tools import chair_smoke, pacing, queue_rows
+import pytest
+
+from agent_tools import chair_smoke, pacing, queue_rows, run_store
 from agent_tools.chair import lease_holder
 from agent_tools.chair_facts import (
     FactsDeps,
@@ -17,10 +20,15 @@ from agent_tools.chair_facts import (
     limits_facts,
     new_missing_repos,
     resolve_idle_stall_minutes,
+    windowed_actions,
 )
 from agent_tools.chair_idle_stall import diagnose, is_stalled
+from agent_tools.chair_land_backoff import backoff_for
+from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_plan_recover import plan_recover
 from agent_tools.chair_read_attempts import with_stored_rescues
+from agent_tools.chair_read_record import recorder
+from agent_tools.chair_read_stale import read_chair_actions
 from agent_tools.chair_types import Facts
 from agent_tools.usage_window import WeeklyReset, weekly_window_start
 
@@ -652,3 +660,63 @@ def test_a_landed_row_inside_the_horizon_still_resets_the_count():
     [refusal] = land_refusals_from_actions(rows, NOW)
     assert refusal["attempts"] == 1
     assert refusal["last_refused_at"] == _stamp(NOW - timedelta(hours=3))
+
+
+def _store_with_recorder(tmp_path, monkeypatch, at: datetime):
+    """A sqlite `chair_actions` table and the recorder wired to it as `record-action` writes it: ts, kind, target and the whole line as action_json."""
+    db = tmp_path / "store.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE chair_actions (ts TEXT, kind TEXT, target TEXT, action_json TEXT)")
+
+    def store(argv: list[str]) -> tuple[int, str]:
+        line = json.loads(argv[-1])
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "INSERT INTO chair_actions VALUES (?, ?, ?, ?)", (line["ts"], line["kind"], line.get("target", ""), json.dumps(line))
+            )
+        return 0, ""
+
+    def open_store(runs_dir):
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        return conn, "?"
+
+    monkeypatch.setattr(run_store, "_open", open_store)
+    return recorder(tmp_path, lambda: 4, lambda: _stamp(at), store=store, holder="h")
+
+
+def _planned_kinds(tmp_path, now: datetime) -> list[str]:
+    """Facts through the planner's own read path, `read_chair_actions` under `windowed_actions`, then `plan_lands`."""
+    actions = windowed_actions(lambda n: read_chair_actions(tmp_path, n), now)
+    facts = gather_facts(replace(_deps(), actions=actions), now)
+    return [a["kind"] for a in plan_lands(facts, now)]
+
+
+@pytest.mark.parametrize("status", ["refused", "failed", "not_landed"])
+def test_a_land_phase_refusal_the_recorder_wrote_holds_the_planner_off_until_the_back_off_elapses(tmp_path, monkeypatch, status):
+    record = _store_with_recorder(tmp_path, monkeypatch, NOW)
+    record({"kind": "land_phase", "status": status, "initiative": "i", "phase": "p", "run": "i-1", "reason": "x"})
+    assert _planned_kinds(tmp_path, NOW + timedelta(minutes=5)) == []
+    assert _planned_kinds(tmp_path, NOW + backoff_for(1)) == ["fetch", "land_phase"]
+
+
+def test_two_not_landed_rows_count_two_attempts_so_the_back_off_doubles():
+    rows = [_refusal(NOW - timedelta(minutes=40), "not_landed"), _refusal(NOW, "not_landed")]
+    [refusal] = land_refusals_from_actions(rows, NOW)
+    assert refusal["attempts"] == 2 and backoff_for(2) == 2 * backoff_for(1)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="root cause outside this task's surfaces: chair_read_stale.read_chair_actions returns [] when run_store._open "
+    "raises the missing-psycopg RuntimeError, while the recorder writes through the harness python, which has psycopg",
+)
+def test_a_reader_without_psycopg_still_holds_off_a_land_the_recorder_wrote(tmp_path, monkeypatch):
+    record = _store_with_recorder(tmp_path, monkeypatch, NOW)
+    record({"kind": "land_phase", "status": "refused", "initiative": "i", "phase": "p", "run": "i-1", "reason": "x"})
+
+    def no_driver(runs_dir):
+        raise RuntimeError("a postgres store needs psycopg: pip install 'coxswain-tools[postgres]'")
+
+    monkeypatch.setattr(run_store, "_open", no_driver)
+    assert _planned_kinds(tmp_path, NOW + timedelta(minutes=5)) == []
