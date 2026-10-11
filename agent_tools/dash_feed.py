@@ -130,22 +130,71 @@ def _hard_stop_fraction(runs_dir: Path) -> float:
     return cli._resolved_pacing_policy(Path(runs_dir)).weekly_hard_stop_fraction
 
 
-def _spend(runs_dir: Path, now: str) -> dict:
-    """The spend header: a fresh usage meter wins outright; otherwise an estimate ceilinged by an implied
-    ceiling the meter has recorded, falling back to the routing profile's own ceilings."""
+def _profile_weekly_reset() -> usage_window.WeeklyReset | None:
+    """Edge. The routing profile's `weekly_reset`, parsed as the chair parses it; None when the profile is
+    missing, unreadable or unparseable, or sets no reset."""
+    try:
+        profile = route.parse_profile(_profile_path().read_text(encoding="utf-8"))
+    except (OSError, route.ProfileError):
+        return None
+    return usage_window.parse_weekly_reset(profile.get("weekly_reset"))
+
+
+def _store_meter(read_store, runs_dir: Path) -> usage_meter.Meter | None:
+    """Edge. The newest meter the store holds, through `read_store` (`run_store.latest_chair_meter`, the reader
+    the standby chair's "(meter, store)" label uses). None for no row, a store error, or a naive `observed_at`,
+    which `usage_meter.fresh` cannot compare with an aware clock."""
+    try:
+        doc = read_store(Path(runs_dir))
+    except (*run_store._db_errors(), ValueError, TypeError, RuntimeError):  # RuntimeError: psycopg not installed
+        return None
+    meter = usage_meter.parse(doc) if doc else None
+    return meter if meter is not None and meter.observed_at.tzinfo is not None else None
+
+
+def _newest_meter(*meters: usage_meter.Meter | None) -> usage_meter.Meter | None:
+    """The meter with the latest `observed_at`, even a stale one; None when there is none."""
+    seen = [m for m in meters if m is not None and m.observed_at.tzinfo is not None]
+    return max(seen, key=lambda m: m.observed_at, default=None)
+
+
+def _from_meter(meter: usage_meter.Meter, label: str, spend_source: str, at: datetime, hard_stop: float) -> dict:
+    return {
+        "five_hour_fraction": meter.five_hour.used_percentage / 100,
+        "five_hour_source": label,
+        "five_hour_resets_at": meter.five_hour.resets_at.isoformat(),
+        "weekly_fraction": meter.seven_day.used_percentage / 100,
+        "weekly_source": label,
+        "weekly_resets_at": meter.seven_day.resets_at.isoformat(),
+        "hard_stop_fraction": hard_stop,
+        "spend_source": spend_source,
+        "spend_age_s": _age_s(meter.observed_at.isoformat(), at),
+    }
+
+
+def _spend(runs_dir: Path, now: str, *, read_local=None, read_store=None, read_reset=None) -> dict:
+    """The spend header, from the first of three sources: a fresh local usage meter; else the newest meter in
+    the store when fresh; else an estimate ceilinged by an implied ceiling the meter has recorded, falling back
+    to the routing profile's own ceilings. The weekly estimate starts at the newest meter's reset (even a stale
+    one), else the profile's configured reset; the five-hour estimate keeps its rolling window.
+    `spend_source` is "local meter", "meter store" or "estimate"; `spend_age_s` is the age of the meter that
+    answered, or of the newest stale one an estimate went on, and None when no meter exists.
+    `read_local`, `read_store` and `read_reset` default to the real readers, looked up at call time."""
     at = _parse_now(now)
     hard_stop_fraction = _hard_stop_fraction(runs_dir)
-    meter = usage_meter.read()
-    if meter is not None and usage_meter.fresh(meter, at):
-        return {
-            "five_hour_fraction": meter.five_hour.used_percentage / 100,
-            "five_hour_source": "meter",
-            "five_hour_resets_at": meter.five_hour.resets_at.isoformat(),
-            "weekly_fraction": meter.seven_day.used_percentage / 100,
-            "weekly_source": "meter",
-            "weekly_resets_at": meter.seven_day.resets_at.isoformat(),
-            "hard_stop_fraction": hard_stop_fraction,
-        }
+    local = (usage_meter.read if read_local is None else read_local)()
+    if local is not None and usage_meter.fresh(local, at):
+        return _from_meter(local, "meter", "local meter", at, hard_stop_fraction)
+    stored = _store_meter(run_store.latest_chair_meter if read_store is None else read_store, runs_dir)
+    if stored is not None and usage_meter.fresh(stored, at):
+        return _from_meter(stored, "meter, store", "meter store", at, hard_stop_fraction)
+    newest = _newest_meter(local, stored)
+    reset = (_profile_weekly_reset if read_reset is None else read_reset)()
+    start = usage_window.weekly_start_from_reset(
+        None if newest is None else newest.seven_day.resets_at,
+        None if reset is None else usage_window.weekly_window_start(at, reset),
+        at,
+    )
     profile_window_ceiling, profile_weekly_ceiling = _profile_ceilings()
     window_ceiling = usage_meter.implied_ceiling("five_hour", at)
     if window_ceiling is None:
@@ -154,7 +203,7 @@ def _spend(runs_dir: Path, now: str) -> dict:
     if weekly_ceiling is None:
         weekly_ceiling = profile_weekly_ceiling
     window = usage_window.gather(runs_dir, at, ceiling_usd=window_ceiling)
-    weekly = usage_window.gather_weekly(runs_dir, at, weekly_ceiling_usd=weekly_ceiling)
+    weekly = usage_window.gather_weekly(runs_dir, at, weekly_ceiling_usd=weekly_ceiling, start=start)
     return {
         "five_hour_fraction": _fraction(window.spent_usd, window.ceiling_usd),
         "five_hour_source": "est",
@@ -163,6 +212,8 @@ def _spend(runs_dir: Path, now: str) -> dict:
         "weekly_source": "est",
         "weekly_resets_at": None,
         "hard_stop_fraction": hard_stop_fraction,
+        "spend_source": "estimate",
+        "spend_age_s": None if newest is None else _age_s(newest.observed_at.isoformat(), at),
     }
 
 
