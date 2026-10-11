@@ -1398,7 +1398,9 @@ def _filed_write_error(path: Path, stored: bool, exc: OSError) -> str:
     return f"routing: store unavailable and the file write for {path} failed too: {exc}"
 
 
-def write_filed_item(runs_dir: Path, path: Path, kind: str, path_parts: tuple[str, ...], text: str) -> int:
+def write_filed_item(
+    runs_dir: Path, path: Path, kind: str, path_parts: tuple[str, ...], text: str, priority: int | None = None
+) -> int:
     """The store first, the file second, for one file `cox route file` is about to write. `queue_rows.parse_item`
     is the codec that turns `(kind, path_parts, text)` into the row; `run_store.upsert_row` is the seam that
     takes it. A store that cannot take it — down, or a shape the codec does not recognize — is one warning, not
@@ -1406,9 +1408,11 @@ def write_filed_item(runs_dir: Path, path: Path, kind: str, path_parts: tuple[st
     the next `route import` or chair export reconciles it. A file write that then fails is one printed line and
     a non-zero return either way, since a store row already taken makes the row the record a chair export
     recreates the file from, and a store that never took one leaves nothing else to fall back on. Returns 0 on
-    the ordinary, no-surprise path."""
+    the ordinary, no-surprise path. A `priority` is also sent as the row's top-level int `priority` key, beside
+    the frontmatter copy `parse_item` leaves in `extra`, which alone does not reach the store's priority column."""
     row = queue_rows.parse_item(kind, path_parts, text)
-    stored = row is not None and run_store.upsert_row(runs_dir, row)
+    sent = row if row is None or priority is None else {**row, "priority": priority}
+    stored = sent is not None and run_store.upsert_row(runs_dir, sent)
     if not stored:
         print(_unrecorded_row_warning(path, row))
     try:
@@ -1584,7 +1588,8 @@ def set_initiative_priority(runs_dir: Path, ws: Path, initiative: str, flag: int
         return 1
     value = next_priority(current_priority(texts), flag)
     for path, text in zip(paths, texts, strict=True):
-        if write_filed_item(runs_dir, path, "task", path.relative_to(ws / "work").parts, priority_text(text, value)) != 0:
+        parts = path.relative_to(ws / "work").parts
+        if write_filed_item(runs_dir, path, "task", parts, priority_text(text, value), priority=value) != 0:
             return 1
     print(f"{initiative}: priority {value} on {len(paths)} item(s)")
     return 0
