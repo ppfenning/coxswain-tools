@@ -15,6 +15,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Twice the core count keeps every core runnable while the timed subprocesses compete for them.
 LOAD_THREADS = 2 * (os.cpu_count() or 1)
+
+# Both tests saturate the CPU on purpose and compare cox's startup with the interpreter's. On a shared CI host the
+# other jobs' load moves that ratio from 8x to 11x run to run (2026-10-11: tools main red on py315, then extras), so
+# the comparison is meaningful only on a quiet machine. They run locally and skip under CI; the unloaded ceiling in
+# test_cli_startup.py still runs everywhere.
+pytestmark = pytest.mark.skipif(os.environ.get("CI") == "true", reason="load-sensitive timing; run locally")
 LOAD_BUFFER = bytes(1 << 20)
 RUNS = 7
 # Added import time is twice the clean cox median, so total startup is about 3x clean.
