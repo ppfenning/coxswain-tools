@@ -664,8 +664,29 @@ def _noted(returncode: int, output: str, required: tuple[str, ...] | None) -> tu
     return returncode, "\n".join([*([output] if output else []), *note])
 
 
-def check_poll_result(check_runs: dict[str, Any], status: dict[str, Any], required: tuple[str, ...] | None = None) -> tuple[int, str]:
-    """The `(returncode, output)` pair `wait_decision` reads, from the two REST bodies. A failure beats pending, as `--fail-fast` did. Fewer rows than `total_count` is pending, never green. `required` names the base branch's required contexts, each pending until seen; None means the required-checks call was unreadable, so the old rule applies and the output says so."""
+WORKFLOW_ISSUE = "workflow file issue: "
+_SUITE_FAILED = frozenset({"startup_failure", "failure"})
+
+
+def _seen_names(check_runs: dict[str, Any], status: dict[str, Any]) -> set[str]:
+    return {r.get("name", "") for r in check_runs.get("check_runs") or []} | {s.get("context", "") for s in status.get("statuses") or []}
+
+
+def needs_suites(check_runs: dict[str, Any], status: dict[str, Any], required: tuple[str, ...] | None = None) -> bool:
+    """Whether the poll shows no check runs or a required context not yet seen, which is when the edge reads the check suites."""
+    seen = _seen_names(check_runs, status)
+    return not check_runs.get("check_runs") or any(n not in seen for n in required or ())
+
+
+def _workflow_issue(suites: tuple[dict[str, Any], ...]) -> str | None:
+    """The first suite that concluded `startup_failure` or `failure`, as its detail line with the run url; None when none did."""
+    bad = [s for s in suites if s.get("conclusion") in _SUITE_FAILED]
+    return " ".join(filter(None, [f"{WORKFLOW_ISSUE}{bad[0].get('workflow')}", bad[0].get("url")])) if bad else None
+
+
+def check_poll_result(check_runs: dict[str, Any], status: dict[str, Any], required: tuple[str, ...] | None = None, *,
+                      suites: tuple[dict[str, Any], ...] = (), elapsed_s: float = 0.0, timeout_s: float = 180.0) -> tuple[int, str]:
+    """The `(returncode, output)` pair `wait_decision` reads, from the two REST bodies. A failure beats pending, as `--fail-fast` did. Fewer rows than `total_count` is pending, never green. `required` names the base branch's required contexts, each pending until seen; None means the required-checks call was unreadable, so the old rule applies and the output says so. `suites` matter only when `needs_suites`: a failed one fails the poll as a workflow file issue. A required context still unseen at `elapsed_s` >= `timeout_s` fails, named."""
     runs = [(r.get("name", ""), r.get("status"), r.get("conclusion")) for r in check_runs.get("check_runs") or []]
     statuses = [(s.get("context", ""), s.get("state")) for s in status.get("statuses") or []]
     runs_total, statuses_total = check_runs.get("total_count") or 0, status.get("total_count") or 0
@@ -674,11 +695,16 @@ def check_poll_result(check_runs: dict[str, Any], status: dict[str, Any], requir
         [n for n, st in statuses if st in ("failure", "error")] or combined_failed)
     unread = ([f"{len(runs)} of {runs_total} check runs read"] if len(runs) < runs_total else []) + (
         [f"{len(statuses)} of {statuses_total} statuses read"] if len(statuses) < statuses_total else [])
-    seen = {n for n, _, _ in runs} | {n for n, _ in statuses}
+    seen = _seen_names(check_runs, status)
     missing = [n for n in required or () if n not in seen]
     pending = [n for n, st, _ in runs if st != "completed"] + [n for n, st in statuses if st == "pending"] + unread + missing
+    issue = _workflow_issue(suites) if needs_suites(check_runs, status, required) else None
     if failed:
         return _noted(1, f"failing checks: {', '.join(failed)}", required)
+    if issue:
+        return _noted(1, issue, required)
+    if missing and elapsed_s >= timeout_s:
+        return _noted(1, f"required checks never appeared within {timeout_s:.0f}s: {', '.join(missing)}", required)
     if pending:
         return _noted(PENDING_RC, f"checks pending: {', '.join(pending)}", required)
     if not runs and not statuses:
