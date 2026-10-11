@@ -18,7 +18,7 @@ class LandRefusal(TypedDict):
 
 # 2 ** 3 * BASE already reaches CAP; a larger exponent only risks the timedelta overflow a run with
 # 1267 recorded refusals produced on 2026-10-11 (every tick died in planning, before any action).
-_MAX_DOUBLINGS = 8
+_MAX_DOUBLINGS = 3
 
 
 def backoff_for(attempts: int) -> timedelta:
