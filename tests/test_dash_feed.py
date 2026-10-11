@@ -234,7 +234,7 @@ def _spy_readers(monkeypatch, window_spent: float, weekly_spent: float) -> dict:
             start=now, end=now, spent_usd=window_spent, ceiling_usd=ceiling_usd, burn_usd_per_hour=0.0, runs_in_flight=0,
         )
 
-    def gather_weekly(runs_dir, now, *, weekly_ceiling_usd=None):
+    def gather_weekly(runs_dir, now, *, weekly_ceiling_usd=None, start=None):
         seen["weekly_ceiling_usd"] = weekly_ceiling_usd
         return usage_window.Window(
             start=now, end=now, spent_usd=weekly_spent, ceiling_usd=weekly_ceiling_usd, burn_usd_per_hour=0.0,
