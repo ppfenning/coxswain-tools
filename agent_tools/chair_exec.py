@@ -632,6 +632,12 @@ def _fetched_host(runs_dir: Path, run: str) -> str:
     return record["host"] if record else ""
 
 
+def fetch_status(code: int, message: str) -> str:
+    """`skipped` for a nonzero fetch that refused because the run is still live, `failed` for any other nonzero fetch."""
+    live = message.startswith("fetch: refuse:") and "is still live on" in message
+    return "skipped" if code != 0 and live else "failed"
+
+
 def _fetch_exit(action: Action, deps: Deps) -> Result:
     """`cox runs fetch` for a remote run, then fold its approvals into local ticket state on success.
 
@@ -644,7 +650,7 @@ def _fetch_exit(action: Action, deps: Deps) -> Result:
         return _result(action, "refused", "fetch_exit needs a run id")
     code, output = deps.run(argv)
     if code != 0:
-        return _result(action, "failed", output)
+        return _result(action, fetch_status(code, output), output)
     approved = chair_apply_fetch.apply_fetched_approvals(deps.runs_dir, deps.work_dir, run, initiative)
     reason = f"fetched {run}; approved: {', '.join(approved)}"
     return {"action": action, "status": "done", "reason": reason, "run": run, "host": _fetched_host(deps.runs_dir, run)}
