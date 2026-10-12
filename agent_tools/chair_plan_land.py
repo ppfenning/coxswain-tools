@@ -4,6 +4,7 @@ from collections.abc import Collection
 from datetime import datetime
 
 from agent_tools.chair_land_backoff import suppressing
+from agent_tools.chair_plan_partial import partial_land_action
 from agent_tools.chair_types import Action, ApprovedTask, Facts, InitiativeFacts
 
 
@@ -132,4 +133,16 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
             actions.append(fetch_action(run, repo, initiative))
             fetched.add(run)
         actions.append({"kind": "land_phase", "initiative": initiative, "phase": phase, "repo": repo, "run": run, "epoch": None})
-    return actions
+    return actions + _partial_lands(facts, frozenset(_land_groups(facts)))
+
+
+def _partial_lands(facts: Facts, whole: frozenset[tuple[str, str]]) -> list[Action]:
+    """A partial_land per phase with approved and quarantined tasks and nothing unfinished; awaiting phases and whole-phase lands are skipped."""
+    skip = whole | awaiting_phases(facts)
+    return [
+        action
+        for p in facts.get("phase_tasks", [])
+        if (p["initiative"], p["phase"]) not in skip
+        for action in [partial_land_action(p["initiative"], p["phase"], p["tasks"])]
+        if action is not None
+    ]
