@@ -18,6 +18,7 @@ _CHECK_ORDER = (
     "workspace",
     "schema",
     "cast",
+    "chair unit PATH",
 )
 
 
@@ -282,7 +283,7 @@ def test_render_lists_every_row_in_order_with_its_own_check_label():
     data_lines = lines[1 : 1 + len(rows)]
     labels = [re.split(r"\s{2,}", line.strip())[0] for line in data_lines]
     assert labels == list(_CHECK_ORDER)
-    assert lines[-1] == "doctor: 15 ok, 0 failing"
+    assert lines[-1] == "doctor: 16 ok, 0 failing"
 
 
 def test_render_marks_a_failing_row_as_fail_and_counts_it():
@@ -291,14 +292,15 @@ def test_render_marks_a_failing_row_as_fail_and_counts_it():
     rows = doctor.checks(facts)
     text = doctor.render(rows)
     assert "FAIL" in text
-    assert "doctor: 14 ok, 1 failing" in text
+    assert "doctor: 15 ok, 1 failing" in text
 
 
 def test_empty_facts_dict_yields_all_rows_not_checked_and_exit_one():
     rows = _rows_by_check(doctor.checks({}))
     assert all(r["ok"] is False and r["detail"] == "not checked"
-               for check, r in rows.items() if check not in ("cast", "schema", "plugins"))
+               for check, r in rows.items() if check not in ("cast", "schema", "plugins", "chair unit PATH"))
     assert rows["cast"] == {"check": "cast", "ok": True, "detail": "not gathered"}
+    assert rows["chair unit PATH"] == {"check": "chair unit PATH", "ok": True, "detail": "not gathered"}
     assert rows["schema"] == {"check": "schema", "ok": True, "detail": ""}
     assert doctor.exit_code(rows.values()) == 1
 
@@ -601,6 +603,61 @@ def test_gather_says_the_same_for_a_postgres_server_with_no_runs_table(tmp_path,
     assert "db.example" not in str(store)
 
 
+_UNIT = "[Unit]\nDescription=x\n\n[Service]\nExecStart=/opt/bin/cox chair run\nEnvironment=PATH={path}\nRestart=on-failure\n"
+
+
+def _unit_row(text, tools=None):
+    facts = {**_good_facts(), "chair_unit_text": text}
+    if tools is not None:
+        facts["chair_unit_tools"] = tools
+    return _rows_by_check(doctor.checks(facts))["chair unit PATH"]
+
+
+def test_unit_path_entries_reads_the_environment_path_line():
+    assert doctor.unit_path_entries(_UNIT.format(path="/opt/bin:/usr/bin")) == ["/opt/bin", "/usr/bin"]
+    assert doctor.unit_path_entries("[Service]\nExecStart=/x\n") is None
+
+
+def test_a_unit_path_with_cox_and_pytest_passes():
+    row = _unit_row(_UNIT.format(path="/opt/bin:/usr/bin"), {"/opt/bin": ["cox"], "/usr/bin": ["pytest"]})
+    assert row == {"check": "chair unit PATH", "ok": True, "detail": "2 entries"}
+
+
+def test_a_unit_path_without_cox_fails_naming_cox():
+    row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["pytest"]})
+    assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: cox"}
+
+
+def test_a_unit_path_without_pytest_fails_naming_pytest():
+    row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["cox"]})
+    assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: pytest"}
+
+
+def test_a_unit_with_no_path_line_fails_naming_the_line():
+    row = _unit_row("[Service]\nExecStart=/x\n")
+    assert row == {"check": "chair unit PATH", "ok": False, "detail": "no Environment=PATH= line in the unit"}
+
+
+def test_a_tilde_entry_fails_naming_it_even_when_the_tools_are_found():
+    row = _unit_row(_UNIT.format(path="~/.local/bin:/usr/bin"), {"/usr/bin": ["cox", "pytest"]})
+    assert row["ok"] is False
+    assert "'~/.local/bin'" in row["detail"]
+
+
+def test_a_percent_or_relative_entry_fails_naming_it():
+    assert "'%h/bin'" in _unit_row(_UNIT.format(path="%h/bin:/usr/bin"))["detail"]
+    assert "'bin'" in _unit_row(_UNIT.format(path="bin:/usr/bin"))["detail"]
+
+
+def test_a_unit_that_is_not_installed_passes():
+    assert _unit_row(None) == {"check": "chair unit PATH", "ok": True, "detail": "not installed"}
+
+
+def test_a_unit_fact_never_gathered_passes():
+    rows = _rows_by_check(doctor.checks(_good_facts()))
+    assert rows["chair unit PATH"] == {"check": "chair unit PATH", "ok": True, "detail": "not gathered"}
+
+
 def test_a_bare_path_store_reads_as_other_and_still_answers(tmp_path):
     import sqlite3
 
@@ -656,4 +713,4 @@ def test_render_shows_warn_and_counts_warnings_apart_from_ok_and_failing():
     rows = doctor.checks(_good_facts()) + doctor.freshness_rows(_PROFILE, _CATALOG, None, lambda p, c: [_STALE])
     text = doctor.render(rows)
     assert re.search(r"model freshness\s+warn\s+" + re.escape(_STALE), text)
-    assert text.splitlines()[-1] == "doctor: 15 ok, 0 failing, 1 warning"
+    assert text.splitlines()[-1] == "doctor: 16 ok, 0 failing, 1 warning"
