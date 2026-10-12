@@ -133,16 +133,32 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
             actions.append(fetch_action(run, repo, initiative))
             fetched.add(run)
         actions.append({"kind": "land_phase", "initiative": initiative, "phase": phase, "repo": repo, "run": run, "epoch": None})
-    return actions + _partial_lands(facts, frozenset(_land_groups(facts)))
+    return actions + _partial_lands(facts, frozenset(_land_groups(facts)), now)
 
 
-def _partial_lands(facts: Facts, whole: frozenset[tuple[str, str]]) -> list[Action]:
-    """A partial_land per phase with approved and quarantined tasks and nothing unfinished; awaiting phases and whole-phase lands are skipped."""
+def _partial_lands(facts: Facts, whole: frozenset[tuple[str, str]], now: datetime | None = None) -> list[Action]:
+    """A partial_land per phase with approved and quarantined tasks and nothing unfinished; awaiting phases and whole-phase lands are skipped.
+
+    Each gains the repo, `task_runs` (approved task id -> the run holding its record, from `approved`) and `run`, the
+    newest of those runs; a fetch leads it when one of its runs is remote and unfetched. A phase inside its
+    `land_refusals` backoff plans nothing, as a land_phase would."""
     skip = whole | awaiting_phases(facts)
-    return [
-        action
-        for p in facts.get("phase_tasks", [])
-        if (p["initiative"], p["phase"]) not in skip
-        for action in [partial_land_action(p["initiative"], p["phase"], p["tasks"])]
-        if action is not None
-    ]
+    approved = {(t["initiative"], t["phase"], t["id"]): t for t in facts["approved"]}
+    actions: list[Action] = []
+    fetched: set[str] = set()
+    for p in facts.get("phase_tasks", []):
+        action = None if (p["initiative"], p["phase"]) in skip else partial_land_action(p["initiative"], p["phase"], p["tasks"])
+        if action is None:
+            continue
+        rows = [approved[key] for t in action["task_ids"] if (key := (p["initiative"], p["phase"], t)) in approved]
+        task_runs = {t["id"]: t["run"] for t in rows}
+        run = newest_run(set(task_runs.values()) - {""}) if any(task_runs.values()) else ""
+        if _backing_off(facts, p["initiative"], p["phase"], run, now):
+            continue
+        for t in rows:
+            if t["needs_fetch"] and t["run"] and t["run"] not in fetched:
+                actions.append(fetch_action(t["run"], t["repo"], p["initiative"]))
+                fetched.add(t["run"])
+        repo = rows[0]["repo"] if rows else ""
+        actions.append({**action, "repo": repo, "run": run, "task_runs": {t: task_runs.get(t, "") for t in action["task_ids"]}})
+    return actions

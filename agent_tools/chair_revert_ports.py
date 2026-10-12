@@ -26,6 +26,7 @@ __all__ = [
     "main_ci_run",
     "parent_count",
     "rerun_failed",
+    "rerun_infra",
 ]
 
 Runner = Callable[[list[str]], tuple[int, str]]
@@ -36,6 +37,8 @@ CI_WATCH_TIMEOUT_SECONDS = 30 * 60
 _PENDING_STATUSES = frozenset({"queued", "in_progress", "waiting", "requested", "pending"})
 # Names tried for one backup ref before giving up; each try finds the previous name taken.
 _BACKUP_TRIES = 50
+# Reruns of one infra main run before the chair is asked instead; GitHub counts them as the run's `attempt`.
+MAX_INFRA_RERUNS = 3
 
 
 def parent_count(rev_list_line: str) -> int:
@@ -298,3 +301,30 @@ def rerun_failed(runner: Runner, repo: str, run_id: int, commit: str) -> tuple[s
     _checked(runner, ["gh", "run", "rerun", str(run_id), "--repo", repo, "--failed"])
     _checked(runner, ["gh", "run", "watch", str(run_id), "--repo", repo])
     return main_ci_run(runner, repo, commit)
+
+
+def rerun_infra(runner: Runner, repo: str, commit: str, max_reruns: int = MAX_INFRA_RERUNS) -> tuple[str, str]:
+    """Rerun the failed jobs of main's newest run for `commit`, the run whose jobs never got past setup.
+
+    The rerun count is GitHub's own: a run's `attempt` is 1 before any rerun, so nothing is remembered between ticks.
+    ("pending", "") when no run for the commit exists or the newest one has not failed; ("capped", ...) once its
+    attempt exceeds `max_reruns`; else ("rerun", ...) after `gh run rerun --failed`. It never waits on the run.
+    """
+    listed = _checked(
+        runner,
+        [
+            "gh", "run", "list", "--repo", repo, "--branch", "main", "--commit", commit,
+            "--json", "databaseId,status,conclusion,headSha,attempt",
+        ],
+    )  # fmt: skip
+    rows = [row for row in json.loads(listed or "[]") if row.get("headSha") == commit]
+    if not rows:
+        return "pending", ""
+    run = max(rows, key=lambda row: row["databaseId"])
+    run_id, attempt = run["databaseId"], int(run.get("attempt") or 1)
+    if run.get("conclusion") != "failure":
+        return "pending", ""
+    if attempt > max_reruns:
+        return "capped", f"run {run_id} for {commit} still failed after {attempt} attempts"
+    _checked(runner, ["gh", "run", "rerun", str(run_id), "--repo", repo, "--failed"])
+    return "rerun", f"reran the failed jobs of run {run_id} for {commit} (attempt {attempt})"
