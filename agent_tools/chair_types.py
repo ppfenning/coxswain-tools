@@ -313,10 +313,11 @@ class LandWatch(TypedDict):
 
 
 class LandedMain(LandWatch):
-    ci: Literal["pending", "green", "red"]
+    ci: Literal["pending", "green", "red", "infra"]  # infra: the main run failed with no job past setup
     ci_output: str
     smoke: Literal["pending", "ok", "failed"]
     smoke_output: str
+    green_after: NotRequired[bool]  # a green main run exists at or after this land's commit; absent means False
 
 
 class LaunchRecord(TypedDict):
@@ -432,6 +433,7 @@ ActionKind = Literal[
     "tune_lanes",
     "propose_tiers",
     "revert_land",
+    "rerun_main",
     "widen_ticket",
 ]
 
@@ -449,6 +451,7 @@ class Action(TypedDict, total=False):
     tip and base. tune_lanes carries host, from_lanes, to_lanes, reason and evidence. propose_tiers carries
     proposals and body and is propose-only: no action kind applies a tier or model change.
     revert_land carries initiative, phase, repo, pr, commit and reason.
+    rerun_main carries initiative, phase, repo and commit.
     widen_ticket carries initiative, task_id, paths, additions and reason. A relaunch_loop needs_chair carries
     initiative, cause and a reason naming both quarantined run ids."""
 
