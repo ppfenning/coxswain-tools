@@ -100,6 +100,7 @@ chair_read_stale = _LazyModule("agent_tools.chair_read_stale")
 chair_read_stall = _LazyModule("agent_tools.chair_read_stall")
 chair_read_stranded = _LazyModule("agent_tools.chair_read_stranded")
 chair_report = _LazyModule("agent_tools.chair_report")
+chair_revert_green = _LazyModule("agent_tools.chair_revert_green")
 chair_revert_ports = _LazyModule("agent_tools.chair_revert_ports")
 chair_revert_watch = _LazyModule("agent_tools.chair_revert_watch")
 chair_run = _LazyModule("agent_tools.chair_run")
@@ -7418,6 +7419,24 @@ def _main_ci_reader(runner: Callable[[list[str]], tuple[int, str]]) -> Callable[
     return read
 
 
+def _green_since_reader(runner: Callable[[list[str]], tuple[int, str]]) -> Callable[[str, str], bool]:
+    """`read(repo, commit)` is `main_green_since` that never raises. Results cache per (repo, commit) in `read.cache`,
+    which the caller clears each tick."""
+    cache: dict[tuple[str, str], bool] = {}
+
+    def read(repo: str, commit: str) -> bool:
+        key = (repo, commit)
+        if key not in cache:
+            try:
+                cache[key] = chair_revert_green.main_green_since(runner, repo, _gh_repo(repo), commit)
+            except Exception:  # any gh or git failure must not escape gather_facts
+                cache[key] = False
+        return cache[key]
+
+    read.cache = cache  # type: ignore[attr-defined]
+    return read
+
+
 class _SlugForge:
     """A `GhForgePort` whose `open_pr` takes the watch's checkout path and hands gh its owner/name."""
 
@@ -7489,6 +7508,7 @@ def _chair_run_deps(
     runner = chair_revert_ports.bounded(chair_exec.run_argv)  # gh and git of the revert path never wait past the bound
 
     main_ci = _main_ci_reader(runner)  # edge state: `beat` clears its cache, one gh read per land per tick
+    green_since = _green_since_reader(runner)  # edge state: `beat` clears its cache, one read per land per tick
     # edge state: `beat` empties it, so one tick's window, weekly and source readers share one meter read and verdict
     meter_snapshot: list[tuple[usage_meter.Meter | None, str]] = []
 
@@ -7535,6 +7555,7 @@ def _chair_run_deps(
         snapshot.clear()
         tick_reads.clear()
         main_ci.cache.clear()
+        green_since.cache.clear()
         meter_snapshot.clear()
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
         if _record_beat_wanted(dry_run, lost):
@@ -7752,6 +7773,7 @@ def _chair_run_deps(
         actions=actions,
         land_watches=lambda: chair_revert_watch.pending_watches(actions),
         read_main_ci=main_ci,
+        green_since=green_since,
         land_hold=lambda: chair_smoke.read_hold(str(runs_dir)),
         land_outcomes=lambda: chair_revert_watch.outcomes(actions),
         decompose_runs=lambda path: (
@@ -7791,14 +7813,16 @@ def _chair_run_deps(
             holder,
         ),
         resolve_land=_resolve_land_with(actions, record),
+        rerun_main=lambda repo, commit: chair_revert_ports.rerun_infra(runner, _gh_repo(repo), commit),
         launch_stagger_s=chair_exec.stagger_seconds((profile.get("chair") or {}).get("launch_stagger_s")),
     )
     def held() -> None:
-        """Resolves each pending watch whose commit is green on main and that the smoke hold does not name."""
+        """Resolves each pending watch the smoke hold does not name, when its commit is green on main or main went green after it."""
         for w in chair_revert_watch.pending_watches(actions):
             (ci, _) = main_ci(w["repo"], w["commit"])
             hold = chair_smoke.read_hold(str(runs_dir))
-            if ci == "green" and (hold is None or hold["land"]["commit"] != w["commit"]):
+            unheld = hold is None or hold["land"]["commit"] != w["commit"]
+            if unheld and (ci == "green" or green_since(w["repo"], w["commit"])):
                 chair_revert_watch.resolve_watch(record, w["commit"], "held")
 
     stop_lands = chair_run.no_lands_to_stop

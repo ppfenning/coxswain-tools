@@ -951,17 +951,22 @@ def test_chair_perform_with_smoke_calls_held_after_the_smoke_step(monkeypatch, t
     assert calls == ["watch", "smoke", "held"]
 
 
-def _held_from_deps(monkeypatch, tmp_path, rows, ci_by_commit, hold):
-    """Builds real chair deps, then runs the `held` its perform wrapper calls, with the actions, the CI reader and the hold faked."""
+def _held_from_deps(monkeypatch, tmp_path, rows, ci_by_commit, hold, green_commits=()):
+    """Builds real chair deps, then runs the `held` its perform wrapper calls, with the actions, the CI readers and the hold faked."""
     reads: list[tuple[str, str]] = []
 
     def reader(repo: str, commit: str) -> tuple[str, str]:
         reads.append((repo, commit))
         return ci_by_commit[commit], ""
 
+    def green_reader(repo: str, commit: str) -> bool:
+        return commit in green_commits
+
     reader.cache = {}
+    green_reader.cache = {}
     resolved: list[tuple[str, str]] = []
     monkeypatch.setattr(cli, "_main_ci_reader", lambda runner: reader)
+    monkeypatch.setattr(cli, "_green_since_reader", lambda runner: green_reader)
     monkeypatch.setattr(cli.chair_read_stale, "read_chair_actions", lambda runs_dir, *_window: rows)
     monkeypatch.setattr(cli.chair_smoke, "read_hold", lambda runs_dir: hold)
     monkeypatch.setattr(cli.chair_revert_watch, "resolve_watch", lambda write, c, outcome: resolved.append((c, outcome)))
@@ -999,6 +1004,29 @@ def test_chair_run_deps_held_resolves_a_green_watch_when_the_hold_names_another_
     resolved, _ = _held_from_deps(monkeypatch, tmp_path, [_pending_row("g1")], {"g1": "green"}, hold)
 
     assert resolved == [("g1", "held")]
+
+
+def test_chair_run_deps_held_resolves_a_red_watch_with_a_later_green(monkeypatch, tmp_path):
+    rows = [_pending_row("r1"), _pending_row("r2"), _pending_row("i1")]
+    ci = {"r1": "red", "r2": "red", "i1": "infra"}
+
+    resolved, _ = _held_from_deps(monkeypatch, tmp_path, rows, ci, None, green_commits={"r1", "i1"})
+
+    assert resolved == [("r1", "held"), ("i1", "held")]
+
+
+def test_chair_run_deps_held_leaves_a_red_watch_with_no_later_green(monkeypatch, tmp_path):
+    resolved, _ = _held_from_deps(monkeypatch, tmp_path, [_pending_row("r1")], {"r1": "red"}, None)
+
+    assert resolved == []
+
+
+def test_chair_run_deps_held_leaves_a_later_green_watch_the_hold_names(monkeypatch, tmp_path):
+    hold = {"land": {"repo": "o/r", "pr": 4, "commit": "r1"}, "cause": "smoke_failed"}
+
+    resolved, _ = _held_from_deps(monkeypatch, tmp_path, [_pending_row("r1")], {"r1": "red"}, hold, green_commits={"r1"})
+
+    assert resolved == []
 
 
 def test_dash_once_prints_the_gathered_feed_as_one_json_line(monkeypatch, tmp_path, capsys):
