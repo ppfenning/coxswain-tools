@@ -18,8 +18,8 @@ from agent_tools.queue_export import is_ahead_of_store
 __all__ = [
     "EASTERN", "Deps", "echo_line", "failed_items", "fetched_items", "file_ahead_items", "format_status",
     "housekeeping_fragment",
-    "landing_items", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "steered_items", "would_items",
-    "write_status",
+    "landing_items", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "partial_land_text",
+    "steered_items", "would_items", "write_status",
 ]
 
 
@@ -30,8 +30,8 @@ class Deps:
 
 
 def lands_this_tick(results: Sequence[Result]) -> int:
-    """chair_exec marks a land or land_phase `landed` only when it exited 0 and reported both merge and mark_done."""
-    return sum(1 for r in results if r["action"].get("kind") in ("land", "land_phase") and r["status"] == "landed")
+    """chair_exec marks a land, land_phase or partial_land `landed` only when its lands exited 0 and reported both merge and mark_done."""
+    return sum(1 for r in results if r["action"].get("kind") in ("land", "land_phase", "partial_land") and r["status"] == "landed")
 
 
 def mode_of(actions: Sequence[Action], results: Sequence[Result]) -> str:
@@ -56,14 +56,22 @@ def _target(action: Action) -> str:
     return action.get("task_id") or _scope(action)
 
 
+def partial_land_text(action: Action) -> str:
+    """`partial-land: <initiative>/<phase> N approved, M quarantined` from a partial_land action's task_ids and quarantined."""
+    return f"partial-land: {_scope(action)} {len(action.get('task_ids', []))} approved, {action.get('quarantined', 0)} quarantined"
+
+
 def needs_chair_items(actions: Sequence[Action]) -> list[str]:
-    """Runaway-ceiling entries first, each bare (`RUNAWAY <scope>`); the rest keep `needs chair: <scope>:<cause>`."""
+    """Runaway-ceiling entries first, each bare (`RUNAWAY <scope>`); then `needs chair: <scope>:<cause>`; then a `partial-land:` per partial_land."""
     chair_actions = [a for a in actions if a.get("kind") == "needs_chair"]
     runaway = [a for a in chair_actions if a.get("cause") == RUNAWAY_CAUSE]
     rest = [a for a in chair_actions if a.get("cause") != RUNAWAY_CAUSE]
-    return [f"RUNAWAY {_scope(a)}" for a in runaway] + [
-        f"needs chair: {_scope(a)}:{a.get('cause', '?')}" for a in rest
-    ]
+    partial = [a for a in actions if a.get("kind") == "partial_land"]
+    return (
+        [f"RUNAWAY {_scope(a)}" for a in runaway]
+        + [f"needs chair: {_scope(a)}:{a.get('cause', '?')}" for a in rest]
+        + [partial_land_text(a) for a in partial]
+    )
 
 
 def file_ahead_items(files: Sequence[QueueFile]) -> list[str]:
