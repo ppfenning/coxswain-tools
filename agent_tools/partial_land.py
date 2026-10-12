@@ -146,9 +146,23 @@ def landed_commit(task: str, result: Mapping[str, Any]) -> list[LandedCommit]:
     return [{"task_id": task, "commit": str(result["commit"]), "reason": str(result.get("reason", ""))}]
 
 
+# The line `cox runs land` prints, exiting 3, when the store says the task is done (cli.py `_land_approval_stop`).
+ALREADY_DONE = "land: task is already done; another machine landed it"
+
+
+def already_done(result: Mapping[str, Any]) -> bool:
+    """True for a refused task land whose output carries the already-done line: another machine finished the task."""
+    lines = str(result.get("reason", "")).splitlines()
+    return result.get("status") == "refused" and any(line.startswith(ALREADY_DONE) for line in lines)
+
+
 def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]:
     """Edge. Each approved task in turn: back up its siblings, run its task land, restore the siblings even when the
     land failed. A land that does not land stops the sequence; later tasks wait for the next tick.
+
+    A land answering that another machine already finished the task is no failure: no commit, and the sequence goes
+    on. The result's commit and output stay the last land that reached main, and a sequence where no task reached
+    main is `recorded`, not `landed`, so nothing downstream treats it as a merge. Any other land stops the sequence.
 
     A failed backup stops the sequence before that task's land runs: whatever siblings were already backed up are
     restored, the task is not landed, and the result is `failed`; tasks landed earlier in the tick stay landed.
@@ -161,6 +175,8 @@ def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]
     commits: list[LandedCommit] = []
     backed: dict[str, str] = {}
     last: Mapping[str, Any] = {}
+    landed_last: Mapping[str, Any] = {}  # the last land that reached main; an already-done land never replaces it
+    elsewhere: list[str] = []
     for step in steps(action):
         task, run = step["task_id"], step["run"]
         if step["kind"] == "backup":
@@ -176,7 +192,9 @@ def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]
             commits += landed_commit(task, last)
         else:
             restore_error = _restore(git, repo, run, backed)
-            if last.get("status") != "landed":
+            if already_done(last):
+                elsewhere.append(task)
+            elif last.get("status") != "landed":
                 return {
                     **_outcome(
                         action, last.get("status", "failed"), done, f"task {task}: {last.get('reason', '')}",
@@ -184,12 +202,17 @@ def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]
                     ),
                     **({"needs_chair": last["needs_chair"]} if "needs_chair" in last else {}),
                 }
+            else:
+                landed_last = last
             done.append(task)
             if restore_error:
-                return _outcome(action, "failed", done, restore_error, last, commits)
+                return _outcome(action, "failed", done, restore_error, landed_last, commits)
+    note = f"already done on another machine: {', '.join(elsewhere)}" if elsewhere else ""
     if not done:
         return _outcome(action, "recorded", done, "no approved task of the phase has a known run yet")
-    return _outcome(action, "landed", done, "", last, commits)
+    if not landed_last:
+        return _outcome(action, "recorded", [], note)
+    return _outcome(action, "landed", done, note, landed_last, commits)
 
 
 def _outcome(

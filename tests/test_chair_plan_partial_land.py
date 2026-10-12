@@ -1,6 +1,6 @@
 from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_plan_partial import classify_phase, partial_land_action
-from agent_tools.chair_read_approved import phase_task_rows
+from agent_tools.chair_read_approved import mark_landed, phase_task_rows
 
 
 def _facts(tasks: list[tuple[str, str]], approved: list[dict] | None = None) -> dict:
@@ -70,3 +70,27 @@ def test_the_edge_lists_every_task_state_of_a_phase_with_approved_work():
         {"id": "c", "initiative": "i", "phase": "q", "state": "ready"},
     ]
     assert phase_task_rows(items) == [{"initiative": "i", "phase": "p", "tasks": [("a", "approved"), ("b", "quarantined")]}]
+
+
+def _item(id: str, state: str) -> dict:
+    return {"id": id, "initiative": "i", "phase": "p", "state": state}
+
+
+def _planned(items: list[dict], landed: set[str]) -> list[dict]:
+    rows = phase_task_rows(mark_landed(items, landed))
+    approved = [_approved(i["id"], False) for i in items if i["state"] == "approved"]
+    return plan_lands({**_facts([]), "approved": approved, "phase_tasks": rows})
+
+
+def test_the_only_approved_task_being_landed_beside_a_quarantined_one_plans_no_partial_land():
+    assert _planned([_item("a", "approved"), _item("b", "quarantined")], {"a"}) == []
+
+
+def test_a_landed_approved_task_is_left_out_of_the_partial_land_task_ids():
+    items = [_item("a", "approved"), _item("b", "approved"), _item("q", "quarantined")]
+    assert [a["task_ids"] for a in _planned(items, {"a"})] == [["b"]]
+
+
+def test_mark_landed_marks_only_the_landed_approved_ids():
+    items = [_item("a", "approved"), _item("b", "approved"), _item("c", "ready")]
+    assert [i["state"] for i in mark_landed(items, {"a", "c"})] == ["done", "approved", "ready"]
