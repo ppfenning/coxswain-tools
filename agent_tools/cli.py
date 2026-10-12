@@ -7658,6 +7658,7 @@ def _chair_run_deps(
         policy=lambda: _resolved_pacing_policy(runs_dir),
         docket=docket,
         approved=approved,
+        phase_tasks=lambda: chair_read_approved.read_phase_tasks(ws, mode, work_files(), store_rows()),
         quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode, work_files(), store_rows()),
         stranded=lambda: chair_read_stranded.read_stranded(*stranded_inputs()),
         missing_repos=missing_repos,
