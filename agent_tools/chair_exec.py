@@ -155,6 +155,7 @@ class Deps:
     revert_ports: Callable[[Action], tuple[RevertGitPort, RevertForgePort]] | None = None  # a revert_land's ports; None refuses it
     quarantine_phase: Callable[[str, str, str, str], None] | None = None  # (initiative, phase, cause, reason): quarantines that phase's tasks
     resolve_land: Callable[[str, str, str], None] | None = None  # (initiative, phase, outcome): the store's resolve write for a land
+    rerun_main: Callable[[str, str], tuple[str, str]] | None = None  # a rerun_main's (repo, commit) -> chair_revert_ports.rerun_infra's (state, line); None refuses it
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -898,9 +899,39 @@ def _revert_land(action: Action, deps: Deps) -> Result:
     return {**_result(action, "done" if reverted.status == MERGED else "failed", reason), "needs_chair": raised}
 
 
+MAIN_INFRA_CAUSE = "main_infra"
+
+
+def _rerun_main(action: Action, deps: Deps) -> Result:
+    """Edge. Rerun an infra main's failed jobs through the wired port; never revert, quarantine or resolve a land.
+
+    "rerun" and "pending" are done: the next tick reads main CI again. "capped" is failed with a needs_chair naming the
+    commit, since GitHub has already rerun it as often as the port allows. A raise is a failed result.
+    """
+    if deps.rerun_main is None:
+        return _result(action, "refused", "rerun_main needs a wired rerun port")
+    repo, commit = action.get("repo", ""), action.get("commit", "")
+    try:
+        state, line = deps.rerun_main(repo, commit)
+    except Exception as exc:  # the edge: a port failure is a failed rerun, planned again next tick
+        return _result(action, "failed", f"rerun raised {type(exc).__name__}: {exc}")
+    if state in ("rerun", "pending"):
+        return _result(action, "done", line)
+    reason = f"main CI for {commit} never got past setup and was not rerun again: {line}"
+    raised: Action = {
+        "kind": "needs_chair", "initiative": action.get("initiative", ""), "phase": action.get("phase", ""),
+        "cause": MAIN_INFRA_CAUSE, "epoch": action.get("epoch", 0), "reason": reason,
+    }
+    return {**_result(action, "failed", reason), "needs_chair": raised}
+
+
 def _steer_reason(action: Action) -> str:
     """`steer clear of <other>: <paths joined by comma>`, cut to 200 characters."""
     return f"steer clear of {action.get('other', '')}: {','.join(action.get('paths', []))}"[:200]
+
+
+# The kinds whose result may carry a needs_chair that is recorded as its own row after the result.
+_CARRIES_NEEDS_CHAIR = ("clear_branches", "review_landed", "carry_phase", "rebase_phase", "revert_land", "rerun_main")
 
 
 def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
@@ -926,6 +957,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _rebase_phase(action, deps)
     if kind == "revert_land":
         return _revert_land(action, deps)
+    if kind == "rerun_main":
+        return _rerun_main(action, deps)
     if kind == "take_lease":
         return _lease(action, deps)
     if kind == "check_login":
@@ -1073,7 +1106,7 @@ def perform(
             escalated = _escalate(action, result)
             deps.record(_recorded(escalated))
             results.append(escalated)
-        if action.get("kind") in ("clear_branches", "review_landed", "carry_phase", "rebase_phase", "revert_land") and "needs_chair" in result:
+        if action.get("kind") in _CARRIES_NEEDS_CHAIR and "needs_chair" in result:
             carried = _result(result["needs_chair"], "recorded", result["needs_chair"].get("reason", ""))
             deps.record(_recorded(carried))
             results.append(carried)
