@@ -1220,3 +1220,29 @@ def test_usage_assessment_estimates_the_weekly_figure_from_the_stores_spend(monk
     cli._usage_assessment(tmp_path, 50.0, 200.0, None)
 
     assert seen["store_spend"]("2026-10-04") == (tmp_path, "2026-10-04")
+
+
+def _bus_lines(bus):
+    return [json.loads(line) for line in bus.read_text(encoding="utf-8").splitlines()]
+
+
+def test_chair_ask_addresses_the_profiles_operator_and_answers_from_it(tmp_path, capsys):
+    profile, bus = _decision_bus(tmp_path)
+    Path(profile).write_text(Path(profile).read_text(encoding="utf-8") + "operator: sam\n", encoding="utf-8")
+    assert _chair(profile, "ask", "ship it?", "--option", "yes", "--option", "no") == 0
+    decision_id = capsys.readouterr().out.strip()
+    assert _chair(profile, "decisions", "--open", "--json") == 0
+    assert [d["id"] for d in json.loads(capsys.readouterr().out)] == [decision_id]
+    assert _chair(profile, "answer", decision_id, "yes") == 0
+    lines = _bus_lines(bus)
+    assert {e["to"] for e in lines if "options" in e} == {"sam"}
+    assert {(e["from"], e["to"]) for e in lines if "answer" in e} == {("sam", "chair")}
+
+
+def test_chair_ask_with_no_operator_configured_addresses_operator(tmp_path, capsys):
+    profile, bus = _decision_bus(tmp_path)
+    assert _chair(profile, "ask", "ship it?", "--option", "yes", "--option", "no") == 0
+    decision_id = capsys.readouterr().out.strip()
+    assert [e["to"] for e in _bus_lines(bus)] == ["operator"]
+    assert _chair(profile, "decisions", "--open", "--json") == 0
+    assert [d["id"] for d in json.loads(capsys.readouterr().out)] == [decision_id]

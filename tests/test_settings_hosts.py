@@ -6,12 +6,12 @@ TRACKED = {"cartridge.yaml": True, "profile.yaml": False}
 
 def _host(name, capacity):
     return {"section": "lanes and machines", "scope": "host", "key": f"{name}.capacity",
-            "value": capacity, "source_file": "store: hosts", "tracked": False, "pat_only": False}
+            "value": capacity, "source_file": "store: hosts", "tracked": False, "operator_only": False}
 
 
 def _lanes(value, tracked=True):
     return {"section": "lanes and machines", "scope": "cartridge", "key": "policy.dispatch.local_lanes",
-            "value": value, "source_file": "cartridge.yaml", "tracked": tracked, "pat_only": False}
+            "value": value, "source_file": "cartridge.yaml", "tracked": tracked, "operator_only": False}
 
 
 def test_hosts_sorted_then_local_lanes():
@@ -34,4 +34,4 @@ def test_missing_local_lanes_key_emits_no_row():
 def test_local_lanes_row_resolves_in_the_registry():
     [row] = host_rows({}, {"policy": {"dispatch": {"local_lanes": "any"}}}, TRACKED)
     setting = setting_for(row["scope"], row["key"])
-    assert (setting.section, setting.source_file, setting.pat_only) == (row["section"], row["source_file"], row["pat_only"])
+    assert (setting.section, setting.source_file, setting.operator_only) == (row["section"], row["source_file"], row["operator_only"])
