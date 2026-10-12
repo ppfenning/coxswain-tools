@@ -12,6 +12,6 @@ options:
   --body-file BODY_FILE
   --repo REPO
   --surfaces SURFACES   task ticket only: comma-separated paths that replace the list
-  --state STATE         task ticket only: a ticket state such as ready
+  --state STATE         task ticket only: ready, approved, done or dropped; never backward
   --dry-run             print the diff and write nothing
   --profile PROFILE

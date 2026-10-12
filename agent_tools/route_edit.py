@@ -9,10 +9,13 @@ unknown: the store has no row kind for `work/<id>/initiative.md` (`queue_rows.pa
 `live_runs` is required, with no default, so a caller cannot skip the live-run check by omission. Build it as
 `{lane.run for lane in run_store.live_lanes(runs_dir, now)}`; a lane carries no initiative, so the guard refuses on any live run.
 A store that cannot take an intake's row is one printed warning from `route.write_filed_item` and the file is still written.
-A task ticket (a `work_items` row that `resolve_target` does not name) is edited store first: `run_store.upsert_row_detail`
-takes the stored row with only the named fields changed, then `queue_export.export_file(force=True)` rewrites its one file
-from that row and records the hash, so a hand-edited file is overwritten by the store text. `--surfaces` and `--state`
-apply to a task ticket only, and a task ticket has no live-run guard.
+A task ticket (a `work_items` row that `resolve_target` does not name) is edited store first. `--state` goes through
+`store_cli.set_state`, the single writer for work state, with a compare-and-set on the state the edit read; a move out of
+done or dropped, a move backward along ready -> in_progress -> approved -> done, and a move on a row a launch claim holds
+are refused. `--title`, `--surfaces` and the body go to `run_store.upsert_row_detail` as a partial row that never carries
+`state`, so a state the loop set meanwhile survives. Then `queue_export.export_file(force=True)` rewrites the one file from
+the row as the store now holds it and records the hash, so a hand-edited file is overwritten by the store text.
+`--surfaces` and `--state` apply to a task ticket only.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-from agent_tools import queue_export, route, route_guard, run_store
+from agent_tools import queue_export, route, route_guard, run_store, store_cli
 
 DONE = route_guard.DONE
 REFUSED = route_guard.REFUSED
@@ -124,17 +127,95 @@ def _rewrite(path: Path, runs_dir: Path, is_intake: bool, new_text: str) -> str 
     return None
 
 
+# Along ready -> in_progress -> approved -> done a ticket only moves forward by hand: a move back could relaunch work
+# that has started or ended. todo and ready share a rank, both unstarted. store_cli's set-state has no override flag.
+_STATE_RANK = {"todo": 0, "ready": 0, "in_progress": 1, "approved": 2, "done": 3}
+_FINAL_STATES = frozenset({"done", "dropped"})
+# The states `harness.store_cli set-state` takes, as its target and as its `--expect`.
+SET_STATES = ("ready", "approved", "done", "dropped")
+_CONTENT_FIELDS = ("title", "body", "surfaces")
+EDITED_BY = "cox route edit"
+
+
+def check_state_move(current: str | None, new: str) -> str | None:
+    """Pure: the reason a hand move from `current` to `new` is refused, or None. Out of done or dropped is refused,
+    and so is a move backward along ready -> in_progress -> approved -> done, and a move to a state the store's
+    single writer does not set."""
+    if current == new:
+        return None
+    if new not in SET_STATES:
+        return f"--state {new!r} is not one the store sets by hand: use one of {', '.join(SET_STATES)}"
+    if current in _FINAL_STATES:
+        return f"the ticket is {current!r}; a hand edit does not move it out of {current}"
+    if current in _STATE_RANK and new in _STATE_RANK and _STATE_RANK[new] < _STATE_RANK[current]:
+        return f"the ticket is {current!r}; moving it back to {new!r} could launch it again"
+    return None
+
+
+def check_claim(row: dict, now: str | None) -> str | None:
+    """Pure: the reason a state move is refused because a launch claim holds the row, or None. A claim whose
+    `expires_at` is at or before `now` (ISO text, compared as text as `live_lanes` does) no longer holds;
+    with no `now`, any holder holds."""
+    holder, expires = row.get("holder"), row.get("expires_at")
+    if not holder:
+        return None
+    if now is not None and expires and str(expires) <= now:
+        return None
+    return f"{holder} holds a launch claim on {row.get('task_id')}; let that run finish or stop it first"
+
+
+def content_row(row: dict, planned: dict) -> dict | None:
+    """Pure: the partial row that writes only the content fields `planned` changed, keyed by initiative and task_id,
+    or None when none changed. It never carries `state`, so the store's upsert keeps whatever state is stored now."""
+    changed = {key: planned[key] for key in _CONTENT_FIELDS if planned.get(key) != row.get(key)}
+    return {"initiative": row["initiative"], "task_id": row["task_id"], **changed} if changed else None
+
+
+def _stored_row(runs_dir: Path, row: dict) -> dict | None:
+    """Edge: the row as the store holds it now, or None when the store cannot say."""
+    return next(
+        (r for r in run_store.read_queue(runs_dir, row.get("initiative"), kind="task") if r.get("task_id") == row.get("task_id")), None
+    )
+
+
+def _set_state(runs_dir: Path, row: dict, state: str) -> EditResult | None:
+    """Edge: move the row's state through store_cli's single writer, compare-and-set on the state the edit read.
+    None when the store took it. set-state's `--expect` takes only `SET_STATES`; from any other state (todo, blocked,
+    quarantined, in_progress) the row is re-read just before the write instead, which narrows the race but does not close it."""
+    read = row.get("state")
+    if read not in SET_STATES:
+        stored = _stored_row(runs_dir, row)
+        if stored is None or stored.get("state") != read:
+            now = "no row" if stored is None else stored.get("state")
+            return EditResult(f"{row['task_id']} moved to {now!r} after the edit read it as {read!r}; nothing written", REFUSED)
+    expected = read if read in SET_STATES else None
+    result = store_cli.set_state(runs_dir, row["initiative"], row["task_id"], state, EDITED_BY, expected=expected)
+    if isinstance(result, store_cli.StateSet):
+        return None
+    if isinstance(result, store_cli.StateRefused):
+        now = result.current or "no row"
+        return EditResult(f"{row['task_id']} moved to {now!r} after the edit read it as {row.get('state')!r}; nothing written", REFUSED)
+    detail = result.detail if isinstance(result, store_cli.Failed) else (getattr(result, "reason", "") or "harness not available")
+    return EditResult(f"the store did not take the state of {row['task_id']}: {detail}", FAILED)
+
+
 def _edit_task(
     runs_dir: Path, ws: Path, row: dict, *, title: str | None, body: str | None, body_file: str | None,
-    surfaces: str | None, state: str | None, dry_run: bool,
+    surfaces: str | None, state: str | None, dry_run: bool, now: str | None,
 ) -> EditResult:
-    """Edge: the store row first through `upsert_row_detail`, then its one file through `export_file(force=True)`.
-    The diff is the file on disk against the text the new row renders, so a hand-edited file shows what is overwritten."""
+    """Edge: a state move first, through `store_cli.set_state` with a compare-and-set on the state read; then the changed
+    content fields only, as a partial row `upsert_row_detail` merges (never `state`); then the store's row as it now stands,
+    through `export_file(force=True)`. The diff is the file on disk against the text the planned row renders."""
     try:
         new_body = Path(body_file).read_text(encoding="utf-8").removesuffix("\n") if body_file is not None else body
     except OSError as exc:
         return EditResult(f"cannot read: {exc}", FAILED)
     new_row = plan_task_row(row, title=title, body=new_body, surfaces=surfaces, state=state)
+    moves = new_row.get("state") != row.get("state")
+    if moves:
+        problem = check_state_move(row.get("state"), new_row["state"]) or check_claim(row, now)
+        if problem is not None:
+            return EditResult(problem, REFUSED)
     if queue_export.is_contentless(new_row):
         return EditResult(f"task {row.get('task_id')!r} has no content to export", REFUSED)
     [(rel, new_text)] = queue_export.export_rows([new_row]).items()
@@ -148,12 +229,18 @@ def _edit_task(
     )
     if dry_run or (not diff and new_row == row):
         return EditResult(diff, DONE)
-    if new_row != row:
-        reason = run_store.upsert_row_detail(runs_dir, new_row)
+    if moves:
+        refused = _set_state(runs_dir, row, new_row["state"])
+        if refused is not None:
+            return refused
+    partial = content_row(row, new_row)
+    if partial is not None:
+        reason = run_store.upsert_row_detail(runs_dir, partial)
         if reason:
             return EditResult(f"the store did not take {row.get('task_id')}: {reason}", FAILED)
+    stored = _stored_row(runs_dir, row) or new_row
     try:
-        queue_export.export_file(ws, new_row, force=True, hashes=queue_export.store_hashes(runs_dir))
+        queue_export.export_file(ws, stored, force=True, hashes=queue_export.store_hashes(runs_dir))
     except OSError as exc:
         return EditResult(f"the store row was updated but {rel} could not be written: {exc}", FAILED)
     return EditResult(diff or f"store row {row.get('task_id')} updated; {rel} already matched", DONE)
@@ -172,6 +259,7 @@ def apply_edit(
     state: str | None = None,
     dry_run: bool = False,
     live_runs: Collection[str],
+    now: str | None = None,
 ) -> EditResult:
     """Edge: edit the queued intake, the initiative or the task ticket named `id`. Exit 0 returns the diff; exit 2 returns the
     reason and writes nothing, whether the options are wrong, the id is unknown, or the guard refuses. With
@@ -194,7 +282,8 @@ def apply_edit(
         if problem is not None:
             return EditResult(problem, REFUSED)
         return _edit_task(
-            runs_dir, ws, dict(tickets[0]), title=title, body=body, body_file=body_file, surfaces=surfaces, state=state, dry_run=dry_run
+            runs_dir, ws, dict(tickets[0]), title=title, body=body, body_file=body_file, surfaces=surfaces, state=state, dry_run=dry_run,
+            now=now,
         )
     if surfaces is not None or state is not None:
         return EditResult("--surfaces and --state apply to a task ticket only", REFUSED)
