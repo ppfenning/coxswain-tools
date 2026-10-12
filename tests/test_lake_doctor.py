@@ -13,15 +13,19 @@ pytest.importorskip("pyiceberg_core")
 from agent_tools.lake_config import LakeConfig, load_catalog
 from agent_tools.lake_doctor import (
     Check,
+    _dangling_check,
     _fail,
+    _load_tables,
+    _local_path,
     _object_store_check,
+    _pointer_locations,
     _table_checks,
     run_checks,
     sqlite_catalog_path,
     verdict,
 )
 from agent_tools.lake_sync import HISTORY, sync
-from agent_tools.lake_tables import TABLES, ensure_tables
+from agent_tools.lake_tables import NAMESPACE, TABLES, ensure_tables
 
 E1 = "2026-09-25T05:00:00+00:00"
 T = "2026-09-25T04:10:00+00:00"
@@ -173,3 +177,79 @@ def test_the_object_store_row_names_the_endpoint_and_which_env_vars_are_set_and_
 
 def test_no_object_store_block_gives_no_row(config):
     assert _object_store_check(config, {}) == []
+
+
+def test_an_existing_current_file_is_not_dangling(config):
+    assert _dangling_check("runs", "/m/2.json", "/m/1.json", lambda _: True, config) is None
+
+
+def test_a_missing_current_with_an_existing_previous_is_dangling_and_names_the_previous(config):
+    check = _dangling_check("runs", "/m/2.json", "/m/1.json", lambda p: p == "/m/1.json", config)
+    assert check is not None and check.name == "table runs" and check.status == "fail"
+    assert "dangling" in check.detail and "previous metadata at /m/1.json" in check.detail
+
+
+def test_a_missing_current_with_no_usable_previous_still_fails_by_table_name(config):
+    for previous in (None, "/m/1.json"):
+        check = _dangling_check("runs", "/m/2.json", previous, lambda _: False, config)
+        assert check == Check("table runs", "fail", "metadata pointer is dangling: /m/2.json is missing; no usable previous metadata")
+
+
+def test_a_dangling_detail_redacts_a_password_in_a_location(config):
+    check = _dangling_check("runs", "s3://u:hunter2@b/2.json", "s3://u:hunter2@b/1.json", lambda p: p.endswith("1.json"), config)
+    assert check is not None and "hunter2" not in check.detail and "***" in check.detail
+
+
+class _FailingCatalog:
+    """Every load raises `error`, whatever type it is."""
+
+    def __init__(self, error):
+        self.error = error
+
+    def load_table(self, identifier):
+        raise self.error
+
+
+def test_a_load_error_of_any_type_is_dangling_when_the_row_points_at_a_missing_file(config, monkeypatch):
+    monkeypatch.setattr("agent_tools.lake_doctor._pointer_locations", lambda *_: ("/m/2.json", "/m/1.json"))
+    monkeypatch.setattr("agent_tools.lake_doctor._exists", lambda _catalog, location: location == "/m/1.json")
+    for error in (FileNotFoundError("gone"), RuntimeError("wrapped"), OSError("wrapped")):
+        loaded, failures = _load_tables(_FailingCatalog(error), ["runs"], "ns", config)
+        assert loaded == {}
+        assert failures == [Check("table runs", "fail", "metadata pointer is dangling: /m/2.json is missing; previous metadata at /m/1.json")]
+
+
+def test_a_load_error_with_an_existing_current_file_keeps_the_plain_failure(config, monkeypatch):
+    monkeypatch.setattr("agent_tools.lake_doctor._pointer_locations", lambda *_: ("/m/2.json", "/m/1.json"))
+    monkeypatch.setattr("agent_tools.lake_doctor._exists", lambda _catalog, _location: True)
+    _, failures = _load_tables(_FailingCatalog(RuntimeError("corrupt")), ["runs"], "ns", config)
+    assert failures == [Check("table runs", "fail", "RuntimeError: corrupt")]
+
+
+def test_a_load_error_with_an_unreadable_row_keeps_the_load_error_and_names_the_read_error(config, monkeypatch):
+    def unreadable(*_):
+        raise AttributeError("no column")
+
+    monkeypatch.setattr("agent_tools.lake_doctor._pointer_locations", unreadable)
+    _, failures = _load_tables(_FailingCatalog(FileNotFoundError("gone")), ["runs"], "ns", config)
+    assert failures == [Check("table runs", "fail", "FileNotFoundError: gone; pointer read failed: AttributeError: no column")]
+
+
+def test_a_deleted_current_metadata_file_is_reported_as_dangling_for_that_table_only(config, store_url):
+    catalog = load_catalog(config)
+    ensure_tables(catalog)
+    sync(catalog, store_url)
+    victim = next(iter(HISTORY))
+    # ensure_tables writes the first metadata file and the sync's transaction commits a second, so a previous exists.
+    current, previous = _pointer_locations(catalog, NAMESPACE, victim)
+    assert current and previous and _local_path(previous).exists()
+    _local_path(current).unlink()
+    checks = run_checks(config)
+    found = by_name(checks)
+    assert found[f"table {victim}"].status == "fail"
+    assert "dangling" in found[f"table {victim}"].detail and previous in found[f"table {victim}"].detail
+    for name in HISTORY:
+        if name != victim:
+            assert found[f"table {name}"].status == "ok"
+            assert found[f"table {name} mark"].status == "ok"
+    assert verdict(checks) == "fail"

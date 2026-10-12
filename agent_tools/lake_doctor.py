@@ -7,7 +7,7 @@ Module level imports no pyiceberg: the lake extra is optional and `run_checks` s
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -74,6 +74,57 @@ def _warehouse_check(config: LakeConfig, probe: Any) -> Check:
     return Check("warehouse", OK, f"{shown} metadata file opens")
 
 
+def _dangling_check(name: str, current: str | None, previous: str | None, exists: Callable[[str], bool], config: LakeConfig) -> Check | None:
+    """None when `current` exists. Otherwise a fail that says the pointer is dangling and names `previous` when it exists."""
+    if current is None or exists(current):
+        return None
+    missing = f"metadata pointer is dangling: {redact(current)} is missing"
+    if previous is not None and exists(previous):
+        return Check(f"table {name}", FAIL, f"{missing}; previous metadata at {redact(previous)}")
+    return Check(f"table {name}", FAIL, f"{missing}; no usable previous metadata")
+
+
+def _pointer_locations(catalog: Any, namespace: str, name: str) -> tuple[str | None, str | None]:
+    """Edge. The current and previous metadata locations in the catalog row, read without opening either file."""
+    from pyiceberg.catalog.sql import IcebergTables
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    where = (
+        IcebergTables.catalog_name == catalog.name,
+        IcebergTables.table_namespace == namespace,
+        IcebergTables.table_name == name,
+    )
+    with Session(catalog.engine) as session:
+        row = session.scalar(select(IcebergTables).where(*where))
+        return (None, None) if row is None else (row.metadata_location or None, row.previous_metadata_location or None)
+
+
+def _exists(catalog: Any, location: str) -> bool:
+    """Edge. Whether the metadata file at `location` exists: a local path is stat-ed, any other scheme opens through FileIO."""
+    local = _local_path(location)
+    if local is not None:
+        return local.exists()
+    from pyiceberg.io import load_file_io
+
+    return bool(load_file_io(dict(catalog.properties), location).new_input(location).exists())
+
+
+def _missing_file_check(catalog: Any, namespace: str, name: str, err: Exception, config: LakeConfig) -> Check:
+    """Edge. The dangling-pointer check for a table whose load failed, whatever exception type carried the failure.
+
+    Asks the catalog row whether the current metadata file exists, so a wrapped or differently typed error still reads as
+    dangling. Falls back to the plain `_fail` when the file exists. When the row itself cannot be read, the plain failure
+    carries that read error in its detail, so a wrong column name shows in the output instead of vanishing."""
+    try:
+        current, previous = _pointer_locations(catalog, namespace, name)
+        found = _dangling_check(name, current, previous, lambda location: _exists(catalog, location), config)
+    except Exception as read_err:  # the load error stays the finding; the read error rides along
+        plain = _fail(f"table {name}", err, config)
+        return Check(plain.name, FAIL, f"{plain.detail}; pointer read failed: {type(read_err).__name__}: {redact(str(read_err))}")
+    return found if found is not None else _fail(f"table {name}", err, config)
+
+
 def _load_tables(catalog: Any, names: Sequence[str], namespace: str, config: LakeConfig) -> tuple[dict[str, Any], list[Check]]:
     """Edge. Each table by name, None when missing; a load that fails otherwise gives a fail check and no entry."""
     from pyiceberg.exceptions import NoSuchTableError
@@ -85,8 +136,8 @@ def _load_tables(catalog: Any, names: Sequence[str], namespace: str, config: Lak
             loaded[name] = catalog.load_table(f"{namespace}.{name}")
         except NoSuchTableError:
             loaded[name] = None
-        except Exception as err:  # a corrupt or unreadable table is a finding, not a crash
-            failures.append(_fail(f"table {name}", err, config))
+        except Exception as err:  # a corrupt, unreadable or dangling table is a finding, not a crash
+            failures.append(_missing_file_check(catalog, namespace, name, err, config))
     return loaded, failures
 
 
