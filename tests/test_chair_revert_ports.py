@@ -21,7 +21,10 @@ TMP = "/nonexistent-revert-tmp"
 W = f"{TMP}/wt"
 GW = ["git", "-C", W]
 PROBE = [*G, "rev-list", "--parents", "-n", "1", "abc"]
-WORKTREE_ADD = [*G, "worktree", "add", "-b", "revert/7", W, "origin/main"]
+WORKTREE_ADD = [*G, "worktree", "add", "-B", "revert/7", W, "origin/main"]
+PRUNE = [*G, "worktree", "prune"]
+LOCAL_TIP = [*G, "rev-parse", "--verify", "--quiet", "refs/heads/revert/7"]
+REMOTE_LIST = [*G, "ls-remote", "--heads", "origin", "refs/heads/revert/7"]
 WORKTREE_REMOVE = [*G, "worktree", "remove", "--force", W]
 BRANCH_DROP = [*G, "branch", "-D", "revert/7"]
 PR_URL = "https://github.com/o/r/pull/9"
@@ -93,6 +96,9 @@ def test_clean_revert_works_in_a_worktree_and_push_removes_it() -> None:
     port.push("/r", "revert/7")
     assert run.calls == [
         PROBE,
+        PRUNE,
+        LOCAL_TIP,
+        REMOTE_LIST,
         WORKTREE_ADD,
         [*GW, "revert", "--no-edit", "abc"],
         [*GW, "push", "origin", "revert/7"],
@@ -500,3 +506,125 @@ def test_unreadable_remote_listing_raises_instead_of_reading_as_no_branch() -> N
     with pytest.raises(RuntimeError, match="could not read from remote"):
         _git(run).clear_stale_branch("/r", "revert/7", False)
     assert BRANCH_DROP not in run.calls
+
+
+MAIN_TIP = "c" * 40
+BRANCH_REF = "refs/heads/revert/7"
+REF_B2 = "refs/backup/revert/7/bbbbbbbbbbbb-2"
+REF_C1 = "refs/backup/revert/7/cccccccccccc-1"
+LEASE_PUSH = [*GW, "push", f"--force-with-lease={BRANCH_REF}:{TIP_B}", "origin", "revert/7"]
+
+
+class Leftover(Refs):
+    """Refs that also refuses what git refuses over a branch an earlier attempt left behind.
+
+    `worktree add -b` over an existing branch, any add while a dead worktree is still registered,
+    and a push over the remote branch without a lease naming its current tip.
+    """
+
+    def __init__(
+        self,
+        local: str = "",
+        remote: str = "",
+        stale_worktree: bool = False,
+        script: dict[tuple[str, ...], tuple[int, str]] | None = None,
+        push_failures: int = 0,
+    ) -> None:
+        super().__init__({BRANCH_REF: local} if local else {}, {**PR_FLOW, **(script or {})})
+        self.remote = remote
+        self.stale_worktree = stale_worktree
+        self.push_failures = push_failures
+
+    def __call__(self, argv: list[str]) -> tuple[int, str]:
+        answer = super().__call__(argv)
+        verb = argv[3:5] if argv[:3] == G else []
+        if verb[:1] == ["ls-remote"]:
+            return 0, f"{self.remote}\t{BRANCH_REF}\n" if self.remote else ""
+        if verb == ["worktree", "prune"]:
+            self.stale_worktree = False
+        if verb == ["worktree", "add"]:
+            return self._worktree_add(argv[6], argv[5])
+        if argv[:3] == GW and argv[3] == "push":
+            return self._push(argv)
+        return answer
+
+    def _worktree_add(self, branch: str, flag: str) -> tuple[int, str]:
+        if self.stale_worktree:
+            return 128, f"fatal: '{branch}' is a missing but already registered worktree"
+        if flag == "-b" and f"refs/heads/{branch}" in self.refs:
+            return 128, f"fatal: a branch named '{branch}' already exists"
+        self.refs[f"refs/heads/{branch}"] = MAIN_TIP
+        return 0, ""
+
+    def _push(self, argv: list[str]) -> tuple[int, str]:
+        if self.push_failures:
+            self.push_failures -= 1
+            return 1, "rejected: remote hung up"
+        if self.remote and f"--force-with-lease={BRANCH_REF}:{self.remote}" not in argv:
+            return 1, "! [rejected] (non-fast-forward)"
+        self.remote = self.refs[BRANCH_REF]
+        return 0, ""
+
+
+def test_local_branch_left_by_an_earlier_attempt_is_backed_up_and_recreated() -> None:
+    run = Leftover(local=TIP_A)
+    assert _drive(run) == MERGED
+    assert run.refs[REF_A1] == TIP_A
+    assert run.refs[BRANCH_REF] == MAIN_TIP
+    assert run.calls.index(UPDATE_A1) < run.calls.index(WORKTREE_ADD)
+    _assert_clean(run)
+
+
+def test_remote_branch_left_by_an_earlier_attempt_is_backed_up_and_replaced_under_a_lease() -> None:
+    run = Leftover(remote=TIP_B)
+    assert _drive(run) == MERGED
+    assert run.refs[REF_B1] == TIP_B
+    assert run.calls.index(UPDATE_B1) < run.calls.index(LEASE_PUSH)
+    assert REMOTE_DROP not in run.calls
+    assert run.remote == MAIN_TIP
+    _assert_clean(run)
+
+
+def test_local_and_remote_branches_are_both_backed_up_then_recreated_and_replaced() -> None:
+    run = Leftover(local=TIP_A, remote=TIP_B)
+    assert _drive(run) == MERGED
+    assert (run.refs[REF_A1], run.refs[REF_B1]) == (TIP_A, TIP_B)
+    assert max(run.calls.index(UPDATE_A1), run.calls.index(UPDATE_B1)) < run.calls.index(WORKTREE_ADD)
+    assert LEASE_PUSH in run.calls
+    _assert_clean(run)
+
+
+def test_worktree_registered_by_a_crashed_attempt_is_pruned_before_the_add() -> None:
+    run = Leftover(local=TIP_A, stale_worktree=True)
+    assert _drive(run) == MERGED
+    assert run.calls.index(PRUNE) < run.calls.index(WORKTREE_ADD)
+    _assert_clean(run)
+
+
+def test_second_tick_after_a_failed_push_takes_the_same_path_and_succeeds() -> None:
+    run = Leftover(remote=TIP_B, push_failures=1)
+    with pytest.raises(RuntimeError, match="rejected"):
+        _drive(run)
+    _assert_clean(run)
+    assert _drive(run) == MERGED
+    assert (run.refs[REF_B1], run.refs[REF_B2], run.refs[REF_C1]) == (TIP_B, TIP_B, MAIN_TIP)
+    assert run.calls.count(LEASE_PUSH) == 2
+    _assert_clean(run)
+
+
+def test_open_revert_pr_is_reused_and_the_leftover_branches_are_untouched() -> None:
+    run = Leftover(local=TIP_A, remote=TIP_A, script=_prs("revert/7"))
+    result = perform_revert(
+        "/r",
+        7,
+        "abc",
+        "main red",
+        _git(run),
+        GhForgePort(run),
+        find_open_pr=lambda _repo, pr: find_open_revert_pr(run, "o/r", pr),
+    )
+    assert (result.status, result.pr) == (MERGED, "https://github.com/o/r/pull/9")
+    assert [c for c in run.calls if c[0] == "git"] == []
+    assert [c for c in run.calls if c[:3] == ["gh", "pr", "create"]] == []
+    assert (run.refs, run.remote) == ({BRANCH_REF: TIP_A}, TIP_A)
+    assert run.head == "main"
