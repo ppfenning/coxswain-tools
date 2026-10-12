@@ -143,7 +143,7 @@ wheels = [
 
 [[package]]
 name = "coxswain-tools"
-version = "0.34.0"
+version = "0.37.0"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },
@@ -151,6 +151,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+analytics = [
+    { name = "duckdb" },
+]
 dev = [
     { name = "pytest" },
     { name = "ruff" },
@@ -172,6 +175,7 @@ traces = [
 
 [package.metadata]
 requires-dist = [
+    { name = "duckdb", marker = "extra == 'analytics'", specifier = ">=1.0" },
     { name = "duckdb", marker = "extra == 'lake'", specifier = ">=1.0" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pyarrow", marker = "extra == 'parquet'" },
@@ -183,7 +187,7 @@ requires-dist = [
     { name = "zstandard", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "zstandard", marker = "extra == 'traces'", specifier = ">=0.23" },
 ]
-provides-extras = ["dev", "traces", "postgres", "parquet", "lake"]
+provides-extras = ["dev", "traces", "postgres", "parquet", "lake", "analytics"]
 
 [[package]]
 name = "duckdb"

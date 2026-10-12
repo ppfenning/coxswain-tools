@@ -1762,6 +1762,42 @@ def test_lint_items_flags_a_grant_violation():
     ]
 
 
+_GRANTS = ("pytest", "git status", "git diff")
+
+
+def _grant_problem(cmd: str) -> route.Problem:
+    return route.Problem("t1", "grant", f"command {cmd!r} is not in this role's grant",
+                         "name only pytest, git status, git diff")
+
+
+def _lint_body(body: str) -> list:
+    return route.lint_items([{"task": "t1", "phase": "build", "surfaces": [], "body": body}], "acme/widgets", _GRANTS)
+
+
+def test_lint_items_flags_a_grant_command_written_as_a_check():
+    assert _lint_body("Add the flag.\n\nChecks:\n- ruff check .\n- pytest") == [_grant_problem("ruff")]
+
+
+def test_lint_items_flags_a_grant_command_written_in_the_done_line():
+    assert _lint_body("Add the flag.\nDone when `cox route lint` exits 0.") == [_grant_problem("cox")]
+
+
+def test_lint_items_flags_an_imperative_run_of_a_grant_command():
+    assert _lint_body("Then run gh pr list to see the pull request.") == [_grant_problem("gh")]
+
+
+def test_lint_items_passes_a_grant_command_in_a_fixture_in_prose():
+    assert _lint_body("The fake runner feeds in gh run list output for the test.") == []
+
+
+def test_lint_items_passes_a_grant_command_named_in_a_prohibition():
+    assert _lint_body("No direct gh invocation; no real git, gh or network call.") == []
+
+
+def test_lint_items_passes_a_grant_command_named_as_a_code_path():
+    assert _lint_body("Keep cox --version and cox host beat working as they do.") == []
+
+
 def test_lint_items_flags_a_coupling_violation():
     # work-shape.md §8: "two tickets sharing a test file" is the fixture named for this rule.
     items = [

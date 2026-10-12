@@ -37,7 +37,7 @@ from agent_tools.notify_events import events_from_tick
 __all__ = [
     "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "GateState", "LeaseRejected", "OverrunState", "RunDeps", "TickOverrun",
     "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink", "next_gate_record", "no_landing", "no_lands_to_stop", "overran",
-    "overrun_line", "run", "tick", "tick_timed",
+    "overrun_limit_hit", "overrun_line", "run", "tick", "tick_timed",
 ]
 
 DEFAULT_INTERVAL = 60.0
@@ -116,6 +116,11 @@ class TickOverrun(Exception):
 
 def overran(elapsed: float, bound: float) -> bool:
     return elapsed >= bound
+
+
+def overrun_limit_hit(consecutive: int, limit: int) -> bool:
+    """A limit of 0 or less disables the stop."""
+    return limit > 0 and consecutive >= limit
 
 
 def overrun_line(bound: float, count: int, now: datetime) -> str:
@@ -479,8 +484,17 @@ def start_lease_beat(deps: RunDeps, dry_run: bool) -> threading.Event:
     return stop
 
 
-def run(once: bool, interval: float, dry_run: bool, deps: RunDeps) -> None:
-    """Ticks until interrupted or SIGTERM, or once; an interrupt stops the land worker, then releases the lease if held."""
+def _shutdown(deps: RunDeps, beating: threading.Event, restore: Callable[[], None]) -> None:
+    beating.set()  # before the release: a beat with no sidecar acquires, and would retake the lease just released
+    restore()  # a second SIGTERM during the release below ends the process as it would have
+    with contextlib.suppress(Exception):  # a failed land release must not keep the chair lease held
+        deps.stop_lands()
+    if deps.holds():
+        deps.release()
+
+
+def run(once: bool, interval: float, dry_run: bool, deps: RunDeps, max_overruns: int = 3) -> None:
+    """Ticks until interrupted, SIGTERM or max_overruns overruns in a row, or once; a stop frees the lands, then the lease."""
     restore = (lambda: None) if dry_run else deps.install_sigterm()
     beating = start_lease_beat(deps, dry_run)
     try:
@@ -488,14 +502,12 @@ def run(once: bool, interval: float, dry_run: bool, deps: RunDeps) -> None:
             _attempt(deps, dry_run)
             if once:
                 return
+            if overrun_limit_hit(deps.overrun_state.consecutive, max_overruns):
+                _shutdown(deps, beating, restore)
+                return
             deps.sleep(interval)
     except KeyboardInterrupt:
-        beating.set()  # before the release: a beat with no sidecar acquires, and would retake the lease just released
-        restore()  # a second SIGTERM during the release below ends the process as it would have
-        with contextlib.suppress(Exception):  # a failed land release must not keep the chair lease held
-            deps.stop_lands()
-        if deps.holds():
-            deps.release()
+        _shutdown(deps, beating, restore)
     finally:
         beating.set()
         restore()
