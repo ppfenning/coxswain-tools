@@ -1,5 +1,6 @@
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -10,7 +11,7 @@ pytest.importorskip("pyiceberg_core")
 
 from pyiceberg.catalog.sql import SqlCatalog
 
-from agent_tools.lake_sync import HISTORY, next_hwm, rows_after, sync, to_arrow
+from agent_tools.lake_sync import HISTORY, LakeSyncError, next_hwm, pointer_verdict, rows_after, sync, to_arrow
 from agent_tools.lake_tables import HWM_PROPERTY, NAMESPACE, TABLES, ensure_tables
 
 E1, E2, E3 = "2026-09-25T05:00:00+00:00", "2026-09-25T06:00:00+00:00", "2026-09-25T07:00:00+00:00"
@@ -172,3 +173,40 @@ def test_to_arrow_turns_iso_text_into_utc_timestamps_and_ints_into_bools():
     assert out["ts"] == datetime(2026, 9, 25, 2, 10, tzinfo=UTC)
     assert out["ok"] is True
     assert out["cost_usd"] is None
+
+
+def test_a_dangling_metadata_pointer_is_refused_and_nothing_is_written(store, catalog):
+    conn, url = store
+    sync(catalog, url, dry_run=False)
+    others = HISTORY[1:]
+    counts = {n: _table(catalog, n).scan().to_arrow().num_rows for n in others}
+    marks = {n: _table(catalog, n).properties.get(HWM_PROPERTY) for n in others}
+    location = _table(catalog, "runs").metadata_location
+    Path(location.removeprefix("file://")).unlink()
+    conn.execute("UPDATE runs SET ended_at = ? WHERE run_id = 'live'", (E3,))
+    conn.commit()
+    with pytest.raises(LakeSyncError) as excinfo:
+        sync(catalog, url, dry_run=False)
+    assert f"{NAMESPACE}.runs" in str(excinfo.value)
+    assert "dangling" in str(excinfo.value)
+    assert {n: _table(catalog, n).scan().to_arrow().num_rows for n in others} == counts
+    assert {n: _table(catalog, n).properties.get(HWM_PROPERTY) for n in others} == marks
+
+
+def test_a_commit_that_cannot_be_read_back_raises_naming_the_table(store, catalog, monkeypatch):
+    _, url = store
+    monkeypatch.setattr("agent_tools.lake_sync._exists", lambda table, location: False)
+    with pytest.raises(LakeSyncError) as excinfo:
+        sync(catalog, url, dry_run=False)
+    assert f"{NAMESPACE}.runs" in str(excinfo.value)
+    assert "read back" in str(excinfo.value)
+
+
+def test_pointer_verdict_is_none_for_a_live_file_and_names_the_previous_only_when_it_exists():
+    assert pointer_verdict("cur", "prev", True, False) is None
+    both = pointer_verdict("cur", "prev", False, True)
+    assert both is not None and "dangling" in both and "prev" in both
+    neither = pointer_verdict("cur", "prev", False, False)
+    assert neither is not None and "dangling" in neither and "prev" not in neither
+    first = pointer_verdict("cur", None, False, False)
+    assert first is not None and "None" not in first
