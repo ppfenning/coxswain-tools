@@ -170,6 +170,31 @@ def test_roles_report_cost_per_landed_is_none_when_no_landed_task_carries_a_cost
     assert row["cost_unknown"] == 1
 
 
+def test_roles_report_counts_a_task_in_landed_whatever_its_outcome():
+    calls = [_call("t1"), _call("t2")]
+    tasks = [_task("t1", outcome="failed", attempt=2, cost_usd=3.0), _task("t2", outcome="failed", attempt=1, cost_usd=1.0)]
+    [row] = roles_report(calls, tasks, landed={"t1"})
+    assert row["landed_rate"] == 0.5
+    assert row["cost_per_landed"] == 3.0
+    assert row["attempts_to_land"] == 2.0
+
+
+def test_roles_report_landed_none_keeps_the_outcome_numbers():
+    calls = [_call("t1"), _call("t2")]
+    tasks = [_task("t1", outcome="failed", cost_usd=3.0), _task("t2", outcome="landed", cost_usd=1.0)]
+    [row] = roles_report(calls, tasks)
+    assert row["landed_rate"] == 0.5
+    assert row["cost_per_landed"] == 1.0
+
+
+def test_roles_report_landed_set_overrides_a_landed_outcome_absent_from_it():
+    calls = [_call("t1")]
+    tasks = [_task("t1", outcome="landed", cost_usd=1.0)]
+    [row] = roles_report(calls, tasks, landed=set())
+    assert row["landed_rate"] == 0.0
+    assert row["cost_per_landed"] is None
+
+
 def test_series_report_cartridge_sha_filter_keeps_only_matching_runs():
     runs = [
         {"run_id": "run-a", "cartridge_sha": "abc", "provider_profile": "p1"},
