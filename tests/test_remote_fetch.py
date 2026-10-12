@@ -1,13 +1,18 @@
 import json
 import shutil
+import sqlite3
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
+from agent_tools import run_store
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_fetch import (
     FetchError,
     approved_without_branch,
+    branch_expected,
     chair_repo_path,
     fetch_plan,
     fetch_run,
@@ -15,7 +20,9 @@ from agent_tools.remote_fetch import (
     probe_argv,
     pull_argvs,
     refuse_unended,
+    store_task_records,
     task_repos,
+    task_status,
 )
 
 RSYNC_BOUND = ["rsync", "-a", "--timeout=30", "-e", "ssh -o ConnectTimeout=30"]
@@ -228,4 +235,123 @@ def test_fetch_run_is_done_when_every_approved_task_has_its_branch(tmp_path):
 
 def test_fetch_run_lets_the_branch_check_decide_when_a_record_is_unreadable(tmp_path):
     result = _fetch_with(tmp_path, [_record("t1", False), "not json"], set())
+    assert isinstance(result, FetchError) and result.step == "verify"
+
+
+def _store_fetch(tmp_path, stored):
+    """Store-mode `fetch_run`: no tasks/ on disk, the records come from a stub store. Returns (result, argvs)."""
+    argvs = []
+
+    def run_cmd(argv):
+        argvs.append(argv)
+        return 2 if "ls-remote" in argv else 0
+
+    result = fetch_run(LaneHost("h", "u@h", "/w"), "r1", tmp_path / "runs", lambda _: ["/elsewhere/repo"], run_cmd,
+                       lambda p: p, lease_released=True, ended_at="t", store_records=lambda _dir, _run: stored)
+    return result, argvs
+
+
+def test_store_fetch_of_a_run_with_nothing_approved_skips_the_branch_verify(tmp_path):
+    result, argvs = _store_fetch(tmp_path, [_record("t1", False), _record("t2", False)])
+    assert result == ("/elsewhere/repo",)
+    assert not any("ls-remote" in argv for argv in argvs)
+
+
+def test_store_fetch_of_a_run_with_an_approved_task_still_fails_verify_without_the_branch(tmp_path):
+    result, _ = _store_fetch(tmp_path, [_record("t1", False), _record("t2", True)])
+    assert isinstance(result, FetchError) and result.step == "verify"
+
+
+def test_store_fetch_with_no_store_answer_keeps_the_branch_verify(tmp_path):
+    result, argvs = _store_fetch(tmp_path, [])
+    assert isinstance(result, FetchError) and result.step == "verify"
+    assert any("ls-remote" in argv for argv in argvs)
+
+
+def test_branch_expected_only_when_a_task_is_approved():
+    assert branch_expected(["not_approved", "not_approved"]) is False
+    assert branch_expected(["not_approved", "approved"]) is True
+
+
+def _sqlite_store(tmp_path, monkeypatch, rows):
+    """A real sqlite `task_records` table, read through run_store's own scripts run by this interpreter."""
+    db = tmp_path / "store.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE task_records (run_id TEXT, phase_id TEXT, task_id TEXT, record_json TEXT)")
+    conn.executemany(
+        "INSERT INTO task_records VALUES (?, ?, ?, ?)",
+        [(run, "p1", task, json.dumps(record)) for run, task, record in rows],
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
+    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: f"sqlite:///{db}")
+
+
+def _stored_row(approved):
+    """The row shape `land` reads: `review` and `adversary` verdict objects, as in a task file's record."""
+    verdict = {"verdict": "approve" if approved else "revise"}
+    return {"repo": "/elsewhere/repo", "review": verdict, "adversary": verdict}
+
+
+def test_store_task_records_reads_each_row_with_its_task_id_and_land_reads_the_verdicts(tmp_path, monkeypatch):
+    rows = [("r1", "t1", _stored_row(True)), ("r1", "t2", _stored_row(False)), ("other", "t9", _stored_row(True))]
+    _sqlite_store(tmp_path, monkeypatch, rows)
+    records = store_task_records(tmp_path / "runs", "r1")
+    assert [(r["task"], task_status(r)) for r in records] == [("t1", "approved"), ("t2", "not_approved")]
+
+
+def test_store_task_records_is_empty_for_a_run_the_store_does_not_hold(tmp_path, monkeypatch):
+    _sqlite_store(tmp_path, monkeypatch, [("other", "t9", _stored_row(True))])
+    assert store_task_records(tmp_path / "runs", "r1") == []
+
+
+def test_store_task_records_is_empty_when_one_record_cannot_be_read(tmp_path, monkeypatch):
+    rows = [("r1", "t1", _stored_row(False)), ("r1", "t2", _stored_row(True)), ("r1", "t3", _stored_row(False))]
+    _sqlite_store(tmp_path, monkeypatch, rows)
+    real = run_store.task_record
+    monkeypatch.setattr(run_store, "task_record", lambda d, run, phase, task: None if task == "t2" else real(d, run, phase, task))
+    assert store_task_records(tmp_path / "runs", "r1") == []
+
+
+def test_store_task_records_is_empty_when_a_task_id_has_no_phase(tmp_path, monkeypatch):
+    _sqlite_store(tmp_path, monkeypatch, [("r1", "t1", _stored_row(False)), ("r1", "t2", _stored_row(False))])
+    real = run_store.task_record_phases
+    monkeypatch.setattr(run_store, "task_record_phases", lambda d, run, task: [] if task == "t2" else real(d, run, task))
+    assert store_task_records(tmp_path / "runs", "r1") == []
+
+
+def test_fetch_run_keeps_verify_when_the_approved_tasks_record_cannot_be_read(tmp_path, monkeypatch):
+    rows = [("r1", "t1", _stored_row(False)), ("r1", "t2", _stored_row(True)), ("r1", "t3", _stored_row(False))]
+    _sqlite_store(tmp_path, monkeypatch, rows)
+    real = run_store.task_record
+    monkeypatch.setattr(run_store, "task_record", lambda d, run, phase, task: None if task == "t2" else real(d, run, phase, task))
+    result, argvs = _real_store_fetch(tmp_path)
+    assert isinstance(result, FetchError) and result.step == "verify"
+    assert any("ls-remote" in argv for argv in argvs)
+
+
+def _real_store_fetch(tmp_path):
+    """`fetch_run` with the default store reader; `ls-remote` fails. Returns (result, argvs)."""
+    argvs = []
+
+    def run_cmd(argv):
+        argvs.append(argv)
+        return 2 if "ls-remote" in argv else 0
+
+    result = fetch_run(LaneHost("h", "u@h", "/w"), "r1", tmp_path / "runs", lambda _: ["/elsewhere/repo"], run_cmd,
+                       lambda p: p, lease_released=True, ended_at="t")
+    return result, argvs
+
+
+def test_fetch_run_reads_the_real_store_and_skips_verify_when_nothing_is_approved(tmp_path, monkeypatch):
+    _sqlite_store(tmp_path, monkeypatch, [("r1", "t1", _stored_row(False)), ("r1", "t2", _stored_row(False))])
+    result, argvs = _real_store_fetch(tmp_path)
+    assert result == ("/elsewhere/repo",)
+    assert not any("ls-remote" in argv for argv in argvs)
+
+
+def test_fetch_run_reads_the_real_store_and_keeps_verify_when_a_task_is_approved(tmp_path, monkeypatch):
+    _sqlite_store(tmp_path, monkeypatch, [("r1", "t1", _stored_row(False)), ("r1", "t2", _stored_row(True))])
+    result, _ = _real_store_fetch(tmp_path)
     assert isinstance(result, FetchError) and result.step == "verify"
