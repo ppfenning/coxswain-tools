@@ -41,6 +41,42 @@ def test_a_hold_for_another_commit_does_not_fail_this_watch():
     assert row["smoke"] == "ok"
 
 
+def test_infra_main_ci_yields_ci_infra_with_its_output():
+    [row] = landed_main_facts([WATCH], lambda repo, commit: ("infra", "no jobs"), None)
+    assert (row["ci"], row["ci_output"]) == ("infra", "no jobs")
+
+
+def test_red_main_with_a_later_green_sets_green_after():
+    [row] = landed_main_facts([WATCH], lambda repo, commit: ("red", ""), None, lambda repo, commit: True)
+    assert row["green_after"] is True
+
+
+def test_red_main_with_no_later_green_leaves_green_after_false():
+    [row] = landed_main_facts([WATCH], lambda repo, commit: ("red", ""), None, lambda repo, commit: False)
+    assert row["green_after"] is False
+
+
+def test_green_main_ci_does_not_call_green_since():
+    calls: list[tuple[str, str]] = []
+    [row] = landed_main_facts(
+        [WATCH], lambda repo, commit: ("green", ""), None, lambda repo, commit: calls.append((repo, commit)) or True
+    )
+    assert (calls, row["green_after"]) == ([], False)
+
+
+def test_pending_main_ci_does_not_call_green_since():
+    calls: list[tuple[str, str]] = []
+    [row] = landed_main_facts(
+        [WATCH], lambda repo, commit: ("pending", ""), None, lambda repo, commit: calls.append((repo, commit)) or True
+    )
+    assert (calls, row["green_after"]) == ([], False)
+
+
+def test_failed_smoke_with_a_later_green_sets_green_after():
+    [row] = landed_main_facts([WATCH], lambda repo, commit: ("green", ""), _hold("abc"), lambda repo, commit: True)
+    assert row["green_after"] is True
+
+
 def test_no_watches_yield_an_empty_landed_main():
     assert landed_main_facts([], lambda repo, commit: ("green", ""), None) == []
 
