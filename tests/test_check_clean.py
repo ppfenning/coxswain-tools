@@ -109,3 +109,22 @@ def test_git_dirs_and_binary_files_are_not_read(tmp_path, capsys):
 def test_this_repository_passes_its_structural_rules(capsys):
     root = Path(__file__).resolve().parents[1]
     assert check_clean.main(["check_clean.py", str(root)], NO_NAMES) == 0, capsys.readouterr().out
+
+
+def test_skip_drops_a_fixed_rule(tmp_path, capsys):
+    (tmp_path / "a.md").write_text("binds the jira tracker\n")  # clean: allow
+    assert check_clean.main(["check_clean.py", str(tmp_path)], NO_NAMES) == 1
+    assert check_clean.main(["check_clean.py", str(tmp_path), "--skip", "vendor"], NO_NAMES) == 0
+    capsys.readouterr()
+
+
+def test_skip_naming_no_rule_is_refused(tmp_path, capsys):
+    assert check_clean.main(["check_clean.py", "--skip", "vendr", str(tmp_path)], NO_NAMES) == 2
+    assert "vendr" in capsys.readouterr().out
+
+
+def test_a_rust_target_dir_is_not_scanned(tmp_path, capsys):
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target" / "out.txt").write_text("host.lan\n")  # clean: allow
+    assert check_clean.main(["check_clean.py", str(tmp_path)], NO_NAMES) == 0
+    capsys.readouterr()

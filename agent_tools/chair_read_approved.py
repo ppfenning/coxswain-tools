@@ -3,7 +3,8 @@
 `approved_rows` is pure. `read_approved` is the edge: it loads items through the existing work-store readers
 (`route.parse_frontmatter`, `route.work_item`, `route.with_store_states`, `run_store.work_items`) and hands them over.
 """
-from collections.abc import Mapping, Sequence
+import json
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,11 @@ def phase_task_rows(items: Sequence[Item]) -> list[PhaseTasks]:
         }
         for initiative, phase in keys
     ]
+
+
+def mark_landed(items: Sequence[Item], landed: Collection[str]) -> list[Item]:
+    """Each approved item whose id is in `landed` reads `done`, so a phase plan leaves it out; other items are unchanged."""
+    return [{**i, "state": "done"} if i["state"] == "approved" and i["id"] in landed else i for i in items]
 
 
 def _run_order(run: str) -> tuple[int, str]:
@@ -151,10 +157,27 @@ def read_approved(
     return approved_rows(route.with_store_states(items, rows, mode))
 
 
+def _is_landed(path: Path) -> bool:
+    """Edge. True when the task record at `path` has `landed: true`; an unreadable or malformed record is not landed."""
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(record, dict) and record.get("landed") is True
+
+
+def read_landed_task_ids(runs_dir: Path) -> frozenset[str]:
+    """Edge. Ids of tasks whose record under `runs_dir/<run>/tasks/*/<task>.json` says landed, the fact `runs clean` reads."""
+    return frozenset(p.stem for p in runs_dir.glob("*/tasks/*/*.json") if _is_landed(p))
+
+
 def read_phase_tasks(
     ws: Path, mode: str = "files", files: WorkFiles | None = None, store_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[PhaseTasks]:
-    """Edge. The task states of every phase with approved work, from the same reads as `read_approved`."""
+    """Edge. The task states of every phase with approved work, from the same reads as `read_approved`.
+
+    An approved task whose record already says landed reads `done`: the work-item state can lag the record, and the
+    land refuses a task another machine landed."""
     items = _load_items(ws, files)
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
-    return phase_task_rows(route.with_store_states(items, rows, mode))
+    return phase_task_rows(mark_landed(route.with_store_states(items, rows, mode), read_landed_task_ids(ws / "runs")))
