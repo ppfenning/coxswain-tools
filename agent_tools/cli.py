@@ -3864,14 +3864,17 @@ def _route_file(a: argparse.Namespace) -> int:
 
 
 def _route_priority(a: argparse.Namespace) -> int:
-    if a.set is None and not a.up and not a.down:
-        print("routing: exactly one of --set, --up, --down is required")
-        return 2
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
         return rc
     ws = Path(profile["workspace_dir"]).expanduser()
-    flag = a.set if a.set is not None else ("up" if a.up else "down")
+    named = [name for name in ("up", "down", "top", "bottom") if getattr(a, name)]
+    if a.set is None and not named:
+        return route.list_open_queue(ws / "runs")
+    if not a.initiative:
+        print("routing: an initiative is required with --set, --up, --down, --top or --bottom")
+        return 2
+    flag = a.set if a.set is not None else named[0]
     return route.set_initiative_priority(ws / "runs", ws, _initiative_token(ws / "runs", a.initiative), flag)
 
 
@@ -6899,13 +6902,16 @@ ROUTE_COMMANDS = [
     commands.Command(
         "priority", "route", "move an initiative up or down the launch order",
         (
-            commands.Arg(("initiative",)), commands.Arg(("--profile",)),
+            commands.Arg(("initiative",), {"nargs": "?", "help": "required with a flag; omit it to list the open queue"}),
+            commands.Arg(("--profile",)),
             commands.Arg(("--set",), {"type": int, "default": None, "metavar": "N", "help": "write N on every item"}),
-            commands.Arg(("--up",), {"action": "store_true", "help": "one above the initiative's highest priority"}),
-            commands.Arg(("--down",), {"action": "store_true", "help": "one below the initiative's highest priority"}),
+            commands.Arg(("--up",), {"action": "store_true", "help": "pass the nearest higher open initiative"}),
+            commands.Arg(("--down",), {"action": "store_true", "help": "pass the nearest lower open initiative"}),
+            commands.Arg(("--top",), {"action": "store_true", "help": "one above every other open initiative"}),
+            commands.Arg(("--bottom",), {"action": "store_true", "help": "one below every other open initiative"}),
         ),
         "agent_tools.cli:_route_priority", False, (),
-        exclusive=("--set", "--up", "--down"),
+        exclusive=("--set", "--up", "--down", "--top", "--bottom"),
     ),
     commands.Command(
         "pull", "route", "file intake tickets from a source, once per link",

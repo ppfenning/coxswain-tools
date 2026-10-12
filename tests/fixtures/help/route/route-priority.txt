@@ -1,11 +1,15 @@
-usage: cox route priority [-h] [--profile PROFILE] [--set N | --up | --down] initiative
+usage: cox route priority [-h] [--profile PROFILE]
+                          [--set N | --up | --down | --top | --bottom]
+                          [initiative]
 
 positional arguments:
-  initiative
+  initiative         required with a flag; omit it to list the open queue
 
 options:
   -h, --help         show this help message and exit
   --profile PROFILE
   --set N            write N on every item
-  --up               one above the initiative's highest priority
-  --down             one below the initiative's highest priority
+  --up               pass the nearest higher open initiative
+  --down             pass the nearest lower open initiative
+  --top              one above every other open initiative
+  --bottom           one below every other open initiative
