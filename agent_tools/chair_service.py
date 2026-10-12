@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import posixpath
 import re
 from pathlib import Path
 
@@ -33,11 +34,19 @@ def export_lines(env_text: str) -> list[int]:
     return [n for n, line in enumerate(env_text.splitlines(), start=1) if line.lstrip().startswith("export ")]
 
 
+def path_value(cox: str, tools_bin: str, graphs_bin: str, default_path: str) -> str:
+    """The unit's PATH: cox's directory, then the two venv bins, then the default; empties dropped, first duplicate kept."""
+    entries = [posixpath.dirname(cox), tools_bin, graphs_bin, *default_path.split(":")]
+    return ":".join(dict.fromkeys(entry for entry in entries if entry))
+
+
 def unit_text(
     cox: str, workspace_dir: str, label: str, interval: int, environment_file: str | None, profile: str | None = None,
+    path: str | None = None,
 ) -> str:
-    """`EnvironmentFile=-` keeps a missing file from failing the unit."""
+    """`EnvironmentFile=-` keeps a missing file from failing the unit; `path` becomes the one `Environment=PATH=` line."""
     env_lines = [f"EnvironmentFile=-{environment_file}"] if environment_file is not None else []
+    path_lines = [f"Environment=PATH={path}"] if path is not None else []
     profile_args = f" --profile {profile}" if profile is not None else ""
     lines = [
         "[Unit]",
@@ -46,6 +55,7 @@ def unit_text(
         "[Service]",
         f"ExecStart={cox} chair run --label {label} --interval {interval}{profile_args}",
         f"WorkingDirectory={workspace_dir}",
+        *path_lines,
         *env_lines,
         "Restart=on-failure",
         "RestartSec=30",

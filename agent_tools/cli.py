@@ -7796,6 +7796,13 @@ def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
     if refuse_rc is not None:
         return refuse_rc
     env_file = _chair_service_environment_file(a)
+    harness_dir = profile.get("harness_dir")
+    unit_path_value = chair_service.path_value(
+        os.path.abspath(cox),
+        str(Path(__file__).resolve().parents[1] / ".venv" / "bin"),
+        str(Path(harness_dir).expanduser() / ".venv" / "bin") if harness_dir else "",
+        os.environ.get("PATH", ""),
+    )
     # systemd does not expand `~/` in WorkingDirectory=, and the unit does not inherit this shell's
     # $AGENT_TOOLS_PROFILE, so every path is absolute and the profile is pinned in ExecStart.
     values = {
@@ -7804,6 +7811,7 @@ def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
         "--label": _holder_label(a),
         "--profile": os.path.abspath(_profile_path(a)),
         **({"--environment-file": env_file} if env_file is not None else {}),
+        "PATH": unit_path_value,
     }
     unsafe = chair_service.unsafe_values(values)
     if unsafe:
@@ -7816,6 +7824,7 @@ def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
         return 2
     text = chair_service.unit_text(
         values["cox"], values["workspace_dir"], values["--label"], a.interval, env_file, values["--profile"],
+        unit_path_value,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
