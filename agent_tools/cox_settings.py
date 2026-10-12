@@ -48,14 +48,14 @@ def cartridge_path_for(profile: dict) -> Path | None:
     return Path(cartridges_dir).expanduser() / team / settings_model.CARTRIDGE_FILE
 
 
-def pat_only_for(row: SettingRow) -> bool:
-    """Whether the registry marks this row pat_only; a key the registry does not know is not."""
+def operator_only_for(row: SettingRow) -> bool:
+    """Whether the registry marks this row operator_only; a key the registry does not know is not."""
     setting = settings_model.setting_for(row.scope, row.key)
-    return setting.pat_only if setting is not None else False
+    return setting.operator_only if setting is not None else False
 
 
 def _row_json(row: Row) -> dict:
-    """A builder's dict row already carries `pat_only`; a `SettingRow` takes it from the registry."""
+    """A builder's dict row already carries `operator_only`; a `SettingRow` takes it from the registry."""
     if isinstance(row, dict):
         return row
     return {
@@ -65,19 +65,28 @@ def _row_json(row: Row) -> dict:
         "value": row.value,
         "source_file": row.source_file,
         "tracked": row.tracked,
-        "pat_only": pat_only_for(row),
+        "operator_only": operator_only_for(row),
     }
+
+
+def _with_legacy_alias(row: dict) -> dict:
+    """`pat_only` beside `operator_only`, same value, for one release while coxswain-dash reads either."""
+    return {**row, "pat_only": row["operator_only"]}
 
 
 def to_json(grouped: Grouped) -> dict:
     """`{"sections": [{"name": ..., "rows": [...]}]}`, sections in the order of `grouped`, empty ones kept."""
-    return {"sections": [{"name": name, "rows": [_row_json(r) for r in rows]} for name, rows in grouped.items()]}
+    return {
+        "sections": [
+            {"name": name, "rows": [_with_legacy_alias(_row_json(r)) for r in rows]} for name, rows in grouped.items()
+        ]
+    }
 
 
 def _row_line(row: Row) -> str:
     f = _row_json(row)
     where = "tracked" if f["tracked"] else "local"
-    marker = "  [pat-only]" if f["pat_only"] else ""
+    marker = "  [operator-only]" if f["operator_only"] else ""
     return f"  {f['scope']}:{f['key']} = {json.dumps(f['value'], default=str)}  ({f['source_file']}, {where}){marker}"
 
 
@@ -256,8 +265,8 @@ def run_set(profile_path: Path, scope: str, key: str, value: str, dry_run: bool,
     if isinstance(plan, settings_plan.PlanError):
         print(f"error: {plan.reason}")
         return 1
-    if plan.pat_only:
-        print(f"Pat-only: {scope}:{key} is a Pat-only setting. Proceeding.")
+    if plan.operator_only:
+        print(f"operator-only: {scope}:{key} is an operator-only setting. Proceeding.")
     if not plan.diff:
         print(f"no change: {scope}:{key} already has this value in {path.name}")
         return 0

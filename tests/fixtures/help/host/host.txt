@@ -23,7 +23,7 @@ options:
   --profile PROFILE
 
 examples:
-  cox host add jarvis --ssh jarvis --capacity 8
+  cox host add host-a --ssh host-a --capacity 8
   cox host list
   cox host beat
-  cox host sync jarvis
+  cox host sync host-a

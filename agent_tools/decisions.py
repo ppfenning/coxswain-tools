@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from agent_tools import courier
 
+DECISION_PREFIX = "coxswain://decision/"
+
 __all__ = [
     "filter_decisions",
+    "inbox_split",
     "make_answer_entry",
     "make_ask_entry",
     "merge_decisions",
@@ -20,9 +23,10 @@ def validate_options(options: list[str]) -> str | None:
 
 
 def make_ask_entry(
-    question: str, options: list[str], context: str, chair_label: str, decision_id: str, asked_at: str
+    question: str, options: list[str], context: str, chair_label: str, decision_id: str, asked_at: str, *, operator: str
 ) -> dict:
-    entry = courier.send(courier.Reference("decision", decision_id), chair_label, "pat", question, decision_id)
+    """The ask, addressed to `operator`: the profile's configured human, resolved at the edge."""
+    entry = courier.send(courier.Reference("decision", decision_id), chair_label, operator, question, decision_id)
     return entry | {"options": list(options), "context": context, "asked_at": asked_at}
 
 
@@ -36,11 +40,18 @@ def validate_answer(ask_entry: dict | None, option: str) -> str | None:
     return None
 
 
-def make_answer_entry(ask_entry: dict, option: str, answered_at: str, message_id: str) -> dict:
+def make_answer_entry(ask_entry: dict, option: str, answered_at: str, message_id: str, *, operator: str) -> dict:
+    """The answer from `operator` back to the chair."""
     entry = courier.send(
-        courier.Reference("decision", ask_entry["id"]), "pat", "chair", f"answer: {option}", message_id
+        courier.Reference("decision", ask_entry["id"]), operator, "chair", f"answer: {option}", message_id
     )
     return entry | {"answer": option, "asked_at": answered_at}
+
+
+def inbox_split(entries: list[dict], operator: str) -> tuple[list[dict], list[dict]]:
+    """(asks, answers): decision entries addressed to `operator`, and those addressed to the chair."""
+    mine = [e for e in entries if e["ref"].startswith(DECISION_PREFIX)]
+    return [e for e in mine if e["to"] == operator], [e for e in mine if e["to"] == "chair"]
 
 
 def _matching_answer(ask_entry: dict, answer_entries: list[dict]) -> dict | None:

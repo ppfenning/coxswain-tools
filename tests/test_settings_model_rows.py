@@ -9,7 +9,7 @@ def _row(key: str, value: str) -> dict:
         "value": value,
         "source_file": "cartridge.yaml",
         "tracked": False,
-        "pat_only": True,
+        "operator_only": True,
     }
 
 

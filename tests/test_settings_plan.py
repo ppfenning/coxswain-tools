@@ -82,9 +82,9 @@ def test_chair_reads_covers_every_chair_cap_reader():
     assert readers == {getattr(chair_cap, n) for n in dir(chair_cap) if n.endswith("_from_cartridge")}
 
 
-def test_pat_only_flag_is_carried():
+def test_operator_only_flag_is_carried():
     result = plan_set("cartridge", "policy.review_tier", "3", "policy:\n  review_tier: 2\n", _valid)
-    assert isinstance(result, Plan) and result.pat_only is True
+    assert isinstance(result, Plan) and result.operator_only is True
 
 
 def test_absent_default_key_is_inserted_at_its_path():
@@ -102,7 +102,7 @@ def test_absent_default_key_is_inserted_at_its_path():
     )
 
 
-def test_absent_role_model_key_is_inserted_and_flagged_pat_only():
+def test_absent_role_model_key_is_inserted_and_flagged_operator_only():
     result = plan_set("cartridge", "policy.review_tier", "3", OLD, _valid)
     assert result == Plan(
         OLD + "  review_tier: 3\n",
