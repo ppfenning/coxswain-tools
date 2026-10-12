@@ -158,8 +158,10 @@ class FactsDeps:
     land_watches: the lands not yet resolved, as `LandWatch` rows. Defaults to a callable returning [].
     handoff_stops: the ready or blocked tickets with an attempt on their current body, as `HandoffStop` rows
         (`chair_read_handoff_stops.read_handoff_stops`). Defaults to a callable returning [].
-    read_main_ci: (repo, commit) to (state, output) of main's first CI run for that commit, state pending, green
-        or red. Defaults to a callable returning pending.
+    read_main_ci: (repo, commit) to (state, output) of main's first CI run for that commit, state pending, green,
+        red or infra. Defaults to a callable returning pending.
+    green_since: (repo, commit) to whether a green main run exists at or after that commit. Consulted only for a red,
+        infra or smoke-failed land. Defaults to a callable returning False.
     land_hold: the smoke hold, `chair_smoke.read_hold`'s result. Defaults to a callable returning None.
     land_outcomes: initiative to its resolved land outcomes, oldest first. Defaults to a callable returning {}.
     """
@@ -222,6 +224,7 @@ class FactsDeps:
     lane_bounds: Callable[[], Mapping[str, tuple[int, int]]] = lambda: {}  # host ("" local) to the cartridge's (min, max) lanes; absent means {}
     land_watches: Callable[[], Sequence[LandWatch]] = lambda: []  # unresolved lands; absent means landed_main is []
     read_main_ci: Callable[[str, str], tuple[str, str]] = lambda repo, commit: ("pending", "")  # (repo, commit) to (state, output)
+    green_since: Callable[[str, str], bool] = lambda repo, commit: False  # (repo, commit) to whether main went green after; absent means False
     land_hold: Callable[[], HoldRecord | None] = lambda: None  # chair_smoke.read_hold's result; absent means no hold
     land_outcomes: Callable[[], Mapping[str, list[str]]] = lambda: {}  # initiative to resolved outcomes, oldest first; absent means {}
     handoff_stops: Callable[[], Sequence[Row]] = lambda: []  # chair_read_handoff_stops.read_handoff_stops rows; absent means []
@@ -823,13 +826,18 @@ def landed_main_facts(
     watches: Sequence[LandWatch],
     read_main_ci: Callable[[str, str], tuple[str, str]],
     hold: HoldRecord | None,
+    green_since: Callable[[str, str], bool] = lambda repo, commit: False,
 ) -> list[LandedMain]:
-    """One LandedMain per watch, carrying main's first CI state and output for its commit and the smoke verdict."""
+    """One LandedMain per watch: main's first CI state and output, the smoke verdict, and green_after, asked only of a red, infra or smoke-failed land."""
 
     def build(watch: LandWatch) -> LandedMain:
         ci, ci_output = read_main_ci(watch["repo"], watch["commit"])
         smoke, smoke_output = _smoke_of(watch, hold)
-        return {**watch, "ci": ci, "ci_output": ci_output, "smoke": smoke, "smoke_output": smoke_output}  # type: ignore[typeddict-item]
+        broken = ci in ("red", "infra") or smoke == "failed"
+        green_after = green_since(watch["repo"], watch["commit"]) if broken else False
+        return {  # type: ignore[typeddict-item]
+            **watch, "ci": ci, "ci_output": ci_output, "smoke": smoke, "smoke_output": smoke_output, "green_after": green_after,
+        }
 
     return [build(w) for w in watches]
 
@@ -929,7 +937,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
             pacing._elapsed_fraction(weekly, now) if weekly is not None else 0.0,
             current_lanes(dispatch), dict(deps.lane_bounds()),
         ),
-        "landed_main": landed_main_facts(list(deps.land_watches()), deps.read_main_ci, deps.land_hold()),
+        "landed_main": landed_main_facts(list(deps.land_watches()), deps.read_main_ci, deps.land_hold(), deps.green_since),
         "land_outcomes": dict(deps.land_outcomes()),
         "handoff_stops": list(deps.handoff_stops()),
         "queue_files": deps.queue_files(),
