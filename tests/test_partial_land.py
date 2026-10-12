@@ -3,9 +3,20 @@ from datetime import UTC, datetime, timedelta
 from agent_tools.chair_exec import Deps, perform
 from agent_tools.chair_facts import land_refusals_from_actions
 from agent_tools.chair_plan_land import plan_lands
-from agent_tools.partial_land import backup_ref, land_action, perform_partial_land, siblings, steps, to_restore
+from agent_tools.cli import _land_approval_stop
+from agent_tools.partial_land import (
+    already_done,
+    backup_ref,
+    land_action,
+    perform_partial_land,
+    siblings,
+    steps,
+    to_restore,
+)
 
 LANDED = "merge: ok\nmark_done: ok\n"
+DONE_LINE = "land: task is already done; another machine landed it, so nothing is merged"
+ALREADY_DONE = {"status": "refused", "reason": DONE_LINE, "needs_chair": {"kind": "needs_chair", "cause": "land"}}
 
 
 def _action(task_ids=("a",), runs=None, quarantined=1) -> dict:
@@ -99,7 +110,70 @@ def test_siblings_are_the_other_agents_branches_of_the_run():
     assert to_restore({"q": "2", "r": "5"}, {"agents/i-1/r": "5"}, "i-1") == {"q": "2"}
 
 
+def test_already_done_reads_the_land_answer_and_nothing_else():
+    assert already_done({"status": "refused", "reason": DONE_LINE})
+    assert not already_done({"status": "landed", "reason": LANDED})
+    assert not already_done({"status": "refused", "reason": "failing checks: test"})
+    assert not already_done({})
+    assert not already_done({"status": "failed", "reason": DONE_LINE})
+    assert not already_done({"status": "refused", "reason": "checks: echo 'land: task is already done; another"})
+
+
+def test_already_done_recognises_the_line_cox_runs_land_prints():
+    assert already_done({"status": "refused", "reason": _land_approval_stop("store", "done", None)})
+
+
 # --- the edge, with fakes ---
+
+
+def test_an_already_done_task_is_recorded_without_refusal_and_the_sibling_is_restored():
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/q": "qqq"})
+    result = perform_partial_land(_action(("a",)), repo.git, _lander(repo, {"a": ALREADY_DONE}))
+    assert result["status"] == "recorded"  # nothing reached main this tick, so no smoke and no land counted
+    assert "needs_chair" not in result
+    assert "commit" not in result
+    assert "landed_commits" not in result
+    assert result["reason"] == "already done on another machine: a"
+    assert repo.events == [("backup", "q"), ("land", "a"), ("restore", "q")]
+    assert repo.branches == {"agents/i-1/q": "qqq"}
+
+
+def test_a_landed_task_keeps_its_commit_when_a_later_task_is_already_done():
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/c": "ccc", "agents/i-1/q": "qqq"})
+    lands = {
+        "a": {"status": "landed", "reason": "pr_create: https://github.com/o/r/pull/1\n" + LANDED, "commit": "c-a"},
+        "c": ALREADY_DONE,
+    }
+    result = perform_partial_land(_action(("a", "c")), repo.git, _lander(repo, lands))
+    assert result["status"] == "landed"
+    assert result["commit"] == "c-a"
+    assert "pull/1" in result["reason"]
+    assert DONE_LINE not in result["reason"]
+    assert [(c["task_id"], c["commit"]) for c in result["landed_commits"]] == [("a", "c-a")]
+    assert repo.branches == {"agents/i-1/q": "qqq"}
+
+
+def test_an_already_done_task_does_not_stop_the_next_approved_task():
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/c": "ccc", "agents/i-1/q": "qqq"})
+    lands = {"a": ALREADY_DONE, "c": {"status": "landed", "reason": LANDED, "commit": "c-c"}}
+    result = perform_partial_land(_action(("a", "c")), repo.git, _lander(repo, lands))
+    assert result["status"] == "landed"
+    assert "landed a, c" in result["reason"]
+    assert result["commit"] == "c-c"
+    assert [e for e in repo.events if e[0] == "land"] == [("land", "a"), ("land", "c")]
+    assert [(c["task_id"], c["commit"]) for c in result["landed_commits"]] == [("c", "c-c")]
+    assert repo.branches == {"agents/i-1/q": "qqq"}
+
+
+def test_another_land_failure_is_still_refused_and_stops_the_sequence():
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/c": "ccc", "agents/i-1/q": "qqq"})
+    refusal = {"kind": "needs_chair", "initiative": "i", "task_id": "a", "cause": "land"}
+    lands = {"a": {"status": "refused", "reason": "land: task state is 'ready', not approved", "needs_chair": refusal}}
+    result = perform_partial_land(_action(("a", "c")), repo.git, _lander(repo, lands))
+    assert result["status"] == "refused"
+    assert result["needs_chair"] == refusal
+    assert [e for e in repo.events if e[0] == "land"] == [("land", "a")]
+    assert "agents/i-1/q" in repo.branches
 
 
 def test_one_approved_and_one_quarantined_backs_up_lands_and_restores_once():
