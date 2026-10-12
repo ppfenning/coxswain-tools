@@ -27,28 +27,29 @@ def test_json_shape():
         "sections": [
             {"name": "lanes and machines", "rows": [{
                 "section": "lanes and machines", "scope": "cartridge", "key": "policy.dispatch.max_in_flight",
-                "value": 4, "source_file": "cartridge.yaml", "tracked": True, "pat_only": False,
+                "value": 4, "source_file": "cartridge.yaml", "tracked": True, "operator_only": False, "pat_only": False,
             }]},
             {"name": "spend and pacing", "rows": []},
             {"name": "models and tiers", "rows": [{
                 "section": "models and tiers", "scope": "cartridge", "key": "policy.review_tier",
-                "value": "opus", "source_file": "cartridge.yaml", "tracked": False, "pat_only": True,
+                "value": "opus", "source_file": "cartridge.yaml", "tracked": False, "operator_only": True, "pat_only": True,
             }]},
             {"name": "profile files", "rows": [{
                 "section": "profile files", "scope": "profile", "key": "team",
-                "value": "operator", "source_file": "profile.yaml", "tracked": False, "pat_only": False,
+                "value": "operator", "source_file": "profile.yaml", "tracked": False, "operator_only": False,
+                "pat_only": False,
             }]},
         ]
     }
 
 
-def test_text_rendering_marks_pat_only_rows():
+def test_text_rendering_marks_operator_only_rows():
     assert cox_settings.render_text(GROUPED) == (
         "lanes and machines\n"
         "  cartridge:policy.dispatch.max_in_flight = 4  (cartridge.yaml, tracked)\n"
         "\n"
         "models and tiers\n"
-        '  cartridge:policy.review_tier = "opus"  (cartridge.yaml, local)  [pat-only]\n'
+        '  cartridge:policy.review_tier = "opus"  (cartridge.yaml, local)  [operator-only]\n'
         "\n"
         "profile files\n"
         '  profile:team = "operator"  (profile.yaml, local)'
@@ -79,8 +80,25 @@ def test_sections_fill_the_four_sections_and_keep_the_registry_rows():
         ("cartridge", "models.build.tier"),
     ]
     assert all(len(set(k)) == len(k) for k in keys.values())
-    assert by_section["models and tiers"][1]["pat_only"] is True
+    assert by_section["models and tiers"][1]["operator_only"] is True
     assert by_section["lanes and machines"][1]["value"] == 2
+
+
+def test_json_carries_the_legacy_pat_only_alias_with_the_operator_only_value_on_every_row():
+    cartridge = {"policy": {"review_tier": "opus", "dispatch": {"max_in_flight": 2}}}
+    grouped = cox_settings.sections(cartridge, {}, {"box": 2}, {"cartridge.yaml": True})
+    rows = [r for s in cox_settings.to_json(grouped)["sections"] for r in s["rows"]]
+    assert rows and all(r["pat_only"] is r["operator_only"] for r in rows)
+    assert {r["operator_only"] for r in rows} == {True, False}
+
+
+def test_the_operator_default_row_is_operator_until_the_profile_names_one():
+    def operator_rows(profile):
+        grouped = cox_settings.with_defaults(cox_settings.sections({}, profile, {}, {"profile.yaml": False}))
+        return [r for s in cox_settings.to_json(grouped)["sections"] for r in s["rows"] if r["key"] == "operator"]
+
+    assert [(r["value"], r["source_file"]) for r in operator_rows({})] == [("operator", "built-in")]
+    assert [(r["value"], r["source_file"]) for r in operator_rows({"operator": "sam"})] == [("sam", "profile.yaml")]
 
 
 def test_host_capacities_names_each_host():
@@ -157,11 +175,12 @@ def test_an_error_result_prints_and_writes_nothing(tmp_path, capsys):
     assert _git(cartridge.parent, "rev-list", "--count", "HEAD") == "1"
 
 
-def test_a_pat_only_setting_prints_the_notice_before_the_diff_and_proceeds(tmp_path, capsys):
+def test_an_operator_only_setting_prints_the_notice_before_the_diff_and_proceeds(tmp_path, capsys):
     profile, cartridge = _workspace(tmp_path, track=True)
     code = cox_settings.run_set(profile, "cartridge", "policy.review_tier", "sonnet", dry_run=False, commit=True)
     out = capsys.readouterr().out
     assert code == 0
-    assert out.index("Pat-only") < out.index("--- a/cartridge.yaml")
+    assert "is an operator-only setting" in out
+    assert out.index("operator-only") < out.index("--- a/cartridge.yaml")
     assert "review_tier: sonnet" in cartridge.read_text(encoding="utf-8")
     assert _git(cartridge.parent, "rev-list", "--count", "HEAD") == "2"

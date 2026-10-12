@@ -1,6 +1,6 @@
 """Pure notifier core: event type, message rendering, rate-limit decision, profile config.
 
-Profile shape: `notify: {ntfy: https://ntfy.sh/pat-coxswain}`. A missing or empty `ntfy` means the notifier is off.
+Profile shape: `notify: {ntfy: https://ntfy.sh/<your-topic>}`. A missing or empty `ntfy` means the notifier is off.
 """
 
 from __future__ import annotations

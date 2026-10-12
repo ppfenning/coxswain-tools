@@ -106,6 +106,7 @@ _KNOWN_KEYS = {
     "umbrella_dir",
     "log_retention_days",  # run logs and traces kept locally, in days; run_logs.DEFAULT_RETENTION_DAYS when absent
     "ids",  # `slug` (default) or `sequence`; `intake_file`'s own id source, spec's `route file --intake`
+    "operator",  # the human the courier and decisions address; settings_model.operator_name, "operator" when absent
 }
 
 _JSON_KEYS = {"sources", "repo_map"}
@@ -1084,7 +1085,7 @@ def overlay(profile: dict, tier_ceiling: str | None, effort_ceiling: str | None)
     under `tiers` (`cheap: haiku, standard: sonnet, deep: opus`) and each tier
     to a thinking effort under `effort` (`cheap: low, standard: high, deep:
     high`). The profile's own tier ceiling is the highest tier it maps; its
-    effort ceiling is the highest effort it names. Pat, 2026-09-05: the profile
+    effort ceiling is the highest effort it names. The profile
     is an UPPER LIMIT — a launch may pick at or below it, never above.
 
     `--tier-ceiling T` rewrites every tier above T to run T's model and T's

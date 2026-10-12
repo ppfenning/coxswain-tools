@@ -1,4 +1,4 @@
-"""Lanes-and-machines rows as plain dicts; `SettingRow` has no `pat_only`, and the verb prints seven fields."""
+"""Lanes-and-machines rows as plain dicts; `SettingRow` has no `operator_only`, and the verb prints seven fields."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ HOSTS_SOURCE = "store: hosts"
 LOCAL_LANES = setting_for("cartridge", "policy.dispatch.local_lanes")
 
 
-def _pat_only(scope: str, key: str) -> bool:
+def _operator_only(scope: str, key: str) -> bool:
     setting = setting_for(scope, key)
-    return setting.pat_only if setting is not None else False
+    return setting.operator_only if setting is not None else False
 
 
 def _row(scope: str, key: str, value: object, source_file: str, tracked: bool) -> dict:
     return {"section": SECTION, "scope": scope, "key": key, "value": value,
-            "source_file": source_file, "tracked": tracked, "pat_only": _pat_only(scope, key)}
+            "source_file": source_file, "tracked": tracked, "operator_only": _operator_only(scope, key)}
 
 
 def host_rows(hosts: dict[str, object], profile: dict, tracked: dict[str, bool]) -> list[dict]:

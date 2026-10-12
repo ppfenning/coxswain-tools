@@ -23,7 +23,7 @@ Keys by section, in section order:
   `node_cap_usd`, `weekly_reset`; cartridge `policy.pacing.hard_stop_fraction`,
   `policy.pacing.weekly_hard_stop_fraction`, `policy.pacing.min_elapsed_fraction`.
 - builds and budgets: cartridge `policy.build_budget_usd_max`, `epic_threshold`.
-- models and tiers (all pat_only): cartridge `policy.review_tier`,
+- models and tiers (all operator_only): cartridge `policy.review_tier`,
   `policy.plan_competition.min_tier`, `policy.pacing.tier_ladder`,
   `policy.pacing.effort_ladder`.
 - crew seats: cartridge `crew.<seat>.enabled`, `crew.<seat>.skills`.
@@ -31,7 +31,7 @@ Keys by section, in section order:
   `chair.stale_days`, `analytics.snapshot_max_age_s`.
 - profile files: profile `team`, `cartridges_dir`, `skills_roots`,
   `provider_profile`, `harness_dir`, `workspace_dir`, `assume`, `router`,
-  `forge`, `tracker`, `umbrella_dir`, `ids`.
+  `forge`, `tracker`, `umbrella_dir`, `ids`, `operator`.
 
 unknown: `lane_hosts` is not in the parsed profile dict, so no row carries it.
 `landing_areas.checks`, `context`, `sources` and `repo_map` are not scalar
@@ -57,6 +57,9 @@ SECTIONS = (
 CARTRIDGE_FILE = "cartridge.yaml"
 PROFILE_FILE = "profile.yaml"
 
+DEFAULT_OPERATOR = "operator"
+OPERATOR_DESCRIPTION = "the name of the human the courier and decisions address"
+
 
 @dataclass(frozen=True)
 class Setting:
@@ -65,7 +68,8 @@ class Setting:
     section: str
     source_file: str
     path: str
-    pat_only: bool = False
+    operator_only: bool = False
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,8 +82,8 @@ class SettingRow:
     tracked: bool
 
 
-def _in(section: str, scope: str, source_file: str, keys: tuple[str, ...], pat_only: bool = False) -> tuple[Setting, ...]:
-    return tuple(Setting(scope, key, section, source_file, key, pat_only) for key in keys)
+def _in(section: str, scope: str, source_file: str, keys: tuple[str, ...], operator_only: bool = False) -> tuple[Setting, ...]:
+    return tuple(Setting(scope, key, section, source_file, key, operator_only) for key in keys)
 
 
 REGISTRY: tuple[Setting, ...] = (
@@ -93,13 +97,20 @@ REGISTRY: tuple[Setting, ...] = (
     *_in("builds and budgets", "cartridge", CARTRIDGE_FILE, ("policy.build_budget_usd_max", "epic_threshold")),
     *_in("models and tiers", "cartridge", CARTRIDGE_FILE,
          ("policy.review_tier", "policy.plan_competition.min_tier",
-          "policy.pacing.tier_ladder", "policy.pacing.effort_ladder"), pat_only=True),
+          "policy.pacing.tier_ladder", "policy.pacing.effort_ladder"), operator_only=True),
     *_in("housekeeping", "profile", PROFILE_FILE,
          ("log_retention_days", "chair.housekeeping_hours", "chair.stale_days", "analytics.snapshot_max_age_s")),
     *_in("profile files", "profile", PROFILE_FILE,
          ("team", "cartridges_dir", "skills_roots", "provider_profile", "harness_dir",
           "workspace_dir", "assume", "router", "forge", "tracker", "umbrella_dir", "ids")),
+    Setting("profile", "operator", "profile files", PROFILE_FILE, "operator", description=OPERATOR_DESCRIPTION),
 )
+
+
+def operator_name(profile: dict) -> str:
+    """The profile's `operator`, the human the courier and decisions address; `DEFAULT_OPERATOR` when unset or blank."""
+    name = profile.get("operator")
+    return name.strip() if isinstance(name, str) and name.strip() else DEFAULT_OPERATOR
 
 
 def _seat_setting(path: str) -> Setting:

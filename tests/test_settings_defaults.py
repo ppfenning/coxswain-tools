@@ -11,7 +11,7 @@ def _set(scope: str, key: str) -> dict:
         "value": 1,
         "source_file": "cartridge.yaml",
         "tracked": True,
-        "pat_only": False,
+        "operator_only": False,
     }
 
 
@@ -27,6 +27,7 @@ def test_missing_keys_yield_exactly_those_built_in_rows():
         "policy.review_tier",
         "chair.housekeeping_hours",
         "analytics.snapshot_max_age_s",
+        "operator",
     ]
     assert {r["source_file"] for r in rows} == {"built-in"}
     assert {r["tracked"] for r in rows} == {False}
@@ -62,11 +63,11 @@ def test_code_defaults_are_imported_and_cartridge_keys_are_null():
     assert by_key["epic_threshold"]["note"] == "set by the cartridge"
 
 
-def test_models_and_tiers_default_rows_are_pat_only():
+def test_models_and_tiers_default_rows_are_operator_only():
     by_key = _by_key(default_rows([]))
     assert by_key["policy.review_tier"]["section"] == "models and tiers"
-    assert by_key["policy.review_tier"]["pat_only"] is True
-    assert by_key["chair.stale_days"]["pat_only"] is False
+    assert by_key["policy.review_tier"]["operator_only"] is True
+    assert by_key["chair.stale_days"]["operator_only"] is False
 
 
 def test_input_rows_are_not_mutated():

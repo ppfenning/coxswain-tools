@@ -27,7 +27,7 @@ def _row(key: str, value: object, tracked: bool) -> dict:
         "value": value,
         "source_file": CARTRIDGE_FILE,
         "tracked": tracked,
-        "pat_only": True,
+        "operator_only": True,
     }
 
 

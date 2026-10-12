@@ -31,9 +31,9 @@ def test_host_doctor_runs_every_command_locally_on_the_loops_own_host(monkeypatc
 
 
 def test_host_doctor_wraps_every_command_in_ssh_for_another_host(monkeypatch, tmp_path, capsys):
-    code, argvs = _recorded_doctor(monkeypatch, tmp_path, "bp-linux", "chair-host")
+    code, argvs = _recorded_doctor(monkeypatch, tmp_path, "host-b", "chair-host")
     assert code == 0
-    assert argvs == [ssh_argv("operator@bp-linux", doctor_argv()), ssh_argv("operator@bp-linux", auth_status_argv())]
+    assert argvs == [ssh_argv("operator@host-b", doctor_argv()), ssh_argv("operator@host-b", auth_status_argv())]
 
 
 def test_doctor_on_host_wraps_in_ssh_by_default():

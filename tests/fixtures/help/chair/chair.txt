@@ -6,9 +6,9 @@ positional arguments:
   {run,service,ask,answer,decisions}
     run                 beat, gather, plan, perform and report every tick until interrupted
     service             write or show the systemd user unit that keeps `cox chair run` alive
-    ask                 put a question with its options to pat on the courier bus
+    ask                 put a question with its options to the operator on the courier bus
     answer              answer an open decision with one of its options
-    decisions           list decisions asked of pat and their answers
+    decisions           list decisions asked of the operator and their answers
 
 options:
   -h, --help            show this help message and exit
