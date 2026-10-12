@@ -17,6 +17,15 @@ Land = Callable[[Action], Mapping[str, Any]]  # a `land` action -> its result, w
 BACKUP_PREFIX = "refs/backup/partial-land"
 
 
+class LandedCommit(TypedDict):
+    """One task land of the sequence that reached main: its task, its origin/main commit, and its own output, which
+    names its PR. The watch recorder records one red-main watch per entry."""
+
+    task_id: str
+    commit: str
+    reason: str
+
+
 class Step(TypedDict):
     kind: Literal["backup", "land", "restore"]
     task_id: str
@@ -130,14 +139,26 @@ def _restore(git: Run, repo: str, run: str, backed: Mapping[str, str]) -> str:
     return "; ".join(failures.values())
 
 
+def landed_commit(task: str, result: Mapping[str, Any]) -> list[LandedCommit]:
+    """The one-entry list for a task land that landed with a commit, else the empty list."""
+    if result.get("status") != "landed" or not result.get("commit"):
+        return []
+    return [{"task_id": task, "commit": str(result["commit"]), "reason": str(result.get("reason", ""))}]
+
+
 def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]:
     """Edge. Each approved task in turn: back up its siblings, run its task land, restore the siblings even when the
     land failed. A land that does not land stops the sequence; later tasks wait for the next tick.
 
+    A failed backup stops the sequence before that task's land runs: whatever siblings were already backed up are
+    restored, the task is not landed, and the result is `failed`; tasks landed earlier in the tick stay landed.
+
     The result is the partial_land's: `landed` when every planned task landed, else the failing land's status and
-    any needs_chair it raised; `recorded` when no task has a known run, `failed` when a backup or restore failed."""
+    any needs_chair it raised; `recorded` when no task has a known run, `failed` when a backup or restore failed.
+    Whatever the status, `landed_commits` lists every task land that reached main this tick, one entry per commit."""
     repo = action.get("repo", "")
     done: list[str] = []
+    commits: list[LandedCommit] = []
     backed: dict[str, str] = {}
     last: Mapping[str, Any] = {}
     for step in steps(action):
@@ -146,32 +167,39 @@ def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]
             backed, error = _backup(git, repo, run, task)
             if error:
                 restore_error = _restore(git, repo, run, backed)
-                return _outcome(action, "failed", done, "; ".join(filter(None, [error, restore_error])))
+                return _outcome(action, "failed", done, "; ".join(filter(None, [error, restore_error])), commits=commits)
         elif step["kind"] == "land":
             try:
                 last = land(land_action(action, task))
             except Exception as exc:  # the edge: a land that raised did not land, and the restore below still runs
                 last = {"status": "failed", "reason": f"task land raised {type(exc).__name__}: {exc}"}
+            commits += landed_commit(task, last)
         else:
             restore_error = _restore(git, repo, run, backed)
             if last.get("status") != "landed":
                 return {
-                    **_outcome(action, last.get("status", "failed"), done, f"task {task}: {last.get('reason', '')}"),
+                    **_outcome(
+                        action, last.get("status", "failed"), done, f"task {task}: {last.get('reason', '')}",
+                        commits=commits,
+                    ),
                     **({"needs_chair": last["needs_chair"]} if "needs_chair" in last else {}),
                 }
             done.append(task)
             if restore_error:
-                return _outcome(action, "failed", done, restore_error, last)
+                return _outcome(action, "failed", done, restore_error, last, commits)
     if not done:
         return _outcome(action, "recorded", done, "no approved task of the phase has a known run yet")
-    return _outcome(action, "landed", done, "", last)
+    return _outcome(action, "landed", done, "", last, commits)
 
 
 def _outcome(
-    action: Action, status: str, done: Sequence[str], reason: str, last: Mapping[str, Any] = {}
+    action: Action, status: str, done: Sequence[str], reason: str, last: Mapping[str, Any] = {},
+    commits: Sequence[LandedCommit] = (),
 ) -> dict[str, Any]:
-    """The partial_land's result; the landed tasks lead the reason, and the last land's output and commit ride along."""
+    """The partial_land's result; the landed tasks lead the reason, the last land's output and commit ride along, and
+    `landed_commits` carries every landed task's commit (the last one alone would leave the others unwatched)."""
     head = f"landed {', '.join(done)}" if done else ""
     text = "\n".join(filter(None, [head, reason, str(last.get("reason", "")) if status == "landed" else ""]))
     commit = {"commit": last["commit"]} if "commit" in last else {}
-    return {"action": action, "status": status, "reason": text, **commit}
+    landed = {"landed_commits": list(commits)} if commits else {}
+    return {"action": action, "status": status, "reason": text, **commit, **landed}

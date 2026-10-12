@@ -92,6 +92,7 @@ class Result(TypedDict):
     needs_chair: NotRequired[Action]  # a refused land's classified needs_chair, escalated in place of the generic one;
     # or a clear_branches carry's conflicted-merge needs_chair, recorded alongside its own done result
     commit: NotRequired[str]  # a landed land's origin/main commit, from land_commit; set only when landed() was True
+    landed_commits: NotRequired[list[partial_land.LandedCommit]]  # a partial_land's every landed task commit, any status
 
 
 class LandSink(Protocol):

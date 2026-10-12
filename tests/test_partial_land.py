@@ -147,6 +147,63 @@ def test_two_approved_tasks_land_in_order_each_keeping_the_other():
     assert "landed a, c" in result["reason"]
 
 
+def test_every_landed_task_commit_rides_in_the_result_not_only_the_last():
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/c": "ccc", "agents/i-1/q": "qqq"})
+    lands = {
+        "a": {"status": "landed", "reason": "pr_create: https://github.com/o/r/pull/1\n" + LANDED, "commit": "c-a"},
+        "c": {"status": "landed", "reason": "pr_create: https://github.com/o/r/pull/2\n" + LANDED, "commit": "c-c"},
+    }
+    result = perform_partial_land(_action(("a", "c")), repo.git, _lander(repo, lands))
+    assert result["status"] == "landed"
+    assert result["commit"] == "c-c"  # the single-commit field a plain land carries is unchanged
+    assert [(c["task_id"], c["commit"]) for c in result["landed_commits"]] == [("a", "c-a"), ("c", "c-c")]
+    assert "pull/1" in result["landed_commits"][0]["reason"]
+
+
+def test_a_task_landed_before_a_later_failure_keeps_its_commit():
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/c": "ccc"})
+    lands = {
+        "a": {"status": "landed", "reason": LANDED, "commit": "c-a"},
+        "c": {"status": "not_landed", "reason": "checks red"},
+    }
+    result = perform_partial_land(_action(("a", "c")), repo.git, _lander(repo, lands))
+    assert result["status"] == "not_landed"
+    assert [(c["task_id"], c["commit"]) for c in result["landed_commits"]] == [("a", "c-a")]
+
+
+def test_a_failed_backup_runs_no_land_and_leaves_every_branch_in_place():
+    branches = {"agents/i-1/a": "aaa", "agents/i-1/c": "ccc", "agents/i-1/q": "qqq"}
+    repo = FakeRepo(branches)
+    plain = repo.git
+
+    def git(argv):
+        return (1, "fatal: cannot lock ref") if argv[3:5] == ["update-ref", backup_ref("i-1", "q")] else plain(argv)
+
+    result = perform_partial_land(_action(("a",)), git, _lander(repo))
+    assert result["status"] == "failed"
+    assert "backing up agents/i-1/q" in result["reason"]
+    assert not any(e[0] == "land" for e in repo.events)
+    assert repo.branches == branches
+    assert repo.refs == {}  # the siblings backed up before the failure are dropped again
+    assert "landed_commits" not in result
+
+
+def test_a_failed_backup_on_a_later_task_keeps_the_earlier_land():
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/c": "ccc", "agents/i-1/q": "qqq"})
+    plain = repo.git
+    lands = {"a": {"status": "landed", "reason": LANDED, "commit": "c-a"}}
+
+    def git(argv):
+        landed_a = ("land", "a") in repo.events
+        return (1, "fatal: no") if landed_a and argv[3] == "update-ref" and argv[4] != "-d" else plain(argv)
+
+    result = perform_partial_land(_action(("a", "c")), git, _lander(repo, lands))
+    assert result["status"] == "failed"
+    assert [e for e in repo.events if e[0] == "land"] == [("land", "a")]
+    assert result["reason"].startswith("landed a")
+    assert [c["commit"] for c in result["landed_commits"]] == ["c-a"]
+
+
 def test_a_failed_restore_keeps_the_backup_ref():
     repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/q": "qqq"})
     plain = repo.git
