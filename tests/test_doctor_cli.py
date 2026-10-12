@@ -467,3 +467,51 @@ def test_an_installed_unit_is_judged_by_the_executables_on_its_path(tmp_path, mo
     assert "FAIL" in line and "pytest" in line
     _write_executable(unit_bin / "pytest", "#!/bin/sh\n")
     assert main(["setup", "doctor", "--profile", str(profile)]) == 0
+
+
+# ── the model freshness check runs inside the probe, against a stub core ────
+
+def _fresh_core(warnings_src, *, profile_src="return {'p': 1}", catalog_src="return {'c': 1}"):
+    return {
+        **_FAKE_CORE_OK,
+        "core/catalog.py": f"def load_catalog(path):\n    {catalog_src}\n",
+        "core/profile.py": f"def load_profile(provider_profile, catalog_path):\n    {profile_src}\n",
+        "core/model_freshness.py": f"def freshness_warnings(profile, catalog):\n    {warnings_src}\n",
+    }
+
+
+def _freshness_rows(rows):
+    return [r for r in rows.values() if r["check"] == "model freshness"]
+
+
+def test_a_freshness_check_with_nothing_to_report_adds_no_row(tmp_path, monkeypatch, capsys):
+    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, _fresh_core("return []"))
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    assert _freshness_rows(_rows(capsys)) == []
+    assert rc == 0
+
+
+def test_a_freshness_warning_prints_one_warn_line_and_leaves_the_exit_code(tmp_path, monkeypatch, capsys):
+    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, _fresh_core("return ['opus-4 is 120 days old']"))
+    rc = main(["setup", "doctor", "--profile", str(profile)])
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if line.startswith("model freshness")]
+    assert len(lines) == 1 and "warn" in lines[0] and "opus-4 is 120 days old" in lines[0]
+    assert rc == 0
+
+
+def test_a_core_without_model_freshness_gives_the_one_skip_line(tmp_path, monkeypatch, capsys):
+    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, _FAKE_CORE_OK)
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    (row,) = _freshness_rows(_rows(capsys))
+    assert row["ok"] is True and row["warn"] is True and row["detail"].startswith("skipped:")
+    assert rc == 0
+
+
+def test_a_profile_loader_error_list_becomes_a_not_checked_line(tmp_path, monkeypatch, capsys):
+    core = _fresh_core("return []", profile_src="return ['no such tier', 'second']")
+    profile, *_ = _real_probe_setup(tmp_path, monkeypatch, core)
+    rc = main(["setup", "doctor", "--profile", str(profile), "--json"])
+    (row,) = _freshness_rows(_rows(capsys))
+    assert row["detail"] == "model freshness not checked: no such tier"
+    assert rc == 0
