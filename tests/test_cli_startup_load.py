@@ -18,9 +18,12 @@ LOAD_THREADS = 2 * (os.cpu_count() or 1)
 
 # Both tests saturate the CPU on purpose and compare cox's startup with the interpreter's. On a shared CI host the
 # other jobs' load moves that ratio from 8x to 11x run to run (2026-10-11: tools main red on py315, then extras), so
-# the comparison is meaningful only on a quiet machine. They run locally and skip under CI; the unloaded ceiling in
-# test_cli_startup.py still runs everywhere.
-pytestmark = pytest.mark.skipif(os.environ.get("CI") == "true", reason="load-sensitive timing; run locally")
+# the comparison is meaningful only on a quiet machine. Seat builds and `cox runs land` run pytest on busy lane hosts
+# too, where CI is unset (2026-10-12: random "1 failed" quarantined tasks and refused lands), so the module is opt-in:
+# it runs only when COX_RUN_LOAD_TESTS=1. The unloaded ceiling in test_cli_startup.py still runs everywhere.
+pytestmark = pytest.mark.skipif(
+    os.environ.get("COX_RUN_LOAD_TESTS") != "1", reason="load-sensitive timing; set COX_RUN_LOAD_TESTS=1 to run"
+)
 LOAD_BUFFER = bytes(1 << 20)
 RUNS = 7
 # Added import time is twice the clean cox median, so total startup is about 3x clean.
