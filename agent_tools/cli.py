@@ -301,14 +301,17 @@ def _stats_fetch(conn: sqlite3.Connection, table: str) -> list[dict]:
 
 
 def _stats_roles(a: argparse.Namespace) -> int:
+    lands = run_store.landed_tasks(Path(a.runs_dir), "", "9999")
     conn = stats_schema.connect(a.db)
     try:
         report = stats_query.roles_report(
             _stats_fetch(conn, "calls"), _stats_fetch(conn, "tasks"), _stats_fetch(conn, "runs"),
             cartridge_sha=a.cartridge_sha, provider_profile=a.provider_profile,
+            landed={row["task_id"] for row in lands.rows} if lands.rows else None,
         )
     finally:
         conn.close()
+    print(f"lands from: {lands.source}", file=sys.stderr)
     print(json.dumps(report, indent=2) if a.json else stats_query.render_capped(report))
     return 0
 
@@ -6204,6 +6207,7 @@ STATS_COMMANDS = [
         "roles", "stats", "landed rate, attempts-to-land and $/landed per role and model",
         (
             commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--runs-dir",), {"default": "runs", "help": "where lands are read from"}),
             commands.Arg(("--json",), {"action": "store_true"}),
             commands.Arg(("--cartridge-sha",), {"default": None, "help": "keep only runs on this cartridge_sha"}),
             commands.Arg(("--provider-profile",), {"default": None, "help": "keep only runs on this provider_profile"}),

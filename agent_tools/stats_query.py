@@ -12,7 +12,7 @@ from __future__ import annotations
 import itertools
 import sqlite3
 from collections import defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any
 
 from agent_tools import stats_derive
@@ -65,6 +65,7 @@ def roles_report(
     *,
     cartridge_sha: str | None = None,
     provider_profile: str | None = None,
+    landed: Collection[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Landed rate, attempts-to-land and $/landed per (role, model), with sample size
     and coverage (spec §5). `runs` supplies each call's `(cartridge_sha,
@@ -78,7 +79,10 @@ def roles_report(
     challenger calls yields two rows, each with its own `n_calls`/`landed_rate`, so
     a challenger row never inflates the standard row's sample size or its landed
     rate (router-steward.md §3 — a challenger outcome is never read as a
-    regression)."""
+    regression).
+
+    When `landed` is given, a joined call's task counts as landed when its `task_id`
+    is in `landed`, whatever its outcome; None tests the task's `outcome == "landed"`."""
     regime_by_run = _regime_map(runs)
     filtering = cartridge_sha is not None or provider_profile is not None
     matching_run_ids = {
@@ -86,6 +90,9 @@ def roles_report(
     }
     matching_calls = [c for c in calls if c.get("run_id") in matching_run_ids] if filtering else calls
     matching_tasks = [t for t in tasks if t.get("run_id") in matching_run_ids] if filtering else tasks
+
+    def is_landed(r: Mapping[str, Any]) -> bool:
+        return r["task_id"] in landed if landed is not None else r["task_outcome"] == "landed"
 
     groups: dict[tuple[Any, Any, bool], list[dict[str, Any]]] = defaultdict(list)
     for row in _joined(matching_calls, matching_tasks):
@@ -95,8 +102,8 @@ def roles_report(
     for (role, model, challenger), rows in groups.items():
         joined = [r for r in rows if r["task_outcome"] is not None]
         joined_task_ids = {r["task_id"] for r in joined}
-        landed_task_ids = {r["task_id"] for r in joined if r["task_outcome"] == "landed"}
-        landed_rows = [r for r in joined if r["task_outcome"] == "landed"]
+        landed_rows = [r for r in joined if is_landed(r)]
+        landed_task_ids = {r["task_id"] for r in landed_rows}
         seen_landed: set[Any] = set()
         landed_attempts = []
         attempts_unknown = 0

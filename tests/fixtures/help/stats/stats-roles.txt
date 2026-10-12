@@ -1,9 +1,11 @@
-usage: cox stats roles [-h] [--db DB] [--json] [--cartridge-sha CARTRIDGE_SHA]
+usage: cox stats roles [-h] [--db DB] [--runs-dir RUNS_DIR] [--json]
+                       [--cartridge-sha CARTRIDGE_SHA]
                        [--provider-profile PROVIDER_PROFILE]
 
 options:
   -h, --help            show this help message and exit
   --db DB
+  --runs-dir RUNS_DIR   where lands are read from
   --json
   --cartridge-sha CARTRIDGE_SHA
                         keep only runs on this cartridge_sha

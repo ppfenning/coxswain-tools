@@ -87,7 +87,7 @@ cox upgrade --root ROOT [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG
 cox home [--profile PROFILE]   the live dashboard: runs, leader, backlog
 cox session [--profile PROFILE] [--no-plugin] [--print-argv] [CLAUDE_ARG...]   open the coxswain Claude session
 cox stats ingest [RUNS_DIR] [--db DB] [--work-store-root WORK_STORE_ROOT] [--cartridges-repo CARTRIDGES_REPO]   load usage, task, node and launch records into stats.db
-cox stats roles [--db DB] [--json] [--cartridge-sha CARTRIDGE_SHA] [--provider-profile PROVIDER_PROFILE]   landed rate, attempts-to-land and $/landed per role and model
+cox stats roles [--db DB] [--runs-dir RUNS_DIR] [--json] [--cartridge-sha CARTRIDGE_SHA] [--provider-profile PROVIDER_PROFILE]   landed rate, attempts-to-land and $/landed per role and model
 cox stats tiers [--db DB] [--since SINCE] [--min-samples MIN_SAMPLES] [--json]   per-role model summaries, a cost-aware pick and the spend it would save
 cox stats models [--db DB] [--role ROLE] [--since SINCE] [--json]   per-role cost, tokens, turns, $/landed and first-try per model id
 cox stats causes [--runs-dir RUNS_DIR] [--since SINCE] [--json]   quarantined attempts by cause and kind, with sample reasons
