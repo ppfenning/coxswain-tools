@@ -26,6 +26,17 @@ A forge is a module that defines these five functions. Each returns
         through this module's `pr_state(module, url)`, which answers `unknown`
         for a forge without a pull-request host or without this function.
 
+    list_open_prs_by_prefix(repo: Path, prefix: str) -> list[dict] | str
+        `{"number", "head"}` per open PR whose head starts with `prefix`, or the
+        reason they could not be listed. A listing that may be cut off is a reason.
+    close_pr(repo: Path, number: int, comment: str) -> (ok, detail)
+        Post `comment`, then close PR `number`; `(True, "already closed")` when it is.
+    delete_branch(repo: Path, branch: str) -> (ok, detail)
+        Delete `branch` on the host; `(True, "already gone")` when it is missing.
+        Callers reach these three through this module's dispatchers of the same
+        names, which answer a "not supported" reason or `(False, reason)` for a
+        forge without them.
+
     merge_state(pr: int, *, repo=None) -> str
         GitHub's `mergeStateStatus` for PR `pr`, unchanged and upper case: CLEAN,
         BEHIND, DIRTY, BLOCKED, UNSTABLE and the rest. Raises `ForgeError` when it
@@ -85,6 +96,27 @@ def pr_state(module, url: str) -> dict:
     """`module.pr_state(url)`, or `unknown` for a forge that has no such function."""
     fn = getattr(module, "pr_state", None)
     return fn(url) if fn else {"state": "unknown", "merged_at": None}
+
+
+NOT_SUPPORTED = "not supported by this forge"
+
+
+def list_open_prs_by_prefix(module, repo, prefix: str) -> list[dict] | str:
+    """`module.list_open_prs_by_prefix(repo, prefix)`, or a reason for a forge that has no such function."""
+    fn = getattr(module, "list_open_prs_by_prefix", None)
+    return fn(repo, prefix) if fn else NOT_SUPPORTED
+
+
+def close_pr(module, repo, number: int, comment: str) -> tuple[bool, str]:
+    """`module.close_pr(repo, number, comment)`, or `(False, reason)` for a forge that has no such function."""
+    fn = getattr(module, "close_pr", None)
+    return fn(repo, number, comment) if fn else (False, NOT_SUPPORTED)
+
+
+def delete_branch(module, repo, branch: str) -> tuple[bool, str]:
+    """`module.delete_branch(repo, branch)`, or `(False, reason)` for a forge that has no such function."""
+    fn = getattr(module, "delete_branch", None)
+    return fn(repo, branch) if fn else (False, NOT_SUPPORTED)
 
 
 def forge_for(name: str):
