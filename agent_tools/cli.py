@@ -5125,6 +5125,19 @@ def _doctor_profile(text: str | None) -> dict | None:
         return None
 
 
+def _chair_unit_facts() -> dict:
+    """Edge: the installed chair unit's text, and per absolute PATH entry the names of cox and pytest executable there."""
+    text = _read_text_or_none(chair_service.unit_path(Path.home()))
+    facts: dict = {"chair_unit_text": text}
+    if text is not None:
+        entries = [e for e in doctor.unit_path_entries(text) or [] if e.startswith("/")]
+        facts["chair_unit_tools"] = {
+            e: [n for n in ("cox", "pytest") if (Path(e) / n).is_file() and os.access(Path(e) / n, os.X_OK)]
+            for e in entries
+        }
+    return facts
+
+
 def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     """Gathers exactly the Facts keys `doctor.checks` reads; never refuses on
     a missing or unparseable profile, since reporting that is the doctor's
@@ -5134,6 +5147,7 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     profile = _doctor_profile(text)
     facts.update(_git_and_forge_facts(profile or {}))
     facts["plugins_tools"] = _tools_plugin_facts()
+    facts.update(_chair_unit_facts())
     if profile is None:
         return facts
     singles = [profile.get(k, "") for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir")]
