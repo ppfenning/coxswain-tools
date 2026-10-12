@@ -242,7 +242,7 @@ def test_merge_squashes() -> None:
 
 
 def _listing(status: str, conclusion: str) -> dict[tuple[str, ...], tuple[int, str]]:
-    runs = [{"databaseId": 55, "status": status, "conclusion": conclusion}]
+    runs = [{"databaseId": 55, "status": status, "conclusion": conclusion, "headSha": "abc"}]
     return {("gh", "run", "list"): (0, json.dumps(runs))}
 
 
@@ -261,9 +261,10 @@ def test_main_ci_failure_is_red_with_log_tail() -> None:
     assert (state, output.splitlines()[0], output.splitlines()[-1]) == ("red", "line 60", "line 99")
     assert run.calls[0] == [
         "gh", "run", "list", "--repo", "o/r", "--branch", "main", "--commit", "abc",
-        "--json", "databaseId,status,conclusion", "--limit", "1",
+        "--json", "databaseId,status,conclusion,headSha",
     ]  # fmt: skip
-    assert run.calls[1] == ["gh", "run", "view", "55", "--repo", "o/r", "--log-failed"]
+    assert run.calls[1] == ["gh", "run", "view", "55", "--repo", "o/r", "--json", "jobs"]
+    assert run.calls[2] == ["gh", "run", "view", "55", "--repo", "o/r", "--log-failed"]
 
 
 def test_main_ci_cancelled_is_not_red() -> None:
@@ -291,6 +292,81 @@ def test_main_ci_run_returns_the_id_it_judged() -> None:
     assert main_ci_run(Recorder({("gh",): (0, "[]")}), "o/r", "abc") == ("pending", "", None)
 
 
+LIST = ["gh", "run", "list", "--repo", "o/r", "--branch", "main", "--commit", "abc"]
+JSON_FIELDS = ["--json", "databaseId,status,conclusion,headSha"]
+SETUP_ONLY_JOBS = {
+    "jobs": [{"name": "test", "conclusion": "failure", "steps": [{"name": "Set up job", "conclusion": None}]}]
+}
+RAN_TESTS_JOBS = {
+    "jobs": [
+        {
+            "name": "test",
+            "conclusion": "failure",
+            "steps": [
+                {"name": "Set up job", "conclusion": "success"},
+                {"name": "Run tests", "conclusion": "failure"},
+            ],
+        }
+    ]
+}
+
+
+def _failed(run_id: int, sha: str = "abc") -> dict[str, object]:
+    return {"databaseId": run_id, "status": "completed", "conclusion": "failure", "headSha": sha}
+
+
+def test_main_ci_failed_run_that_never_started_is_infra() -> None:
+    run = Recorder(
+        {
+            ("gh", "run", "list"): (0, json.dumps([_failed(55)])),
+            ("gh", "run", "view", "55", "--repo", "o/r", "--json"): (0, json.dumps(SETUP_ONLY_JOBS)),
+        }
+    )
+    assert main_ci_run(run, "o/r", "abc") == ("infra", "jobs never started: test", 55)
+    assert run.calls == [
+        [*LIST, *JSON_FIELDS],
+        ["gh", "run", "view", "55", "--repo", "o/r", "--json", "jobs"],
+    ]
+
+
+def test_main_ci_failed_run_with_a_failed_step_is_red_with_the_log_tail() -> None:
+    run = Recorder(
+        {
+            ("gh", "run", "list"): (0, json.dumps([_failed(55)])),
+            ("gh", "run", "view", "55", "--repo", "o/r", "--json"): (0, json.dumps(RAN_TESTS_JOBS)),
+            ("gh", "run", "view", "55", "--repo", "o/r", "--log-failed"): (0, "FAILED test_x\nassert 1 == 2"),
+        }
+    )
+    assert main_ci(run, "o/r", "abc") == ("red", "FAILED test_x\nassert 1 == 2")
+    assert run.calls[-1] == ["gh", "run", "view", "55", "--repo", "o/r", "--log-failed"]
+
+
+def test_main_ci_list_holding_only_another_commit_is_pending() -> None:
+    run = Recorder({("gh", "run", "list"): (0, json.dumps([_failed(99, sha="def")]))})
+    assert main_ci_run(run, "o/r", "abc") == ("pending", "", None)
+    assert run.calls == [[*LIST, *JSON_FIELDS]]
+
+
+def test_main_ci_two_rows_for_the_commit_judge_the_newest() -> None:
+    rows = [_failed(55), {**GREEN_RUN, "databaseId": 61}, _failed(70, sha="def")]
+    run = Recorder({("gh", "run", "list"): (0, json.dumps(rows))})
+    assert main_ci_run(run, "o/r", "abc") == ("green", "", 61)
+
+
+def test_rerun_port_reruns_the_judged_run_and_returns_the_reread_state() -> None:
+    run = Recorder(
+        {
+            ("gh", "run", "list"): (0, json.dumps([_failed(55)])),
+            ("gh", "run", "view", "55", "--repo", "o/r", "--json"): (0, json.dumps(SETUP_ONLY_JOBS)),
+        }
+    )
+    state, _, run_id = main_ci_run(Recorder({("gh", "run", "list"): (0, json.dumps([_failed(55)]))}), "o/r", "abc")
+    assert (state, run_id) == ("red", 55)
+    assert rerun_failed(run, "o/r", 55, "abc") == ("infra", "jobs never started: test", 55)
+    assert run.calls[:2] == [["gh", "run", "rerun", "55", "--repo", "o/r", "--failed"], WATCH]
+    assert run.calls[2] == [*LIST, *JSON_FIELDS]
+
+
 class Flaky(SharedCheckout):
     """Main CI that lists each scripted run in turn: red first, then whatever the rerun produced."""
 
@@ -307,8 +383,8 @@ class Flaky(SharedCheckout):
         return super().__call__(argv)
 
 
-RED_RUN = {"databaseId": 55, "status": "completed", "conclusion": "failure"}
-GREEN_RUN = {"databaseId": 55, "status": "completed", "conclusion": "success"}
+RED_RUN = {"databaseId": 55, "status": "completed", "conclusion": "failure", "headSha": "abc"}
+GREEN_RUN = {"databaseId": 55, "status": "completed", "conclusion": "success", "headSha": "abc"}
 RERUN = ["gh", "run", "rerun", "55", "--repo", "o/r", "--failed"]
 WATCH = ["gh", "run", "watch", "55", "--repo", "o/r"]
 
