@@ -135,7 +135,7 @@ cox route launch decompose [--profile PROFILE] --idea IDEA --initiative-id INITI
 cox route launch rescue [--profile PROFILE] --initiative INITIATIVE --task TASK [--repo REPO] [--dry-run] [--run-id RUN_ID] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the rescue graph against a task
 cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the cos graph
 cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
-cox chair run [--once] [--interval INTERVAL] [--dry-run] [--label LABEL] [--profile PROFILE]   beat, gather, plan, perform and report every tick until interrupted
+cox chair run [--once] [--interval INTERVAL] [--dry-run] [--max-overruns MAX_OVERRUNS] [--label LABEL] [--profile PROFILE]   beat, gather, plan, perform and report every tick until interrupted
 cox chair service [--install] [--status] [--label LABEL] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE] [--host HOST] [--apply]   write or show the systemd user unit that keeps `cox chair run` alive
 cox chair ask QUESTION [--option OPTION] [--context CONTEXT] [--label LABEL] [--profile PROFILE]   put a question with its options to pat on the courier bus
 cox chair answer ID OPTION [--profile PROFILE]   answer an open decision with one of its options

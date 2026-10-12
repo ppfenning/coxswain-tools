@@ -21,6 +21,7 @@ from agent_tools.chair_run import (
     next_gate_record,
     no_landing,
     overran,
+    overrun_limit_hit,
     run,
     tick,
 )
@@ -544,6 +545,54 @@ def test_a_tick_that_completes_resets_the_overrun_count():
         assert hanging.overrun_state.consecutive == 0
     finally:
         release.set()
+
+
+def test_overrun_limit_hit_is_true_at_and_past_a_positive_limit_only():
+    cases = [(0, 0), (99, 0), (2, 3), (3, 3), (4, 3), (1, -1)]
+    assert [overrun_limit_hit(c, n) for c, n in cases] == [False, False, False, True, True, False]
+
+
+def _scripted(rig, hangs, release, calls):
+    """A gather that hangs past the bound on every tick whose entry in `hangs` is true."""
+
+    def gather(deps, now):
+        calls.append(1)
+        if hangs[(len(calls) - 1) % len(hangs)]:
+            release.wait(30)
+        return rig._gather(deps, now)
+
+    return replace(rig.deps(), gather=gather, facts_bound=0.05)
+
+
+def test_overruns_every_tick_stop_the_loop_after_exactly_the_limit_and_free_the_lease():
+    rig, release, calls = Rig(sleeps_before_interrupt=100), threading.Event(), []
+    stopped = []
+    deps = replace(_scripted(rig, [True], release, calls), stop_lands=lambda: stopped.append(True))
+    try:
+        assert run(False, 60, False, deps, 3) is None
+    finally:
+        release.set()
+    assert (len(calls), len(rig.sleeps), stopped, rig.released) == (3, 2, [True], [True])
+
+
+def test_overruns_broken_by_a_completed_tick_never_stop_the_loop():
+    rig, release, calls = Rig(sleeps_before_interrupt=8), threading.Event(), []
+    deps = _scripted(rig, [True, True, False], release, calls)
+    try:
+        run(False, 60, False, deps, 3)
+    finally:
+        release.set()
+    assert (len(calls), len(rig.sleeps)) == (8, 8)  # only the interrupt in the eighth sleep ended it
+
+
+def test_a_limit_of_zero_never_stops_on_overruns():
+    rig, release, calls = Rig(sleeps_before_interrupt=5), threading.Event(), []
+    deps = _scripted(rig, [True], release, calls)
+    try:
+        run(False, 60, False, deps, 0)
+    finally:
+        release.set()
+    assert (len(calls), deps.overrun_state.consecutive) == (5, 5)
 
 
 def test_a_gather_that_raises_inside_the_bound_still_surfaces_its_exception():
