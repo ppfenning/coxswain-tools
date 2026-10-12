@@ -1,9 +1,9 @@
 usage: cox route edit [-h] [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--repo REPO]
-                      [--dry-run] [--profile PROFILE]
+                      [--surfaces SURFACES] [--state STATE] [--dry-run] [--profile PROFILE]
                       id
 
 positional arguments:
-  id                    a queued intake or an initiative
+  id                    a queued intake, an initiative or a task ticket
 
 options:
   -h, --help            show this help message and exit
@@ -11,5 +11,7 @@ options:
   --body BODY
   --body-file BODY_FILE
   --repo REPO
+  --surfaces SURFACES   task ticket only: comma-separated paths that replace the list
+  --state STATE         task ticket only: ready, approved, done or dropped; never backward
   --dry-run             print the diff and write nothing
   --profile PROFILE
