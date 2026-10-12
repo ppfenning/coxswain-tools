@@ -2,6 +2,7 @@ import copy
 import os
 import signal
 import threading
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -13,11 +14,13 @@ from agent_tools.chair_run import (
     DEFAULT_INTERVAL,
     PROFILE_STALE_NOTE,
     RunDeps,
+    _attempt,
     as_holder,
     error_line,
     land_sink,
     next_gate_record,
     no_landing,
+    overran,
     run,
     tick,
 )
@@ -499,6 +502,60 @@ def test_a_gather_that_raises_still_publishes_the_meter_once():
     with pytest.raises(RuntimeError):
         tick(deps, False, NOW)
     assert len(_meter_actions(rig)) == 1
+
+
+def test_overran_is_true_at_and_past_the_bound_only():
+    assert (overran(0.1, 0.2), overran(0.2, 0.2), overran(0.3, 0.2)) == (False, True, True)
+
+
+def _hanging(rig, release, calls):
+    def gather(deps, now):
+        calls.append(1)
+        release.wait(30)
+        return rig._gather(deps, now)
+
+    return replace(rig.deps(), gather=gather, facts_bound=0.2)
+
+
+def test_a_gather_that_never_returns_is_abandoned_and_the_overrun_is_counted():
+    rig, release, calls = Rig(), threading.Event(), []
+    deps = _hanging(rig, release, calls)
+    planned = []
+    deps = replace(deps, plan=lambda f, n: planned.append(1) or [], perform=lambda *a: planned.append(1) or [])
+    try:
+        started = time.monotonic()
+        _attempt(deps, False)
+        assert time.monotonic() - started < 1.0
+        assert "overrun: facts stage over 0.2s (1 in a row)" in rig.lines[-1]
+        _attempt(deps, False)
+        assert "overrun: facts stage over 0.2s (2 in a row)" in rig.lines[-1]
+        assert (len(calls), deps.overrun_state.consecutive, planned) == (2, 2, [])
+    finally:
+        release.set()
+
+
+def test_a_tick_that_completes_resets_the_overrun_count():
+    rig, release, calls = Rig(), threading.Event(), []
+    hanging = _hanging(rig, release, calls)
+    try:
+        _attempt(hanging, False)
+        assert hanging.overrun_state.consecutive == 1
+        _attempt(replace(hanging, gather=rig._gather), False)
+        assert hanging.overrun_state.consecutive == 0
+    finally:
+        release.set()
+
+
+def test_a_gather_that_raises_inside_the_bound_still_surfaces_its_exception():
+    rig = Rig()
+
+    def boom(_deps, _now):
+        raise RuntimeError("gather down")
+
+    deps = replace(rig.deps(), gather=boom)
+    with pytest.raises(RuntimeError, match="gather down"):
+        tick(deps, False, NOW)
+    assert deps.overrun_state.consecutive == 0
 
 
 def test_a_tick_records_one_status_row_with_its_line():
