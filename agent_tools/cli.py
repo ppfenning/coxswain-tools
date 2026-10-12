@@ -3274,7 +3274,7 @@ def _route_edit(a: argparse.Namespace) -> int:
         return 2
     result = route_edit.apply_edit(
         runs_dir, runs_dir.parent, _initiative_token(runs_dir, a.id), title=a.title, body=a.body, body_file=a.body_file, repo=a.repo,
-        dry_run=a.dry_run, live_runs=_live_runs(runs_dir, _now_iso()),
+        surfaces=a.surfaces, state=a.state, dry_run=a.dry_run, live_runs=_live_runs(runs_dir, _now_iso()),
     )
     if result.code != route_edit.DONE:
         print(f"edit: {'refused' if result.code == route_edit.REFUSED else 'failed'}: {result.text}")
@@ -6979,10 +6979,12 @@ ROUTE_COMMANDS = [
         "agent_tools.cli:_route_decline", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
-        "edit", "route", "change a queued intake's or an initiative's title, body or repo",
+        "edit", "route", "change a queued intake, an initiative or a task ticket",
         (
-            commands.Arg(("id",), {"help": "a queued intake or an initiative"}), commands.Arg(("--title",)),
+            commands.Arg(("id",), {"help": "a queued intake, an initiative or a task ticket"}), commands.Arg(("--title",)),
             commands.Arg(("--body",)), commands.Arg(("--body-file",)), commands.Arg(("--repo",)),
+            commands.Arg(("--surfaces",), {"help": "task ticket only: comma-separated paths that replace the list"}),
+            commands.Arg(("--state",), {"help": "task ticket only: a ticket state such as ready"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the diff and write nothing"}),
             commands.Arg(("--profile",)),
         ),
