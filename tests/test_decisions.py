@@ -1,5 +1,6 @@
 from agent_tools.decisions import (
     filter_decisions,
+    inbox_split,
     make_answer_entry,
     make_ask_entry,
     merge_decisions,
@@ -18,11 +19,11 @@ def test_validate_options_accepts_two_options():
 
 
 def test_make_ask_entry_shape():
-    entry = make_ask_entry("ship it?", ["yes", "no"], "release gate", "cox", "d1", "2026-09-29T10:00:00Z")
+    entry = make_ask_entry("ship it?", ["yes", "no"], "release gate", "cox", "d1", "2026-09-29T10:00:00Z", operator="sam")
     assert entry == {
         "ref": "coxswain://decision/d1",
         "from": "cox",
-        "to": "operator",
+        "to": "sam",
         "note": "ship it?",
         "id": "d1",
         "ack": False,
@@ -53,10 +54,10 @@ def test_validate_answer_accepts_valid_option():
 
 def test_make_answer_entry_shape():
     ask_entry = {"ref": "coxswain://decision/d1", "id": "d1"}
-    entry = make_answer_entry(ask_entry, "yes", "2026-09-29T11:00:00Z", "m1")
+    entry = make_answer_entry(ask_entry, "yes", "2026-09-29T11:00:00Z", "m1", operator="sam")
     assert entry == {
         "ref": "coxswain://decision/d1",
-        "from": "operator",
+        "from": "sam",
         "to": "chair",
         "note": "answer: yes",
         "id": "m1",
@@ -132,3 +133,16 @@ def test_open_decisions_newest_first_orders_and_drops_answer():
     result = open_decisions_newest_first(decisions)
     assert [d["id"] for d in result] == ["d2", "d1"]
     assert "answer" not in result[0]
+
+
+def test_inbox_split_takes_asks_addressed_to_the_configured_operator_only():
+    entries = [
+        {"ref": "coxswain://decision/d1", "to": "sam"},
+        {"ref": "coxswain://decision/d2", "to": "operator"},
+        {"ref": "coxswain://decision/d1", "to": "chair"},
+        {"ref": "coxswain://run/r1", "to": "sam"},
+    ]
+    asks, answers = inbox_split(entries, "sam")
+    assert [e["ref"] for e in asks] == ["coxswain://decision/d1"]
+    assert [e["ref"] for e in answers] == ["coxswain://decision/d1"]
+    assert [e["ref"] for e in inbox_split(entries, "operator")[0]] == ["coxswain://decision/d2"]

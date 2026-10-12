@@ -169,6 +169,7 @@ runs_stranded = _LazyModule("agent_tools.runs_stranded")
 runs_top = _LazyModule("agent_tools.runs_top")
 runs_top_screen = _LazyModule("agent_tools.runs_top_screen")
 schema = _LazyModule("agent_tools.schema")
+settings_model = _LazyModule("agent_tools.settings_model")
 setup_install = _LazyModule("agent_tools.setup_install")
 sources = _LazyModule("agent_tools.sources")
 stats_causes = _LazyModule("agent_tools.stats_causes")
@@ -5834,7 +5835,7 @@ def _usage_assessment(
     if weekly_ceiling is None:
         weekly_ceiling = weekly_ceiling_usd
     # The store's spend, the same source the chair's facts and the console read: a lane host's own usage files
-    # also hold runs fetched from or synced with other machines (host-a read $4093 against a store $1349, 2026-10-06).
+    # also hold runs fetched from or synced with other machines (one lane host read $4093 against a store $1349).
     estimate_weekly = usage_window.gather_weekly(
         runs_dir, now, weekly_ceiling, usage=usage, reset=reset,
         store_spend=lambda since: _tolerant_cost_since(runs_dir, since),
@@ -6814,10 +6815,16 @@ def _spawn(argv: list[str]) -> subprocess.Popen:
     )
 
 
-def _courier_workspace(a: argparse.Namespace) -> Path | None:
+def _courier_profile(a: argparse.Namespace) -> dict | None:
+    """The parsed profile when it names a workspace; None, after saying why, when it does not."""
     profile, reason, *_ = _gather_context(_profile_path(a))
     if reason: print(f"routing: {reason}"); return None
-    return Path(profile["workspace_dir"]).expanduser()
+    return profile
+
+
+def _courier_workspace(a: argparse.Namespace) -> Path | None:
+    profile = _courier_profile(a)
+    return None if profile is None else Path(profile["workspace_dir"]).expanduser()
 
 
 def _courier_send(a: argparse.Namespace) -> int:
@@ -8006,19 +8013,13 @@ def _chair_service(a: argparse.Namespace) -> int:
 _DECISION_PREFIX = "coxswain://decision/"
 
 
-def _decision_bus(a: argparse.Namespace) -> tuple[Path, str, list[dict]] | None:
-    """The courier path, its raw text and its latest-per-id entries; None when no workspace resolves."""
-    workspace = _courier_workspace(a)
-    if workspace is None: return None
-    path = workspace / "courier.jsonl"
+def _decision_bus(a: argparse.Namespace) -> tuple[Path, str, list[dict], str] | None:
+    """The courier path, its raw text, its latest-per-id entries and the profile's operator; None when no workspace resolves."""
+    profile = _courier_profile(a)
+    if profile is None: return None
+    path = Path(profile["workspace_dir"]).expanduser() / "courier.jsonl"
     blob = _read_text_or_none(path) or ""
-    return path, blob, courier.entries(blob)
-
-
-def _decision_entries(entries: list[dict]) -> tuple[list[dict], list[dict]]:
-    """(asks, answers): decision entries addressed to the operator, and those addressed to the chair."""
-    mine = [e for e in entries if e["ref"].startswith(_DECISION_PREFIX)]
-    return [e for e in mine if e["to"] == "operator"], [e for e in mine if e["to"] == "chair"]
+    return path, blob, courier.entries(blob), settings_model.operator_name(profile)
 
 
 def _new_decision_id(taken: set[str]) -> str | None:
@@ -8034,12 +8035,14 @@ def _decision_now() -> str:
 def _chair_ask(a: argparse.Namespace) -> int:
     bus = _decision_bus(a)
     if bus is None: return 2
-    path, blob, entries = bus
+    path, blob, entries, operator = bus
     problem = decisions.validate_options(a.option)
     if problem: print(f"chair ask: {problem}"); return 2
     decision_id = _new_decision_id({e["ref"] for e in entries})
     if decision_id is None: print("chair ask: could not draw an unused decision id"); return 2
-    entry = decisions.make_ask_entry(a.question, a.option, a.context, _holder_label(a), decision_id, _decision_now())
+    entry = decisions.make_ask_entry(
+        a.question, a.option, a.context, _holder_label(a), decision_id, _decision_now(), operator=operator
+    )
     path.write_text(courier.append_line(blob, entry), encoding="utf-8")
     print(decision_id)
     return 0
@@ -8048,12 +8051,14 @@ def _chair_ask(a: argparse.Namespace) -> int:
 def _chair_answer(a: argparse.Namespace) -> int:
     bus = _decision_bus(a)
     if bus is None: return 2
-    path, blob, entries = bus
-    asks, _ = _decision_entries(entries)
+    path, blob, entries, operator = bus
+    asks, _ = decisions.inbox_split(entries, operator)
     ask_entry = next((e for e in asks if e["ref"] == f"{_DECISION_PREFIX}{a.id}"), None)
     problem = decisions.validate_answer(ask_entry, a.option)
     if problem: print(f"chair answer: {problem}"); return 2
-    answer = decisions.make_answer_entry(ask_entry, a.option, answered_at=_decision_now(), message_id=uuid.uuid4().hex)
+    answer = decisions.make_answer_entry(
+        ask_entry, a.option, answered_at=_decision_now(), message_id=uuid.uuid4().hex, operator=operator
+    )
     path.write_text(courier.ack(courier.append_line(blob, answer), ask_entry["id"]), encoding="utf-8")
     return 0
 
@@ -8066,7 +8071,8 @@ def _decision_line(d: dict) -> str:
 def _chair_decisions(a: argparse.Namespace) -> int:
     bus = _decision_bus(a)
     if bus is None: return 2
-    asks, answers = _decision_entries(bus[2])
+    _, _, entries, operator = bus
+    asks, answers = decisions.inbox_split(entries, operator)
     listed = decisions.filter_decisions(decisions.merge_decisions(asks, answers), open_only=a.open, answered_only=a.answered)
     if a.json: print(json.dumps(listed))
     else:

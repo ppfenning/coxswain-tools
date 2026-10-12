@@ -60,7 +60,7 @@ def intake_links(files: Mapping[str, str]) -> frozenset[str]:
     return frozenset(link for link in links if link is not None)
 
 
-# Adapters that name a vendor live outside this repository and register here by name (the operator, 2026-09-25).
+# Adapters that name a vendor live outside this repository and register here by name, so no vendor is compiled in.
 ENTRY_POINT_GROUP = "coxswain.sources"
 
 
