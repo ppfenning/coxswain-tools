@@ -4,7 +4,15 @@ import sqlite3
 import stat
 import sys
 
+import pytest
+
 from agent_tools.cli import _run_core_probe, main
+
+
+@pytest.fixture(autouse=True)
+def _home(tmp_path, monkeypatch):
+    """A chair unit installed on the test machine must not reach the doctor's `chair unit PATH` row."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
 _STUB = """#!{python}
 import json
@@ -434,3 +442,28 @@ def test_schema_row_reads_cartridges_from_the_checkout_above_provider_profile(tm
     rows = _rows(capsys)
     assert rows["schema"] == {"check": "schema", "ok": True, "detail": "cartridges 1.0, graphs 1.0, tools 1.0"}
     assert rc == 0
+
+
+def _unit_row_line(out):
+    return next(line for line in out.splitlines() if "chair unit PATH" in line)
+
+
+def test_no_installed_unit_reads_not_installed(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    main(["setup", "doctor", "--profile", str(profile)])
+    assert "not installed" in _unit_row_line(capsys.readouterr().out)
+
+
+def test_an_installed_unit_is_judged_by_the_executables_on_its_path(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    unit_bin = tmp_path / "unit-bin"
+    _write_executable(unit_bin / "cox", "#!/bin/sh\n")
+    unit = tmp_path / "home" / ".config" / "systemd" / "user" / "coxswain-chair.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text(f"[Service]\nEnvironment=PATH={unit_bin}\n")
+    rc = main(["setup", "doctor", "--profile", str(profile)])
+    line = _unit_row_line(capsys.readouterr().out)
+    assert rc == 1
+    assert "FAIL" in line and "pytest" in line
+    _write_executable(unit_bin / "pytest", "#!/bin/sh\n")
+    assert main(["setup", "doctor", "--profile", str(profile)]) == 0
