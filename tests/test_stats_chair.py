@@ -4,12 +4,14 @@ import json
 
 import pytest
 
+from agent_tools.run_store import Landed
 from agent_tools.stats_chair import (
     catalog_prices,
     chair_cost,
     chair_report,
     frontmatter_item,
     hand_finished,
+    landed_pairs,
     lines_since,
     quarantine_cost_by_cause,
     render_chair,
@@ -152,6 +154,34 @@ def test_render_chair_has_the_harness_pr_row_and_one_quarantine_row_per_cause():
     lines = render_chair(chair_report(None, [("r1", "a")], [], [], 1.0, [])).splitlines()
     assert lines[1].startswith("harness PRs")
     assert [line.split()[2] for line in lines if line.startswith("quarantine $")] == ["ticket", "code", "harness", "unknown"]
+
+
+def _land(run: str, task: str) -> dict[str, str]:
+    return {"run_id": run, "task_id": task, "ts": "2026-10-01T00:00:00Z"}
+
+
+def test_landed_pairs_reads_run_and_task_from_each_store_row():
+    assert landed_pairs(Landed((_land("r1", "a"), _land("r2", "b")), "work_items")) == [("r1", "a"), ("r2", "b")]
+
+
+def test_cost_per_landed_pr_divides_by_the_store_rows_and_matches_land_rows_on_them():
+    store = Landed((_land("r1", "a"), _land("r1", "b"), _land("r2", "c"), _land("r2", "d")), "work_items")
+    merged = [{"run": "r1", "task": t, "steps_reached": ["merge"], "exit": 0} for t in "ab"]
+    report = chair_report(None, store, [], merged, 2.0, [])
+    assert (report["harness_prs"], report["chair_usd_per_pr"], report["hand_finished"]["n"]) == (4, 0.5, 2)
+
+
+def test_the_landed_source_comes_from_the_store_value_and_is_rendered_on_one_line():
+    report = chair_report(None, Landed((_land("r1", "a"),), "land_records"), [], [], 1.0, [])
+    rendered = [line for line in render_chair(report).splitlines() if line.startswith("landed source")]
+    assert report["landed_source"] == "land_records"
+    assert len(rendered) == 1 and rendered[0].endswith("land_records")
+
+
+def test_without_a_landed_source_the_report_and_rendering_omit_it():
+    report = chair_report(None, [("r1", "a")], [], [], 1.0, [])
+    assert "landed_source" not in report
+    assert not any(line.startswith("landed source") for line in render_chair(report).splitlines())
 
 
 def test_catalog_prices_reads_models_with_a_price_and_drops_the_rest():

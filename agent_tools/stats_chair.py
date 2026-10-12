@@ -9,6 +9,8 @@ from typing import NamedTuple
 
 import yaml
 
+from agent_tools.run_store import Landed
+
 __all__ = [
     "CAUSES",
     "catalog_prices",
@@ -16,6 +18,7 @@ __all__ = [
     "chair_report",
     "frontmatter_item",
     "hand_finished",
+    "landed_pairs",
     "lines_since",
     "quarantine_cost_by_cause",
     "render_chair",
@@ -148,18 +151,24 @@ def hand_finished(landed: Iterable[tuple[str, str]], land_rows: Iterable[Mapping
     return [pair for pair in landed if pair not in merged]
 
 
+def landed_pairs(landed: Landed) -> list[tuple[str, str]]:
+    """(run_id, task_id) for each store land row, in the store's order."""
+    return [(str(row["run_id"]), str(row["task_id"])) for row in landed.rows]
+
+
 def chair_report(
     since: str | None,
-    landed: list[tuple[str, str]],
+    landed: Landed | list[tuple[str, str]],
     usage_calls: list[Mapping],
     land_rows: list[Mapping],
     chair_usd: float | None,
     items: list[Mapping],
 ) -> dict:
-    """One entry per fact. `chair_usd` None means no catalog priced the transcripts."""
-    prs = len(landed)
-    by_hand = len(hand_finished(landed, land_rows))
-    return {
+    """One entry per fact; a store `Landed` also sets `landed_source`. `chair_usd` None means no catalog priced the transcripts."""
+    pairs, source = (landed_pairs(landed), landed.source) if isinstance(landed, Landed) else (list(landed), None)
+    prs = len(pairs)
+    by_hand = len(hand_finished(pairs, land_rows))
+    base = {
         "window": {"since": since},
         "harness_prs": prs,
         "harness_usd": sum(c.get("cost_usd") or 0.0 for c in usage_calls),
@@ -168,6 +177,7 @@ def chair_report(
         "hand_finished": {"n": by_hand, "pct": round(100 * by_hand / prs, 1) if prs else None},
         "quarantine_usd": quarantine_cost_by_cause(items, usage_calls),
     }
+    return {**base, **({"landed_source": source} if source is not None else {})}
 
 
 def _money(value: float | None) -> str:
@@ -181,6 +191,7 @@ def render_chair(report: Mapping) -> str:
     rows = [
         ("window", f"since {report['window']['since'] or 'the beginning'}"),
         ("harness PRs", str(report["harness_prs"])),
+        *((("landed source", report["landed_source"]),) if report.get("landed_source") is not None else ()),
         ("harness $", _money(report["harness_usd"])),
         ("chair $", _money(report["chair_usd"])),
         ("chair $ per harness PR", _money(report["chair_usd_per_pr"])),
