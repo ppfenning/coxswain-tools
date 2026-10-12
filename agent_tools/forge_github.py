@@ -38,6 +38,68 @@ def find_open_prs(repo: Path, branch: str) -> list[int] | str:
         return f"could not read the open pull requests for {branch}: {r.stdout.strip()}"
 
 
+PR_LIST_LIMIT = 200  # more open PRs than a task can have; a listing that reaches it may be cut off
+
+
+def list_open_prs_by_prefix(repo: Path, prefix: str) -> list[dict] | str:
+    """`{"number", "head"}` per open PR whose head starts with `prefix`, or the reason they could not be listed. A listing that reaches `PR_LIST_LIMIT` is a reason, never a partial list."""
+    argv = ["gh", "pr", "list", "--state", "open", "--limit", str(PR_LIST_LIMIT), "--json", "number,headRefName"]
+    try:
+        r = _run(argv, timeout=READ_TIMEOUT_S, cwd=repo)
+    except (OSError, ForgeError) as exc:
+        return f"could not list open pull requests: {exc}"
+    if r.returncode != 0:
+        return f"could not list open pull requests: {(r.stderr or r.stdout).strip()}"
+    try:
+        rows = json.loads(r.stdout or "[]")
+        if len(rows) >= PR_LIST_LIMIT:
+            return f"open pull request listing reached its limit of {PR_LIST_LIMIT}; it may be incomplete"
+        return [{"number": int(p["number"]), "head": p["headRefName"]} for p in rows
+                if p["headRefName"].startswith(prefix)]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return f"could not read the open pull requests: {r.stdout.strip()}"
+
+
+def close_pr(repo: Path, number: int, comment: str) -> tuple[bool, str]:
+    """Post `comment` on PR `number`, then close it. A closed PR is left alone; a comment already posted is not posted again."""
+    try:
+        view = _run(["gh", "pr", "view", str(number), "--json", "state,comments"], timeout=READ_TIMEOUT_S, cwd=repo)
+        if view.returncode != 0:
+            return False, (view.stderr or view.stdout).strip()
+        data = json.loads(view.stdout or "{}")
+        state = data.get("state")
+        posted = any(c.get("body") == comment for c in data.get("comments") or [])
+        if state == "CLOSED":
+            return True, "already closed"
+        if state == "MERGED":
+            return False, f"PR {number} is already merged"
+        comment_step = [] if posted else [["gh", "pr", "comment", str(number), "--body", comment]]
+        for argv in [*comment_step, ["gh", "pr", "close", str(number)]]:
+            r = _run(argv, timeout=WRITE_TIMEOUT_S, cwd=repo)
+            if r.returncode != 0:
+                return False, (r.stderr or r.stdout).strip()
+    except (OSError, ForgeError, ValueError, AttributeError) as exc:
+        return False, f"could not close PR {number}: {exc}"
+    return True, "closed"
+
+
+def _ref_missing(message: str) -> bool:
+    """gh's reply to deleting a ref that is not there: 422 "Reference does not exist". A 404 means the repo is unknown or hidden, not that the branch is gone."""
+    return "reference does not exist" in message.lower()
+
+
+def delete_branch(repo: Path, branch: str) -> tuple[bool, str]:
+    argv = ["gh", "api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/git/refs/heads/{branch}"]
+    try:
+        r = _run(argv, timeout=WRITE_TIMEOUT_S, cwd=repo)
+    except (OSError, ForgeError) as exc:
+        return False, f"could not delete {branch}: {exc}"
+    if r.returncode == 0:
+        return True, "deleted"
+    message = (r.stderr or r.stdout).strip()
+    return (True, "already gone") if _ref_missing(message) else (False, message)
+
+
 UNKNOWN_PR_STATE = {"state": "unknown", "merged_at": None}
 _PR_STATES = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
 
