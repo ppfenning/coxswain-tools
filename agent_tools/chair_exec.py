@@ -102,6 +102,10 @@ class LandSink(Protocol):
         """True while a land handed over for `repo` has not been collected."""
         ...
 
+    def landing(self) -> list[dict[str, str]]:
+        """One dict per land in progress, with its `initiative`, `phase` and `repo`."""
+        ...
+
     def submit(self, action: Action, work: Callable[[], Result]) -> Result:
         """Start `work` in the background and return at once: `in_progress`, or `busy` when another process holds the repo."""
         ...
@@ -529,6 +533,16 @@ def _partial_land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result
     return partial_land.perform_partial_land(action, deps.run, lambda land: _land(land, deps, blocked))  # type: ignore[return-value]
 
 
+def _land_blocks_clear(landing: list[dict[str, str]], repo: str, initiative: str) -> bool:
+    """A pending land in `repo` blocks the clear unless every such land names another initiative.
+
+    Branches live under epic/<initiative>/*, disjoint per initiative. A land with no initiative, or none listed
+    for a repo that reports pending, is unknown and blocks.
+    """
+    initiatives = [land.get("initiative", "") for land in landing if land.get("repo", "") == repo]
+    return not initiatives or any(i in ("", initiative) for i in initiatives)
+
+
 def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     initiative = action.get("initiative", "")
     pattern = branch_pattern(initiative)
@@ -539,7 +553,7 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _result(action, "refused", f"no repository resolved for initiative {initiative}")
     if repo in blocked:
         return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
-    if deps.lands is not None and deps.lands.pending(repo):
+    if deps.lands is not None and deps.lands.pending(repo) and _land_blocks_clear(deps.lands.landing(), repo, initiative):
         return _result(action, "skipped", f"a land in {repo} is still running")
     host = action.get("host", "")
     ssh = deps.ssh_for(host) if host else ""
