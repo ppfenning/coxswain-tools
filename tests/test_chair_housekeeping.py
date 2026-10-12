@@ -69,3 +69,33 @@ def test_join_reason_keeps_failed_names():
 
 def test_the_trace_prune_keeps_the_configured_number_of_days():
     assert hk.prune_argv("/t", 14, PYTHON)[-2:] == ["--older-than", "14"]
+
+
+def test_s3_traces_root_skips_prune_without_failing():
+    run, seen = _runner()
+    root = "s3://coxswain/traces"
+    status, reason = hk.run_housekeeping(run, root, lambda: True, PYTHON)
+    assert status == "done"
+    assert reason.split("; ")[1] == "prune: skipped, traces in object storage"
+    assert hk.prune_argv(root, 7, PYTHON) not in seen
+    assert seen == [hk.sync_argv()]
+
+
+def test_failed_sync_traceback_keeps_the_exception_line():
+    trace = (
+        "Traceback (most recent call last):\n"
+        '  File "x.py", line 1, in <module>\n'
+        "FileNotFoundError: s3://coxswain/lake/metadata/v1.json\n"
+    )
+
+    def run(argv):
+        return (1, trace) if argv == hk.sync_argv() else (0, "fine")
+
+    status, reason = hk.run_housekeeping(run, "/t", lambda: True, PYTHON)
+    assert status == "failed"
+    assert reason.startswith("lake sync: FAILED exit 1 FileNotFoundError: s3://coxswain/lake/metadata/v1.json; ")
+
+
+def test_step_line_failed_picks_last_non_empty_line():
+    out = "Traceback (most recent call last):\nValueError: bad\n\n"
+    assert hk.step_line("lake sync", 1, out) == "lake sync: FAILED exit 1 ValueError: bad"
