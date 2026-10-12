@@ -177,3 +177,95 @@ def test_a_store_only_ended_run_reads_its_usage_from_the_store(tmp_path):
     got = notify._usage(tmp_path, "run9", already_emitted=False)
     assert got["summary"]["cost_usd"] == 1.5
     assert notify._usage(tmp_path, "run9", already_emitted=True) is None
+
+
+class _FakeConn:
+    """A psycopg stand-in: outside autocommit its first execute opens a transaction that only commit, rollback or close ends."""
+
+    def __init__(self, autocommit: bool):
+        self.autocommit = autocommit
+        self.in_transaction = False
+        self.closed = False
+
+    def execute(self, *_args):
+        self.in_transaction = self.in_transaction or not self.autocommit
+        return self
+
+    def fetchall(self):
+        return []
+
+    def close(self):
+        self.closed = True
+
+
+def _fake_psycopg(monkeypatch):
+    """Installs a fake `psycopg` whose `connect` records each connection; returns that list."""
+    import sys
+    import types
+
+    opened = []
+
+    def connect(_url, *, autocommit=False, **kwargs):
+        conn = _FakeConn(autocommit)
+        conn.kwargs = kwargs
+        opened.append(conn)
+        return conn
+
+    fake = types.ModuleType("psycopg")
+    fake.connect = connect
+    fake.Error = type("Error", (Exception,), {})
+    conninfo = types.ModuleType("psycopg.conninfo")
+    conninfo.conninfo_to_dict = lambda _url: {}
+    rows = types.ModuleType("psycopg.rows")
+    rows.dict_row = object()
+    monkeypatch.setitem(sys.modules, "psycopg", fake)
+    monkeypatch.setitem(sys.modules, "psycopg.conninfo", conninfo)
+    monkeypatch.setitem(sys.modules, "psycopg.rows", rows)
+    return opened
+
+
+def test_a_poll_leaves_no_postgres_transaction_open(tmp_path, monkeypatch):
+    from agent_tools import run_store
+
+    opened = _fake_psycopg(monkeypatch)
+    monkeypatch.setattr(run_store, "_store_url", lambda _runs_dir: "postgresql://h/db")
+    for name in ("run1", "run2"):
+        (tmp_path / f"{name}.log").write_text(_EXIT.format(run=name, q=0), encoding="utf-8")
+    assert notify.run_loop(tmp_path, once=True, send=[].append) == 0
+    assert len(opened) == 2  # one usage read per run without a usage file
+    assert all(c.autocommit and c.closed and not c.in_transaction for c in opened)
+    assert all("default_transaction_read_only=on" in c.kwargs["options"] for c in opened)
+
+
+def test_a_store_error_on_one_poll_backs_off_and_the_next_poll_still_notifies(tmp_path, monkeypatch, capsys):
+    from agent_tools import run_store
+
+    calls = []
+
+    def flaky_open(_runs_dir):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("connection refused")
+        return
+
+    monkeypatch.setattr(run_store, "_open", flaky_open)
+    (tmp_path / "run1.log").write_text(_EXIT.format(run="run1", q=0), encoding="utf-8")
+    sent, sleeps = [], []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        notify.run_loop(tmp_path, interval=10, send=sent.append, sleep=sleep, replay=True)
+    assert sleeps == [20, 10]
+    assert [argv[5] for argv in sent] == ["run1 exited"]
+    out = capsys.readouterr().out
+    assert out.count("store read failed") == 1 and "connection refused" in out
+
+
+def test_backoff_doubles_from_the_interval_and_caps():
+    assert [notify._backoff(10, n) for n in (0, 1, 2, 3)] == [10, 20, 40, 80]
+    assert notify._backoff(10, 20) == 300
+    assert notify._backoff(600, 3) == 600

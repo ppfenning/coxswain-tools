@@ -155,28 +155,49 @@ def _chair_state(root: Path, pid_alive, heartbeat_minutes: int) -> str:
     return chair.liveness(record, alive, datetime.datetime.now(datetime.UTC), socket.gethostname(), heartbeat_minutes)
 
 
+_MAX_BACKOFF_S = 300.0
+
+
+def _backoff(interval: float, failures: int) -> float:
+    """Pure: the sleep after `failures` consecutive store errors, doubling from `interval` up to `_MAX_BACKOFF_S`."""
+    return interval if failures == 0 else min(interval * 2 ** failures, max(interval, _MAX_BACKOFF_S))
+
+
 def run_loop(runs_dir, *, once: bool = False, interval: float = 10, send=None, sleep=time.sleep,
              policy: Mapping | None = None, pid_alive=chair.pid_alive,
              heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES, replay: bool = False) -> int:
     """Edge: polls `runs_dir`, sending a notification per event `notifications`     names, plus one on a live-to-stale/none chair transition while a run is alive.
-    A pass with no readable state file seeds every run as seen and sends nothing, unless `replay` is set."""
+    A pass with no readable state file seeds every run as seen and sends nothing, unless `replay` is set.
+    A store error on one pass prints one line and backs off; the next pass opens a fresh connection."""
     root = Path(runs_dir)
     state_path = root / ".notify-state.json"
     runner = send if send is not None else subprocess.run
     can_send = send is not None or shutil.which("notify-send") is not None
     printed_fallback = False
     previous_chair_state = None
+    failures = 0
     while True:
-        states, loaded = _load_states(state_path)
-        cold_start = not replay and not loaded
-        batches = _batches(root, states)
+        try:
+            states, loaded = _load_states(state_path)
+            cold_start = not replay and not loaded
+            batches = _batches(root, states)
+            current_chair_state = _chair_state(root, pid_alive, heartbeat_minutes)
+        except run_store._db_errors() as exc:
+            failures += 1
+            reason = str(exc).splitlines()[0] if str(exc) else ""
+            print(f"runs notify: store read failed ({type(exc).__name__}: {reason}); "
+                  f"retrying in {_backoff(interval, failures):.0f}s", flush=True)
+            if once:
+                return 1
+            sleep(_backoff(interval, failures))
+            continue
+        failures = 0
         if cold_start:
             new_states = seed_state(batches, policy)
             notes = []
             print(f"runs notify: no readable state; seeding {len(new_states)} run(s) from history without notifying")
         else:
             notes, new_states = fold(states, batches, policy)
-        current_chair_state = _chair_state(root, pid_alive, heartbeat_minutes)
         notes = [*notes, *chair_notifications(previous_chair_state, current_chair_state, _any_run_alive(new_states))]
         previous_chair_state = current_chair_state
         for n in notes:
