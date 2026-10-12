@@ -472,7 +472,8 @@ class Action(TypedDict, total=False):
     revert_land carries initiative, phase, repo, pr, commit and reason.
     rerun_main carries initiative, phase, repo and commit.
     widen_ticket carries initiative, task_id, paths, additions and reason. partial_land carries initiative, phase,
-    task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped. A relaunch_loop needs_chair carries
+    task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped;
+    the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. A relaunch_loop needs_chair carries
     initiative, cause and a reason naming both quarantined run ids."""
 
     kind: ActionKind
@@ -499,6 +500,7 @@ class Action(TypedDict, total=False):
     paths: list[str]  # a steer_clear names the shared paths; a widen_ticket names the repo-relative files to add to surfaces
     task_ids: list[str]  # a partial_land names the approved task ids it would land, in phase order
     quarantined: int  # a partial_land counts the phase's quarantined tasks
+    task_runs: dict[str, str]  # a partial_land maps each approved task id to the run holding its approved record; "" when unknown
     pr_branch: str  # a carry_phase names the branch its pull request is opened from
     picks: list[CarryTask]  # a carry_phase lists the commits to cherry-pick, in order
     branch: str  # a rebase_phase names the phase branch it rebases
