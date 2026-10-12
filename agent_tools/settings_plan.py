@@ -1,4 +1,4 @@
-"""Set planner: one setting change as new file text, a unified diff, and the pat_only flag.
+"""Set planner: one setting change as new file text, a unified diff, and the operator_only flag.
 
 Pure: takes scope, key, the raw value string and the current text of the target file,
 returns a `Plan` or a `PlanError`. Nothing is read, written or raised.
@@ -43,7 +43,7 @@ _CHAIR_READS = {
 class Plan:
     new_text: str
     diff: str
-    pat_only: bool
+    operator_only: bool
 
 
 @dataclass(frozen=True)
@@ -174,4 +174,4 @@ def plan_set(
     errors = validate(new_text) if validate is not None and setting.scope == "cartridge" else []
     if errors:
         return PlanError(f"{setting.source_file} violates the schema: {'; '.join(errors)}")
-    return Plan(new_text, _diff(text, new_text, setting.source_file), setting.pat_only)
+    return Plan(new_text, _diff(text, new_text, setting.source_file), setting.operator_only)

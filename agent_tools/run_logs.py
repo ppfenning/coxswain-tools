@@ -1,6 +1,6 @@
 """Run logs past retention: which ended runs' text logs are due, where their archived copies live, and the edge that
-archives each one to the lake's object store before it removes the local file (Pat, 2026-09-28: a 7-day lookback by
-default, set by the routing profile's `log_retention_days`)."""
+archives each one to the lake's object store before it removes the local file (a 7-day lookback by default, set by
+the routing profile's `log_retention_days`)."""
 from __future__ import annotations
 
 import gzip

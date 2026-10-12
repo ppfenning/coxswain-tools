@@ -1,4 +1,4 @@
-from agent_tools.settings_model import REGISTRY, SECTIONS, SettingRow, rows, setting_for
+from agent_tools.settings_model import REGISTRY, SECTIONS, SettingRow, operator_name, rows, setting_for
 from agent_tools.settings_sections.defaults import DEFAULT_KEYS
 
 TRACKED = {"cartridge.yaml": True, "profile.yaml": False}
@@ -74,8 +74,8 @@ def test_profile_files_and_tracked_flag_follows_the_map():
     assert [r.tracked for r in rows({}, profile, {})["profile files"]] == [False, False]
 
 
-def test_every_models_and_tiers_setting_is_pat_only_and_nothing_else_is():
-    flagged = {s.key for s in REGISTRY if s.pat_only}
+def test_every_models_and_tiers_setting_is_operator_only_and_nothing_else_is():
+    flagged = {s.key for s in REGISTRY if s.operator_only}
     assert flagged == {s.key for s in REGISTRY if s.section == "models and tiers"}
     assert flagged == {
         "policy.review_tier",
@@ -96,4 +96,16 @@ def test_setting_for_resolves_registry_and_crew_keys():
 def test_every_defaults_table_key_resolves_in_the_registry():
     found = [(spec, setting_for(spec.scope, spec.key)) for spec in DEFAULT_KEYS]
     assert all(setting is not None for _, setting in found)
-    assert [(s.section, s.pat_only) for _, s in found] == [(spec.section, spec.pat_only) for spec, _ in found]
+    assert [(s.section, s.operator_only) for _, s in found] == [(spec.section, spec.operator_only) for spec, _ in found]
+
+
+def test_operator_is_a_registered_profile_key_described_as_the_human_addressed():
+    setting = setting_for("profile", "operator")
+    assert setting is not None and setting.section == "profile files" and not setting.operator_only
+    assert setting.description == "the name of the human the courier and decisions address"
+
+
+def test_operator_name_defaults_to_operator_and_reads_the_profile_key():
+    assert operator_name({}) == "operator"
+    assert operator_name({"operator": "  "}) == "operator"
+    assert operator_name({"operator": "sam"}) == "sam"
