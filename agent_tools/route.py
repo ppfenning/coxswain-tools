@@ -37,6 +37,7 @@ __all__ = [
     "initiative_summaries",
     "intake_entries",
     "intake_file",
+    "intake_priority_rows",
     "is_chair_machine",
     "latest_groups_file",
     "launch_blockers",
@@ -66,6 +67,7 @@ __all__ = [
     "run_entries",
     "run_under_claim",
     "set_initiative_priority",
+    "set_intake_priority",
     "should_export_board",
     "slugify",
     "state_problems",
@@ -1633,6 +1635,51 @@ def list_open_queue(runs_dir: Path) -> int:
     return 0
 
 
+def _queued_intake_row(runs_dir: Path, intake_id: str) -> Mapping | None:
+    """Edge: the queued intake row `select_intake_row` finds for `intake_id`, by file stem or frontmatter `id`, else None."""
+    queued = [r for r in run_store.read_queue(runs_dir, kind="intake") if r.get("state") == "queued"]
+    return select_intake_row(queued, intake_id)
+
+
+def intake_priority_rows(stored: Sequence[Mapping], intake: Mapping) -> list[open_queue_priority.Row]:
+    """Pure: the measured rows for a queued intake. Every stored intake row shares the initiative `intake`, so
+    the target is keyed by its own `task_id`, and its stored row is replaced by one carrying its own priority."""
+    task_id = str(intake["task_id"])
+    others = [r for r in stored if not (r.get("kind") == "intake" and r.get("task_id") == task_id)]
+    own = open_queue_priority.Row(task_id, "intake", "queued", priority_rows([intake])[0].priority)
+    return [*priority_rows(others), own]
+
+
+def set_intake_priority(runs_dir: Path, ws: Path, intake: Mapping, flag: int | str) -> int:
+    """Edge: `set_initiative_priority` for a queued intake row with no initiative yet. The store takes the new
+    priority first; `intake/<stem>.md` follows through `priority_text` only when it carries a `priority:` key."""
+    task_id = str(intake["task_id"])
+    if isinstance(flag, int):
+        value = flag
+    else:
+        value, lines = priority_target(intake_priority_rows(run_store.read_queue(runs_dir), intake), task_id, flag)
+        for line in lines:
+            print(line)
+    path = ws / "intake" / f"{task_id}.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        text = None
+    extra = intake.get("extra") or {}
+    sent = {**intake, "priority": value, "extra": {**extra, "priority": value} if "priority" in extra else extra}
+    if not run_store.upsert_row(runs_dir, sent):
+        print(f"routing: the store did not take the priority for intake {task_id}")
+        return 1
+    if text is not None and "priority" in parse_frontmatter(text)[0]:
+        try:
+            path.write_text(priority_text(text, value), encoding="utf-8")
+        except OSError as exc:
+            print(_filed_write_error(path, True, exc))
+            return 1
+    print(f"{task_id}: priority {value} on 1 item(s)")
+    return 0
+
+
 def set_initiative_priority(runs_dir: Path, ws: Path, initiative: str, flag: int | str) -> int:
     """Edge: one priority on every `work/<initiative>/<phase>/*.md` under `ws`, the store first and the file
     second through `write_filed_item`, as `cox route file` orders them. An int `flag` is `--set`; `top`,
@@ -1642,6 +1689,9 @@ def set_initiative_priority(runs_dir: Path, ws: Path, initiative: str, flag: int
     root = ws / "work" / initiative
     paths = sorted(root.glob("*/*.md")) if Path(initiative).name == initiative else []
     if not paths:
+        intake = _queued_intake_row(runs_dir, initiative) if Path(initiative).name == initiative else None
+        if intake is not None:
+            return set_intake_priority(runs_dir, ws, intake, flag)
         print(f"routing: unknown initiative {initiative}")
         return 2
     try:
