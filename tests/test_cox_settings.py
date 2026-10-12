@@ -17,7 +17,7 @@ GROUPED = {
         SettingRow("models and tiers", "cartridge", "policy.review_tier", "opus", "cartridge.yaml", False),
     ],
     "profile files": [
-        SettingRow("profile files", "profile", "team", "example-team", "profile.yaml", False),
+        SettingRow("profile files", "profile", "team", "operator", "profile.yaml", False),
     ],
 }
 
@@ -36,7 +36,7 @@ def test_json_shape():
             }]},
             {"name": "profile files", "rows": [{
                 "section": "profile files", "scope": "profile", "key": "team",
-                "value": "example-team", "source_file": "profile.yaml", "tracked": False, "pat_only": False,
+                "value": "operator", "source_file": "profile.yaml", "tracked": False, "pat_only": False,
             }]},
         ]
     }
@@ -51,7 +51,7 @@ def test_text_rendering_marks_pat_only_rows():
         '  cartridge:policy.review_tier = "opus"  (cartridge.yaml, local)  [operator-only]\n'
         "\n"
         "profile files\n"
-        '  profile:team = "example-team"  (profile.yaml, local)'
+        '  profile:team = "operator"  (profile.yaml, local)'
     )
 
 

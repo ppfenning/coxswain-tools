@@ -156,7 +156,7 @@ def test_snapshot_matches_committed_fixture():
             "kind": "review_pr",
             "initiative": "dash-feed",
             "target": "p2-feed-task",
-            "url": "https://github.com/example-team/coxswain-tools/pull/42",
+            "url": "https://github.com/example-org/coxswain-tools/pull/42",
             "reason": "awaiting review",
             "short_id": "I412",
         },

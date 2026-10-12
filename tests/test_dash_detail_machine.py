@@ -13,7 +13,7 @@ HOST_ROW = {
     "versions_json": json.dumps({
         "cox": "1.2.3",
         "login_ok": True,
-        "host_facts": {"os": "Linux 7.2.5-3-omarchy", "cpu_count": 16, "mem_total_gb": 64.0},
+        "host_facts": {"os": "Linux 7.2.5-3-host-b", "cpu_count": 16, "mem_total_gb": 64.0},
         "checkouts": {
             "coxswain-tools": {"branch": "main", "behind_main": 0},
             "coxswain-dash": {"branch": "worktree-coxtop-drills", "behind_main": 3},

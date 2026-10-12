@@ -102,9 +102,9 @@ def test_smoke_verdict_failure_after_a_timeout_still_fails() -> None:
 
 
 def test_revert_pr_create_runs_in_the_checkout_without_a_repo_flag() -> None:
-    argv = revert_pr_argv({"repo": "/home/me/repos/tools", "pr": 7, "commit": "abc"}, "boom")
+    argv = revert_pr_argv({"repo": "/home/user/repos/tools", "pr": 7, "commit": "abc"}, "boom")
     assert "--repo" not in argv["pr_create"]
-    assert argv["cwd"] == "/home/me/repos/tools"
+    assert argv["cwd"] == "/home/user/repos/tools"
 
 
 def test_revert_pr_argv_carries_commit_and_pr() -> None:

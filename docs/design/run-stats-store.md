@@ -90,7 +90,7 @@ Four facts that shape the design:
    under-report cost and — far worse — will be blind to exactly the runs that failed.
    A store that sees only successes cannot answer a question about reliability.
 6. **No run record names its host.** A second machine with a different provider profile
-   (the planned local-8B on host-c) would be indistinguishable in the data.
+   (a planned local 8B model on a lane host) would be indistinguishable in the data.
 
 ## 2. The risk, and the spike that retires it
 

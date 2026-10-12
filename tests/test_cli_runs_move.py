@@ -5,7 +5,7 @@ from agent_tools.cli import main
 from agent_tools.lane_hosts import LaneHost
 
 RUN = "demo-1"
-HOSTS = (LaneHost(name="host-a", ssh="host-a.local", workspace_dir="/home/agent/ws"),)
+HOSTS = (LaneHost(name="host-a", ssh="host-a.local", workspace_dir="/home/user/ws"),)
 CONFLICT = {"kind": "needs_chair", "initiative": "demo", "cause": "carry_conflict", "reason": "phase 2-core conflicts with main: a.py"}
 
 

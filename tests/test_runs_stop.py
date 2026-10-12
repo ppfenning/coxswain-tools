@@ -7,13 +7,13 @@ from agent_tools.runs_stop import stop_kill_argv, stop_run
 
 
 def test_stop_kill_argv_literal():
-    assert stop_kill_argv("host-a.tail", "/home/x/ws/runs/r-1.pid") == [
+    assert stop_kill_argv("host-a.tail", "/home/user/ws/runs/r-1.pid") == [
         "ssh",
         "-o", "ConnectTimeout=30",
         "-o", "ServerAliveInterval=10",
         "-o", "ServerAliveCountMax=3",
         "host-a.tail",
-        "sh -c 'kill -TERM $(cat /home/x/ws/runs/r-1.pid)'",
+        "sh -c 'kill -TERM $(cat /home/user/ws/runs/r-1.pid)'",
     ]
 
 
@@ -73,7 +73,7 @@ def test_stop_run_remote_success(tmp_path: Path):
     (tmp_path / f"{run_id}.remote.json").write_text(
         json.dumps({"host": "host-a", "launched_at": "2026-09-29T00:00:00Z"})
     )
-    hosts = (LaneHost("host-a", "host-a.tail", "/home/x/ws"),)
+    hosts = (LaneHost("host-a", "host-a.tail", "/home/user/ws"),)
     run_remote = _sequence(True)
 
     result = stop_run(
@@ -88,7 +88,7 @@ def test_stop_run_remote_success(tmp_path: Path):
 
     assert result == {"ok": True, "run": run_id, "host": "host-a"}
     assert run_remote.calls == [
-        (stop_kill_argv("host-a.tail", f"/home/x/ws/runs/{run_id}.pid"),)
+        (stop_kill_argv("host-a.tail", f"/home/user/ws/runs/{run_id}.pid"),)
     ]
 
 

@@ -8,8 +8,8 @@ from agent_tools import chair_service, cli
 
 
 def test_unit_text_with_an_environment_file_loads_it_and_runs_the_labelled_chair() -> None:
-    text = chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, "/home/x/.config/agent-tools/garage.env")
-    assert "EnvironmentFile=-/home/x/.config/agent-tools/garage.env" in text
+    text = chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, "/home/user/.config/agent-tools/garage.env")
+    assert "EnvironmentFile=-/home/user/.config/agent-tools/garage.env" in text
     assert "ExecStart=/usr/local/bin/cox chair run --label chair --interval 60" in text
 
 
@@ -18,8 +18,8 @@ def test_unit_text_without_an_environment_file_has_no_such_line() -> None:
 
 
 def test_path_value_orders_cox_dir_then_venv_bins_then_the_default() -> None:
-    assert chair_service.path_value("/home/x/.local/bin/cox", "/t/.venv/bin", "/g/.venv/bin", "/usr/local/bin:/usr/bin") == (
-        "/home/x/.local/bin:/t/.venv/bin:/g/.venv/bin:/usr/local/bin:/usr/bin"
+    assert chair_service.path_value("/home/user/.local/bin/cox", "/t/.venv/bin", "/g/.venv/bin", "/usr/local/bin:/usr/bin") == (
+        "/home/user/.local/bin:/t/.venv/bin:/g/.venv/bin:/usr/local/bin:/usr/bin"
     )
 
 

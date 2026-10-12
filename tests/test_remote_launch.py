@@ -187,13 +187,13 @@ def test_env_preflight_reports_a_failed_ssh_and_an_empty_name_list_without_calli
     assert env_preflight((), {}) == "no auth_env or endpoint_env configured: nothing to check on the host"
 
 
-REPO = "/home/me/repos/proj"
+REPO = "/home/user/repos/proj"
 EPIC_PUSH = [
-    "git", "-C", "/home/me/repos/proj", "push", "--force", "ssh://me@box/home/me/repos/proj",
+    "git", "-C", "/home/user/repos/proj", "push", "--force", "ssh://me@box/home/user/repos/proj",
     "refs/heads/epic/init/*:refs/heads/epic/init/*",
 ]
 AGENT_PUSH = [
-    "git", "-C", "/home/me/repos/proj", "push", "--force", "ssh://me@box/home/me/repos/proj",
+    "git", "-C", "/home/user/repos/proj", "push", "--force", "ssh://me@box/home/user/repos/proj",
     "refs/heads/agents/init-1/t1:refs/heads/agents/init-1/t1",
 ]
 
@@ -248,7 +248,7 @@ def test_a_relaunch_pushes_from_the_chairs_checkout_when_it_differs_from_the_hos
     host = LaneHost("box", "me@box", "/ws")
     plan = launch_plan(host, "init", "r2", "lbl", None, REPO, None, Relaunch("init-1", (), "/srv/chair/proj"))
     assert plan[2] == [
-        "git", "-C", "/srv/chair/proj", "push", "--force", "ssh://me@box/home/me/repos/proj",
+        "git", "-C", "/srv/chair/proj", "push", "--force", "ssh://me@box/home/user/repos/proj",
         "refs/heads/epic/init/*:refs/heads/epic/init/*",
     ]
 

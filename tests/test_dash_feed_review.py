@@ -6,7 +6,7 @@ from agent_tools.dash_feed import _review_inbox_v1
 
 PR = {
     "initiative": "dash-feed", "phase": "p2-feed", "task_id": "p2-feed-task", "repo": "coxswain-tools",
-    "url": "https://github.com/example-team/coxswain-tools/pull/42", "state": "unknown", "merged_at": None,
+    "url": "https://github.com/example-org/coxswain-tools/pull/42", "state": "unknown", "merged_at": None,
 }
 
 

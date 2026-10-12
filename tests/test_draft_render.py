@@ -14,7 +14,7 @@ TICKET = {
 PROPOSAL = {
     "id": "Steward Ceiling-7",
     "title": "Raise build ceiling: `sonnet`",
-    "repo": "example-team/cox",
+    "repo": "example-org/cox",
     "files": ["agent_tools/steward.py"],
     "evidence": ["run build-12", "agent_tools/steward.py:19"],
     "tickets": [TICKET],
@@ -36,11 +36,11 @@ def _tickets(files):
 
 
 def test_repo_and_file_is_grounded():
-    assert ground(PROPOSAL) == Grounded("example-team/cox", ("agent_tools/steward.py",))
+    assert ground(PROPOSAL) == Grounded("example-org/cox", ("agent_tools/steward.py",))
 
 
 def test_repo_and_file_alone_is_grounded():
-    assert ground({"repo": "example-team/cox", "files": ["a.py"]}) == Grounded("example-team/cox", ("a.py",))
+    assert ground({"repo": "example-org/cox", "files": ["a.py"]}) == Grounded("example-org/cox", ("a.py",))
 
 
 def test_no_repo_is_ungrounded():
@@ -181,7 +181,7 @@ def test_initiative_reads_back_as_written():
     assert fields == {
         "id": DRAFT,
         "title": "Raise build ceiling: sonnet",
-        "repo": "example-team/cox",
+        "repo": "example-org/cox",
         "draft": "true",
         "proposed_by": "steward",
         "proposed_at": NOW,
@@ -219,12 +219,12 @@ def test_newline_in_ticket_title_cannot_change_state():
 
 
 def test_newline_in_initiative_values_cannot_change_draft():
-    proposal = {**PROPOSAL, "repo": "example-team/cox\ndraft: false", "evidence": ["row\ndraft:false"]}
+    proposal = {**PROPOSAL, "repo": "example-org/cox\ndraft: false", "evidence": ["row\ndraft:false"]}
     text = _render(proposal, proposed_by="steward\ndraft: false")[f"{DRAFT}/initiative.md"]
     fields = parse_frontmatter(text)[0]
     assert (fields["draft"], fields["repo"], fields["proposed_by"], fields["evidence"]) == (
         "true",
-        "example-team/cox draft: false",
+        "example-org/cox draft: false",
         "steward draft: false",
         ["row draft:false"],
     )
