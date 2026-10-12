@@ -54,7 +54,7 @@ def _setup(tmp_path, monkeypatch, mode, launch_code=0, board=BOARD, stub_export=
     real_export = queue_export.export_files
     monkeypatch.setattr(
         "agent_tools.queue_export.export_files",
-        lambda workspace, rows: calls.append(("export", workspace, rows))
+        lambda workspace, rows, **_: calls.append(("export", workspace, rows))
         or (queue_export.Export([], []) if stub_export else real_export(workspace, rows)),
     )
     monkeypatch.setattr("agent_tools.cli._merge_initiative_tickets", lambda d: calls.append(("merge", d)) or [])

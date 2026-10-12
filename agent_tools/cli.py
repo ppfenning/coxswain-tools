@@ -4766,7 +4766,7 @@ def _export_board(runs_dir: Path, workspace: Path) -> list[str]:
     from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
 
     store_fill.fill_workspace(workspace)
-    return queue_export.export_files(workspace, run_store.read_queue(runs_dir)).skipped
+    return queue_export.export_files(workspace, run_store.read_queue(runs_dir), hashes=queue_export.store_hashes(runs_dir)).skipped
 
 
 def _launch_rows_then_export(
