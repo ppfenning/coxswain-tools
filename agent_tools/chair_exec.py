@@ -1089,18 +1089,37 @@ def _text(captured: str | bytes | None) -> str:
     return captured.decode(errors="replace") if isinstance(captured, bytes) else captured or ""
 
 
-def run_argv(argv: list[str], cwd: Path | None = None, timeout: float = LOCAL_ARGV_TIMEOUT_S) -> tuple[int, str]:
+@dataclass(frozen=True)
+class ArgvResult:
+    """One finished argv. `stdout` and `stderr` are the child's own streams; `mixed` is what `run_argv` has always
+    returned: stdout then stderr, with the 127/124 message ahead of them. A caller that parses stdout reads `stdout`."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+    mixed: str
+
+
+def run_argv_split(argv: list[str], cwd: Path | None = None, timeout: float = LOCAL_ARGV_TIMEOUT_S) -> ArgvResult:
     """Edge. A missing binary is exit 127 and a timeout exit 124, each with its message, never an exception out of perform.
 
     A timeout keeps what the child printed before it was killed, after the message, so a later task can read it."""
     try:
         done = subprocess.run(argv, capture_output=True, text=True, check=False, cwd=cwd, timeout=timeout)
     except OSError as error:
-        return 127, f"{argv[0] if argv else '<empty argv>'}: {error}"
+        message = f"{argv[0] if argv else '<empty argv>'}: {error}"
+        return ArgvResult(127, "", message, message)
     except subprocess.TimeoutExpired as error:
         message = f"{argv[0] if argv else '<empty argv>'}: timed out after {timeout}s\n"
-        return 124, message + _text(error.stdout) + _text(error.stderr)
-    return done.returncode, done.stdout + done.stderr
+        out, err = _text(error.stdout), _text(error.stderr)
+        return ArgvResult(124, out, err, message + out + err)
+    return ArgvResult(done.returncode, done.stdout, done.stderr, done.stdout + done.stderr)
+
+
+def run_argv(argv: list[str], cwd: Path | None = None, timeout: float = LOCAL_ARGV_TIMEOUT_S) -> tuple[int, str]:
+    """Edge. The exit code and the mixed stdout-then-stderr text of `run_argv_split`."""
+    done = run_argv_split(argv, cwd, timeout=timeout)
+    return done.returncode, done.mixed
 
 
 def run_lane_host(argv: list[str], cwd: Path | None = None) -> tuple[int, str]:
