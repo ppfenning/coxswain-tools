@@ -1528,8 +1528,21 @@ def test_resume_decision_refuses_a_differing_side_naming_both_trees():
         "kind": "refuse", "reason": "remote tree U differs from the cherry-picked tree T"}
 
 
-def test_resume_decision_refuses_an_open_pr_naming_its_number():
-    assert land.resume_decision("T", "T", "T", [7]) == {"kind": "refuse", "reason": "open pull request #7 points at the branch"}
+def test_resume_decision_adopts_the_first_open_pr():
+    assert land.resume_decision("T", "T", "T", [7, 9]) == {"kind": "adopt", "pr": 7}
+
+
+def test_resume_decision_adopts_an_open_pr_before_the_differing_tree_refusal():
+    assert land.resume_decision("T", "T", "U", [7]) == {"kind": "adopt", "pr": 7}
+
+
+def test_resume_steps_adopt_drops_the_build_steps_and_pins_wait_checks():
+    steps = land.land_plan(_record(), {"agents/epic-x-5/seams-task": ["Add seams module"]}, "main")
+    adopted = land.resume_steps(steps, {"kind": "adopt", "pr": 7}, "pr/seams-task")
+    assert [s["kind"] for s in adopted if s["kind"] in ("cherry_pick", "checks", "push", "pr_create")] == []
+    wait = next(s for s in adopted if s["kind"] == "wait_checks")
+    assert (wait["pr"], wait["branch"]) == (7, "origin/pr/seams-task")
+    assert [s["kind"] for s in adopted if s["kind"] in ("merge", "clean", "mark_done")] == ["merge", "clean", "mark_done"]
 
 
 def test_resume_steps_swaps_only_the_cherry_pick_and_leaves_a_non_resume_alone():
@@ -1558,16 +1571,19 @@ def test_cli_apply_resumes_on_a_local_pr_branch_with_the_cherry_picked_tree(repo
     assert ran[:10] == [k if k != "cherry_pick" else "reuse_branch" for k in _PRESYNCED]
 
 
-def test_cli_apply_refuses_a_matching_pr_branch_that_has_an_open_pr(repo, tmp_path, capsys, monkeypatch):
+def test_cli_apply_adopts_a_pr_branch_that_has_an_open_pr(repo, tmp_path, capsys, monkeypatch):
     sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "agents/epic-x-5/seams-task"], check=True, env=_ENV)
     rc, ran = _apply_resume(repo, tmp_path, monkeypatch, prs=[7])
-    assert (rc, ran) == (2, [])
-    assert "open pull request #7" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "land: adopting open pull request #7 on pr/seams-task" in out
+    assert not {"cherry_pick", "reuse_branch", "checks", "push", "pr_create"} & set(ran)
+    assert ran.index("merge") < ran.index("mark_done")
 
 
 def test_cli_apply_refuses_a_differing_pr_branch_naming_the_diff(repo, tmp_path, capsys, monkeypatch):
     sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "main"], check=True, env=_ENV)
-    rc, ran = _apply_resume(repo, tmp_path, monkeypatch, prs=[7])  # a local-only leftover is backed up instead: test_cli_land_leftover.py
+    rc, ran = _apply_resume(repo, tmp_path, monkeypatch, prs=[])  # a local-only leftover is backed up instead: test_cli_land_leftover.py
     out = capsys.readouterr().out
     assert (rc, ran) == (2, [])
     assert "already exists" in out and "local tree" in out and "files differing: f" in out
