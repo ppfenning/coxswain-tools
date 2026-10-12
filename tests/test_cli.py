@@ -890,6 +890,35 @@ def test_chair_perform_with_smoke_watches_a_landed_phase_land_and_a_plain_land(m
     ]
 
 
+def test_chair_perform_with_smoke_watches_every_task_commit_of_a_partial_land(monkeypatch, tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    monkeypatch.setattr(cli.chair_smoke, "run_smoke_commands", lambda repo_dir: [_ok_smoke_result(["cox"])])
+    action = {"kind": "partial_land", "initiative": "i1", "phase": "p1", "repo": "/repos/x", "task_ids": ["a", "c"]}
+    pr = "pr_create: https://github.com/o/x/pull/{}\nmerge: ok\n"
+    both = {
+        "action": action, "status": "landed", "reason": "landed a, c", "commit": "c2",
+        "landed_commits": [
+            {"task_id": "a", "commit": "c1", "reason": pr.format(11)},
+            {"task_id": "c", "commit": "c2", "reason": pr.format(12)},
+        ],
+    }
+    half = {
+        "action": {**action, "phase": "p2"}, "status": "not_landed", "reason": "landed a\ntask c: red",
+        "landed_commits": [{"task_id": "a", "commit": "c3", "reason": pr.format(13)}],
+    }
+    watched: list = []
+    wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: [both, half], watch=watched.append)
+
+    wrapped([], object(), lambda: 1, False)
+
+    assert watched == [
+        {"initiative": "i1", "phase": "p1", "repo": "/repos/x", "pr": 11, "commit": "c1"},
+        {"initiative": "i1", "phase": "p1", "repo": "/repos/x", "pr": 12, "commit": "c2"},
+        {"initiative": "i1", "phase": "p2", "repo": "/repos/x", "pr": 13, "commit": "c3"},
+    ]
+
+
 def test_chair_perform_with_smoke_dry_run_calls_neither_watch_nor_held(monkeypatch, tmp_path):
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()

@@ -7290,23 +7290,33 @@ def _record_beat_wanted(dry_run: bool, lost: str) -> bool:
     return lost == ""
 
 
+def _landed_commits(result: chair_exec.Result) -> list[tuple[str, str, str]]:
+    """(task id, commit, land output) for every commit a result put on main. A partial_land lists one per task land in
+    `landed_commits`, whatever its own status (an earlier task can land before a later one fails); any other land is
+    one landed result with a commit."""
+    if "landed_commits" in result:
+        return [(c["task_id"], c["commit"], c["reason"]) for c in result["landed_commits"] if c.get("commit")]
+    if result["status"] == "landed" and result.get("commit"):
+        return [(result["action"].get("task_id", ""), result["commit"], result["reason"])]
+    return []
+
+
 def _land_watches(results: list[chair_exec.Result], tickets: Callable[[], Sequence[Mapping]]) -> list[dict]:
-    """One watch per landed result that carries a commit. A land_phase names its phase; a plain land takes it from its ticket.
-    The tickets are read only when a land needs them."""
-    if not any(r["status"] == "landed" and r.get("commit") for r in results):
+    """One watch per landed commit: one per landed result, or one per task land of a partial_land. A land_phase or
+    partial_land names its phase; a plain land takes it from its ticket. The tickets are read only when a land needs them."""
+    landed = [(r["action"], *c) for r in results for c in _landed_commits(r)]
+    if not landed:
         return []
     phase_of = {(t.get("initiative", ""), t.get("id", "")): t.get("phase", "") for t in tickets()}
     return [
         {
-            "initiative": r["action"].get("initiative", ""),
-            "phase": r["action"].get("phase")
-            or phase_of.get((r["action"].get("initiative", ""), r["action"].get("task_id", "")), ""),
-            "repo": r["action"].get("repo", ""),
-            "pr": chair_exec._pr_from_reason(r["reason"]),
-            "commit": r["commit"],
+            "initiative": action.get("initiative", ""),
+            "phase": action.get("phase") or phase_of.get((action.get("initiative", ""), task_id), ""),
+            "repo": action.get("repo", ""),
+            "pr": chair_exec._pr_from_reason(reason),
+            "commit": commit,
         }
-        for r in results
-        if r["status"] == "landed" and r.get("commit")
+        for action, task_id, commit, reason in landed
     ]
 
 

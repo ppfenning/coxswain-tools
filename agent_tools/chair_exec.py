@@ -34,6 +34,7 @@ from agent_tools import (
     cox_settings,
     forge_auto,
     host_cmd,
+    partial_land,
     remote_fetch,
     remote_lane,
     route,
@@ -91,6 +92,7 @@ class Result(TypedDict):
     needs_chair: NotRequired[Action]  # a refused land's classified needs_chair, escalated in place of the generic one;
     # or a clear_branches carry's conflicted-merge needs_chair, recorded alongside its own done result
     commit: NotRequired[str]  # a landed land's origin/main commit, from land_commit; set only when landed() was True
+    landed_commits: NotRequired[list[partial_land.LandedCommit]]  # a partial_land's every landed task commit, any status
 
 
 class LandSink(Protocol):
@@ -153,6 +155,7 @@ class Deps:
     revert_ports: Callable[[Action], tuple[RevertGitPort, RevertForgePort]] | None = None  # a revert_land's ports; None refuses it
     quarantine_phase: Callable[[str, str, str, str], None] | None = None  # (initiative, phase, cause, reason): quarantines that phase's tasks
     resolve_land: Callable[[str, str, str], None] | None = None  # (initiative, phase, outcome): the store's resolve write for a land
+    rerun_main: Callable[[str, str], tuple[str, str]] | None = None  # a rerun_main's (repo, commit) -> chair_revert_ports.rerun_infra's (state, line); None refuses it
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -171,6 +174,7 @@ def stagger_seconds(value: object) -> float:
 
 
 _UNFENCED = ("standby", "take_lease", "steer_clear")  # not writes, so a stale or missing epoch does not stop them
+_LAND_KINDS = ("land", "land_phase", "partial_land")  # a partial_land is a run of task lands, blocked and escalated as one
 _REASON_CAP = 600
 LOCAL_ARGV_TIMEOUT_S = 900.0  # a local argv with no bound of its own; matches _CHECK_COMMAND_TIMEOUT_S
 LAND_TIMEOUT_S = 45 * 60.0  # the overall bound on one `cox runs land`; it outlives the checks it runs
@@ -368,7 +372,7 @@ def _land_async(action: Action, deps: Deps, sink: LandSink) -> Result:
     repo = action.get("repo", "")
     if sink.pending(repo):
         return _result(action, "in_progress", f"a land in {repo} is still running")
-    land = _land if action.get("kind") == "land" else _land_phase
+    land = {"land": _land, "partial_land": _partial_land}.get(action.get("kind", ""), _land_phase)
     return sink.submit(action, lambda: land(action, deps, {}))
 
 
@@ -510,6 +514,19 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
     return _land_result(action, repo, code, output)
+
+
+def _partial_land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
+    """The approved tasks of a partial phase, one task land each, through `partial_land.perform_partial_land`:
+    git runs through `deps.run`, and each task land is `_land`'s, so a refusal is classified and escalated as one."""
+    repo = action.get("repo", "")
+    if not repo or not action.get("task_ids"):
+        return _result(action, "refused", "partial_land needs a repo and approved task ids")
+    if repo in blocked:
+        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
+    if not partial_land.steps(action):  # recorded, not escalated: the run is learned once it is fetched
+        return _result(action, "recorded", "no approved task of the phase has a known run yet")
+    return partial_land.perform_partial_land(action, deps.run, lambda land: _land(land, deps, blocked))  # type: ignore[return-value]
 
 
 def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
@@ -882,22 +899,54 @@ def _revert_land(action: Action, deps: Deps) -> Result:
     return {**_result(action, "done" if reverted.status == MERGED else "failed", reason), "needs_chair": raised}
 
 
+MAIN_INFRA_CAUSE = "main_infra"
+
+
+def _rerun_main(action: Action, deps: Deps) -> Result:
+    """Edge. Rerun an infra main's failed jobs through the wired port; never revert, quarantine or resolve a land.
+
+    "rerun" and "pending" are done: the next tick reads main CI again. "capped" is failed with a needs_chair naming the
+    commit, since GitHub has already rerun it as often as the port allows. A raise is a failed result.
+    """
+    if deps.rerun_main is None:
+        return _result(action, "refused", "rerun_main needs a wired rerun port")
+    repo, commit = action.get("repo", ""), action.get("commit", "")
+    try:
+        state, line = deps.rerun_main(repo, commit)
+    except Exception as exc:  # the edge: a port failure is a failed rerun, planned again next tick
+        return _result(action, "failed", f"rerun raised {type(exc).__name__}: {exc}")
+    if state in ("rerun", "pending"):
+        return _result(action, "done", line)
+    reason = f"main CI for {commit} never got past setup and was not rerun again: {line}"
+    raised: Action = {
+        "kind": "needs_chair", "initiative": action.get("initiative", ""), "phase": action.get("phase", ""),
+        "cause": MAIN_INFRA_CAUSE, "epoch": action.get("epoch", 0), "reason": reason,
+    }
+    return {**_result(action, "failed", reason), "needs_chair": raised}
+
+
 def _steer_reason(action: Action) -> str:
     """`steer clear of <other>: <paths joined by comma>`, cut to 200 characters."""
     return f"steer clear of {action.get('other', '')}: {','.join(action.get('paths', []))}"[:200]
 
 
+# The kinds whose result may carry a needs_chair that is recorded as its own row after the result.
+_CARRIES_NEEDS_CHAIR = ("clear_branches", "review_landed", "carry_phase", "rebase_phase", "revert_land", "rerun_main")
+
+
 def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     kind = action.get("kind")
     if (
-        kind in ("land", "land_phase") and deps.lands is not None
-        and argv_for(action) is not None and action.get("repo", "") not in blocked
+        kind in _LAND_KINDS and deps.lands is not None and action.get("repo", "") not in blocked
+        and (argv_for(action) is not None or (kind == "partial_land" and bool(partial_land.steps(action))))
     ):
         return _land_async(action, deps, deps.lands)
     if kind == "land":
         return _land(action, deps, blocked)
     if kind == "land_phase":
         return _land_phase(action, deps, blocked)
+    if kind == "partial_land":
+        return _partial_land(action, deps, blocked)
     if kind == "clear_branches":
         return _clear(action, deps, blocked)
     if kind == "review_landed":
@@ -908,6 +957,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _rebase_phase(action, deps)
     if kind == "revert_land":
         return _revert_land(action, deps)
+    if kind == "rerun_main":
+        return _rerun_main(action, deps)
     if kind == "take_lease":
         return _lease(action, deps)
     if kind == "check_login":
@@ -983,9 +1034,9 @@ def _ack_done_land_notices(deps: Deps) -> list[str]:
 
 
 def _note_uncounted(action: Action, blocked: dict[str, str], blocked_initiatives: dict[str, str]) -> None:
-    """A land_phase that names an initiative blocks only that initiative; any other land blocks its whole repo."""
+    """A land_phase or partial_land that names an initiative blocks only that initiative; any other land blocks its whole repo."""
     initiative = action.get("initiative", "")
-    if action.get("kind") == "land_phase" and initiative:
+    if action.get("kind") in ("land_phase", "partial_land") and initiative:
         blocked_initiatives[initiative] = _land_subject(action)
     else:
         blocked[action.get("repo", "")] = _land_subject(action)
@@ -1035,7 +1086,7 @@ def perform(
             result = _result(action, "fenced", "planned under another lease epoch")
         elif action.get("kind") == "relaunch" and initiative in uncleared:
             result = _result(action, "skipped", f"clear_branches for {initiative} was {uncleared[initiative]} this tick")
-        elif initiative in blocked_initiatives and action.get("kind") in ("land", "land_phase", "clear_branches", "relaunch", "launch_epic"):
+        elif initiative in blocked_initiatives and action.get("kind") in (*_LAND_KINDS, "clear_branches", "relaunch", "launch_epic"):
             result = _result(action, "skipped", f"an earlier land in {action.get('repo', '')} ({blocked_initiatives[initiative]}) was not counted")
         else:
             if action.get("kind") in LAUNCH_KINDS:
@@ -1044,18 +1095,18 @@ def perform(
                     sleep(deps.launch_stagger_s)
                 launched_hosts.add(launch_host)
             result = _execute(action, deps, blocked)
-        if action.get("kind") in ("land", "land_phase") and (result["status"] == "not_landed" or "needs_chair" in result):
+        if action.get("kind") in _LAND_KINDS and (result["status"] == "not_landed" or "needs_chair" in result):
             _note_uncounted(action, blocked, blocked_initiatives)
         if action.get("kind") == "clear_branches" and result["status"] != "done":
             uncleared[initiative] = result["status"]
         if result["status"] != "in_progress":  # the land's own result is recorded when it is collected
             deps.record(_recorded(result))
         results.append(result)
-        if action.get("kind") in ("land", "land_phase") and result["status"] not in ("landed", "fenced", "busy", "in_progress"):
+        if action.get("kind") in _LAND_KINDS and result["status"] not in ("landed", "fenced", "busy", "in_progress", "recorded"):
             escalated = _escalate(action, result)
             deps.record(_recorded(escalated))
             results.append(escalated)
-        if action.get("kind") in ("clear_branches", "review_landed", "carry_phase", "rebase_phase", "revert_land") and "needs_chair" in result:
+        if action.get("kind") in _CARRIES_NEEDS_CHAIR and "needs_chair" in result:
             carried = _result(result["needs_chair"], "recorded", result["needs_chair"].get("reason", ""))
             deps.record(_recorded(carried))
             results.append(carried)
