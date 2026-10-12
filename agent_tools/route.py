@@ -1451,12 +1451,16 @@ def plan_writes(plan: Mapping, intake_row: Mapping, existing: Sequence[Mapping])
 
     A plan with no tasks gives no rows and the `decompose_empty` reason. A row the store holds past ready
     is left out, so a rerun never resets it. `existing` is the store's rows for the plan's initiative.
+    A non-zero intake priority is set on the initiative and task rows; the intake row keeps its own.
     """
     outcome = decompose_empty.empty_outcome(len(plan["tasks"]), list(plan.get("lint", [])), False)
     if outcome["empty"]:
         return [], f"routing: {outcome['reason']}"
     started = {(r["kind"], r["task_id"]) for r in existing if r.get("state") not in _UNSTARTED_STATES}
-    built = [*queue_rows.plan_to_rows(plan, intake_row["task_id"]), queue_rows.intake_stamp(dict(intake_row), plan["id"])]
+    value = _row_priority(intake_row)
+    inherit = {"initiative", "task"} if value else set()
+    planned = [{**r, "priority": value} if r["kind"] in inherit else r for r in queue_rows.plan_to_rows(plan, intake_row["task_id"])]
+    built = [*planned, queue_rows.intake_stamp(dict(intake_row), plan["id"])]
     return [r for r in built if (r["kind"], r["task_id"]) not in started], None
 
 
@@ -1584,17 +1588,18 @@ def _int_or_zero(value: object) -> int:
         return 0
 
 
-def priority_rows(stored: Sequence[Mapping]) -> list[open_queue_priority.Row]:
-    """Pure: one core `Row` per stored task or intake row. The priority is the row's top-level `priority`, else
-    the copy in `extra`; a missing or non-integer one reads as 0."""
-    def priority(row: Mapping) -> int:
-        extra = row.get("extra")
-        top = row.get("priority")
-        return _int_or_zero(top if top is not None else extra.get("priority") if isinstance(extra, Mapping) else None)
+def _row_priority(row: Mapping) -> int:
+    """A row's top-level `priority`, else the copy in `extra`; a missing or non-integer one reads as 0."""
+    extra = row.get("extra")
+    top = row.get("priority")
+    return _int_or_zero(top if top is not None else extra.get("priority") if isinstance(extra, Mapping) else None)
 
+
+def priority_rows(stored: Sequence[Mapping]) -> list[open_queue_priority.Row]:
+    """Pure: one core `Row` per stored task or intake row, with its `_row_priority`."""
     return [
         open_queue_priority.Row(
-            str(r.get("initiative") or r.get("task_id") or ""), str(r["kind"]), str(r.get("state") or ""), priority(r)
+            str(r.get("initiative") or r.get("task_id") or ""), str(r["kind"]), str(r.get("state") or ""), _row_priority(r)
         )
         for r in stored
         if r.get("kind") in ("task", "intake")
