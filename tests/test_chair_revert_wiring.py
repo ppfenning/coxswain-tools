@@ -7,7 +7,7 @@ from pathlib import Path
 
 from agent_tools import cli, commands  # noqa: F401  (cli imports commands first; keep the import order the suite uses)
 
-GREEN = json.dumps([{"databaseId": 7, "status": "completed", "conclusion": "success"}])
+GREEN = json.dumps([{"databaseId": 7, "status": "completed", "conclusion": "success", "headSha": "abc"}])
 
 
 def _checkout(tmp_path: Path, url: str = "git@github.com:o/r.git") -> str:
