@@ -509,19 +509,18 @@ def with_issue(steps: Sequence[dict[str, Any]], record: dict[str, Any], issue: s
 
 def resume_decision(expected_tree: str, local_tree: str | None, remote_tree: str | None,
                     open_prs: Sequence[int]) -> dict[str, Any]:
-    """Whether an existing `pr/<task>` branch can be reused. `fresh` when
-    neither side exists, `resume` when every existing side carries
-    `expected_tree` and no open PR points at it, else a `refuse` naming why."""
+    """Whether an existing `pr/<task>` branch can be reused. `fresh` when neither side exists, `adopt` of the
+    first open PR whatever the trees, `resume` when every existing side carries `expected_tree`, else a `refuse`."""
     sides = {"local": local_tree, "remote": remote_tree}
     existing = {side: tree for side, tree in sides.items() if tree is not None}
     if not existing:
         return {"kind": "fresh"}
+    if open_prs:
+        return {"kind": "adopt", "pr": open_prs[0]}
     differing = [f"{side} tree {tree} differs from the cherry-picked tree {expected_tree}"
                  for side, tree in existing.items() if tree != expected_tree]
     if differing:
         return {"kind": "refuse", "reason": "; ".join(differing)}
-    if open_prs:
-        return {"kind": "refuse", "reason": "open pull request " + ", ".join(f"#{n}" for n in open_prs) + " points at the branch"}
     return {"kind": "resume", "local": local_tree is not None, "remote": remote_tree is not None}
 
 
@@ -554,9 +553,12 @@ def leftover_branch_decision(branch: str, remote_exists: bool, open_pr: bool, lo
 
 
 def resume_steps(steps: Sequence[dict[str, Any]], decision: dict[str, Any], pr_branch: str) -> list[dict[str, Any]]:
-    """`steps` with the `cherry_pick` replaced by a `reuse_branch` when
-    `decision` is a `resume`; every other step keeps its place. Any other
-    decision returns the steps unchanged."""
+    """`steps` with the `cherry_pick` replaced by a `reuse_branch` on a `resume`. On an `adopt` the steps that build
+    and open the PR are dropped and `wait_checks` is pinned to the open PR; every other step keeps its place."""
+    if decision["kind"] == "adopt":
+        built = ("cherry_pick", "checks", "push", "pr_create")
+        return [{**s, "pr": decision["pr"], "branch": f"origin/{pr_branch}"} if s["kind"] == "wait_checks" else s
+                for s in steps if s["kind"] not in built and s.get("before") != "pr_create"]
     if decision["kind"] != "resume":
         return list(steps)
     reuse = {"kind": "reuse_branch", "branch": pr_branch, "local": decision["local"], "remote": decision["remote"]}

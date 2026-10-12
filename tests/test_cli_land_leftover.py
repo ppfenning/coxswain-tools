@@ -120,11 +120,12 @@ def test_the_backup_ref_resolves_to_the_old_commit_and_overwrites_an_older_one(r
     assert _git(repo, "rev-parse", _BACKUP) == old
 
 
-def test_a_leftover_with_an_open_pull_request_still_refuses_with_the_original_message(repo, tmp_path, monkeypatch, capsys):
+def test_a_leftover_with_an_open_pull_request_is_adopted_not_backed_up(repo, tmp_path, monkeypatch, capsys):
     rc, ran = _land(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(1, "me"), prs=[7])
     out = capsys.readouterr().out
-    assert (rc, ran) == (2, [])
-    assert _refusal(repo) in out and "backed up" not in out
+    assert rc == 0, out
+    assert f"land: adopting open pull request #7 on {_PR}\n" in out and "backed up" not in out
+    assert "cherry_pick" not in ran and "push" not in ran
     assert not _has_ref(repo, _BACKUP)
 
 
@@ -238,10 +239,11 @@ def test_a_rerun_finds_the_backup_already_on_origin_and_carries_on(repo, tmp_pat
     assert _remote_tip(repo, f"refs/heads/{_PR}") == "" and _remote_tip(repo, _REMOTE_BACKUP) == old
 
 
-def test_a_remote_only_leftover_with_an_open_pull_request_still_refuses(repo, tmp_path, monkeypatch, capsys):
+def test_a_remote_only_leftover_with_an_open_pull_request_is_adopted(repo, tmp_path, monkeypatch, capsys):
     old = _push_pr(repo, keep_local=False)
     rc, ran = _land(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(1, "me"), prs=[7])
     out = capsys.readouterr().out
-    assert (rc, ran) == (2, [])
-    assert f"land: refusing, branch {_PR} already exists in {repo}: remote tree " in out and "backed up" not in out
+    assert rc == 0, out
+    assert f"land: adopting open pull request #7 on {_PR}\n" in out and "backed up" not in out
+    assert "cherry_pick" not in ran
     assert _remote_tip(repo, f"refs/heads/{_PR}") == old and not _has_ref(repo, _REMOTE_BACKUP)
