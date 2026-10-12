@@ -1475,7 +1475,7 @@ def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> di
     """`land.resume_decision` for the `pr/<task>` branch a `cherry_pick` step
     would create. The expected tree is what cherry-picking the one commit onto
     `from` yields, computed by `git merge-tree` without touching the checkout.
-    Open PRs are only asked for once every existing branch already matches."""
+    Open PRs are asked for whenever a branch exists; one is adopted whatever the trees."""
     branch, base = cherry_pick["onto"], cherry_pick["from"]
     local = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{tree}}")
     fetched = subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
@@ -1483,6 +1483,11 @@ def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> di
     remote = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}^{{tree}}") if fetched else None
     if local is None and remote is None:
         return land.resume_decision("", None, None, [])
+    prs = _open_prs_for(repo, branch, forge_module)
+    if isinstance(prs, str):
+        return {"kind": "refuse", "reason": prs}
+    if prs:
+        return land.resume_decision("", local, remote, prs)
     shas = (_git_out(repo, "rev-list", f"{base}..{cherry_pick['branch']}") or "").split()
     merged = _git_out(repo, "merge-tree", "--write-tree", f"--merge-base={shas[0]}^", base, shas[0]) if len(shas) == 1 else None
     expected = merged.splitlines()[0] if merged else None
@@ -1494,17 +1499,13 @@ def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> di
         if expected is None:
             return {"kind": "refuse", "reason": f"cannot compute the generated tree of {cherry_pick['branch']} onto {base}: {why}"}
     existing = [t for t in (local, remote) if t is not None]
-    prs = _open_prs_for(repo, branch, forge_module) if all(t == expected for t in existing) else []
-    if isinstance(prs, str):
-        return {"kind": "refuse", "reason": prs}
-    decision = land.resume_decision(expected, local, remote, prs)
+    decision = land.resume_decision(expected, local, remote, [])
     if decision["kind"] != "refuse":
         return decision
     files = sorted({f for t in existing if t != expected
                     for f in (_git_out(repo, "diff-tree", "-r", "--name-only", expected, t) or "").split()})
     refused = {**decision, "reason": decision["reason"] + (f"; files differing: {', '.join(files)}" if files else "")}
-    # Carried for `_land_leftover`, so it need not run the generator a second time. A refusal over an open PR has
-    # every tree equal to `expected` and carries nothing.
+    # Carried for `_land_leftover`, so it need not run the generator a second time.
     return {**refused, "local_tree": local, "remote_tree": remote, "expected_tree": expected} if any(t != expected for t in existing) else refused
 
 
@@ -2614,6 +2615,8 @@ def _runs_land(a: argparse.Namespace) -> int:
             return 2
         if decision["kind"] == "resume":
             print(f"land: resuming on existing branch {cherry_pick['onto']}")
+        if decision["kind"] == "adopt":
+            print(f"land: adopting open pull request #{decision['pr']} on {cherry_pick['onto']}")
         steps = land.resume_steps(steps, decision, cherry_pick["onto"])
         planned = land.resume_steps(planned, decision, cherry_pick["onto"])
     # Steps start here: every return from now on is logged. Earlier returns are not.
