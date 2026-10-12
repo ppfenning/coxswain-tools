@@ -17,6 +17,7 @@ from agent_tools.chair_exec import (
     argv_for,
     decompose_id,
     delete_branches_with,
+    failed_reason,
     land_commit,
     land_refusal,
     perform,
@@ -116,6 +117,49 @@ def test_a_fetch_exit_whose_fetch_errors_still_fails_with_its_reason_unchanged(t
     deps = replace(_deps([], code=2, output=output), runs_dir=tmp_path, work_dir=tmp_path)
     results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
     assert (results[0]["status"], results[0]["reason"]) == ("failed", output)
+
+
+VERDICT = "fetch: verify: r-1 has no approved tasks in the store"
+LAST_BRANCH = "epic/alpha/t20 -> epic/alpha/t20"
+GIT_STDERR = "".join(f" * [new branch]      epic/alpha/t{n:02d} -> epic/alpha/t{n:02d}\n" for n in range(1, 21))
+
+
+def test_a_failed_reason_starts_with_the_stdout_verdict_and_ends_with_the_last_stderr_line() -> None:
+    reason = failed_reason(VERDICT + "\n", GIT_STDERR)
+    assert len(GIT_STDERR) > 600
+    assert reason.startswith(VERDICT + "\n")
+    assert reason.endswith(LAST_BRANCH)
+    assert len(reason) <= 600
+
+
+def test_a_failed_reason_with_empty_stdout_is_the_stderr_tail() -> None:
+    assert failed_reason("", "one\ntwo\n") == "one\ntwo"
+    assert failed_reason("", GIT_STDERR).endswith(LAST_BRANCH)
+    assert len(failed_reason("", GIT_STDERR)) <= 600
+
+
+def test_a_failed_reason_with_empty_stderr_is_the_stdout_verdict() -> None:
+    assert failed_reason(f"\n{VERDICT}\nsecond line\n", "") == VERDICT
+
+
+def test_a_failed_reason_with_both_empty_is_empty() -> None:
+    assert failed_reason("", "") == ""
+
+
+def test_a_failed_fetch_records_the_verdict_first_through_run_argv(monkeypatch) -> None:
+    done = chair_exec.ArgvResult(2, VERDICT + "\n", GIT_STDERR, VERDICT + "\n" + GIT_STDERR)
+    monkeypatch.setattr(chair_exec, "run_argv_split", lambda *a, **k: done)
+    code, output = run_argv(["cox", "runs", "fetch", "r-1"])
+    recorded = chair_exec._recorded({"action": {"kind": "fetch_exit", "run": "r-1"}, "status": "failed", "reason": output})
+    assert code == 2
+    assert recorded["reason"].startswith("fetch: verify:")
+    assert recorded["reason"].endswith(LAST_BRANCH)
+
+
+def test_a_failed_land_keeps_the_mixed_text_so_the_conflict_line_survives(monkeypatch) -> None:
+    done = chair_exec.ArgvResult(1, "merge: ok\n", "error: could not apply abc\n", "merge: ok\nerror: could not apply abc\n")
+    monkeypatch.setattr(chair_exec, "run_argv_split", lambda *a, **k: done)
+    assert run_argv(["cox", "runs", "land", "r-1"]) == (1, done.mixed)
 
 
 WIDEN = {
