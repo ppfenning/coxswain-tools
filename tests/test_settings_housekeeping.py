@@ -1,7 +1,7 @@
 from agent_tools.settings_housekeeping import housekeeping_rows
 from agent_tools.settings_model import SettingRow
 
-PROFILE = {"team": "pat", "chair": {"housekeeping_hours": 12, "stale_days": 3}}
+PROFILE = {"team": "example-team", "chair": {"housekeeping_hours": 12, "stale_days": 3}}
 TRACKED = {"profile.yaml": True, "cartridge.yaml": True}
 
 
@@ -27,5 +27,5 @@ def test_analytics_snapshot_max_age_is_a_housekeeping_row():
 
 
 def test_no_chair_mapping_yields_no_rows():
-    assert housekeeping_rows({"team": "pat"}, TRACKED) == []
+    assert housekeeping_rows({"team": "example-team"}, TRACKED) == []
     assert housekeeping_rows({"chair": None}, TRACKED) == []

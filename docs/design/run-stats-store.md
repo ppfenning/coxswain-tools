@@ -11,7 +11,7 @@ programme. Keep them in step. -->
 
 # Run stats store (P0) — design
 
-Date: 2026-09-07. Status: approved in chat, spec for review. Author: chair session with Pat.
+Date: 2026-09-07. Status: approved in chat, spec for review. Author: chair session with the operator.
 
 The stats store is the substrate for routing work by evidence instead of by hand. Today the
 provider profile's routing decisions are recorded as PROSE in
@@ -90,7 +90,7 @@ Four facts that shape the design:
    under-report cost and — far worse — will be blind to exactly the runs that failed.
    A store that sees only successes cannot answer a question about reliability.
 6. **No run record names its host.** A second machine with a different provider profile
-   (the planned local-8B on the TensorBook) would be indistinguishable in the data.
+   (a planned local 8B model on a lane host) would be indistinguishable in the data.
 
 ## 2. The risk, and the spike that retires it
 

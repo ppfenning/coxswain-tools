@@ -86,8 +86,8 @@ def test_git_fetch_argv_maps_the_run_branches_onto_themselves():
 
 
 def test_git_fetch_argv_also_brings_back_the_initiative_phase_branch():
-    assert git_fetch_argv("jarvis:/r", "init-a-2") == [
-        "git", "fetch", "jarvis:/r",
+    assert git_fetch_argv("host-a:/r", "init-a-2") == [
+        "git", "fetch", "host-a:/r",
         "refs/heads/agents/init-a-2/*:refs/heads/agents/init-a-2/*",
         "+refs/heads/epic/init-a/*:refs/heads/epic/init-a/*",
     ]

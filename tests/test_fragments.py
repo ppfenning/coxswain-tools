@@ -45,12 +45,12 @@ def test_a_list_top_level_is_refused():
 
 
 def test_merge_edits_merges_nested_dicts_with_edits_winning():
-    existing = {"cast": {"builder": "codex"}, "team": "pat"}
+    existing = {"cast": {"builder": "codex"}, "team": "example-team"}
     edits = {"cast": {"builder": "claude", "reviewer": "codex"}}
     merged = merge_edits(existing, edits)
     assert merged == {
         "cast": {"builder": "claude", "reviewer": "codex"},
-        "team": "pat",
+        "team": "example-team",
     }
 
 
@@ -75,7 +75,7 @@ def test_merge_edits_does_not_mutate_its_arguments():
 
 
 def test_round_trips_true_for_an_ordinary_fragment():
-    text = "team: pat\ncast:\n  builder: codex\n"
+    text = "team: example-team\ncast:\n  builder: codex\n"
     assert round_trips(text) is True
 
 
@@ -100,16 +100,16 @@ def test_round_trips_false_for_a_self_referential_anchor():
 
 
 def test_write_fragment_creates_the_file_with_the_header(tmp_path):
-    team_dir = tmp_path / "pat"
-    path = write_fragment(team_dir, {"team": "pat"})
+    team_dir = tmp_path / "example-team"
+    path = write_fragment(team_dir, {"team": "example-team"})
     assert path == team_dir / "cartridge.d" / "edited.yaml"
     text = path.read_text()
     assert text.startswith(HEADER)
-    assert load_fragment(text) == {"team": "pat"}
+    assert load_fragment(text) == {"team": "example-team"}
 
 
 def test_write_fragment_merges_and_keeps_earlier_edits(tmp_path):
-    team_dir = tmp_path / "pat"
+    team_dir = tmp_path / "example-team"
     write_fragment(team_dir, {"context": ["base.md"], "cast": {"builder": "codex"}})
     path = write_fragment(team_dir, {"context": ["extra.md"], "cast": {"reviewer": "claude"}})
     assert load_fragment(path.read_text()) == {
@@ -119,20 +119,20 @@ def test_write_fragment_merges_and_keeps_earlier_edits(tmp_path):
 
 
 def test_write_fragment_refuses_a_hand_written_file_with_an_anchor(tmp_path):
-    team_dir = tmp_path / "pat"
+    team_dir = tmp_path / "example-team"
     fragment_dir = team_dir / "cartridge.d"
     fragment_dir.mkdir(parents=True)
     path = fragment_dir / "edited.yaml"
     original = "a: &a\n  self: *a\n"
     path.write_text(original)
     with pytest.raises(FragmentError):
-        write_fragment(team_dir, {"team": "pat"})
+        write_fragment(team_dir, {"team": "example-team"})
     assert path.read_text() == original
 
 
 def test_write_fragment_leaves_no_temp_file_behind(tmp_path):
-    team_dir = tmp_path / "pat"
-    path = write_fragment(team_dir, {"team": "pat"})
+    team_dir = tmp_path / "example-team"
+    path = write_fragment(team_dir, {"team": "example-team"})
     remaining = {p.name for p in path.parent.iterdir()}
     assert remaining == {"edited.yaml"}
 

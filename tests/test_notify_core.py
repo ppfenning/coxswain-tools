@@ -24,7 +24,7 @@ def test_config_non_string_is_none():
 
 
 def test_config_set():
-    assert config_from_profile({"notify": {"ntfy": "https://ntfy.sh/pat-coxswain"}}) == NotifyConfig("https://ntfy.sh/pat-coxswain")
+    assert config_from_profile({"notify": {"ntfy": "https://ntfy.sh/example-topic"}}) == NotifyConfig("https://ntfy.sh/example-topic")
 
 
 def test_render_truncates_long_body_with_ellipsis():

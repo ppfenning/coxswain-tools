@@ -21,7 +21,7 @@ class FakeStore:
     def __init__(self, path):
         self.conn = sqlite3.connect(path)
         self.conn.execute("CREATE TABLE hosts (name TEXT PRIMARY KEY, beat_at TEXT, versions_json TEXT)")
-        self.conn.execute("INSERT INTO hosts VALUES ('jarvis', ?, ?)", (T0, json.dumps({"login_ok": True})))
+        self.conn.execute("INSERT INTO hosts VALUES ('host-a', ?, ?)", (T0, json.dumps({"login_ok": True})))
 
     def run(self, argv: list[str]) -> tuple[int, str]:
         opts = dict(zip(argv[3::2], argv[4::2]))
@@ -41,7 +41,7 @@ def _login(tmp_path, monkeypatch, login_ok, reason=None, failures=0) -> FakeStor
     profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\n", encoding="utf-8")
     store = FakeStore(tmp_path / "fake.db")
     monkeypatch.setattr(cli.store_cli, "runner", lambda runs_dir: store.run)
-    args = argparse.Namespace(profile=str(profile), name="jarvis", login_ok=login_ok, reason=reason, failures=failures)
+    args = argparse.Namespace(profile=str(profile), name="host-a", login_ok=login_ok, reason=reason, failures=failures)
     assert cli._host_login(args) == 0
     return store
 
@@ -57,16 +57,16 @@ def test_a_login_of_none_stores_none_not_a_string(tmp_path, monkeypatch):
 
 
 def test_the_argv_names_the_login_verb_and_never_beat():
-    assert cli._host_login_argv("jarvis", False, "expired", 3, "chair") == [
-        "host", "login", "jarvis", "--login-ok", "false", "--reason", "expired", "--failures", "3", "--by", "chair",
+    assert cli._host_login_argv("host-a", False, "expired", 3, "chair") == [
+        "host", "login", "host-a", "--login-ok", "false", "--reason", "expired", "--failures", "3", "--by", "chair",
     ]
-    assert "--reason" not in cli._host_login_argv("jarvis", None, None, 0, "chair")
+    assert "--reason" not in cli._host_login_argv("host-a", None, None, 0, "chair")
 
 
 @pytest.mark.parametrize("text, expected", [("true", True), ("False", False), ("none", None)])
 def test_login_ok_reads_true_false_and_none(text, expected):
     assert cli._parse_login_ok(text) is expected
-    ns = cli.build_parser().parse_args(["host", "login", "jarvis", text])
+    ns = cli.build_parser().parse_args(["host", "login", "host-a", text])
     assert ns.login_ok is expected
 
 

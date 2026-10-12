@@ -5,7 +5,7 @@ from agent_tools.cli import main
 from agent_tools.lane_hosts import LaneHost
 
 RUN = "demo-1"
-HOSTS = (LaneHost(name="jarvis", ssh="jarvis.local", workspace_dir="/home/agent/ws"),)
+HOSTS = (LaneHost(name="host-a", ssh="host-a.local", workspace_dir="/home/user/ws"),)
 CONFLICT = {"kind": "needs_chair", "initiative": "demo", "cause": "carry_conflict", "reason": "phase 2-core conflicts with main: a.py"}
 
 
@@ -46,9 +46,9 @@ def _argv(tmp_path, run_id, host, *extra):
 def test_happy_path_moves_in_order(tmp_path, monkeypatch, capsys):
     _patch_hosts(monkeypatch)
     order = _patch_edges(monkeypatch)
-    code = main(_argv(tmp_path, RUN, "jarvis"))
+    code = main(_argv(tmp_path, RUN, "host-a"))
     out = capsys.readouterr().out
-    assert out == f"moved {RUN} -> jarvis\n"
+    assert out == f"moved {RUN} -> host-a\n"
     assert code == 0
     assert order == ["pause", "stop", "clear_branches", "relaunch"]
 
@@ -66,7 +66,7 @@ def test_unknown_host_refuses_before_any_step(tmp_path, monkeypatch, capsys):
 def test_a_failing_stop_step_refuses_and_skips_the_rest(tmp_path, monkeypatch, capsys):
     _patch_hosts(monkeypatch)
     order = _patch_edges(monkeypatch, stop_ok=False, stop_reason="pidfile missing")
-    code = main(_argv(tmp_path, RUN, "jarvis"))
+    code = main(_argv(tmp_path, RUN, "host-a"))
     out = capsys.readouterr().out
     assert out == f"refused {RUN}: pidfile missing\n"
     assert code == 1
@@ -76,7 +76,7 @@ def test_a_failing_stop_step_refuses_and_skips_the_rest(tmp_path, monkeypatch, c
 def test_a_done_clear_branches_carrying_a_needs_chair_refuses_before_relaunch(tmp_path, monkeypatch, capsys):
     _patch_hosts(monkeypatch)
     order = _patch_edges(monkeypatch, clear_extra={"needs_chair": CONFLICT})
-    code = main(_argv(tmp_path, RUN, "jarvis"))
+    code = main(_argv(tmp_path, RUN, "host-a"))
     out = capsys.readouterr().out
     assert out == f"refused {RUN}: clear_branches needs the chair: phase 2-core conflicts with main: a.py\n"
     assert code == 1
@@ -86,14 +86,14 @@ def test_a_done_clear_branches_carrying_a_needs_chair_refuses_before_relaunch(tm
 def test_json_pairs_each_step_with_its_result_on_success_and_on_refusal(tmp_path, monkeypatch, capsys):
     _patch_hosts(monkeypatch)
     _patch_edges(monkeypatch)
-    assert main(_argv(tmp_path, RUN, "jarvis", "--json")) == 0
+    assert main(_argv(tmp_path, RUN, "host-a", "--json")) == 0
     moved = json.loads(capsys.readouterr().out)
     assert (moved["ok"], moved["reason"]) == (True, "")
     assert [(e["step"]["kind"], e["ok"]) for e in moved["move_plan"]] == [
         ("pause", True), ("stop", True), ("clear_branches", True), ("relaunch", True),
     ]
     _patch_edges(monkeypatch, stop_ok=False, stop_reason="pidfile missing")
-    assert main(_argv(tmp_path, RUN, "jarvis", "--json")) == 1
+    assert main(_argv(tmp_path, RUN, "host-a", "--json")) == 1
     refused = json.loads(capsys.readouterr().out)
     assert (refused["ok"], refused["reason"]) == (False, "pidfile missing")
     assert [(e["step"]["kind"], e["ok"]) for e in refused["move_plan"]] == [("pause", True), ("stop", False)]

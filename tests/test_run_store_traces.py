@@ -6,7 +6,7 @@ from agent_tools import lake_config, run_store
 from agent_tools.store_url import TracesRoot
 
 BLOCK = {
-    "endpoint": "http://garage.lan:3900",
+    "endpoint": "http://garage.example.internal:3900",
     "region": "garage",
     "access_key_env": "GARAGE_ACCESS_KEY_ID",
     "secret_key_env": "GARAGE_SECRET_ACCESS_KEY",
@@ -18,7 +18,7 @@ ENV = {"GARAGE_ACCESS_KEY_ID": "AK", "GARAGE_SECRET_ACCESS_KEY": "SK"}
 def test_s3_options_from_the_block_and_the_environment():
     assert run_store.s3_options(BLOCK, ENV) == {
         "scheme": "http",
-        "endpoint_override": "garage.lan:3900",
+        "endpoint_override": "garage.example.internal:3900",
         "region": "garage",
         "access_key": "AK",
         "secret_key": "SK",

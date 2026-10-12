@@ -36,7 +36,7 @@ def _facts(checkouts=None, provider_cli_on_path=True):
     return {"root": "/root", "checkouts": checkouts or {}, "provider_cli_on_path": provider_cli_on_path}
 
 
-def _options(provider="claude-code", with_=None, team="pat", workspace="/ws", root="/root"):
+def _options(provider="claude-code", with_=None, team="example-team", workspace="/ws", root="/root"):
     return {"provider": provider, "with": with_ or [], "root": root, "team": team, "workspace": workspace}
 
 
@@ -165,7 +165,7 @@ def test_cli_install_dry_run_lists_clones_and_exits_zero(tmp_path, capsys):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
     rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
-                   "--provider", "claude-code", "--team", "pat", "--workspace", str(tmp_path / "ws")])
+                   "--provider", "claude-code", "--team", "example-team", "--workspace", str(tmp_path / "ws")])
     out = capsys.readouterr().out
     assert rc == 0
     assert "clone harness" in out and "clone cartridges" in out and "doctor" in out
@@ -315,7 +315,7 @@ def test_cli_install_prints_no_schema_warn_line_when_all_three_agree(tmp_path, m
     manifest_path.write_text(_MANIFEST_TOML)
     _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="1.0")
     rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
-                   "--provider", "claude-code", "--team", "pat", "--workspace", str(tmp_path / "ws")])
+                   "--provider", "claude-code", "--team", "example-team", "--workspace", str(tmp_path / "ws")])
     out = capsys.readouterr().out
     assert rc == 0
     assert "schema" not in out
@@ -326,7 +326,7 @@ def test_cli_install_warns_naming_only_the_disagreeing_pair_before_the_plan(tmp_
     manifest_path.write_text(_MANIFEST_TOML)
     _fake_schema_package(tmp_path, monkeypatch, cartridges="1.0", graphs="2.0")
     rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
-                   "--provider", "claude-code", "--team", "pat", "--workspace", str(tmp_path / "ws")])
+                   "--provider", "claude-code", "--team", "example-team", "--workspace", str(tmp_path / "ws")])
     out = capsys.readouterr().out
     lines = out.splitlines()
     assert lines[0] == "schema  WARN  graphs 2.0"
@@ -393,7 +393,7 @@ def test_cli_install_edge_prints_its_channel(tmp_path, capsys):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
     rc = cli.main(["install", "--edge", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
-                   "--provider", "claude-code", "--team", "pat", "--workspace", str(tmp_path / "ws")])
+                   "--provider", "claude-code", "--team", "example-team", "--workspace", str(tmp_path / "ws")])
     out = capsys.readouterr().out
     assert rc == 0 and "channel: edge" in out and "channel=edge" in out
 

@@ -205,7 +205,7 @@ three fields.
 lane_hosts:
   - name: big
     ssh: big.example.net
-    workspace_dir: /home/me/workspace
+    workspace_dir: /home/user/workspace
 ```
 
 `name` is what you pass to `--host` and `--on`. `ssh` is the destination that

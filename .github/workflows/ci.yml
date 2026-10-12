@@ -13,8 +13,11 @@ jobs:
         with: { python-version: "3.14" }
       - run: pip install -e ".[dev]"
       - run: pytest -q
-      - name: nothing names an employer
-        run: python3 .github/check_clean.py
+      - name: nothing names the operator, their homelab, an employer or a vendor (tests included)
+        env:
+          # the names rule's regex lives only in this secret; without it the step says the rule was skipped
+          COXSWAIN_CLEAN_DENY: ${{ secrets.COXSWAIN_CLEAN_DENY }}
+        run: python3 .github/check_clean.py .
       - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
         run: pip install ruff==0.16.6 && ruff check .
   py315:

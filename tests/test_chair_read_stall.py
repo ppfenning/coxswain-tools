@@ -36,7 +36,7 @@ def test_a_live_run_with_no_remote_json_gives_local_true(tmp_path):
 
 def test_a_live_run_with_a_remote_json_naming_jarvis_gives_local_false(tmp_path):
     _live_store(tmp_path)
-    (tmp_path / "abc-1.remote.json").write_text(json.dumps({"host": "jarvis", "launched_at": LAUNCHED_AT}))
+    (tmp_path / "abc-1.remote.json").write_text(json.dumps({"host": "host-a", "launched_at": LAUNCHED_AT}))
     candidates = read_stall_candidates(tmp_path, (), NOW)
     assert candidates[0]["local"] is False
 

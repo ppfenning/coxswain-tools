@@ -15,7 +15,7 @@ def _run(id: str, surfaces: list[str], repo: str = "r") -> RunningInitiative:
 
 
 def _one_free_host(**over) -> Facts:
-    return _facts(dispatch={"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 3}]}, **over)
+    return _facts(dispatch={"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "host-a", "live_runs": 3}]}, **over)
 
 
 def _facts(**over) -> Facts:
@@ -114,17 +114,17 @@ def test_candidates_past_the_free_lanes_get_no_steer_check():
 
 def test_an_unplaceable_candidate_gives_the_host_lane_to_the_next_one():
     facts = _one_free_host(initiatives=[_init("a", requires=("go",)), _init("b")])
-    assert plan_fill(facts, 0) == [_launch("b", host="jarvis")]
+    assert plan_fill(facts, 0) == [_launch("b", host="host-a")]
 
 
 def test_after_the_local_lanes_an_unplaceable_candidate_is_skipped_for_the_host():
     facts = _one_free_host(initiatives=[_init("a"), _init("b", requires=("go",)), _init("c")])
-    assert plan_fill(facts, 1) == [_launch("a"), _launch("c", host="jarvis")]
+    assert plan_fill(facts, 1) == [_launch("a"), _launch("c", host="host-a")]
 
 
 def test_an_unplaceable_candidate_claims_no_surfaces():
     facts = _one_free_host(initiatives=[_init("a", ["src/main.rs"], requires=("go",)), _init("b", ["src/main.rs"])])
-    assert plan_fill(facts, 0) == [_launch("b", host="jarvis")]
+    assert plan_fill(facts, 0) == [_launch("b", host="host-a")]
 
 
 def test_steer_actions_never_consume_a_lane_so_decomposes_and_the_pull_follow_them():
@@ -138,7 +138,7 @@ def test_steer_actions_never_consume_a_lane_so_decomposes_and_the_pull_follow_th
 
 
 def test_a_steered_out_initiative_is_dropped_before_host_placement():
-    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 2}], "local_lanes": "decompose"}
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "host-a", "live_runs": 2}], "local_lanes": "decompose"}
     facts = _facts(
         dispatch=dispatch,
         initiatives=[_init("x", ["src/main.rs"]), _init("z", ["src/other.rs"])],
@@ -146,6 +146,6 @@ def test_a_steered_out_initiative_is_dropped_before_host_placement():
     )
     actions = plan_fill(facts, 2)
     assert actions == [
-        _launch("z", host="jarvis"),
+        _launch("z", host="host-a"),
         {"kind": "steer_clear", "initiative": "x", "other": "y", "paths": ["src/main.rs"]},
     ]

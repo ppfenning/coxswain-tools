@@ -8,7 +8,7 @@ CARTRIDGE = "policy:\n  dispatch:\n    max_in_flight: 2\n"
 
 
 def _workspace(tmp_path: Path) -> tuple[Path, Path]:
-    cartridge = tmp_path / "cartridges" / "pat" / "cartridge.yaml"
+    cartridge = tmp_path / "cartridges" / "example-team" / "cartridge.yaml"
     cartridge.parent.mkdir(parents=True)
     cartridge.write_text(CARTRIDGE, encoding="utf-8")
     profile = tmp_path / "profile.yaml"
@@ -18,7 +18,7 @@ def _workspace(tmp_path: Path) -> tuple[Path, Path]:
 
 def _profile(tmp_path: Path, stale_days: str) -> str:
     return (
-        f"team: pat\ncartridges_dir: {tmp_path / 'cartridges'}\n"
+        f"team: example-team\ncartridges_dir: {tmp_path / 'cartridges'}\n"
         "skills_roots: [a, b]\n"
         'sources: {"gh": {"repo": "o/r"}}\n'
         'repo_map: {"r": "/x"}\n'
