@@ -57,6 +57,42 @@ def test_main_ci_reader_caches_per_repo_and_commit_until_cleared() -> None:
     assert len(calls) == 3
 
 
+def test_green_since_reader_reads_a_descendant_green_run_as_true() -> None:
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str]) -> tuple[int, str]:
+        calls.append(argv)
+        return (0, json.dumps([{"status": "completed", "conclusion": "success", "headSha": "later"}])) if argv[0] == "gh" else (0, "")
+
+    assert cli._green_since_reader(runner)("o/r", "abc") is True
+    assert calls[0][calls[0].index("--repo") + 1] == "o/r"
+    assert calls[1] == ["git", "-C", "o/r", "merge-base", "--is-ancestor", "abc", "later"]
+
+
+def test_green_since_reader_reads_a_runner_exit_1_as_false() -> None:
+    assert cli._green_since_reader(lambda argv: (1, "boom"))("o/r", "abc") is False
+
+
+def test_green_since_reader_never_raises() -> None:
+    def runner(argv: list[str]) -> tuple[int, str]:
+        raise OSError("no gh")
+
+    assert cli._green_since_reader(runner)("o/r", "abc") is False
+
+
+def test_green_since_reader_caches_per_repo_and_commit_until_cleared() -> None:
+    calls: list[list[str]] = []
+    read = cli._green_since_reader(lambda argv: (calls.append(argv), (0, GREEN))[1])
+    assert read("o/r", "abc") is True
+    assert read("o/r", "abc") is True
+    assert len(calls) == 1
+    read("o/r", "def")
+    assert len(calls) == 3
+    read.cache.clear()
+    read("o/r", "abc")
+    assert len(calls) == 4
+
+
 def test_slug_forge_open_pr_hands_gh_the_slug(tmp_path) -> None:
     calls: list[list[str]] = []
 
@@ -128,3 +164,17 @@ def test_chair_run_deps_wires_the_revert_deps(tmp_path) -> None:
     assert deps.exec_deps.quarantine_phase is not None
     assert deps.exec_deps.resolve_land is not None
     assert callable(deps.facts_deps.read_main_ci)
+
+
+def test_chair_run_deps_wires_green_since_and_rerun_main(tmp_path) -> None:
+    deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert deps.facts_deps.green_since is not None
+    assert deps.exec_deps.rerun_main is not None
+
+
+def test_rerun_main_hands_rerun_infra_the_slug(tmp_path, monkeypatch) -> None:
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(cli.chair_revert_ports, "rerun_infra", lambda runner, repo, commit: (seen.append((repo, commit)), ("pending", ""))[1])
+    deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert deps.exec_deps.rerun_main(_checkout(tmp_path), "abc") == ("pending", "")
+    assert seen == [("o/r", "abc")]
