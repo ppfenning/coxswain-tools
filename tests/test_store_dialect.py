@@ -46,9 +46,9 @@ def test_a_postgres_open_is_autocommit_and_read_only_on_the_server_keeping_the_u
 
     seen = {}
     fake = types.ModuleType("psycopg")
-    fake.connect = lambda url, **kwargs: seen.update(url=url, **kwargs) or "conn"
+    fake.connect = lambda **kwargs: seen.update(kwargs) or "conn"
     conninfo = types.ModuleType("psycopg.conninfo")
-    conninfo.conninfo_to_dict = lambda _url: {"options": "-c statement_timeout=5000"}
+    conninfo.conninfo_to_dict = lambda _url: {"options": "-c search_path=x"}
     rows = types.ModuleType("psycopg.rows")
     rows.dict_row = object()
     monkeypatch.setitem(sys.modules, "psycopg", fake)
@@ -56,7 +56,7 @@ def test_a_postgres_open_is_autocommit_and_read_only_on_the_server_keeping_the_u
     monkeypatch.setitem(sys.modules, "psycopg.rows", rows)
     assert connect_readonly_url("postgresql://h/db?options=x") == "conn"
     assert seen["autocommit"] is True
-    assert seen["options"] == "-c statement_timeout=5000 -c default_transaction_read_only=on"
+    assert seen["options"] == "-c search_path=x -c default_transaction_read_only=on -c statement_timeout=60000"
 
 
 @pytest.mark.skipif(not os.environ.get("COX_TEST_POSTGRES_URL"), reason="COX_TEST_POSTGRES_URL is not set")
