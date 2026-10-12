@@ -356,7 +356,7 @@ def test_sections_groups_rows_by_their_leading_key_segment():
 
 
 def test_cycling_a_choice_row_whose_value_is_none_does_not_raise():
-    row = Row(key="policy.review_tier", value=None, layer="pat", editable=True, kind="choice", choices=("1", "2", "3"))
+    row = Row(key="policy.review_tier", value=None, layer="example-team", editable=True, kind="choice", choices=("1", "2", "3"))
     state = State(rows=(row,), cursor=0, pending={}, message="")
     after = step(state, "space")
     assert after.pending["policy.review_tier"] == "1"

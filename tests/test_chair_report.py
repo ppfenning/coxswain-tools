@@ -52,10 +52,10 @@ _NEEDS = [{"kind": "needs_chair", "initiative": "epic-a", "cause": "harness"}]
 
 
 def test_an_open_idle_stall_appears_after_limits():
-    facts = _facts(idle_stall={"open_diagnosis": "host jarvis ssh check failed"})
+    facts = _facts(idle_stall={"open_diagnosis": "host host-a ssh check failed"})
     assert format_status(facts, _NEEDS, [_landed()], NOW) == (
         "chair 09-26 14:05 EDT | lanes 2/4 | lands 1 | limits 5h 42% (meter) weekly 61%/90% (meter)"
-        " | stall: host jarvis ssh check failed | holding | needs chair: epic-a:harness | housekeeping never"
+        " | stall: host host-a ssh check failed | holding | needs chair: epic-a:harness | housekeeping never"
     )
 
 
@@ -136,8 +136,8 @@ def test_a_rescue_that_ran_appears_as_launched():
 
 
 def test_a_launch_on_a_lane_host_names_the_host():
-    line = format_status(_facts(), [], [_result("launch_epic", "done", initiative="x", host="jarvis")], NOW)
-    assert "launched: epic:x@jarvis" in line
+    line = format_status(_facts(), [], [_result("launch_epic", "done", initiative="x", host="host-a")], NOW)
+    assert "launched: epic:x@host-a" in line
     assert "launch_epic" not in line
 
 
@@ -159,8 +159,8 @@ def test_a_quiet_tick_names_no_launch_and_no_failure():
 
 
 def test_a_fetch_exit_done_names_the_run_and_host():
-    line = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host="jarvis")], NOW)
-    assert "fetched: epic-a-1 from jarvis" in line
+    line = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host="host-a")], NOW)
+    assert "fetched: epic-a-1 from host-a" in line
 
 
 def test_a_fetch_exit_done_with_no_host_says_another_machine():

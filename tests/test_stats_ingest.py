@@ -38,7 +38,7 @@ def _write_trace(runs_dir, run_id, name, events):
 def test_run_row_reads_the_first_nodes_identity_and_sums_human_minutes():
     row = stats_ingest.run_row(
         "r1", {"summary": {}},
-        [{"cartridge_sha": "abc", "cartridge_team": "core", "principal": "pat", "human_minutes": 3},
+        [{"cartridge_sha": "abc", "cartridge_team": "core", "principal": "operator", "human_minutes": 3},
          {"human_minutes": 2}],
         {"launched_by": "session-x"},
     )
@@ -461,7 +461,7 @@ def _write_store(runs_dir, run_id, *, roles=(), phases=(), models=()):
             (f"c{seq}", run_id, seq, role, alias, model_id, f"2026-09-25T04:3{seq}:00+00:00"),
         )
     for n, phase in enumerate(phases):
-        record = {"manifest_record": {"run_id": f"{run_id}:{phase}", "cartridge_team": "pat", "human_minutes": 1.0}}
+        record = {"manifest_record": {"run_id": f"{run_id}:{phase}", "cartridge_team": "example-team", "human_minutes": 1.0}}
         conn.execute(
             "INSERT INTO phases (run_id, phase_id, ts, record_json) VALUES (?, ?, ?, ?)",
             (run_id, phase, f"2026-09-25T04:4{n}:00+00:00", json.dumps(record)),
@@ -504,7 +504,7 @@ def test_a_store_only_ended_run_is_discovered_and_ingested_with_its_calls_and_ph
     conn.close()
     assert report.runs_ingested == 1
     assert calls == [("scope_epic",), ("build",)]
-    assert team == ("pat",)
+    assert team == ("example-team",)
 
 
 def test_bindable_turns_a_list_or_dict_into_sorted_json_and_passes_scalars_through():
@@ -518,7 +518,7 @@ def test_ingest_stores_a_list_valued_store_column_as_json_text(tmp_path):
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
     _write_store(runs_dir, "sr1", roles=("build",), phases=("build",))
-    record = {"manifest_record": {"run_id": "sr1:build", "principal": ["pat", "agent"], "human_minutes": 1.0}}
+    record = {"manifest_record": {"run_id": "sr1:build", "principal": ["operator", "agent"], "human_minutes": 1.0}}
     store = sqlite3.connect(runs_dir / "cox.db")
     store.execute("UPDATE phases SET record_json = ?", (json.dumps(record),))
     store.commit()
@@ -529,7 +529,7 @@ def test_ingest_stores_a_list_valued_store_column_as_json_text(tmp_path):
     conn = connect(tmp_path / "stats.db")
     principal = conn.execute("SELECT principal FROM runs WHERE run_id = 'sr1'").fetchone()
     conn.close()
-    assert principal == ('["pat", "agent"]',)
+    assert principal == ('["operator", "agent"]',)
 
 
 def test_a_node_call_with_a_model_id_lands_with_that_id_and_its_alias_still_in_model(tmp_path):
@@ -688,7 +688,7 @@ def test_ingest_reads_the_stores_manifests_once_not_once_per_run(tmp_path, monke
     conn = connect(tmp_path / "stats.db")
     team = conn.execute("SELECT cartridge_team FROM runs WHERE run_id = 'sr1'").fetchone()
     conn.close()
-    assert team == ("pat",)
+    assert team == ("example-team",)
 
 
 def test_ingest_recovers_a_budget_stopped_runs_cost_from_its_trace_result_line(tmp_path):

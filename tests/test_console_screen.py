@@ -13,9 +13,9 @@ _EASTERN = ZoneInfo("America/New_York")
 
 def _sections():
     return {
-        "drafts": [DraftRow(id="foo", proposed_by="pat", age_seconds=3600)],
-        "hosts": [{"name": "jarvis", "state": "up", "capacity": 3, "in_use": 2, "beat_at": _BEAT, "versions_json": "{}"}],
-        "lanes": [console_screen.LaneRow(run="run-1", host="jarvis", heartbeat_at=_BEAT, phase="build", node="claude",
+        "drafts": [DraftRow(id="foo", proposed_by="operator", age_seconds=3600)],
+        "hosts": [{"name": "host-a", "state": "up", "capacity": 3, "in_use": 2, "beat_at": _BEAT, "versions_json": "{}"}],
+        "lanes": [console_screen.LaneRow(run="run-1", host="host-a", heartbeat_at=_BEAT, phase="build", node="claude",
                                          attempt=2, turns=14, cost_usd=1.5, phases_landed=1, phases_total=2)],
         "chair": [{"holder": "sess-1", "state": "live", "minutes_ago": 2}],
         "spend": {"five_hour": 0.4, "weekly": 0.12, "hard_stop": 0.93},
@@ -27,11 +27,11 @@ def test_render_marks_selected_draft():
     assert console_screen.render(_sections(), selected=0, width=100, now=_NOW, tz=_EASTERN) == [
         "spend: 5h 40%  weekly 12%/93%",
         "drafts:",
-        "> foo  pat  1h",
+        "> foo  operator  1h",
         "hosts:",
-        "  jarvis  2/3  up  beat=8:50 AM  2m ago  login ?",
+        "  host-a  2/3  up  beat=8:50 AM  2m ago  login ?",
         "lanes:",
-        "  run-1  jarvis  beat=8:50 AM  2m ago  build  claude  att 2  turns 14  $1.50  1/2 phases",
+        "  run-1  host-a  beat=8:50 AM  2m ago  build  claude  att 2  turns 14  $1.50  1/2 phases",
         "chair:",
         "  sess-1  (live, beat 2m ago)",
         "needs chair:",
@@ -52,30 +52,30 @@ def test_render_omits_the_spend_line_when_no_spend_section_is_given():
 
 
 def test_with_local_host_appends_a_synthetic_row_when_absent():
-    hosts = [{"name": "jarvis", "capacity": 2, "state": "up"}]
-    assert console_screen.with_local_host(hosts, "omarchy", 3) == [
-        {"name": "jarvis", "capacity": 2, "state": "up"},
-        {"name": "omarchy", "capacity": 3, "state": "active"},
+    hosts = [{"name": "host-a", "capacity": 2, "state": "up"}]
+    assert console_screen.with_local_host(hosts, "host-b", 3) == [
+        {"name": "host-a", "capacity": 2, "state": "up"},
+        {"name": "host-b", "capacity": 3, "state": "active"},
     ]
 
 
 def test_with_local_host_leaves_hosts_unchanged_when_the_local_row_already_exists():
-    hosts = [{"name": "omarchy", "capacity": 4, "state": "up"}]
-    assert console_screen.with_local_host(hosts, "omarchy", 3) == hosts
+    hosts = [{"name": "host-b", "capacity": 4, "state": "up"}]
+    assert console_screen.with_local_host(hosts, "host-b", 3) == hosts
 
 
 def test_render_formats_timestamps_as_local_clock_time_plus_age_not_the_raw_iso_string():
     lines = console_screen.render(_sections(), selected=-1, width=80, now=_NOW, tz=_EASTERN)
-    host_line = next(line for line in lines if line.startswith("  jarvis"))
+    host_line = next(line for line in lines if line.startswith("  host-a"))
     assert "8:50 AM" in host_line
     assert "2m ago" in host_line
     assert _BEAT not in host_line
 
 
 def test_host_beat_falls_back_to_never_when_absent():
-    sections = {**_sections(), "hosts": [{"name": "jarvis", "state": "up", "capacity": 2, "beat_at": None, "versions_json": "{}"}]}
+    sections = {**_sections(), "hosts": [{"name": "host-a", "state": "up", "capacity": 2, "beat_at": None, "versions_json": "{}"}]}
     lines = console_screen.render(sections, selected=-1, width=80, now=_NOW, tz=_EASTERN)
-    assert "beat=never" in next(line for line in lines if line.startswith("  jarvis"))
+    assert "beat=never" in next(line for line in lines if line.startswith("  host-a"))
 
 
 def test_clock_and_age_formats_a_literal_timestamp():
@@ -88,18 +88,18 @@ def test_clock_and_age_returns_placeholder_for_unparseable_timestamp():
 
 def test_selection_at_host_index():
     sections = {
-        "drafts": [DraftRow(id="foo", proposed_by="pat", age_seconds=3600)],
-        "hosts": [{"name": "jarvis"}],
+        "drafts": [DraftRow(id="foo", proposed_by="operator", age_seconds=3600)],
+        "hosts": [{"name": "host-a"}],
         "lanes": [],
         "chair": [],
     }
-    assert console_screen.selection_at(sections, 1) == {"kind": "host", "name": "jarvis"}
+    assert console_screen.selection_at(sections, 1) == {"kind": "host", "name": "host-a"}
 
 
 def test_selection_at_past_last_item_is_none():
     sections = {
-        "drafts": [DraftRow(id="foo", proposed_by="pat", age_seconds=3600)],
-        "hosts": [{"name": "jarvis"}],
+        "drafts": [DraftRow(id="foo", proposed_by="operator", age_seconds=3600)],
+        "hosts": [{"name": "host-a"}],
         "lanes": [],
         "chair": [],
     }
@@ -111,8 +111,8 @@ def test_gather_keeps_only_recent_needs_chair(monkeypatch):
     recent = {"kind": "needs_chair", "ts": "2026-09-28T11:55:00+00:00"}
     stale = {"kind": "needs_chair", "ts": "2026-09-28T00:00:00+00:00"}
     keyless = {"ts": "2026-09-28T11:59:00+00:00"}
-    host_row = {"name": "jarvis", "state": "up", "capacity": 2}
-    lane_row = Lane("run-1", "jarvis", "2026-09-28T00:00:00+00:00", _BEAT)
+    host_row = {"name": "host-a", "state": "up", "capacity": 2}
+    lane_row = Lane("run-1", "host-a", "2026-09-28T00:00:00+00:00", _BEAT)
     chair_row = {"holder": "sess-1", "state": "live", "minutes_ago": 0}
     spend = {"five_hour": None, "weekly": None, "hard_stop": 0.93}
 
@@ -124,12 +124,12 @@ def test_gather_keeps_only_recent_needs_chair(monkeypatch):
     monkeypatch.setattr(console_screen.run_store, "work_items", lambda runs_dir: [])
     monkeypatch.setattr(console_screen.chair_read_stale, "read_chair_actions", lambda runs_dir: [recent, stale, keyless])
 
-    result = console_screen.gather(Path("/runs"), Path("/work"), now, "omarchy", 3, spend)
+    result = console_screen.gather(Path("/runs"), Path("/work"), now, "host-b", 3, spend)
 
     assert result == {
         "drafts": ["draft-row"],
-        "hosts": [{**host_row, "in_use": 1}, {"name": "omarchy", "capacity": 3, "state": "active", "in_use": 0}],
-        "lanes": [console_screen.LaneRow(run="run-1", host="jarvis", heartbeat_at=_BEAT, phase="", node="",
+        "hosts": [{**host_row, "in_use": 1}, {"name": "host-b", "capacity": 3, "state": "active", "in_use": 0}],
+        "lanes": [console_screen.LaneRow(run="run-1", host="host-a", heartbeat_at=_BEAT, phase="", node="",
                                           attempt=0, turns=0, cost_usd=0.0, phases_landed=0, phases_total=0)],
         "chair": [chair_row],
         "spend": spend,
@@ -152,14 +152,14 @@ def test_gather_reads_drafts_from_the_workspace_work_directory(monkeypatch, tmp_
     monkeypatch.setattr(console_screen.runs_top_screen, "rows_now", lambda runs_dir: [])
     monkeypatch.setattr(console_screen.chair_read_stale, "read_chair_actions", lambda runs_dir: [])
     spend = {"five_hour": None, "weekly": None, "hard_stop": 0.93}
-    console_screen.gather(tmp_path / "runs", tmp_path, "2026-09-28T12:00:00+00:00", "omarchy", 3, spend)
+    console_screen.gather(tmp_path / "runs", tmp_path, "2026-09-28T12:00:00+00:00", "host-b", 3, spend)
     assert seen == [tmp_path / "work"]
 
 
 def test_lane_line_shows_its_own_runs_top_phase_and_its_initiatives_phase_progress():
     """The PHASE is the run's own `rows_now` row, never a value inferred from row order; progress is a count
     of phases whose items are all `done` or `dropped`."""
-    lane = Lane("acme-3", "jarvis", "2026-09-28T00:00:00+00:00", _BEAT)
+    lane = Lane("acme-3", "host-a", "2026-09-28T00:00:00+00:00", _BEAT)
     run_rows = {"acme-3": runs_top.Row(run="acme-3", alive=True, phase="build", node="claude", attempt=2,
                                         turns=14, cost_usd=1.5, verdict="", status="running")}
     items = [
@@ -176,7 +176,7 @@ def test_lane_line_shows_its_own_runs_top_phase_and_its_initiatives_phase_progre
 
 
 def test_lane_line_shows_the_runs_short_id_and_the_run_key_when_it_has_none():
-    lane = Lane("acme-20261005-long-slug", "jarvis", "2026-09-28T00:00:00+00:00", _BEAT)
+    lane = Lane("acme-20261005-long-slug", "host-a", "2026-09-28T00:00:00+00:00", _BEAT)
     with_id = runs_top.Row(run=lane.run, alive=True, phase="build", node="claude", attempt=1, turns=1, cost_usd=0.0,
                            verdict="", status="running", short_id="I7-2")
     without = runs_top.Row(run=lane.run, alive=True, phase="build", node="claude", attempt=1, turns=1, cost_usd=0.0,
@@ -202,7 +202,7 @@ def test_gather_reads_work_items_once_per_snapshot_window(monkeypatch, tmp_path)
     spend = {"five_hour": None, "weekly": None, "hard_stop": 0.93}
     runs_dir = tmp_path / "runs"
 
-    console_screen.gather(runs_dir, tmp_path, "2026-09-28T12:00:00+00:00", "omarchy", 3, spend)
-    console_screen.gather(runs_dir, tmp_path, "2026-09-28T12:00:00+00:00", "omarchy", 3, spend)
+    console_screen.gather(runs_dir, tmp_path, "2026-09-28T12:00:00+00:00", "host-b", 3, spend)
+    console_screen.gather(runs_dir, tmp_path, "2026-09-28T12:00:00+00:00", "host-b", 3, spend)
 
     assert len(calls) == 1

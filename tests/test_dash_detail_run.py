@@ -11,7 +11,7 @@ _AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 _BASE_RAW = {
     "run": "dash-feed-1",
-    "machine": "omarchy",
+    "machine": "host-b",
     "initiative": "dash-feed-streams-a-versioned-json-snapshot-of",
     "phase": "p1-foundations",
     "alive": True,
@@ -175,7 +175,7 @@ def test_build_run_detail_matches_the_v1_fixture_keys_and_types_and_round_trips_
 
 
 def _remote_detail(monkeypatch, tmp_path, calls, phases):
-    lane = run_store.Lane("x-3", "omarchy", "2026-10-04T11:40:00Z", "2026-10-04T11:59:50Z")
+    lane = run_store.Lane("x-3", "host-b", "2026-10-04T11:40:00Z", "2026-10-04T11:59:50Z")
     monkeypatch.setattr(run_store, "live_lanes", lambda root, now: [lane])
     monkeypatch.setattr(run_store, "usage", lambda root, run: {"calls": calls} if calls else None)
     monkeypatch.setattr(run_store, "phase_names", lambda root, run: phases)

@@ -23,14 +23,14 @@ def test_dated_draft_becomes_item_with_reason_and_both_commands() -> None:
 
 
 def test_undated_draft_is_kept_at_the_epoch() -> None:
-    record = {"id": "hand-edited", "proposed_by": "pat", "age_seconds": None, "now": "2026-10-05T12:00:00Z"}
+    record = {"id": "hand-edited", "proposed_by": "operator", "age_seconds": None, "now": "2026-10-05T12:00:00Z"}
     assert drafts_to_items([record]) == (
         InboxItem(
             id="59aafd32",
             kind="draft",
             created_at=datetime(1970, 1, 1, tzinfo=UTC),
             what="draft hand-edited awaits approve or decline",
-            evidence="proposed by pat; age unknown: proposed_at missing or unparseable",
+            evidence="proposed by operator; age unknown: proposed_at missing or unparseable",
             accept_cmd=("cox", "route", "approve", "hand-edited"),
             deny_cmd=("cox", "route", "decline", "hand-edited", "--reason", "declined from inbox"),
         ),

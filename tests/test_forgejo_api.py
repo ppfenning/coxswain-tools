@@ -19,13 +19,13 @@ from agent_tools.forgejo_api import (
 )
 from tests.fake_forgejo import FakeForgejo
 
-GOOD = {"forgejo_base_url": "http://git.lan:3000/", "forgejo_token_env": "FORGEJO_TOKEN"}
+GOOD = {"forgejo_base_url": "http://git.example.internal:3000/", "forgejo_token_env": "FORGEJO_TOKEN"}
 ENV = {"FORGEJO_TOKEN": "s3cr3t-value"}
 PULLS = "/api/v1/repos/o/r/pulls"
 
 
 def test_settings_strip_one_trailing_slash():
-    assert read_settings(GOOD) == ForgejoSettings("http://git.lan:3000", "FORGEJO_TOKEN")
+    assert read_settings(GOOD) == ForgejoSettings("http://git.example.internal:3000", "FORGEJO_TOKEN")
 
 
 def test_settings_are_frozen():
@@ -47,8 +47,8 @@ def test_settings_accept_https_bare_ip_and_lowercase_env():
         ({"forgejo_base_url": "http://h", "forgejo_token_env": ["T"]}, "forgejo_token_env"),
         ({"forgejo_base_url": "", "forgejo_token_env": "T"}, "forgejo_base_url"),
         ({"forgejo_base_url": "http://h", "forgejo_token_env": "   "}, "forgejo_token_env"),
-        ({"forgejo_base_url": "git.lan:3000", "forgejo_token_env": "T"}, "forgejo_base_url"),
-        ({"forgejo_base_url": "ftp://git.lan", "forgejo_token_env": "T"}, "forgejo_base_url"),
+        ({"forgejo_base_url": "git.example.internal:3000", "forgejo_token_env": "T"}, "forgejo_base_url"),
+        ({"forgejo_base_url": "ftp://git.example.internal", "forgejo_token_env": "T"}, "forgejo_base_url"),
     ],
 )
 def test_settings_reject_and_name_the_key(forge, key):

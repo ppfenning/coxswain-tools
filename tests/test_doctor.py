@@ -28,7 +28,7 @@ def _good_facts():
         "forge": "local",
         "forge_found": True,
         "profile_path": "/profiles/a.yaml",
-        "profile_text": "team: pat\ncartridges_dir: /c\nskills_roots: [/s1]\nprovider_profile: /p.yaml\nharness_dir: /h\nworkspace_dir: /w\n",
+        "profile_text": "team: example-team\ncartridges_dir: /c\nskills_roots: [/s1]\nprovider_profile: /p.yaml\nharness_dir: /h\nworkspace_dir: /w\n",
         "paths_exist": {"/c": True, "/s1": True, "/p.yaml": True, "/h": True, "/w": True},
         "harness_python_exists": True,
         "core_import": None,
@@ -98,7 +98,7 @@ def test_absent_profile_fails_profile_and_skips_dependent_rows():
 
 def test_unparseable_profile_carries_the_parsers_message():
     facts = _good_facts()
-    facts["profile_text"] = "  team: pat\n"
+    facts["profile_text"] = "  team: example-team\n"
     rows = _rows_by_check(doctor.checks(facts))
     assert rows["profile"]["ok"] is False
     assert "line 1" in rows["profile"]["detail"]
@@ -190,7 +190,7 @@ def test_core_import_error_text_appears_in_detail():
 
 def test_cartridge_load_error_appears_in_detail():
     facts = _good_facts()
-    facts["cartridge_load"] = "team 'pat' has no bound skill 'foo'"
+    facts["cartridge_load"] = "team 'example-team' has no bound skill 'foo'"
     rows = _rows_by_check(doctor.checks(facts))
     assert rows["cartridge"]["ok"] is False
     assert "no bound skill" in rows["cartridge"]["detail"]
@@ -214,7 +214,7 @@ def test_empty_skill_roots_indexed_fails_skills_instead_of_passing_vacuously():
 def test_a_skill_root_the_profile_configures_but_never_indexed_fails_skills():
     facts = _good_facts()
     facts["profile_text"] = (
-        "team: pat\ncartridges_dir: /c\nskills_roots: [/s1, /s2]\n"
+        "team: example-team\ncartridges_dir: /c\nskills_roots: [/s1, /s2]\n"
         "provider_profile: /p.yaml\nharness_dir: /h\nworkspace_dir: /w\n"
     )
     facts["paths_exist"]["/s2"] = True
@@ -671,7 +671,7 @@ def test_a_bare_path_store_reads_as_other_and_still_answers(tmp_path):
     assert _gather_doctor_facts(profile, tmp_path)["store"] == {"kind": "other", "reachable": True, "error": None, "runs": 0, "fresh": False}
 
 
-_PROFILE = {"team": "pat", "tiers": {"fast": "model-a"}}
+_PROFILE = {"team": "example-team", "tiers": {"fast": "model-a"}}
 _CATALOG = {"model-a": {"released": "2025-01-01"}}
 _STALE = "tier fast pins model-a, newer model-b is available"
 

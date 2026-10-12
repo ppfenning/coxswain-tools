@@ -7,13 +7,13 @@ from agent_tools.runs_stop import stop_kill_argv, stop_run
 
 
 def test_stop_kill_argv_literal():
-    assert stop_kill_argv("jarvis.tail", "/home/x/ws/runs/r-1.pid") == [
+    assert stop_kill_argv("host-a.tail", "/home/user/ws/runs/r-1.pid") == [
         "ssh",
         "-o", "ConnectTimeout=30",
         "-o", "ServerAliveInterval=10",
         "-o", "ServerAliveCountMax=3",
-        "jarvis.tail",
-        "sh -c 'kill -TERM $(cat /home/x/ws/runs/r-1.pid)'",
+        "host-a.tail",
+        "sh -c 'kill -TERM $(cat /home/user/ws/runs/r-1.pid)'",
     ]
 
 
@@ -71,9 +71,9 @@ def test_stop_run_local_no_pidfile(tmp_path: Path):
 def test_stop_run_remote_success(tmp_path: Path):
     run_id = "r-remote-1"
     (tmp_path / f"{run_id}.remote.json").write_text(
-        json.dumps({"host": "jarvis", "launched_at": "2026-09-29T00:00:00Z"})
+        json.dumps({"host": "host-a", "launched_at": "2026-09-29T00:00:00Z"})
     )
-    hosts = (LaneHost("jarvis", "jarvis.tail", "/home/x/ws"),)
+    hosts = (LaneHost("host-a", "host-a.tail", "/home/user/ws"),)
     run_remote = _sequence(True)
 
     result = stop_run(
@@ -86,16 +86,16 @@ def test_stop_run_remote_success(tmp_path: Path):
         hosts=hosts,
     )
 
-    assert result == {"ok": True, "run": run_id, "host": "jarvis"}
+    assert result == {"ok": True, "run": run_id, "host": "host-a"}
     assert run_remote.calls == [
-        (stop_kill_argv("jarvis.tail", f"/home/x/ws/runs/{run_id}.pid"),)
+        (stop_kill_argv("host-a.tail", f"/home/user/ws/runs/{run_id}.pid"),)
     ]
 
 
 def test_stop_run_remote_host_not_configured(tmp_path: Path):
     run_id = "r-remote-2"
     (tmp_path / f"{run_id}.remote.json").write_text(
-        json.dumps({"host": "jarvis", "launched_at": "2026-09-29T00:00:00Z"})
+        json.dumps({"host": "host-a", "launched_at": "2026-09-29T00:00:00Z"})
     )
     run_remote = _sequence(True)
 
@@ -109,7 +109,7 @@ def test_stop_run_remote_host_not_configured(tmp_path: Path):
         hosts=(),
     )
 
-    assert result == {"ok": False, "run": run_id, "reason": "host jarvis not configured"}
+    assert result == {"ok": False, "run": run_id, "reason": "host host-a not configured"}
     assert run_remote.calls == []
 
 

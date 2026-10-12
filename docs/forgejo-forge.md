@@ -32,11 +32,11 @@ These are the keys the forgejo forge is built to read. They are defined in `agen
 
 When the keys are wired, both `forgejo_base_url` and `forgejo_token_env` are required. Each must be a string with something in it. A missing, non-string or empty value is refused with a message that names the key.
 
-Here is the intended shape for a server at `git.lan`. Do not paste it into a profile today, because the parser rejects the last two lines.
+Here is the intended shape for a server at `git.example.internal`. Do not paste it into a profile today, because the parser rejects the last two lines.
 
 ```yaml
 forge: forgejo
-forgejo_base_url: https://git.lan
+forgejo_base_url: https://git.example.internal
 forgejo_token_env: FORGEJO_TOKEN_EXAMPLE
 ```
 

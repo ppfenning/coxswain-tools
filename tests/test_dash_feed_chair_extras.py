@@ -14,7 +14,7 @@ def test_chair_extras_from_staged_inputs_match_the_fixture():
         {"kind": "land_phase", "status": "landed", "ts": "2026-09-28T23:30:00+00:00"},
         {"kind": "land", "status": "landed", "ts": "2026-09-27T12:00:00+00:00"},
     ]
-    entries = [{"to": "pat"}, {"to": "chair"}, {"to": "chair-2026-09-29"}]
+    entries = [{"to": "operator"}, {"to": "chair"}, {"to": "chair-2026-09-29"}]
     drafts = [DraftRow("a", "chair", 60), DraftRow("b", "chair", None)]
     chair = _chair_v1(
         {}, {}, {}, _AT, action_rows=rows, inbox_entries=entries, drafts=drafts,

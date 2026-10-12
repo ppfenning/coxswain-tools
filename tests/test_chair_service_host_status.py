@@ -26,13 +26,13 @@ def home(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / "profile.yaml").write_text(f"workspace_dir: {tmp_path}/ws\n")
     monkeypatch.setattr(
-        cli.run_store, "hosts", lambda _runs_dir: [{"name": "jarvis", "ssh": "jarvis.example.com"}],
+        cli.run_store, "hosts", lambda _runs_dir: [{"name": "host-a", "ssh": "host-a.example.com"}],
     )
     return tmp_path
 
 
 def _status(home: Path, *flags: str) -> int:
-    return cli.main(["chair", "service", "--status", "--host", "jarvis", "--profile", str(home / "profile.yaml"), *flags])
+    return cli.main(["chair", "service", "--status", "--host", "host-a", "--profile", str(home / "profile.yaml"), *flags])
 
 
 def test_all_three_ssh_calls_succeed_and_the_line_carries_all_three_values(home: Path, monkeypatch, capsys) -> None:
@@ -43,7 +43,7 @@ def test_all_three_ssh_calls_succeed_and_the_line_carries_all_three_values(home:
     })
     monkeypatch.setattr(cli.subprocess, "run", fake)
     assert _status(home) == 0
-    assert capsys.readouterr().out == "jarvis: active; 3 lanes running; 2026-09-28T00:00Z tick\n"
+    assert capsys.readouterr().out == "host-a: active; 3 lanes running; 2026-09-28T00:00Z tick\n"
 
 
 def test_the_unit_ssh_call_fails_and_the_line_says_no_unit(home: Path, monkeypatch, capsys) -> None:
@@ -54,7 +54,7 @@ def test_the_unit_ssh_call_fails_and_the_line_says_no_unit(home: Path, monkeypat
     })
     monkeypatch.setattr(cli.subprocess, "run", fake)
     assert _status(home) == 0
-    assert capsys.readouterr().out == "jarvis: no unit; 3 lanes running; 2026-09-28T00:00Z tick\n"
+    assert capsys.readouterr().out == "host-a: no unit; 3 lanes running; 2026-09-28T00:00Z tick\n"
 
 
 def test_an_unknown_host_exits_2(home: Path, monkeypatch, capsys) -> None:
@@ -62,5 +62,5 @@ def test_an_unknown_host_exits_2(home: Path, monkeypatch, capsys) -> None:
     fake = FakeRun({})
     monkeypatch.setattr(cli.subprocess, "run", fake)
     assert _status(home) == 2
-    assert capsys.readouterr().out == "unknown host: jarvis\n"
+    assert capsys.readouterr().out == "unknown host: host-a\n"
     assert fake.calls == []

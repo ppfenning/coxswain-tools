@@ -82,18 +82,18 @@ def test_a_stderr_line_before_the_json_still_parses_as_logged_in() -> None:
 
 
 def test_the_loop_s_own_host_is_checked_locally_with_no_ssh(monkeypatch) -> None:
-    monkeypatch.setattr(chair_login_check.socket, "gethostname", lambda: "omarchy")
+    monkeypatch.setattr(chair_login_check.socket, "gethostname", lambda: "host-b")
     run, calls = _fake([_reply(0, LOGGED_IN)])
     captured: list = []
 
-    check_login_on_host("omarchy", "user@omarchy", {}, NOW, run, _recording_cli(captured))
+    check_login_on_host("host-b", "user@host-b", {}, NOW, run, _recording_cli(captured))
 
     assert calls == [["claude", "auth", "status"]]
     assert captured[0] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0}
 
 
 def test_a_different_host_than_the_loop_s_own_is_still_checked_over_ssh(monkeypatch) -> None:
-    monkeypatch.setattr(chair_login_check.socket, "gethostname", lambda: "omarchy")
+    monkeypatch.setattr(chair_login_check.socket, "gethostname", lambda: "host-b")
     run, calls = _fake([_reply(0, LOGGED_IN)])
 
     check_login_on_host("shed", "user@shed", {}, NOW, run, _recording_cli([]))
