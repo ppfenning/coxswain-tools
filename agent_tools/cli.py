@@ -76,6 +76,7 @@ chair_capacity = _LazyModule("agent_tools.chair_capacity")
 chair_decompose_runs = _LazyModule("agent_tools.chair_decompose_runs")
 chair_exec = _LazyModule("agent_tools.chair_exec")
 chair_facts = _LazyModule("agent_tools.chair_facts")
+chair_login_check = _LazyModule("agent_tools.chair_login_check")
 chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
 chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
 chair_read_attempts = _LazyModule("agent_tools.chair_read_attempts")
@@ -8325,7 +8326,9 @@ def _host_doctor(a: argparse.Namespace) -> int:
     if host is None:
         print(f"unknown host: {a.name}")
         return 1
-    code, rows = remote_doctor.doctor_on_host(host, _run_ssh)
+    code, rows = remote_doctor.doctor_on_host(
+        host, _run_ssh, argv_for=lambda argv: chair_login_check._remote_argv(host.name, host.ssh, argv)
+    )
     print(f"doctor on {host.name} ({host.ssh})")
     print("\n".join(rows))
     return code
