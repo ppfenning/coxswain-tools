@@ -2,9 +2,19 @@ import json
 
 import pytest
 
+from agent_tools import run_store
 from agent_tools.cli import _resolved_tier, build_parser, main
 from agent_tools.stats_query import bounds_report, coverage_report, explain_report, roles_report, series_report
 from agent_tools.stats_schema import connect
+
+
+def _lands(rows=(), source="land_records"):
+    return lambda runs_dir, since, until: run_store.Landed(rows=tuple(rows), source=source)
+
+
+@pytest.fixture(autouse=True)
+def _no_store(monkeypatch):
+    monkeypatch.setattr(run_store, "landed_tasks", _lands())
 
 
 def _insert(conn, table, row):
@@ -45,6 +55,34 @@ def test_cli_stats_roles_json_matches_the_direct_report(tmp_path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert code == 0
     assert out == roles_report(calls, tasks, runs)
+
+
+def test_cli_stats_roles_counts_lands_from_the_store_and_prints_the_source(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "stats.db"
+    conn = connect(db)
+    _insert(conn, "calls", {"run_id": "r1", "seq": 1, "role": "build", "model": "sonnet", "task_id": "t1", "join_confidence": "heuristic"})
+    _insert(conn, "tasks", {"run_id": "r1", "task_id": "t1", "attempt": 1, "outcome": "failed", "cost_usd": 2.0})
+    conn.commit()
+    conn.close()
+    rows = [{"run_id": "r1", "task_id": "t1", "ts": "2026-10-01T00:00:00"}]
+    monkeypatch.setattr(run_store, "landed_tasks", _lands(rows, "work_items"))
+    code = main(["stats", "roles", "--db", str(db), "--json"])
+    captured = capsys.readouterr()
+    [row] = json.loads(captured.out)
+    assert code == 0
+    assert row["landed_rate"] == 1.0
+    assert row["cost_per_landed"] == 2.0
+    assert "lands from: work_items" in captured.err
+
+
+def test_cli_stats_roles_without_store_lands_keeps_outcome_numbers_and_prints_the_source(tmp_path, capsys):
+    db = tmp_path / "stats.db"
+    calls, tasks, runs = _seed(db)
+    code = main(["stats", "roles", "--db", str(db), "--json"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert json.loads(captured.out) == roles_report(calls, tasks, runs)
+    assert "lands from: land_records" in captured.err
 
 
 def test_cli_stats_roles_default_text_is_under_the_cap(tmp_path, capsys):
