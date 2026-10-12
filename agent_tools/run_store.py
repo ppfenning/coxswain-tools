@@ -1250,6 +1250,65 @@ def release_row(runs_dir: Path, initiative: str, task_id: str, holder: str) -> b
     return done is not None and done.returncode == 0
 
 
+# The export's own table, apart from the harness-owned work_items: one row per (initiative, task_id) holding the sha256
+# of the file text the export last wrote. `CREATE TABLE IF NOT EXISTS` makes it additive and safe to rerun, and a row
+# with no entry reads as no hash. Run through the harness python, like every other queue write.
+_EXPORT_HASH_SCRIPT = """import json, os, sqlite3, sys
+url, verb, *row = sys.argv[1:]
+if url.startswith(("postgres:", "postgresql:")):
+    import psycopg
+    conn, mark = psycopg.connect(url), "%s"
+else:
+    path = url.removeprefix("sqlite:///")
+    if not os.path.exists(path):
+        sys.exit(3)
+    conn, mark = sqlite3.connect(path), "?"
+conn.execute("CREATE TABLE IF NOT EXISTS export_hashes (initiative TEXT NOT NULL, task_id TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY (initiative, task_id))")
+if verb == "set":
+    conn.execute(
+        "INSERT INTO export_hashes (initiative, task_id, sha256) VALUES ({0}, {0}, {0}) "
+        "ON CONFLICT (initiative, task_id) DO UPDATE SET sha256 = excluded.sha256".format(mark),
+        row,
+    )
+else:
+    for found in conn.execute("SELECT initiative, task_id, sha256 FROM export_hashes").fetchall():
+        print(json.dumps(list(found)))
+conn.commit()
+"""
+
+
+def _export_hash_argv(python: str, url: str, verb: str, row: Sequence[str] = ()) -> list[str]:
+    """Pure: the argv that lists ("get") or sets ("set", with `row` = initiative, task_id, sha256) export hashes. Values are bound arguments, never SQL text."""
+    return [python, "-c", _EXPORT_HASH_SCRIPT, url, verb, *row]
+
+
+def _export_hashes_from(stdout: str) -> dict[tuple[str, str], str]:
+    """Pure: (initiative, task_id) to sha256 from the getter's JSON-array lines. Anything else is skipped."""
+    parsed = (_hash_line_from(line) for line in stdout.splitlines())
+    return {(r[0], r[1]): r[2] for r in parsed if r is not None}
+
+
+def _hash_line_from(line: str) -> list[str] | None:
+    """Pure: the three-string JSON array on this line, else None."""
+    try:
+        found = json.loads(line)
+    except ValueError:
+        return None
+    return found if isinstance(found, list) and len(found) == 3 and all(isinstance(v, str) for v in found) else None
+
+
+def export_hashes(runs_dir: Path) -> dict[tuple[str, str], str]:
+    """Edge: the sha256 of the file the export last wrote, by (initiative, task_id). A row the export never wrote is absent; empty when the store cannot say."""
+    done = _queue_run(runs_dir, lambda python, url: _export_hash_argv(python, url, "get"))
+    return _export_hashes_from(done.stdout) if done is not None and done.returncode == 0 else {}
+
+
+def set_export_hash(runs_dir: Path, initiative: str, task_id: str, digest: str) -> bool:
+    """Edge: True when the store recorded `digest` for this row, False when it could not."""
+    done = _queue_run(runs_dir, lambda python, url: _export_hash_argv(python, url, "set", (initiative, task_id, digest)))
+    return done is not None and done.returncode == 0
+
+
 def claim_outcome(runs_dir: Path, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> tuple[dict | None, str | None]:
     """Edge: `(claim, None)` when taken, else `(None, HELD)` or `(None, UNAVAILABLE)` so a caller can tell them apart."""
     done = _queue_run(runs_dir, lambda python, url: _queue_claim_argv(python, url, initiative, task_id, holder, ttl_s, now))
