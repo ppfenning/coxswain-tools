@@ -15,7 +15,8 @@ the COXSWAIN_CLEAN_DENY environment variable, and without it says so and skips.
 A line carrying the marker `clean: allow` is exempt from every rule; keep it to the lines that
 define the rules and the fixtures that test them.
 
-Usage: python .github/check_clean.py [root]. Stdlib only, so any repo can copy this file as is.
+Usage: python .github/check_clean.py [root] [--skip RULE ...]. Stdlib only, so any repo can copy this file as is.
+--skip drops a fixed rule for a repo whose purpose contradicts it (a vendor-plugin repo skips vendor).
 Exits 1 on any hit, 2 on an unusable COXSWAIN_CLEAN_DENY.
 """
 import ipaddress
@@ -25,7 +26,7 @@ import re
 import sys
 
 ALLOW = "clean: allow"
-SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
+SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", "target"}
 NEUTRAL_HOMES = {("home", "user")}
 PRIVATE_NETWORKS = tuple(
     ipaddress.ip_network(net) for net in ("100.64.0.0/10", "192.168.0.0/16")  # clean: allow
@@ -107,13 +108,26 @@ def hits(root, active):
                     yield f"{relative}:{number}: {name}: '{found}'"
 
 
+def parse_args(argv):
+    """(root, rule names to skip) from `[root] [--skip RULE ...]`."""
+    args = list(argv[1:])
+    skip = {args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--skip"}
+    positional = [arg for i, arg in enumerate(args) if arg != "--skip" and (i == 0 or args[i - 1] != "--skip")]
+    return pathlib.Path(positional[0] if positional else "."), skip
+
+
 def main(argv, environ):
-    root = pathlib.Path(argv[1] if len(argv) > 1 else ".")
+    root, skip = parse_args(argv)
     try:
         active, skipped = rules(environ)
     except re.error as error:
         print(f"COXSWAIN_CLEAN_DENY is not a usable regex: {error}")
         return 2
+    unknown = skip - set(active) - {"names"}
+    if unknown:
+        print(f"--skip names no rule: {', '.join(sorted(unknown))}")
+        return 2
+    active = {name: rule for name, rule in active.items() if name not in skip}
     if skipped:
         print(skipped)
     problems = list(hits(root, active))
