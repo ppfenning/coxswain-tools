@@ -35,13 +35,15 @@ from agent_tools.notify_dispatch import dispatch
 from agent_tools.notify_events import events_from_tick
 
 __all__ = [
-    "DEFAULT_INTERVAL", "LAND_BEAT_INTERVAL", "GateState", "LeaseRejected", "RunDeps", "WorkerLands", "as_holder", "error_line", "finished_land",
-    "land_sink", "next_gate_record", "no_landing", "no_lands_to_stop", "run", "tick", "tick_timed",
+    "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "GateState", "LeaseRejected", "OverrunState", "RunDeps", "TickOverrun",
+    "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink", "next_gate_record", "no_landing", "no_lands_to_stop", "overran",
+    "overrun_line", "run", "tick", "tick_timed",
 ]
 
 DEFAULT_INTERVAL = 60.0
 PROFILE_STALE_NOTE = "profile re-read failed; keeping the last good profile"  # a segment of the one status line
 LAND_BEAT_INTERVAL = 30.0  # half a minute, so the chair lease is beaten at least once a minute while a land runs
+FACTS_BOUND_SECONDS = 180.0  # wall clock the facts stage may take before the tick is abandoned as an overrun
 
 Gather = Callable[[FactsDeps, datetime], Facts]
 Perform = Callable[[list[Action], chair_exec.Deps, Callable[[], int], bool], list[Result]]
@@ -97,6 +99,29 @@ class GateState:
     paused: bool = False
 
 
+@dataclass
+class OverrunState:
+    """Facts-stage overruns in a row; reset by any tick that completes. Read by whatever decides to stop the loop."""
+
+    consecutive: int = 0
+
+
+class TickOverrun(Exception):
+    """The facts stage did not return inside its bound; the tick was abandoned before plan and perform."""
+
+    def __init__(self, bound: float) -> None:
+        super().__init__(f"facts stage over {bound:g}s")
+        self.bound = bound
+
+
+def overran(elapsed: float, bound: float) -> bool:
+    return elapsed >= bound
+
+
+def overrun_line(bound: float, count: int, now: datetime) -> str:
+    return f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z} | overrun: facts stage over {bound:g}s ({count} in a row)"
+
+
 @dataclass(frozen=True)
 class RunDeps:
     """`beat` renews the store lease; a lost renewal reaches the tick through the lease that `gather` reads next.
@@ -128,6 +153,8 @@ class RunDeps:
     set_gate: Callable[[CiGate], object] = no_gate_change
     plan_held: PlanHeld = plan_tick_held
     gate_state: GateState = field(default_factory=GateState)
+    overrun_state: OverrunState = field(default_factory=OverrunState)
+    facts_bound: float = FACTS_BOUND_SECONDS
     # Notifier: `notify` is `dispatch`'s call shape; `notify_config` None is the off state; no `workspace` skips the step.
     notify: Callable[[list, NotifyConfig | None, Path, float], list[str]] = dispatch
     notify_config: NotifyConfig | None = None
@@ -322,6 +349,33 @@ def _notify_step(deps: RunDeps, dry_run: bool, facts: Facts, actions: list[Actio
         return f"notify failed: {type(exc).__name__}: {exc}"
 
 
+def _gather_bounded(deps: RunDeps, sources: dict[str, float], now: datetime, clock: chair_timing.Clock) -> tuple[Facts, float]:
+    """Edge. `chair_timing.timed` around the gather, run in a daemon thread and waited on for at most `deps.facts_bound`.
+
+    A gather that outlives the bound is abandoned, not stopped: its thread is a daemon and its late result is dropped.
+    """
+    outcome: list[tuple[Facts, float] | BaseException] = []
+    done = threading.Event()
+
+    def work() -> None:
+        try:
+            outcome.append(chair_timing.timed(clock, deps.gather, chair_timing.wrap_callables(deps.facts_deps, clock, sources), now))
+        except BaseException as exc:  # carried to the caller's thread, which re-raises it
+            outcome.append(exc)
+        finally:
+            done.set()
+
+    threading.Thread(target=work, name="chair-facts", daemon=True).start()
+    start = time.monotonic()
+    while not done.wait(max(0.0, deps.facts_bound - (time.monotonic() - start))):
+        if overran(time.monotonic() - start, deps.facts_bound):
+            raise TickOverrun(deps.facts_bound)
+    result = outcome[0]
+    if isinstance(result, BaseException):
+        raise result
+    return result
+
+
 def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     """The status line of one tick; `tick_timed` holds the rules and the stage seconds."""
     return tick_timed(deps, dry_run, now)[0]
@@ -342,7 +396,7 @@ def tick_timed(
     sources: dict[str, float] = {}
     deps.beat()
     _publish_meter(deps, dry_run, now)
-    gathered, facts_s = chair_timing.timed(clock, deps.gather, chair_timing.wrap_callables(deps.facts_deps, clock, sources), now)
+    gathered, facts_s = _gather_bounded(deps, sources, now, clock)
     facts = as_holder(gathered) if dry_run else gathered
     gate = _evaluate_gate(deps, now)
     if not dry_run:
@@ -379,6 +433,10 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
     try:
         line, stages, sources = tick_timed(deps, dry_run, now)
         timing, stage_seconds = chair_timing.format_timing(stages, sources), chair_timing.ran(stages)
+        deps.overrun_state.consecutive = 0
+    except TickOverrun as exc:  # a facts stage that never returned; counted, and not an error line
+        deps.overrun_state.consecutive += 1
+        line = overrun_line(exc.bound, deps.overrun_state.consecutive, now)
     except Exception as exc:  # one bad tick must not stop the loop
         line = error_line(exc, now)
     _publish_status(deps, dry_run, line, now, stage_seconds)
