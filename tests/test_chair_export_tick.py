@@ -128,7 +128,7 @@ def test_export_board_fills_the_store_from_files_before_it_exports(tmp_path, mon
     order = []
     monkeypatch.setattr(store_fill, "fill_workspace", lambda ws: order.append(("fill", ws)) or "")
     monkeypatch.setattr(cli.run_store, "read_queue", lambda runs_dir: order.append(("read", runs_dir)) or [])
-    monkeypatch.setattr(cli.queue_export, "export_files", lambda ws, rows: order.append(("export", ws)) or SimpleNamespace(skipped=[]))
+    monkeypatch.setattr(cli.queue_export, "export_files", lambda ws, rows, **_: order.append(("export", ws)) or SimpleNamespace(skipped=[]))
     cli._export_board(tmp_path / "runs", tmp_path)
     assert order == [("fill", tmp_path), ("read", tmp_path / "runs"), ("export", tmp_path)]
 
@@ -141,7 +141,7 @@ def test_a_failed_fill_stops_the_export_before_anything_is_written(tmp_path, mon
 
     exported = []
     monkeypatch.setattr(store_fill, "fill_workspace", unreadable)
-    monkeypatch.setattr(cli.queue_export, "export_files", lambda ws, rows: exported.append(ws))
+    monkeypatch.setattr(cli.queue_export, "export_files", lambda ws, rows, **_: exported.append(ws))
     with pytest.raises(RuntimeError, match="could not be read"):
         cli._export_board(tmp_path / "runs", tmp_path)
     assert exported == []
