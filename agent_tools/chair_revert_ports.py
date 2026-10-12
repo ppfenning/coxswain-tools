@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+
+from agent_tools import chair_ci_jobs
 
 __all__ = [
     "CI_WATCH_TIMEOUT_SECONDS",
@@ -228,19 +230,43 @@ def find_open_revert_pr(runner: Runner, repo: str, pr: int | str) -> str | None:
     return next((p["url"] for p in json.loads(listed or "[]") if p.get("headRefName") == head), None)
 
 
+def _judged_run(rows: list[dict], commit: str) -> dict | None:
+    """The newest run (highest databaseId) whose headSha is `commit`; a row for any other commit is never judged."""
+    matching = [row for row in rows if row.get("headSha") == commit]
+    return max(matching, key=lambda row: row["databaseId"]) if matching else None
+
+
+_PASSING_JOBS = ("success", "skipped", "neutral")
+
+
+def _failed_jobs_line(payload: Mapping) -> str:
+    jobs = payload.get("jobs") or []
+    names = [job.get("name") or "unnamed" for job in jobs if job.get("conclusion") not in _PASSING_JOBS]
+    return f"jobs never started: {', '.join(names)}"
+
+
+def _jobs_payload(runner: Runner, repo: str, run_id: int) -> Mapping:
+    """Parsed `gh run view --json jobs`; an unreadable or malformed answer is empty, which never reads as infra."""
+    code, out = runner(["gh", "run", "view", str(run_id), "--repo", repo, "--json", "jobs"])
+    try:
+        payload = json.loads(out) if code == 0 else {}
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def main_ci_run(runner: Runner, repo: str, commit: str) -> tuple[str, str, int | None]:
     """`main_ci` plus the id of the run it judged, which `rerun_failed` takes; None when no run exists yet."""
     listed = _checked(
         runner,
         [
             "gh", "run", "list", "--repo", repo, "--branch", "main", "--commit", commit,
-            "--json", "databaseId,status,conclusion", "--limit", "1",
+            "--json", "databaseId,status,conclusion,headSha",
         ],
     )  # fmt: skip
-    runs = json.loads(listed or "[]")
-    if not runs:
+    run = _judged_run(json.loads(listed or "[]"), commit)
+    if run is None:
         return "pending", "", None
-    run = runs[0]
     run_id = run["databaseId"]
     if run.get("status") in _PENDING_STATUSES:
         return "pending", "", run_id
@@ -250,19 +276,22 @@ def main_ci_run(runner: Runner, repo: str, commit: str) -> tuple[str, str, int |
     if conclusion != "failure":
         # Cancelled, skipped, neutral and the rest are not evidence that main is red.
         return "pending", f"run concluded {conclusion}", run_id
+    jobs = _jobs_payload(runner, repo, run_id)
+    if chair_ci_jobs.never_started(jobs):
+        return "infra", _failed_jobs_line(jobs), run_id
     code, log = runner(["gh", "run", "view", str(run_id), "--repo", repo, "--log-failed"])
     tail = "\n".join(log.splitlines()[-LOG_TAIL_LINES:])
     return "red", tail if code == 0 else f"failing log unavailable, gh run view exited {code}: {tail}", run_id
 
 
 def main_ci(runner: Runner, repo: str, commit: str) -> tuple[str, str]:
-    """State of main's first workflow run for the commit: pending, green or red, with the failing log tail."""
+    """State of main's newest run whose headSha is `commit`: pending, green, red, or infra when no job got past setup."""
     state, output, _ = main_ci_run(runner, repo, commit)
     return state, output
 
 
 def rerun_failed(runner: Runner, repo: str, run_id: int, commit: str) -> tuple[str, str, int | None]:
-    """Rerun the failed jobs of `run_id`, wait for it to settle, and read main CI again for `commit`.
+    """Rerun the failed jobs of `run_id`, wait for it to settle, and read main CI again for `commit`; the state may be infra.
 
     The wait is as bounded as `runner` is (see `bounded`): an expired wait is a non-zero exit and raises.
     """
