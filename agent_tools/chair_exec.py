@@ -256,6 +256,21 @@ def tail(text: str, limit: int) -> str:
     return rest if newline and rest.strip() else window
 
 
+def failed_reason(stdout: str, stderr: str, cap: int = _REASON_CAP) -> str:
+    """The first non-empty stdout line (cox's verdict, at most half of `cap`), then the last whole stderr lines; at most `cap` characters."""
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    errors = stderr.rstrip()
+    if lines and errors:
+        verdict = lines[0][: cap // 2]
+        return f"{verdict}\n{tail(errors, cap - len(verdict) - 1)}"
+    elif lines:  # noqa: RET505 - every branch spelled out, each with its else
+        return lines[0][:cap]
+    elif errors:
+        return tail(errors, cap)
+    else:
+        return ""
+
+
 def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug") -> list[str] | None:
     """The cox argv for a land, fetch, launch or pull action; None for any other kind or a missing required field.
 
@@ -1117,8 +1132,14 @@ def run_argv_split(argv: list[str], cwd: Path | None = None, timeout: float = LO
 
 
 def run_argv(argv: list[str], cwd: Path | None = None, timeout: float = LOCAL_ARGV_TIMEOUT_S) -> tuple[int, str]:
-    """Edge. The exit code and the mixed stdout-then-stderr text of `run_argv_split`."""
+    """Edge. The exit code and the mixed stdout-then-stderr text of `run_argv_split`.
+
+    A failed `cox runs fetch` is the exception: git's long stderr would push cox's own "fetch: verify: ..." verdict out
+    of the 600-character reason, so its text is `failed_reason`, verdict first. Other argvs keep the mixed text because
+    `land_refusal` reads git's stderr ("could not apply") out of it."""
     done = run_argv_split(argv, cwd, timeout=timeout)
+    if done.returncode not in (0, 124, 127) and argv[:3] == ["cox", "runs", "fetch"]:
+        return done.returncode, failed_reason(done.stdout, done.stderr)
     return done.returncode, done.mixed
 
 
@@ -1215,7 +1236,7 @@ def _login_runner_and_env(profile: dict) -> tuple[str, tuple[str, ...]]:
     return runner, env_names
 
 
-def _check_login_edge(runs_dir: Path, ssh_run: Run, provider_profile: Callable[[], dict], host: str) -> dict:
+def _check_login_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult], provider_profile: Callable[[], dict], host: str) -> dict:
     """Edge. `check_login_on_host` for `host`, its ssh and versions read from the hosts table, "now" read
     from the clock at call time -- never at `edge_deps` construction time. Its `runner` and `env_names`
     come from `provider_profile()`, resolved fresh on each call through `_login_runner_and_env`."""
@@ -1430,7 +1451,8 @@ def edge_deps(
     runner override and `check_login` keeps today's `"claude-code"` default.
     """
     run = _local_only(workspace) if dry_run else _bounded_for_ssh(workspace)
-    live_check = partial(_check_login_edge, runs_dir, partial(run_lane_host, cwd=workspace), provider_profile)
+    login_run = partial(run_argv_split, cwd=workspace, timeout=LANE_HOST_TIMEOUT_S)
+    live_check = partial(_check_login_edge, runs_dir, login_run, provider_profile)
     return Deps(
         run=run,
         delete_branches=lambda repo, pattern: delete_branches_with(run, repo, pattern),

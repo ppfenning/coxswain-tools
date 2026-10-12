@@ -33,14 +33,16 @@ def doctor_on_host(
     run: Callable[[list[str]], tuple[int, str]],
     runner: str = "claude-code",
     env_names: tuple[str, ...] = (),
+    argv_for: Callable[[list[str]], list[str]] | None = None,
 ) -> tuple[int, list[str]]:
-    """`run` takes an argv and returns (exit code, combined output); result is (exit code, output rows)."""
-    code, output = run(ssh_argv(host.ssh, doctor_argv()))
+    """`run` takes an argv and returns (exit code, combined output); `argv_for` wraps each command, ssh by default."""
+    wrap = argv_for if argv_for is not None else (lambda argv: ssh_argv(host.ssh, argv))
+    code, output = run(wrap(doctor_argv()))
     if runner == "claude-code":
-        _, auth_output = run(ssh_argv(host.ssh, auth_status_argv()))
+        _, auth_output = run(wrap(auth_status_argv()))
         verdict = auth_verdict(auth_output)
         row = "claude auth      ok" if verdict is None else verdict
     else:
-        verdict = env_verdict(env_names, lambda name: run(ssh_argv(host.ssh, env_check_argv(name)))[1])
+        verdict = env_verdict(env_names, lambda name: run(wrap(env_check_argv(name)))[1])
         row = "env vars      ok" if verdict is None else verdict
     return (1 if verdict is not None and code == 0 else code), [*output.splitlines(), row]

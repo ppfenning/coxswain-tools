@@ -41,13 +41,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent_tools import run_store
 from agent_tools.land import _approved as land_approved
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import git_fetch_argv, rsync_pull_argv
 
 __all__ = [
-    "FetchError", "FetchPlan", "approved_without_branch", "chair_repo_path", "fetch_plan", "fetch_run", "host_repo_path", "probe_argv",
-    "pull_argvs", "refuse_unended", "task_repos",
+    "FetchError", "FetchPlan", "approved_without_branch", "branch_expected", "chair_repo_path", "fetch_plan", "fetch_run",
+    "host_repo_path", "probe_argv", "pull_argvs", "refuse_unended", "store_task_records", "task_repos", "task_status",
 ]
 
 
@@ -158,6 +159,30 @@ def _task_records(run_dir: Path) -> list[dict[str, Any]] | None:
     return records or None
 
 
+def task_status(record: dict[str, Any]) -> str:
+    """"approved" when `land` approves the record, else "not_approved"."""
+    return "approved" if land_approved(record) is None else "not_approved"
+
+
+def branch_expected(statuses: Sequence[str]) -> bool:
+    """No approved task means no `agents/<run>/*` branch is expected."""
+    return "approved" in statuses
+
+
+def store_task_records(runs_dir: Path, run: str) -> list[dict[str, Any]]:
+    """Edge: the run's task records from the store, each carrying `task`.
+
+    Empty unless every task id has a phase and every record read, so a partial read never looks complete."""
+    try:
+        phases = {task: run_store.task_record_phases(runs_dir, run, task) for task in run_store.run_task_ids(runs_dir, run)}
+        rows = [(task, run_store.task_record(runs_dir, run, phase, task)) for task, found in phases.items() for phase in found]
+    except (OSError, ValueError):
+        return []
+    if not all(phases.values()) or not all(isinstance(record, dict) for _, record in rows):
+        return []
+    return [{**record, "task": task} for task, record in rows if isinstance(record, dict)]
+
+
 def _records_in(records: list[dict[str, Any]], repo: str, chair_ws: str, host_ws: str) -> list[dict[str, Any]]:
     """The records that name `repo`, or name no repo."""
     return [r for r in records if not r.get("repo") or chair_repo_path(chair_ws, host_ws, str(r["repo"])) == repo]
@@ -173,6 +198,7 @@ def fetch_run(
     *,
     lease_released: bool,
     ended_at: str | None,
+    store_records: Callable[[Path, str], list[dict[str, Any]]] | None = None,
 ) -> tuple[str, ...] | FetchError:
     """The chair repos whose `agents/<run>/*` branches now exist, or the step that failed. Nothing is raised."""
     refusal = refuse_unended(lease_released, ended_at)
@@ -201,6 +227,9 @@ def fetch_run(
     if not repos:
         return FetchError("repos", f"no task record under {chair_runs_dir / run}/tasks names a repo")
     records = _task_records(chair_runs_dir / run)
+    # Store mode leaves tasks/ off disk, so the store's records decide whether a branch is expected.
+    stored = (store_records or store_task_records)(chair_runs_dir, run) if records is None else []
+    no_branch_expected = bool(stored) and not branch_expected([task_status(r) for r in stored])
     for repo in repos:
         # git_fetch_argv has no repo selector, so `-C` goes in after its leading "git".
         # git runs its own ssh transport, so no 30s bound from this file applies to this call.
@@ -220,6 +249,8 @@ def fetch_run(
             if missing:
                 names = ", ".join(missing)
                 return FetchError("verify", f"approved task(s) {names} have no refs/heads/agents/{run}/<task> in {repo} after the fetch")
+            continue
+        if no_branch_expected:
             continue
         found = run_cmd(["git", "-C", repo, "ls-remote", "--exit-code", ".", f"refs/heads/agents/{run}/*"])
         if found != 0:
