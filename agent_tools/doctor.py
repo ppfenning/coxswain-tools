@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 
 from agent_tools import records, route, schema
 
-__all__ = ["checks", "exit_code", "freshness_rows", "parquet_line", "render"]
+__all__ = ["checks", "exit_code", "freshness_rows", "parquet_line", "render", "unit_path_entries"]
 
 _MISSING = object()
 _SKIPPED = "skipped: no profile"
@@ -278,11 +278,45 @@ def _cast_row(facts: Mapping, cascade: bool) -> dict:
     return {"check": "cast", "ok": True, "detail": f"{len(seats)} seats"}
 
 
+_UNIT_PATH_LINE = "Environment=PATH="
+_UNIT_TOOLS = ("cox", "pytest")
+
+
+def unit_path_entries(text: str) -> list[str] | None:
+    """The `:`-split value of the unit's `Environment=PATH=` line; None when the unit has no such line."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(_UNIT_PATH_LINE):
+            return stripped[len(_UNIT_PATH_LINE):].strip('"').split(":")
+    return None
+
+
+def _unit_path_row(facts: Mapping) -> dict:
+    """Independent of the profile, so it never cascades. systemd does not expand `~`, so a non-absolute entry fails."""
+    text = facts.get("chair_unit_text", _MISSING)
+    if text is _MISSING:
+        return {"check": "chair unit PATH", "ok": True, "detail": "not gathered"}
+    if text is None:
+        return {"check": "chair unit PATH", "ok": True, "detail": "not installed"}
+    entries = unit_path_entries(text)
+    if entries is None:
+        return {"check": "chair unit PATH", "ok": False, "detail": f"no {_UNIT_PATH_LINE} line in the unit"}
+    relative = [entry for entry in entries if not entry.startswith("/")]
+    if relative:
+        return {"check": "chair unit PATH", "ok": False,
+                "detail": "not an absolute entry (systemd does not expand `~`): " + ", ".join(repr(e) for e in relative)}
+    tools = facts.get("chair_unit_tools") or {}
+    missing = [name for name in _UNIT_TOOLS if not any(name in tools.get(entry, ()) for entry in entries)]
+    if missing:
+        return {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: " + ", ".join(missing)}
+    return {"check": "chair unit PATH", "ok": True, "detail": f"{len(entries)} entries"}
+
+
 def checks(facts: Mapping) -> list[dict]:
     """Judge a Facts mapping. Returns rows `{"check", "ok", "detail"}` in a
     fixed check order: git, forge, profile, profile paths, harness venv, core
     importable, cartridge, project overlay, skills, provider, plugins,
-    store, workspace, schema, cast. A fact that was never gathered fails as "not checked",
+    store, workspace, schema, cast, chair unit PATH. A fact that was never gathered fails as "not checked",
     except `cast` which passes when ungathered; a profile that fails to parse
     fails every row after it as "skipped: no profile"; an empty collection
     where paths, skill roots or workspace dirs belong fails naming that
@@ -305,6 +339,7 @@ def checks(facts: Mapping) -> list[dict]:
         _workspace_row(facts, cascade),
         _schema_row(facts, cascade),
         _cast_row(facts, cascade),
+        _unit_path_row(facts),
     ]
 
 
