@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
+from itertools import accumulate
 from pathlib import Path
 from typing import NamedTuple
 
@@ -704,6 +705,52 @@ def _cross_repo_paths(text: str, repo: str | None) -> list[tuple[str, str]]:
     return [(p, owner[p.split("/")[0]]) for p in paths if "/" in p and p.split("/")[0] in owner]
 
 
+# A label opening a run context: a checks list or a Done line, at line start or after a sentence end.
+_RUN_LABEL = re.compile(r"(?:^|(?<=[.!?]\s))[\s*#_-]*(?:checks|check(?=:)|done(?:\s+when)?|acceptance(?:\s+(?:checks|criteria))?)(?![\w-])", re.I)
+_LIST_ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])\s")
+_RUN_VERB = re.compile(r"\b(?:run|runs|execute|invoke)\s+(?:(?:the|a|an)\s+)?[\x60'\"]?$", re.I)
+_NEGATION = re.compile(r"\b(?:no|not|never|without|cannot|avoid|forbid\w*|prohibit\w*)\b|n't\b", re.I)
+_FIXTURE = re.compile(r"\b(?:fixtures?|output|fake|faked|stub|stubbed|mock|mocked|canned)\b", re.I)
+_CLAUSE_BREAK = re.compile(r"[.;!?](?:\s|$)|\bbut\b|\bthen\b", re.I)
+
+
+def _block_step(state: tuple[int | None, bool, bool], line: str) -> tuple[int | None, bool, bool]:
+    """`(run-context start column or None, inside a code fence, inside a checks block)` after `line`.
+    A label opens a block; list items and fenced lines under it continue it; anything else ends it."""
+    _, in_fence, in_block = state
+    label = _RUN_LABEL.search(line)
+    fence = line.strip().startswith("```")
+    item = in_block and (in_fence or fence or _LIST_ITEM.match(line) is not None)
+    start = label.start() if label else (0 if item else None)
+    return (start, in_fence != fence, label is not None or item)
+
+
+def _asks_to_run(line: str, start: int, ctx_start: int | None) -> bool:
+    """A mention of a command at `start` asks the seat to run it when it sits in a run context or follows
+    run/execute/invoke, and is not negated before it or part of a fixture or quoted output in its clause."""
+    before = _CLAUSE_BREAK.split(line[:start])[-1]
+    clause = before + _CLAUSE_BREAK.split(line[start:], 1)[0]
+    if _NEGATION.search(before) or _FIXTURE.search(clause):
+        return False
+    return (ctx_start is not None and start >= ctx_start) or _RUN_VERB.search(before) is not None
+
+
+def _run_commands(body: str) -> frozenset[str]:
+    """Disallowed commands the body asks the seat to run: named in a checks list or Done line, or after
+    run/execute/invoke. Prose naming a tool, a prohibition, a fixture, a `>` quoted output and a code-path
+    name pass. Wrong belief this guards: that any mention of a tool is an instruction to use it."""
+    lines = body.splitlines()
+    states = list(accumulate(lines, _block_step, initial=(None, False, False)))[1:]
+    return frozenset(
+        cmd
+        for line, (ctx_start, _, _) in zip(lines, states)
+        if not line.lstrip().startswith(">")
+        for cmd in _DISALLOWED_COMMANDS
+        for m in re.finditer(rf"(?<!\w){re.escape(cmd)}(?!\w)", line)
+        if _asks_to_run(line, m.start(), ctx_start)
+    )
+
+
 def _item_problems(item: dict, repo: str | None, grants) -> list:
     """reach, grant, size and cross_repo, each scoped to one ticket item. `repo` falsy
     (no repo could be resolved) stands the reach rule down instead of
@@ -722,7 +769,7 @@ def _item_problems(item: dict, repo: str | None, grants) -> list:
         Problem(task, "grant", f"command {cmd!r} is not in this role's grant",
                 "name only pytest, git status, git diff")
         for cmd in _DISALLOWED_COMMANDS
-        if cmd not in allowed and re.search(rf"(?<!\w){re.escape(cmd)}(?!\w)", body)
+        if cmd not in allowed and cmd in _run_commands(body)
     ]
     words = len(body.split())
     size = [Problem(task, "size", f"body is {words} words",
