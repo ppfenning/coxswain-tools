@@ -26,6 +26,24 @@ def test_chair_run_parses_its_three_flags_with_their_defaults() -> None:
     assert (given.once, given.interval, given.dry_run) == (True, 5.0, True)
 
 
+def test_chair_run_max_overruns_defaults_to_three_and_zero_disables() -> None:
+    parser = cli.build_parser()
+    assert parser.parse_args(["chair", "run"]).max_overruns == 3
+    assert parser.parse_args(["chair", "run", "--max-overruns", "0"]).max_overruns == 0
+
+
+def test_chair_run_exits_three_and_names_the_count_when_the_overrun_limit_is_hit(monkeypatch, tmp_path, capsys) -> None:
+    deps = cli._chair_run_deps(tmp_path, {}, "chair", 1, "h", True, print, tmp_path / "p.yaml", "files")
+    monkeypatch.setattr(cli, "_leader_runs_dir_or_refuse", lambda _a: ({}, tmp_path, None))
+    monkeypatch.setattr(cli, "_chair_run_deps", lambda *_a: deps)
+    monkeypatch.setattr(cli, "_chair_unwired_sources", lambda _d: [])
+    seen = []
+    monkeypatch.setattr(cli.chair_run, "run", lambda *a: seen.append(a[-1]) or setattr(deps.overrun_state, "consecutive", 2))
+    args = cli.build_parser().parse_args(["chair", "run", "--max-overruns", "2"])
+    assert args.fn(args) == 3
+    assert seen == [2] and "2 facts-stage overruns" in capsys.readouterr().out
+
+
 def test_chair_run_help_names_the_steal_flag_and_the_hard_stop(capsys) -> None:
     with contextlib.suppress(SystemExit):
         cli.build_parser().parse_args(["chair", "run", "--help"])
@@ -101,7 +119,7 @@ def test_once_exits_1_on_a_tick_error_and_releases_a_held_lease(monkeypatch, tmp
     monkeypatch.setattr(cli, "_chair_unwired_sources", lambda _f: [])
     monkeypatch.setattr(cli.chair, "_read_lease", lambda *_a: {"epoch": 3})
     monkeypatch.setattr(cli.chair, "release_lease", lambda *_a: released.append("released"))
-    monkeypatch.setattr(cli.chair_run, "run", lambda once, interval, dry_run, deps: deps.report_deps.echo("chair 09-26 | tick error: RuntimeError: x"))
+    monkeypatch.setattr(cli.chair_run, "run", lambda once, interval, dry_run, deps, max_overruns: deps.report_deps.echo("chair 09-26 | tick error: RuntimeError: x"))
     args = cli.build_parser().parse_args(["chair", "run", "--once"])
     assert args.fn(args) == 1
     assert released == ["released"]
@@ -111,7 +129,7 @@ def test_once_exits_1_when_a_timing_line_precedes_a_status_line_with_a_tick_erro
     now = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
     timing = "timing: facts=0.100s plan=0.000s perform=0.000s export=skipped | slowest: docket=0.100s"
 
-    def fake_run(once, interval, dry_run, deps) -> None:
+    def fake_run(once, interval, dry_run, deps, max_overruns) -> None:
         deps.report_deps.echo(timing)
         deps.report_deps.echo(chair_run.error_line(RuntimeError("x"), now))
 
