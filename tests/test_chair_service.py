@@ -17,6 +17,24 @@ def test_unit_text_without_an_environment_file_has_no_such_line() -> None:
     assert "EnvironmentFile" not in chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, None)
 
 
+def test_path_value_orders_cox_dir_then_venv_bins_then_the_default() -> None:
+    assert chair_service.path_value("/home/x/.local/bin/cox", "/t/.venv/bin", "/g/.venv/bin", "/usr/local/bin:/usr/bin") == (
+        "/home/x/.local/bin:/t/.venv/bin:/g/.venv/bin:/usr/local/bin:/usr/bin"
+    )
+
+
+def test_path_value_drops_an_empty_venv_entry_and_keeps_the_first_duplicate() -> None:
+    assert chair_service.path_value("/usr/bin/cox", "/t/.venv/bin", "", "/usr/local/bin::/usr/bin:/t/.venv/bin") == (
+        "/usr/bin:/t/.venv/bin:/usr/local/bin"
+    )
+
+
+def test_unit_text_renders_one_path_line_only_when_given_a_path() -> None:
+    with_path = chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, None, path="/a:/b")
+    assert with_path.splitlines().count("Environment=PATH=/a:/b") == 1
+    assert "Environment=" not in chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, None)
+
+
 def test_unsafe_values_names_what_systemd_would_split_or_expand() -> None:
     assert chair_service.unsafe_values({"--label": "a b", "cox": "/bin/cox", "x": "50%", "y": "$HOME", "z": ""}) == [
         "--label", "x", "y", "z",
@@ -59,6 +77,18 @@ def test_install_expands_a_tilde_workspace_to_an_absolute_working_directory(home
     (home / "profile.yaml").write_text("workspace_dir: ~/ws\n")
     assert _service("--install", "--profile", str(home / "profile.yaml")) == 0
     assert f"WorkingDirectory={home}/ws\n" in chair_service.unit_path(home).read_text()
+
+
+def test_install_writes_one_path_line_that_starts_with_the_cox_dir_and_the_graphs_venv(home: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
+    (home / "profile.yaml").write_text(f"workspace_dir: /ws\nharness_dir: {home}/graphs\n")
+    assert _service("--install", "--profile", str(home / "profile.yaml")) == 0
+    lines = [ln for ln in chair_service.unit_path(home).read_text().splitlines() if ln.startswith("Environment=PATH=")]
+    assert len(lines) == 1
+    entries = lines[0].removeprefix("Environment=PATH=").split(":")
+    assert entries[0] == "/usr/local/bin"
+    assert f"{home}/graphs/.venv/bin" in entries
+    assert entries[-1] == "/usr/bin"
 
 
 def test_status_prints_what_install_wrote(home: Path, capsys) -> None:
