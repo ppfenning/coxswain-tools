@@ -205,7 +205,7 @@ def _fake_psycopg(monkeypatch):
 
     opened = []
 
-    def connect(_url, *, autocommit=False, **kwargs):
+    def connect(*, autocommit=False, **kwargs):
         conn = _FakeConn(autocommit)
         conn.kwargs = kwargs
         opened.append(conn)
