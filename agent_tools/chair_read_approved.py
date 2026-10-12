@@ -10,7 +10,7 @@ from typing import Any
 from agent_tools import route, run_store
 from agent_tools.chair_facts import run_initiative
 from agent_tools.chair_read_quarantined import WorkFiles, task_files
-from agent_tools.chair_types import ApprovedTask
+from agent_tools.chair_types import ApprovedTask, PhaseTasks
 from agent_tools.remote_lane import fetched_record_path, land_needs_fetch, remote_record_path
 
 Item = Mapping[str, Any]
@@ -47,6 +47,19 @@ def approved_rows(items: Sequence[Item]) -> list[ApprovedTask]:
         }
         for item in items
         if item["state"] == "approved"
+    ]
+
+
+def phase_task_rows(items: Sequence[Item]) -> list[PhaseTasks]:
+    """One row per (initiative, phase) holding an approved item, listing every item of the phase as (id, state)."""
+    keys = dict.fromkeys((i["initiative"], i["phase"]) for i in items if i["state"] == "approved")
+    return [
+        {
+            "initiative": initiative,
+            "phase": phase,
+            "tasks": [(i["id"], i["state"]) for i in items if (i["initiative"], i["phase"]) == (initiative, phase)],
+        }
+        for initiative, phase in keys
     ]
 
 
@@ -136,3 +149,12 @@ def read_approved(
     items = _load_items(ws, files)
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
     return approved_rows(route.with_store_states(items, rows, mode))
+
+
+def read_phase_tasks(
+    ws: Path, mode: str = "files", files: WorkFiles | None = None, store_rows: Sequence[Mapping[str, Any]] | None = None,
+) -> list[PhaseTasks]:
+    """Edge. The task states of every phase with approved work, from the same reads as `read_approved`."""
+    items = _load_items(ws, files)
+    rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
+    return phase_task_rows(route.with_store_states(items, rows, mode))

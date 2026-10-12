@@ -29,6 +29,17 @@ def _item(priority: int | None = None) -> str:
     return f"---\nstate: ready\ntitle: T\n{key}---\nBody.\n"
 
 
+@pytest.fixture(autouse=True)
+def _no_open_queue(monkeypatch):
+    """Nothing else is open unless a test says so, and no test shells out to a real store."""
+    monkeypatch.setattr(run_store, "read_queue", lambda runs_dir, *a, **k: [])
+
+
+def _neighbour(monkeypatch, priority: int) -> None:
+    row = {"kind": "task", "initiative": "other", "task_id": "t", "state": "ready", "priority": priority}
+    monkeypatch.setattr(run_store, "read_queue", lambda runs_dir, *a, **k: [row])
+
+
 def _record_store(monkeypatch, path, events: list, result: bool = True) -> None:
     def upsert(runs_dir, row):
         events.append(("store", path.read_text(), row["extra"].get("priority")))
@@ -86,6 +97,26 @@ def test_up_from_two_writes_three_store_first(tmp_path, monkeypatch):
     assert path.read_text() == _item(3)
 
 
+def test_up_passes_the_nearest_higher_open_neighbour(tmp_path, monkeypatch):
+    profile, _ws, phase = _workspace(tmp_path, {"a": _item(2)})
+    path, events = phase / "a.md", []
+    _neighbour(monkeypatch, 7)
+    _record_store(monkeypatch, path, events)
+    assert _run(profile, "--up") == 0
+    assert events == [("store", _item(2), "8")]
+    assert path.read_text() == _item(8)
+
+
+def test_down_passes_the_nearest_lower_open_neighbour(tmp_path, monkeypatch):
+    profile, _ws, phase = _workspace(tmp_path, {"a": _item(2)})
+    path, events = phase / "a.md", []
+    _neighbour(monkeypatch, -3)
+    _record_store(monkeypatch, path, events)
+    assert _run(profile, "--down") == 0
+    assert events == [("store", _item(2), "-4")]
+    assert path.read_text() == _item(-4)
+
+
 def test_down_from_two_writes_one_store_first(tmp_path, monkeypatch):
     profile, _ws, phase = _workspace(tmp_path, {"a": _item(2)})
     path, events = phase / "a.md", []
@@ -128,8 +159,10 @@ def test_an_unknown_initiative_is_one_line_and_non_zero(tmp_path, monkeypatch, c
     assert capsys.readouterr().out.splitlines() == ["routing: unknown initiative nope"]
 
 
-def test_exactly_one_flag_is_required(tmp_path, capsys):
+def test_no_flag_lists_instead_of_writing_and_two_flags_are_refused(tmp_path, monkeypatch, capsys):
     profile, _ws, _phase = _workspace(tmp_path, {"a": _item(2)})
-    assert _run(profile) != 0
+    monkeypatch.setattr(run_store, "upsert_row", lambda runs_dir, row: pytest.fail("a listing must not write"))
+    assert _run(profile) == 0
+    assert capsys.readouterr().out.splitlines() == ["routing: the open queue is empty"]
     with pytest.raises(SystemExit):
         _run(profile, "--up", "--down")
