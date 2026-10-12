@@ -56,7 +56,10 @@ def test_a_quarantined_only_phase_gives_no_partial_land():
 
 def test_plan_lands_emits_the_partial_land_for_a_quarantined_sibling():
     assert plan_lands(_facts([("a", "approved"), ("b", "quarantined")], [_approved("a", False)])) == [
-        {"kind": "partial_land", "initiative": "i", "phase": "p", "task_ids": ["a"], "quarantined": 1}
+        {
+            "kind": "partial_land", "initiative": "i", "phase": "p", "task_ids": ["a"], "quarantined": 1,
+            "repo": "r", "run": "i-1", "task_runs": {"a": "i-1"},
+        }
     ]
 
 
