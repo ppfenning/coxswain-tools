@@ -31,12 +31,16 @@ if TYPE_CHECKING:
 if importlib.util.find_spec("pyarrow") is None:
     raise ModuleNotFoundError("No module named 'pyarrow'", name="pyarrow")
 
-__all__ = ["SyncResult", "next_hwm", "rows_after", "sync", "to_arrow"]
+__all__ = ["LakeSyncError", "SyncResult", "next_hwm", "pointer_verdict", "rows_after", "sync", "to_arrow"]
 
 HISTORY = ("runs", "phases", "node_calls", "gate_decisions", "ledger")
 _ENDED = "_ended_at"
 
 Row = Mapping[str, Any]
+
+
+class LakeSyncError(RuntimeError):
+    """A sync stopped because a table's metadata is unreadable; nothing was repaired or appended."""
 
 
 @dataclass(frozen=True)
@@ -92,8 +96,53 @@ def _query(name: str, table_def: TableDef, token: str, has_mark: bool) -> str:
     )
 
 
+def pointer_verdict(current: str, previous: str | None, current_exists: bool, previous_exists: bool) -> str | None:
+    """None when `current` exists, else a dangling-pointer message that names `previous` only if it exists."""
+    if current_exists:
+        return None
+    message = f"the metadata pointer is dangling: {current} does not exist"
+    if previous is not None and previous_exists:
+        return f"{message}; the previous metadata file {previous} still exists"
+    return message
+
+
+def _dangling_pointer(catalog: Catalog, name: str) -> str | None:
+    """Edge. Reads the catalog row and probes both files. Writes nothing. None when there is no row to judge."""
+    from pyiceberg.catalog.sql import IcebergTables
+    from pyiceberg.io import load_file_io
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    with Session(catalog.engine) as session:
+        row = session.scalars(
+            select(IcebergTables).where(
+                IcebergTables.catalog_name == catalog.name,
+                IcebergTables.table_namespace == NAMESPACE,
+                IcebergTables.table_name == name,
+            )
+        ).first()
+        if row is None:
+            return None
+        current, previous = row.metadata_location, row.previous_metadata_location
+
+    def exists(location: str | None) -> bool:
+        return location is not None and load_file_io(catalog.properties, location).new_input(location).exists()
+
+    return pointer_verdict(current, previous, exists(current), exists(previous))
+
+
+def _exists(table, location: str) -> bool:
+    return table.io.new_input(location).exists()
+
+
 def _sync_table(catalog: Catalog, conn, token: str, name: str, upper: str, dry_run: bool) -> SyncResult:
-    table = catalog.load_table(f"{NAMESPACE}.{name}")
+    try:
+        table = catalog.load_table(f"{NAMESPACE}.{name}")
+    except FileNotFoundError as exc:
+        verdict = _dangling_pointer(catalog, name)
+        if verdict is None:
+            raise
+        raise LakeSyncError(f"{NAMESPACE}.{name}: {verdict}") from exc
     old = table.properties.get(HWM_PROPERTY)
     args = (upper, old) if old is not None else (upper,)
     cursor = conn.execute(_query(name, TABLES[name], token, old is not None), args)
@@ -107,6 +156,11 @@ def _sync_table(catalog: Catalog, conn, token: str, name: str, upper: str, dry_r
             if rows:
                 tx.append(to_arrow(TABLES[name], rows))
             tx.set_properties({HWM_PROPERTY: new})
+        # pyiceberg updates `table` in place on commit, so this is the pointer the commit just wrote.
+        if not _exists(table, table.metadata_location):
+            raise LakeSyncError(
+                f"{NAMESPACE}.{name}: the commit could not be read back, {table.metadata_location} is missing"
+            )
     return SyncResult(name, len(rows), len(rows), old, new)
 
 
