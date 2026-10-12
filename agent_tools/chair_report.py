@@ -11,11 +11,13 @@ from datetime import datetime
 
 from agent_tools.chair_exec import LAUNCH_KINDS, Result
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
-from agent_tools.chair_types import EASTERN, Action, Facts, ReviewPr
+from agent_tools.chair_types import EASTERN, Action, Facts, QueueFile, ReviewPr
 from agent_tools.notify import Notification
+from agent_tools.queue_export import is_ahead_of_store
 
 __all__ = [
-    "EASTERN", "Deps", "echo_line", "failed_items", "fetched_items", "format_status", "housekeeping_fragment",
+    "EASTERN", "Deps", "echo_line", "failed_items", "fetched_items", "file_ahead_items", "format_status",
+    "housekeeping_fragment",
     "landing_items", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "steered_items", "would_items",
     "write_status",
 ]
@@ -61,6 +63,15 @@ def needs_chair_items(actions: Sequence[Action]) -> list[str]:
     rest = [a for a in chair_actions if a.get("cause") != RUNAWAY_CAUSE]
     return [f"RUNAWAY {_scope(a)}" for a in runaway] + [
         f"needs chair: {_scope(a)}:{a.get('cause', '?')}" for a in rest
+    ]
+
+
+def file_ahead_items(files: Sequence[QueueFile]) -> list[str]:
+    """`needs chair: <task>:file-ahead-of-store` per ticket whose file on disk no longer hashes to its stored hash."""
+    return [
+        f"needs chair: {f['task_id']}:file-ahead-of-store"
+        for f in files
+        if f["file_text"] is not None and is_ahead_of_store(f["stored_hash"], f["file_text"])
     ]
 
 
@@ -174,7 +185,10 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
     """One line per tick. `now` must be timezone-aware; it is printed in Eastern time."""
     limits, dispatch = facts["limits"], facts["dispatch"]
     stop = " hard stop" if limits["hard_stop"] else ""
-    needs = needs_chair_items([*actions, *(r["action"] for r in results if r["status"] == "escalated")])
+    needs = [
+        *needs_chair_items([*actions, *(r["action"] for r in results if r["status"] == "escalated")]),
+        *file_ahead_items(facts.get("queue_files", [])),
+    ]
     launched, fetched, failed, would, landing = (
         launched_items(results), fetched_items(results), failed_items(results), would_items(results),
         landing_items(results),
