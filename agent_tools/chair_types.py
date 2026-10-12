@@ -342,6 +342,14 @@ class LaunchHistory(TypedDict, total=False):
     main_head: str  # the current main head; absent means ""
 
 
+class QueueFile(TypedDict):
+    """One exported task ticket: its store hash from the last export, and the text of its file on disk. Either may be None."""
+
+    task_id: str
+    stored_hash: str | None
+    file_text: str | None
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -395,6 +403,7 @@ class Facts(TypedDict):
     land_outcomes: NotRequired[dict[str, list[str]]]
     # The facts edge fills it, the widen planner consumes it, and the widen_ticket executor consumes the action.
     handoff_stops: NotRequired[list[HandoffStop]]  # tickets stopped on a handoff; absent means none
+    queue_files: NotRequired[list[QueueFile]]  # exported task tickets with their stored hash and file text; absent means none
     # The launch budget's inputs, keyed by initiative id; absent means no history. The default limit applies when
     # max_launches_per_hour is absent.
     launch_history: NotRequired[dict[str, LaunchHistory]]
