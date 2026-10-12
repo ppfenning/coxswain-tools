@@ -76,6 +76,8 @@ class GitRevertPort:
         self._mkdtemp = mkdtemp
         # Branch to (worktree, temp dir) for a clean revert awaiting its push, which removes both.
         self._trees: dict[str, tuple[str, str]] = {}
+        # Branch to the remote tip it replaces, "" when the remote had none; the push leases on it.
+        self._leases: dict[str, str] = {}
 
     def fetch_main(self, repo: str) -> None:
         _checked(self._run, ["git", "-C", repo, "fetch", "origin", "main"])
@@ -89,11 +91,24 @@ class GitRevertPort:
         shutil.rmtree(tmp, ignore_errors=True)
 
     def revert_onto_branch(self, repo: str, branch: str, commit: str) -> list[str]:
+        """Branch from origin/main and revert `commit` in a throwaway worktree.
+
+        A local or remote `branch` left by an earlier attempt is backed up first and then replaced:
+        the local one by `worktree add -B`, the remote one by the lease-guarded `push`. Callers that
+        must keep a branch an open PR uses skip this call (see `perform_revert`'s `find_open_pr`).
+        """
         parents = parent_count(_checked(self._run, ["git", "-C", repo, "rev-list", "--parents", "-n", "1", commit]))
+        # A crashed attempt leaves its worktree registered though its directory is gone, and git refuses the branch.
+        _checked(self._run, ["git", "-C", repo, "worktree", "prune"])
+        local, remote = self._stale_tips(repo, branch)
+        for tip in (local, remote):
+            if tip:
+                self._backup(repo, branch, tip)
         tmp = self._mkdtemp()
         tree = (f"{tmp}/wt", tmp)
         try:
-            _checked(self._run, ["git", "-C", repo, "worktree", "add", "-b", branch, tree[0], "origin/main"])
+            # -B, not -b: it resets a leftover local branch to origin/main instead of refusing it.
+            _checked(self._run, ["git", "-C", repo, "worktree", "add", "-B", branch, tree[0], "origin/main"])
         except BaseException:
             shutil.rmtree(tmp, ignore_errors=True)
             raise
@@ -103,6 +118,7 @@ class GitRevertPort:
             code, output = self._run([*git, "revert", "--no-edit", *merge_flags, commit])
             if code == 0:
                 self._trees[branch] = tree
+                self._leases[branch] = remote
                 return []
             _, unmerged = self._run([*git, "diff", "--name-only", "--diff-filter=U"])
             self._run([*git, "revert", "--abort"])
@@ -129,6 +145,18 @@ class GitRevertPort:
                 return ref
         raise RuntimeError(f"no free backup ref for {branch} at {tip[:12]} after {_BACKUP_TRIES} tries")
 
+    def _stale_tips(self, repo: str, branch: str) -> tuple[str, str]:
+        """Tips of the local and remote `branch`, "" for one that is absent; the remote tip is fetched so it is a local object."""
+        git = ["git", "-C", repo]
+        local = self._tip([*git, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"])
+        # ls-remote, not the tracking ref: `fetch_main` fetches main only, so origin/<branch> may lag.
+        listing = _checked(self._run, [*git, "ls-remote", "--heads", "origin", f"refs/heads/{branch}"])
+        remote = _remote_tip(listing, branch)
+        if remote:
+            # The remote tip must be a local object before update-ref can point at it.
+            _checked(self._run, [*git, "fetch", "origin", branch])
+        return local, remote
+
     def clear_stale_branch(self, repo: str, branch: str, pr_open: bool) -> list[str]:
         """Back up and delete a local or remote `branch` no open PR uses; returns the backup refs written.
 
@@ -138,13 +166,7 @@ class GitRevertPort:
         if pr_open:
             return []
         git = ["git", "-C", repo]
-        local = self._tip([*git, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"])
-        # ls-remote, not the tracking ref: `fetch_main` fetches main only, so origin/<branch> may lag.
-        listing = _checked(self._run, [*git, "ls-remote", "--heads", "origin", f"refs/heads/{branch}"])
-        remote = _remote_tip(listing, branch)
-        if remote:
-            # The remote tip must be a local object before update-ref can point at it.
-            _checked(self._run, [*git, "fetch", "origin", branch])
+        local, remote = self._stale_tips(repo, branch)
         backups = [self._backup(repo, branch, tip) for tip in (local, remote) if tip]
         if local:
             _checked(self._run, [*git, "branch", "-D", branch])
@@ -154,11 +176,14 @@ class GitRevertPort:
 
     def push(self, repo: str, branch: str) -> None:
         tree = self._trees.pop(branch, None)
+        replaced = self._leases.pop(branch, "")
         if tree is None:
             _checked(self._run, ["git", "-C", repo, "push", "origin", branch])
             return
+        # Replacing a leftover remote branch is a force push; the lease refuses it if the branch moved since it was read.
+        lease = [f"--force-with-lease=refs/heads/{branch}:{replaced}"] if replaced else []
         try:
-            _checked(self._run, ["git", "-C", tree[0], "push", "origin", branch])
+            _checked(self._run, ["git", "-C", tree[0], "push", *lease, "origin", branch])
         finally:
             # The remote branch is what the PR needs; the worktree has done its job whether or not the push landed.
             self._release(repo, branch, tree, drop_branch=False)
