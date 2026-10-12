@@ -17,7 +17,7 @@ positional arguments:
     store-fill          fill the store's work_items from the workspace files
     approve             approve a draft initiative's todo tickets: todo becomes ready
     decline             decline a draft initiative: its todo tickets become dropped
-    edit                change a queued intake's or an initiative's title, body or repo
+    edit                change a queued intake, an initiative or a task ticket
     remove              remove a queued intake or an initiative that has no live run
     chair               the chair lock for the landing loop (runs/chair.json)
     sync                mirror the work store onto the profile's tracker
