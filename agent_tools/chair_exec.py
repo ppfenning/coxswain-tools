@@ -1236,7 +1236,7 @@ def _login_runner_and_env(profile: dict) -> tuple[str, tuple[str, ...]]:
     return runner, env_names
 
 
-def _check_login_edge(runs_dir: Path, ssh_run: Run, provider_profile: Callable[[], dict], host: str) -> dict:
+def _check_login_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult], provider_profile: Callable[[], dict], host: str) -> dict:
     """Edge. `check_login_on_host` for `host`, its ssh and versions read from the hosts table, "now" read
     from the clock at call time -- never at `edge_deps` construction time. Its `runner` and `env_names`
     come from `provider_profile()`, resolved fresh on each call through `_login_runner_and_env`."""
@@ -1451,7 +1451,8 @@ def edge_deps(
     runner override and `check_login` keeps today's `"claude-code"` default.
     """
     run = _local_only(workspace) if dry_run else _bounded_for_ssh(workspace)
-    live_check = partial(_check_login_edge, runs_dir, partial(run_lane_host, cwd=workspace), provider_profile)
+    login_run = partial(run_argv_split, cwd=workspace, timeout=LANE_HOST_TIMEOUT_S)
+    live_check = partial(_check_login_edge, runs_dir, login_run, provider_profile)
     return Deps(
         run=run,
         delete_branches=lambda repo, pattern: delete_branches_with(run, repo, pattern),
