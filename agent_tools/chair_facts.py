@@ -45,6 +45,7 @@ from agent_tools.chair_types import (
     PhaseBranch,
     PidProbeFact,
     QuarantineFacts,
+    QueueFile,
     ReviewPr,
     RunningInitiative,
     RunRecord,
@@ -222,6 +223,24 @@ class FactsDeps:
     land_hold: Callable[[], HoldRecord | None] = lambda: None  # chair_smoke.read_hold's result; absent means no hold
     land_outcomes: Callable[[], Mapping[str, list[str]]] = lambda: {}  # initiative to resolved outcomes, oldest first; absent means {}
     handoff_stops: Callable[[], Sequence[Row]] = lambda: []  # chair_read_handoff_stops.read_handoff_stops rows; absent means []
+    queue_files: Callable[[], list[QueueFile]] = lambda: []  # `read_queue_files` bound to the workspace and store; absent means []
+
+
+def read_queue_files(workspace: Path, rows: Sequence[Row], stored: Mapping[tuple[str, str], str]) -> list[QueueFile]:
+    """Edge. One entry per task row with content: its stored export hash and the text of its file, None when the file is absent."""
+    from agent_tools.queue_export import is_contentless
+    from agent_tools.queue_rows import row_path
+
+    def entry(row: Row) -> QueueFile:
+        path = Path(workspace) / row_path(row)
+        key = (str(row.get("initiative") or ""), str(row.get("task_id") or ""))
+        return {
+            "task_id": key[1],
+            "stored_hash": stored.get(key),
+            "file_text": path.read_text() if path.is_file() else None,
+        }
+
+    return [entry(row) for row in rows if row.get("kind") == "task" and not is_contentless(row)]
 
 
 def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], Any] = forge.forge_for) -> list[ReviewPr]:
@@ -910,4 +929,5 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "landed_main": landed_main_facts(list(deps.land_watches()), deps.read_main_ci, deps.land_hold()),
         "land_outcomes": dict(deps.land_outcomes()),
         "handoff_stops": list(deps.handoff_stops()),
+        "queue_files": deps.queue_files(),
     }
