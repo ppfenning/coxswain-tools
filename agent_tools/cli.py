@@ -7810,9 +7810,12 @@ def _chair_run(a: argparse.Namespace) -> int:
     if missing:
         print(f"chair run: refusing to start, no lease taken; not wired: {', '.join(missing)}")
         return 2
-    chair_run.run(a.once, a.interval, a.dry_run, deps)
+    chair_run.run(a.once, a.interval, a.dry_run, deps, a.max_overruns)
     if a.once and deps.holds():  # a one-shot process exits here, so its lease must not outlive it
         deps.release()
+    if not a.once and chair_run.overrun_limit_hit(deps.overrun_state.consecutive, a.max_overruns):
+        print(f"chair run: stopping after {deps.overrun_state.consecutive} facts-stage overruns in a row; exit 3 for the supervisor")
+        return 3
     return _chair_once_exit(last[0]) if a.once else 0
 
 
@@ -8052,6 +8055,7 @@ CHAIR_COMMANDS = [
             commands.Arg(("--once",), {"action": "store_true", "help": "run one tick, release the lease, exit 1 if the tick errored"}),
             commands.Arg(("--interval",), {"type": float, "default": _CHAIR_RUN_INTERVAL, "help": "seconds between ticks (default: 60)"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "plan and report each tick without taking the lease or performing any action"}),
+            commands.Arg(("--max-overruns",), {"type": int, "default": 3, "help": "exit 3 after this many facts-stage overruns in a row (default: 3; 0 disables)"}),
             commands.Arg(("--label",), {"help": "the chair's holder label (default: $COX_SESSION_LABEL, else unlabeled)"}),
             commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
         ),
