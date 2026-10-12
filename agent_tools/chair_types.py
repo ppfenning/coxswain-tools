@@ -350,6 +350,14 @@ class QueueFile(TypedDict):
     file_text: str | None
 
 
+class PhaseTasks(TypedDict):
+    """Every task of a phase that holds an approved task, as (id, state) in the phase's order."""
+
+    initiative: str
+    phase: str
+    tasks: list[tuple[str, str]]
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -412,6 +420,7 @@ class Facts(TypedDict):
     relaunch_loop_reported: NotRequired[list[str]]
     # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
     land_refusals: NotRequired[list[LandRefusal]]
+    phase_tasks: NotRequired[list[PhaseTasks]]  # per phase with an approved task, every task's state; absent means none
 
 
 ActionKind = Literal[
@@ -444,6 +453,7 @@ ActionKind = Literal[
     "revert_land",
     "rerun_main",
     "widen_ticket",
+    "partial_land",
 ]
 
 
@@ -461,7 +471,8 @@ class Action(TypedDict, total=False):
     proposals and body and is propose-only: no action kind applies a tier or model change.
     revert_land carries initiative, phase, repo, pr, commit and reason.
     rerun_main carries initiative, phase, repo and commit.
-    widen_ticket carries initiative, task_id, paths, additions and reason. A relaunch_loop needs_chair carries
+    widen_ticket carries initiative, task_id, paths, additions and reason. partial_land carries initiative, phase,
+    task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped. A relaunch_loop needs_chair carries
     initiative, cause and a reason naming both quarantined run ids."""
 
     kind: ActionKind
@@ -486,6 +497,8 @@ class Action(TypedDict, total=False):
     merged_at: str | None  # a review_landed names when that PR merged
     other: str  # a steer_clear names the running initiative it steers clear of
     paths: list[str]  # a steer_clear names the shared paths; a widen_ticket names the repo-relative files to add to surfaces
+    task_ids: list[str]  # a partial_land names the approved task ids it would land, in phase order
+    quarantined: int  # a partial_land counts the phase's quarantined tasks
     pr_branch: str  # a carry_phase names the branch its pull request is opened from
     picks: list[CarryTask]  # a carry_phase lists the commits to cherry-pick, in order
     branch: str  # a rebase_phase names the phase branch it rebases
