@@ -2268,3 +2268,81 @@ def test_a_second_expected_check_refusal_stops_the_land(tmp_path):
 def test_a_different_merge_failure_does_not_loop(tmp_path):
     rc, calls, _ = _walk_merge(tmp_path, [(False, CONFLICT)])
     assert (rc, calls) == (1, ["wait_checks", "merge"])
+
+
+class _WaitWorld:
+    """A fake clock and a fake repo lease store: sleeping advances time, a renewal is recorded at the time it is made."""
+
+    def __init__(self, wait_s, ttl=1200, other_holder_at=None):
+        self.t, self.wait_s, self.ttl, self.other_holder_at = 0.0, wait_s, ttl, other_holder_at
+        self.renewals, self.polls = [], 0
+
+    def now(self):
+        return self.t
+
+    def sleep(self, seconds):
+        self.t += seconds
+
+    def poll(self):
+        self.polls += 1
+        return (0, "all passed") if self.t >= self.wait_s else (land.PENDING_RC, "pending")
+
+    def renew(self):
+        if self.other_holder_at is not None and self.t >= self.other_holder_at:
+            return store_cli.LeaseRefused(epoch=4, holder="other@host:9")
+        self.renewals.append(self.t)
+        return store_cli.LeaseGranted(epoch=3, holder="me@host:1")
+
+    def run(self):
+        return land.await_checks(self.poll, 180.0, self.sleep, self.now, renewal=land.LeaseRenewal(self.renew, self.ttl))
+
+
+def test_renew_due_at_one_third_of_the_ttl_and_not_before():
+    assert land.renew_due(0, 400, 1200) is True
+    assert land.renew_due(0, 399, 1200) is False
+    assert land.renew_due(0, 50, 1200, every=50) is True
+
+
+def test_a_wait_longer_than_the_ttl_renews_the_lease_and_lets_the_merge_proceed():
+    world = _WaitWorld(wait_s=3000)
+    assert world.run() == (True, "green")
+    gaps = [b - a for a, b in zip([0.0, *world.renewals], [*world.renewals, world.t])]
+    assert len(world.renewals) >= 2
+    assert max(gaps) <= 1200
+    assert land.renew_due(world.renewals[-1], world.renewals[-1] + 400, 1200)
+
+
+def test_a_lease_taken_by_another_holder_mid_wait_stops_before_the_merge_naming_the_holder():
+    world = _WaitWorld(wait_s=3000, other_holder_at=1000)
+    ok, detail = world.run()
+    assert ok is False
+    assert "other@host:9" in detail
+    assert world.t < 3000
+
+
+def test_a_short_wait_under_a_third_of_the_ttl_makes_no_renewal():
+    world = _WaitWorld(wait_s=300)
+    assert world.run() == (True, "green")
+    assert world.renewals == []
+
+
+def test_a_transient_renewal_failure_stops_the_wait_without_naming_a_holder():
+    world = _WaitWorld(wait_s=3000)
+    world.renew = lambda: store_cli.LeaseError(detail="store timed out")
+    ok, detail = world.run()
+    assert (ok, "store timed out" in detail) == (False, True)
+
+
+@pytest.mark.parametrize("how", ["green", "holder_lost", "poll_raises"])
+def test_no_renewal_happens_once_the_wait_has_ended(how):
+    world = _WaitWorld(wait_s=3000, other_holder_at=1000 if how == "holder_lost" else None)
+    if how == "poll_raises":
+        real_poll = world.poll
+        world.poll = lambda: (_ for _ in ()).throw(RuntimeError("gh down")) if world.t >= 900 else real_poll()
+        with pytest.raises(RuntimeError):
+            world.run()
+    else:
+        world.run()
+    renewed, polled = list(world.renewals), world.polls
+    world.sleep(5000)
+    assert (world.renewals, world.polls) == (renewed, polled)

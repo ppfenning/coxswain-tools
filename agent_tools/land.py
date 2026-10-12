@@ -26,13 +26,18 @@ import re
 import shlex
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import PurePath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent_tools.chair_plan_land import fetch_action
 
+if TYPE_CHECKING:
+    from agent_tools import store_cli
+
 __all__ = [
     "LAUNCH_ERROR",
+    "LeaseRenewal",
     "approve_to_done",
     "approved_state",
     "arbitration_verdict",
@@ -58,6 +63,8 @@ __all__ = [
     "pr_body",
     "recover_plan",
     "recover_record",
+    "renew_due",
+    "renewal_stop",
     "rest_checks_argvs",
     "set_state_stop",
     "skip_line",
@@ -724,9 +731,45 @@ def unreadable_poll(errors: int, detail: str) -> tuple[int, str]:
     return 1, f"checks unreadable {errors} polls in a row: {detail}"
 
 
-def await_checks(poll, timeout_s: float = 180.0, sleep=time.sleep, now=time.monotonic) -> tuple[bool, str]:
-    """`poll() -> (returncode, output)` until green or failed. No check yet means not yet: retry every 15s for `timeout_s`."""
+@dataclass(frozen=True)
+class LeaseRenewal:
+    """The repo lease held while checks are awaited: `renew()` renews it, `ttl` is its ttl, `every` overrides the ttl/3 interval."""
+
+    renew: Callable[[], store_cli.LeaseResult]
+    ttl: int = 1200
+    every: float | None = None
+
+
+def renew_due(last_renewed: float, now: float, ttl: int, every: float | None = None) -> bool:
+    """True once `every` seconds (default ttl/3) have passed since `last_renewed`; both times are on one clock."""
+    return now - last_renewed >= (ttl / 3 if every is None else every)
+
+
+def renewal_stop(result: store_cli.LeaseResult) -> str | None:
+    """None when the repo lease renewed, else why the land must stop before the merge; a refusal names the holder."""
+    # land.py loads at CLI startup and store_cli pulls in run_store, so import it only when a renewal runs.
+    from agent_tools import store_cli
+
+    if isinstance(result, store_cli.LeaseGranted):
+        return None
+    if isinstance(result, store_cli.LeaseRefused):
+        return f"repo lease lost while waiting on checks: held by {result.holder} at epoch {result.epoch}"
+    if isinstance(result, store_cli.LeaseError):
+        why = result.detail
+    elif isinstance(result, store_cli.NotAvailable):
+        why = result.reason or "the store is not available"
+    else:
+        why = "it was released"
+    return f"repo lease could not be renewed while waiting on checks: {why}"
+
+
+def await_checks(poll, timeout_s: float = 180.0, sleep=time.sleep, now=time.monotonic,
+                 *, renewal: LeaseRenewal | None = None) -> tuple[bool, str]:
+    """`poll() -> (returncode, output)` until green or failed. No check yet means not yet: retry every 15s for `timeout_s`.
+
+    With a `renewal` the repo lease is renewed in this loop, no thread, every ttl/3; a failed renewal ends the wait as failed."""
     started, waiting = now(), False
+    renewed = started
     while True:
         rc, output = poll()
         decision = wait_decision(rc, output, now() - started, timeout_s)
@@ -735,6 +778,13 @@ def await_checks(poll, timeout_s: float = 180.0, sleep=time.sleep, now=time.mono
                 print(f"{output.strip()}; polling every 15s until they finish" if is_pending(rc)
                       else f"no checks reported yet, waiting up to {timeout_s:.0f}s for the first one to appear")
             waiting = True
+            if renewal is not None:
+                at = now()
+                if renew_due(renewed, at, renewal.ttl, renewal.every):
+                    stop = renewal_stop(renewal.renew())
+                    if stop is not None:
+                        return False, stop
+                    renewed = at
             sleep(15)
         elif decision == "timeout":
             return False, f"no checks reported within {timeout_s:.0f}s"
