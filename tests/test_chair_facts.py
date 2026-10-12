@@ -176,8 +176,8 @@ def test_a_missing_forge_gives_state_unknown_for_every_entry(tmp_path):
 
 
 def test_a_newest_run_host_callables_mapping_appears_under_newest_run_host():
-    deps = replace(_deps(), newest_run_host=lambda: {"i": "jarvis"})
-    assert gather_facts(deps, NOW)["newest_run_host"] == {"i": "jarvis"}
+    deps = replace(_deps(), newest_run_host=lambda: {"i": "host-a"})
+    assert gather_facts(deps, NOW)["newest_run_host"] == {"i": "host-a"}
 
 
 def test_an_absent_newest_run_host_callable_gives_an_empty_mapping():
@@ -185,8 +185,8 @@ def test_an_absent_newest_run_host_callable_gives_an_empty_mapping():
 
 
 def test_home_maps_an_initiative_with_an_unlanded_approved_task_to_its_newest_run_host():
-    deps = replace(_deps(), newest_run_host=lambda: {"i": "jarvis"})
-    assert gather_facts(deps, NOW)["home"] == {"i": "jarvis"}
+    deps = replace(_deps(), newest_run_host=lambda: {"i": "host-a"})
+    assert gather_facts(deps, NOW)["home"] == {"i": "host-a"}
 
 
 def test_home_has_no_entry_when_newest_run_host_is_unknown():
@@ -194,13 +194,13 @@ def test_home_has_no_entry_when_newest_run_host_is_unknown():
 
 
 def test_run_hosts_holds_a_remote_run_and_drops_a_local_one():
-    deps = replace(_deps(), run_hosts=lambda: {"run-1": "jarvis", "run-2": ""})
-    assert gather_facts(deps, NOW)["run_hosts"] == {"run-1": "jarvis"}
+    deps = replace(_deps(), run_hosts=lambda: {"run-1": "host-a", "run-2": ""})
+    assert gather_facts(deps, NOW)["run_hosts"] == {"run-1": "host-a"}
 
 
 def test_home_holds_an_initiative_homed_on_omarchy():
-    deps = replace(_deps(), newest_run_host=lambda: {"i": "omarchy"})
-    assert gather_facts(deps, NOW)["home"] == {"i": "omarchy"}
+    deps = replace(_deps(), newest_run_host=lambda: {"i": "host-b"})
+    assert gather_facts(deps, NOW)["home"] == {"i": "host-b"}
 
 
 def test_with_no_host_callables_run_hosts_and_home_are_empty():
@@ -413,15 +413,15 @@ def test_a_failed_retry_reads_two_and_the_planner_hands_it_to_the_chair():
 
 
 def test_dispatch_facts_split_the_local_lanes_from_each_lane_hosts():
-    facts = dispatch_facts({"max_in_flight": 4}, ["jarvis"], {"": 3, "jarvis": 1})
+    facts = dispatch_facts({"max_in_flight": 4}, ["host-a"], {"": 3, "host-a": 1})
     assert facts["live_runs"] == 3
-    assert facts["hosts"] == [{"name": "jarvis", "live_runs": 1, "weight": 1, "capabilities": []}]
+    assert facts["hosts"] == [{"name": "host-a", "live_runs": 1, "weight": 1, "capabilities": []}]
 
 
 def test_dispatch_facts_carry_a_hosts_own_capacity_only_when_it_has_one():
-    facts = dispatch_facts({"max_in_flight": 4}, ["jarvis", "pi"], {}, {"jarvis": 8})
+    facts = dispatch_facts({"max_in_flight": 4}, ["host-a", "pi"], {}, {"host-a": 8})
     assert facts["hosts"] == [
-        {"name": "jarvis", "live_runs": 0, "capacity": 8, "weight": 1, "capabilities": []},
+        {"name": "host-a", "live_runs": 0, "capacity": 8, "weight": 1, "capabilities": []},
         {"name": "pi", "live_runs": 0, "weight": 1, "capabilities": []},
     ]
 
@@ -437,8 +437,8 @@ def test_dispatch_facts_defaults_weight_and_capabilities_with_no_row():
 
 
 def test_dispatch_facts_never_places_the_local_host_among_the_hosts():
-    facts = dispatch_facts({"max_in_flight": 4}, ["omarchy", "jarvis"], {}, local="omarchy")
-    assert facts["hosts"] == [{"name": "jarvis", "live_runs": 0, "weight": 1, "capabilities": []}]
+    facts = dispatch_facts({"max_in_flight": 4}, ["host-b", "host-a"], {}, local="host-b")
+    assert facts["hosts"] == [{"name": "host-a", "live_runs": 0, "weight": 1, "capabilities": []}]
 
 
 def test_dispatch_facts_carry_local_lanes_only_when_it_is_not_any():

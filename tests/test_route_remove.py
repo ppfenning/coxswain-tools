@@ -34,19 +34,19 @@ def snapshot(ws: Path) -> dict[str, str]:
 
 
 def run(ws: Path, id: str, rows: list[dict], live: tuple[str, ...] = (), dry_run: bool = False) -> int:
-    return route_remove.remove(ws, id, "stale", "pat", NOW, rows, live, files_store(), dry_run=dry_run)
+    return route_remove.remove(ws, id, "stale", "operator", NOW, rows, live, files_store(), dry_run=dry_run)
 
 
 def test_the_removal_line_and_the_done_text():
-    assert route_remove.removed_line("pat", "2026-10-05", "stale") == "removed by pat on 2026-10-05: stale"
-    assert route_remove.intake_done_text("Body", "pat", "2026-10-05", "stale") == "Body\nremoved by pat on 2026-10-05: stale\n"
+    assert route_remove.removed_line("operator", "2026-10-05", "stale") == "removed by operator on 2026-10-05: stale"
+    assert route_remove.intake_done_text("Body", "operator", "2026-10-05", "stale") == "Body\nremoved by operator on 2026-10-05: stale\n"
 
 
 def test_remove_an_intake_moves_it_to_done_with_the_line(tmp_path):
     ws = make_ws(tmp_path)
     assert run(ws, "idea", INTAKE_ROWS) == 0
     assert not (ws / "intake" / "idea.md").exists()
-    assert (ws / "intake" / "done" / "idea.md").read_text() == "---\ntitle: Idea\n---\nBody\nremoved by pat on 2026-10-05: stale\n"
+    assert (ws / "intake" / "done" / "idea.md").read_text() == "---\ntitle: Idea\n---\nBody\nremoved by operator on 2026-10-05: stale\n"
 
 
 def test_remove_an_initiative_drops_todo_and_ready_tickets(tmp_path):
@@ -55,7 +55,7 @@ def test_remove_an_initiative_drops_todo_and_ready_tickets(tmp_path):
     demo = ws / "work" / "demo"
     assert [(demo / "1-build" / f"{t}.md").read_text() for t in "ab"] == ["---\nstate: dropped\n---\nA\n", "---\nstate: dropped\n---\nB\n"]
     text = (demo / "initiative.md").read_text()
-    assert "declined_by: pat\n" in text
+    assert "declined_by: operator\n" in text
     assert 'declined_reason: "stale"\n' in text
 
 
@@ -80,5 +80,5 @@ def test_store_mode_expects_the_real_old_state(tmp_path):
     ws, calls = make_ws(tmp_path), []
     rows = lambda initiative: [{"initiative": initiative, "task_id": t, "state": "todo"} for t in "ab"]  # noqa: E731
     store = draft_apply.Store("store", rows, lambda i, t, to, by, expected: calls.append((t, to, expected)) or StateSet({}))
-    assert route_remove.remove(ws, "demo", "stale", "pat", NOW, INITIATIVE_ROWS, (), store) == 0
+    assert route_remove.remove(ws, "demo", "stale", "operator", NOW, INITIATIVE_ROWS, (), store) == 0
     assert calls == [("a", "dropped", "todo"), ("b", "dropped", "ready")]

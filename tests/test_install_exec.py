@@ -184,7 +184,7 @@ def test_cli_install_without_dry_run_executes_and_the_table_reflects_what_landed
     monkeypatch.setattr(cli, "_real_run", fake_run)
 
     rc = cli.main(["install", "--root", str(tmp_path), "--manifest", str(manifest_path),
-                   "--provider", "claude-code", "--team", "pat", "--workspace", str(tmp_path / "ws")])
+                   "--provider", "claude-code", "--team", "example-team", "--workspace", str(tmp_path / "ws")])
     out = capsys.readouterr().out
 
     assert rc == 0

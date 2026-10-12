@@ -11,7 +11,7 @@ def test_dash_detail_run_v1_fixture_loads():
     assert data["kind"] == "run"
     assert data["at"] == "2026-09-29T12:00:00Z"
     assert data["run"] == "dash-feed-1"
-    assert data["machine"] == "omarchy"
+    assert data["machine"] == "host-b"
     assert data["initiative"] == "dash-feed-streams-a-versioned-json-snapshot-of"
     assert data["phase"] == "p1-foundations"
     assert isinstance(data["steps"], list)
@@ -38,7 +38,7 @@ def test_dash_detail_machine_v1_fixture_loads():
     assert data["schema"] == 1
     assert data["kind"] == "machine"
     assert data["at"] == "2026-09-29T12:00:00Z"
-    assert data["machine"] == "omarchy"
+    assert data["machine"] == "host-b"
     assert isinstance(data["host_facts"], dict)
     assert isinstance(data["checkouts"], dict)
     assert data["lanes_in_use"] == 2

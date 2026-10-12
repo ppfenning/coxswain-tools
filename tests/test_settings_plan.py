@@ -42,7 +42,7 @@ def test_value_that_fails_coercion_is_an_error():
 
 
 PROFILE = (
-    "team: pat\n"
+    "team: example-team\n"
     "skills_roots: [a, b]\n"
     'sources: {"gh": {"repo": "o/r"}}\n'
     'repo_map: {"r": "/x"}\n'
@@ -58,7 +58,7 @@ PROFILE = (
 
 
 def test_chair_profile_parser_rejection_is_its_message():
-    result = plan_set("profile", "window_ceiling_usd", "abc", "team: pat\n")
+    result = plan_set("profile", "window_ceiling_usd", "abc", "team: example-team\n")
     assert result == PlanError("line 3:   window_ceiling_usd: abc")
 
 
@@ -69,12 +69,12 @@ def test_chair_cartridge_reader_rejection_names_the_rule():
 
 def test_profile_set_keeps_the_chair_format_for_every_other_key():
     result = plan_set("profile", "team", "other", PROFILE)
-    assert isinstance(result, Plan) and result.new_text == PROFILE.replace("team: pat", "team: other")
+    assert isinstance(result, Plan) and result.new_text == PROFILE.replace("team: example-team", "team: other")
 
 
 def test_profile_spend_key_is_written_under_spend():
-    result = plan_set("profile", "window_ceiling_usd", "5", "team: pat\n")
-    assert isinstance(result, Plan) and result.new_text == "team: pat\nspend:\n  window_ceiling_usd: 5\n"
+    result = plan_set("profile", "window_ceiling_usd", "5", "team: example-team\n")
+    assert isinstance(result, Plan) and result.new_text == "team: example-team\nspend:\n  window_ceiling_usd: 5\n"
 
 
 def test_chair_reads_covers_every_chair_cap_reader():
@@ -118,5 +118,5 @@ def test_absent_role_model_key_is_inserted_and_flagged_pat_only():
 
 
 def test_invalid_value_for_an_absent_default_key_is_refused():
-    result = plan_set("profile", "chair.stale_days", "abc", "team: pat\n")
+    result = plan_set("profile", "chair.stale_days", "abc", "team: example-team\n")
     assert result == PlanError("line 3:   stale_days: abc")

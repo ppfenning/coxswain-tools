@@ -35,13 +35,13 @@ def home(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / "profile.yaml").write_text(f"workspace_dir: {tmp_path}/ws\n")
     monkeypatch.setattr(
-        cli.run_store, "hosts", lambda _runs_dir: [{"name": "jarvis", "ssh": "jarvis.example.com"}],
+        cli.run_store, "hosts", lambda _runs_dir: [{"name": "host-a", "ssh": "host-a.example.com"}],
     )
     return tmp_path
 
 
 def _install(home: Path, fake: FakeRun, *flags: str) -> int:
-    return cli.main(["chair", "service", "--install", "--host", "jarvis", "--profile", str(home / "profile.yaml"), *flags])
+    return cli.main(["chair", "service", "--install", "--host", "host-a", "--profile", str(home / "profile.yaml"), *flags])
 
 
 def test_install_host_without_apply_prints_the_steps_and_runs_none_of_them(home: Path, monkeypatch, capsys) -> None:
@@ -50,7 +50,7 @@ def test_install_host_without_apply_prints_the_steps_and_runs_none_of_them(home:
     assert _install(home, fake) == 0
     assert fake.step_calls() == []
     out = capsys.readouterr().out
-    assert "ssh jarvis.example.com" in out
+    assert "ssh host-a.example.com" in out
     assert "# run by hand" in out
 
 
@@ -68,5 +68,5 @@ def test_install_unknown_host_exits_2_with_one_line(home: Path, monkeypatch, cap
     fake = FakeRun()
     monkeypatch.setattr(cli.subprocess, "run", fake)
     assert _install(home, fake) == 2
-    assert capsys.readouterr().out == "unknown host: jarvis\n"
+    assert capsys.readouterr().out == "unknown host: host-a\n"
     assert fake.calls == []

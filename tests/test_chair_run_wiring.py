@@ -179,10 +179,10 @@ def test_harness_python_falls_back_to_the_bare_interpreter_with_no_harness_dir(t
 
 def test_the_dispatch_facts_offer_the_lane_hosts_named_in_the_profile_file(tmp_path) -> None:
     profile = tmp_path / "profile.yaml"
-    profile.write_text("lane_hosts:\n  - name: jarvis\n    ssh: jarvis\n    workspace_dir: /w\n", encoding="utf-8")
+    profile.write_text("lane_hosts:\n  - name: host-a\n    ssh: host-a\n    workspace_dir: /w\n", encoding="utf-8")
     deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, profile, "files")
     assert deps.facts_deps.dispatch({"max_in_flight": 3}) == {  # type: ignore[misc]
-        "max_in_flight": 3, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 0, "weight": 1, "capabilities": []}],
+        "max_in_flight": 3, "live_runs": 0, "hosts": [{"name": "host-a", "live_runs": 0, "weight": 1, "capabilities": []}],
     }
 
 
@@ -211,8 +211,8 @@ def _cartridge(root: Path, name: str, text: str) -> None:
 def test_a_missing_local_host_row_is_registered_before_dispatch_with_the_cartridge_cap(tmp_path, monkeypatch) -> None:
     runs = tmp_path / "runs"
     _hosts_table(runs)
-    _cartridge(tmp_path, "pat", "policy:\n  dispatch:\n    max_in_flight: 8\n")
-    profile = {"cartridges_dir": str(tmp_path), "team": "pat"}
+    _cartridge(tmp_path, "example-team", "policy:\n  dispatch:\n    max_in_flight: 8\n")
+    profile = {"cartridges_dir": str(tmp_path), "team": "example-team"}
     calls: list[list[str]] = []
     monkeypatch.setattr(cli.store_cli, "runner", lambda runs_dir: (lambda argv: (calls.append(argv), (0, "{}"))[1]))
 
@@ -235,8 +235,8 @@ def test_a_local_host_row_already_present_writes_nothing(tmp_path, monkeypatch) 
 def test_a_local_host_row_capacity_is_the_free_lane_cap_not_the_cartridge_max(tmp_path) -> None:
     runs = tmp_path / "runs"
     _hosts_table(runs, ("h", "h", 2, "active", BEAT))
-    _cartridge(tmp_path, "pat", "policy:\n  dispatch:\n    max_in_flight: 8\n")
-    profile = {"cartridges_dir": str(tmp_path), "team": "pat"}
+    _cartridge(tmp_path, "example-team", "policy:\n  dispatch:\n    max_in_flight: 8\n")
+    profile = {"cartridges_dir": str(tmp_path), "team": "example-team"}
 
     deps = cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
 
@@ -247,11 +247,11 @@ def test_the_dispatch_facts_name_only_the_active_table_hosts_when_the_table_has_
     profile = tmp_path / "profile.yaml"
     profile.write_text("lane_hosts:\n  - name: other\n    ssh: other\n    workspace_dir: /w\n", encoding="utf-8")
     runs = tmp_path / "runs"
-    _hosts_table(runs, ("jarvis", "jarvis", 8, "active", BEAT), ("pi", "pi", 2, "draining", BEAT))
+    _hosts_table(runs, ("host-a", "host-a", 8, "active", BEAT), ("pi", "pi", 2, "draining", BEAT))
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, profile, "files")
     assert deps.facts_deps.dispatch({"max_in_flight": 3}) == {  # type: ignore[misc]
         "max_in_flight": 3, "live_runs": 0,
-        "hosts": [{"name": "jarvis", "live_runs": 0, "capacity": 8, "weight": 1, "capabilities": []}],
+        "hosts": [{"name": "host-a", "live_runs": 0, "capacity": 8, "weight": 1, "capabilities": []}],
     }
 
 
@@ -261,14 +261,14 @@ def test_the_dispatch_facts_carry_weight_and_capabilities_from_the_hosts_row(tmp
     conn = sqlite3.connect(runs / "cox.db")
     conn.execute(HOSTS_DDL.replace("updated_by TEXT)", "updated_by TEXT, weight INTEGER, capabilities TEXT)"))
     conn.execute(
-        "INSERT INTO hosts VALUES ('jarvis', 'jarvis', 8, 'active', '2026-09-26T11:58:00Z', ?, '2026-09-26T11:58:00Z', 'chair', 2, ?)",
+        "INSERT INTO hosts VALUES ('host-a', 'host-a', 8, 'active', '2026-09-26T11:58:00Z', ?, '2026-09-26T11:58:00Z', 'chair', 2, ?)",
         (BEAT, '["go"]'),
     )
     conn.commit()
     conn.close()
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
     assert deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"] == [  # type: ignore[misc]
-        {"name": "jarvis", "live_runs": 0, "capacity": 8, "weight": 2, "capabilities": ["go"]}
+        {"name": "host-a", "live_runs": 0, "capacity": 8, "weight": 2, "capabilities": ["go"]}
     ]
 
 
@@ -276,13 +276,13 @@ def test_an_active_table_host_with_no_workspace_dir_is_not_dispatched_and_the_ch
     profile = tmp_path / "profile.yaml"
     profile.write_text("lane_hosts:\n  - name: other\n    ssh: other\n    workspace_dir: /w\n", encoding="utf-8")
     runs = tmp_path / "runs"
-    _hosts_table(runs, ("jarvis", "jarvis", 8, "active", BEAT), ("fresh", "fresh", 4, "active", None))
+    _hosts_table(runs, ("host-a", "host-a", 8, "active", BEAT), ("fresh", "fresh", 4, "active", None))
     # "h" (this test's local host) carries no row here, so `_chair_run_deps` now tries to register it;
     # stub the write to succeed so that attempt adds no line to `said`, which asserts an exact list below.
     monkeypatch.setattr(cli.store_cli, "runner", lambda runs_dir: (lambda argv: (0, "{}")))
     said: list[str] = []
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, said.append, profile, "files")
-    assert [h["name"] for h in deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"]] == ["jarvis"]  # type: ignore[misc]
+    assert [h["name"] for h in deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"]] == ["host-a"]  # type: ignore[misc]
     assert said == [
         "chair run: not dispatching to fresh: no workspace_dir; run `cox host beat` on each",
         "chair run: profile lane_hosts not in the hosts table are not lane hosts while it has rows: other;"
@@ -294,11 +294,11 @@ def test_the_local_hosts_own_row_is_never_a_dispatch_target_and_its_workspace_di
     # "h" (this test's local host) carries no versions_json, so with no fix it would land in the startup
     # `unreachable` list; the routing profile's own top-level `workspace_dir` resolves it instead.
     runs = tmp_path / "runs"
-    _hosts_table(runs, ("jarvis", "jarvis", 8, "active", BEAT), ("h", "h", 4, "active", None))
+    _hosts_table(runs, ("host-a", "host-a", 8, "active", BEAT), ("h", "h", 4, "active", None))
     profile = {"workspace_dir": "/srv/ws"}
     said: list[str] = []
     deps = cli._chair_run_deps(runs, profile, "chair", 1, "h", False, said.append, tmp_path / "profile.yaml", "files")
-    assert [h["name"] for h in deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"]] == ["jarvis"]  # type: ignore[misc]
+    assert [h["name"] for h in deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"]] == ["host-a"]  # type: ignore[misc]
     assert said == []
 
 
@@ -323,13 +323,13 @@ def test_a_live_pidfile_run_with_no_store_lane_still_counts_as_a_local_lane(tmp_
 
 
 def test_lanes_on_an_unlisted_host_and_live_pidfiles_all_count_as_local() -> None:
-    lanes = [cli.run_store.Lane("r1", host, "t", "t") for host in ("jarvis", "elsewhere", "omarchy")]
-    assert cli._dispatch_counts(lanes, "omarchy", ["jarvis"], 2) == {"": 4, "jarvis": 1}
+    lanes = [cli.run_store.Lane("r1", host, "t", "t") for host in ("host-a", "elsewhere", "host-b")]
+    assert cli._dispatch_counts(lanes, "host-b", ["host-a"], 2) == {"": 4, "host-a": 1}
 
 
 def test_live_lanes_count_per_host_with_the_local_machine_under_the_empty_name() -> None:
-    lanes = [cli.run_store.Lane("r1", host, "t", "t") for host in (None, "omarchy", "jarvis")]
-    assert cli._live_by_host(lanes, "omarchy") == {"": 2, "jarvis": 1}
+    lanes = [cli.run_store.Lane("r1", host, "t", "t") for host in (None, "host-b", "host-a")]
+    assert cli._live_by_host(lanes, "host-b") == {"": 2, "host-a": 1}
 
 
 def test_the_deps_weekly_reader_passes_a_store_spend_that_reads_the_store_from_since(tmp_path, monkeypatch) -> None:

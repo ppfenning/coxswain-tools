@@ -6,10 +6,10 @@ from agent_tools.cli import build_parser
 
 
 def test_a_decompose_action_with_a_host_passes_on_and_the_host_name():
-    action = {"kind": "launch_decompose", "intake_ids": ["i1"], "host": "jarvis"}
+    action = {"kind": "launch_decompose", "intake_ids": ["i1"], "host": "host-a"}
     argv = argv_for(action, "init-1")
     assert argv is not None
-    assert argv[argv.index("--on") + 1] == "jarvis"
+    assert argv[argv.index("--on") + 1] == "host-a"
 
 
 def test_a_decompose_action_without_a_host_passes_no_on():
@@ -26,11 +26,11 @@ def test_the_cli_parses_the_argv_for_a_local_decompose():
 
 def test_the_cli_refuses_a_hosted_decompose_so_the_planner_keeps_hosted_decompose_off():
     # When `cox route launch decompose` gains --on, this parse succeeds: wire the host path, then default it on.
-    argv = argv_for({"kind": "launch_decompose", "intake_ids": ["work/intake/i1.md"], "host": "jarvis"}, "init-1")
+    argv = argv_for({"kind": "launch_decompose", "intake_ids": ["work/intake/i1.md"], "host": "host-a"}, "init-1")
     assert argv is not None
     with pytest.raises(SystemExit):
         build_parser().parse_args(argv[1:])
-    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 0}]}
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "host-a", "live_runs": 0}]}
     facts = {
         "dispatch": dispatch, "initiatives": [], "intake": ["i1", "i2"],
         "work_store_ready": False, "sources_configured": False,

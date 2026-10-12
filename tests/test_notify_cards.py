@@ -29,10 +29,10 @@ def test_a_long_question_is_cut_as_render_cuts_it():
     assert (len(event.body), event.body[-1], event.title) == (BODY_MAX, "…", "x" * TITLE_MAX)
 
 
-_BUS = {"from": "chair", "to": "pat", "ack": False, "options": ["ship", "hold"], "context": "c"}
+_BUS = {"from": "chair", "to": "operator", "ack": False, "options": ["ship", "hold"], "context": "c"}
 _ASK_1 = _BUS | {"ref": "coxswain://decision/d-1", "id": "d-1", "note": "Ship it?", "asked_at": "2026-10-06T10:00:00Z"}
 _ASK_2 = _BUS | {"ref": "coxswain://decision/d-2", "id": "d-2", "note": "Hold it?", "asked_at": "2026-10-06T09:00:00Z"}
-_ANSWER_2 = {"ref": "coxswain://decision/d-2", "id": "a-2", "from": "pat", "to": "chair", "note": "answer: hold",
+_ANSWER_2 = {"ref": "coxswain://decision/d-2", "id": "a-2", "from": "operator", "to": "chair", "note": "answer: hold",
              "ack": False, "answer": "hold", "asked_at": "2026-10-06T11:00:00Z"}
 
 

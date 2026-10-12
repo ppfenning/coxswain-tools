@@ -16,12 +16,12 @@ def _git(cwd: Path, *args: str) -> str:
 
 def _workspace(tmp_path: Path) -> tuple[Path, Path]:
     """A profile naming a committed cartridge in its own git repo; the profile file sits outside the repo."""
-    cartridge_dir = tmp_path / "cartridges" / "pat"
+    cartridge_dir = tmp_path / "cartridges" / "example-team"
     cartridge_dir.mkdir(parents=True)
     cartridge = cartridge_dir / "cartridge.yaml"
     cartridge.write_text(CARTRIDGE, encoding="utf-8")
     profile = tmp_path / "profile.yaml"
-    profile.write_text("team: pat\ncartridges_dir: " + str(tmp_path / "cartridges") + "\n", encoding="utf-8")
+    profile.write_text("team: example-team\ncartridges_dir: " + str(tmp_path / "cartridges") + "\n", encoding="utf-8")
     _git(cartridge_dir, "init", "-q")
     _git(cartridge_dir, "config", "user.name", "Casey Caller")
     _git(cartridge_dir, "config", "user.email", "casey@example.com")

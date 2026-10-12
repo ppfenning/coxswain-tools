@@ -11,7 +11,7 @@ def _lane(run: str) -> console_screen.LaneRow:
 
 def _record(run: str, hour: int, minute: int, status: str) -> dict:
     return {
-        "run": run, "machine": "omarchy", "phase": "p2", "node": "review", "attempt": 1, "turns": 5, "cost": 0.25,
+        "run": run, "machine": "host-b", "phase": "p2", "node": "review", "attempt": 1, "turns": 5, "cost": 0.25,
         "verdict": "approve", "status": status, "ended_at": f"2026-10-04T{hour:02d}:{minute:02d}:00Z",
     }
 
@@ -23,7 +23,7 @@ def test_runs_are_the_live_lanes_then_the_newest_ten_finished_runs():
         _record("old-1", 4, 0, "landed"),
     ]
 
-    runs = dash_feed._runs_v1([_lane("live-1"), _lane("live-2")], "omarchy", records, NOW)
+    runs = dash_feed._runs_v1([_lane("live-1"), _lane("live-2")], "host-b", records, NOW)
 
     assert [r["run"] for r in runs] == ["live-1", "live-2", *(f"done-{m:02d}" for m in range(12, 2, -1))]
     assert [r["status"] for r in runs[:2]] == ["running", "running"]

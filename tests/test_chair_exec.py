@@ -74,7 +74,7 @@ def test_a_land_phase_missing_its_phase_returns_no_argv():
 
 def test_a_fetch_exit_that_exits_zero_applies_approvals_and_carries_run_and_host(tmp_path, monkeypatch) -> None:
     remote_lane.remote_record_path(tmp_path, "r-1").write_text(
-        json.dumps({"host": "jarvis", "launched_at": "2026-09-26T00:00:00+00:00"}), encoding="utf-8"
+        json.dumps({"host": "host-a", "launched_at": "2026-09-26T00:00:00+00:00"}), encoding="utf-8"
     )
     calls: list = []
 
@@ -86,7 +86,7 @@ def test_a_fetch_exit_that_exits_zero_applies_approvals_and_carries_run_and_host
     deps = replace(_deps([]), runs_dir=tmp_path, work_dir=tmp_path)
     results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
     assert calls == [(tmp_path, tmp_path, "r-1", "i")]
-    assert (results[0]["status"], results[0]["run"], results[0]["host"]) == ("done", "r-1", "jarvis")
+    assert (results[0]["status"], results[0]["run"], results[0]["host"]) == ("done", "r-1", "host-a")
     assert results[0]["reason"] == "fetched r-1; approved: t1, t2"
 
 
@@ -100,7 +100,7 @@ def test_a_fetch_exit_that_exits_nonzero_applies_nothing_and_fails(tmp_path, mon
     assert "run" not in results[0] and "host" not in results[0]
 
 
-LIVE_REFUSAL = "fetch: refuse: r-1 is still live on jarvis: the lane has not ended"
+LIVE_REFUSAL = "fetch: refuse: r-1 is still live on host-a: the lane has not ended"
 
 
 def test_a_fetch_exit_refused_because_the_run_is_live_is_skipped_with_its_reason_unchanged(tmp_path, monkeypatch) -> None:
@@ -467,7 +467,7 @@ def test_a_land_refused_by_the_repo_lease_is_busy_and_never_escalated() -> None:
 
 def test_a_repo_lease_refusal_that_exits_non_zero_is_still_busy_for_a_land_and_a_land_phase() -> None:
     # `cox runs land` exits 2 when another land holds the repository: busy, never refused or escalated.
-    output = "land: refusing, chair-loop@bp-macbook:77598 is landing in /repo"
+    output = "land: refusing, chair-loop@chair-host:77598 is landing in /repo"
     for action in (_land("t1", "r"), _land_phase("p", "r")):
         calls: list = []
         results = perform([action], _deps(calls, output, code=2), lambda: 1, False)
@@ -866,10 +866,10 @@ def _host_carry_run(
     return run
 
 
-def _host_clear(run: Run, ssh: str = "me@jarvis", repo: str = "/w/app", relaunch: bool = False) -> list:
+def _host_clear(run: Run, ssh: str = "me@host-a", repo: str = "/w/app", relaunch: bool = False) -> list:
     deps = replace(_deps([]), run=run, repo_for=lambda action: repo, ssh_for=lambda host: ssh)
-    clear = {**_clear("i"), "carry": ["p"], "repo": repo, "host": "jarvis"}
-    tail_actions = [{"kind": "relaunch", "initiative": "i", "host": "jarvis", "epoch": 1}] if relaunch else []
+    clear = {**_clear("i"), "carry": ["p"], "repo": repo, "host": "host-a"}
+    tail_actions = [{"kind": "relaunch", "initiative": "i", "host": "host-a", "epoch": 1}] if relaunch else []
     return perform([clear, *tail_actions], deps, lambda: 1, False)
 
 
@@ -877,35 +877,35 @@ def test_a_host_homed_carry_runs_its_git_steps_on_that_host() -> None:
     argvs: list = []
     results = _host_clear(_host_carry_run(argvs, {"epic/i/p"}))
     assert results[0]["status"] == "done"
-    assert ssh_argv("me@jarvis", sync_argv("/w/app")) in argvs
-    assert [*SSH_BOUND, "me@jarvis", "git -C /tmp/cox-carry-abc merge --no-edit main"] in argvs
-    assert [*SSH_BOUND, "me@jarvis", "git -C /w/app worktree remove --force /tmp/cox-carry-abc"] in argvs
+    assert ssh_argv("me@host-a", sync_argv("/w/app")) in argvs
+    assert [*SSH_BOUND, "me@host-a", "git -C /tmp/cox-carry-abc merge --no-edit main"] in argvs
+    assert [*SSH_BOUND, "me@host-a", "git -C /w/app worktree remove --force /tmp/cox-carry-abc"] in argvs
     assert not any(a[0] == "git" and ("merge" in a or "add" in a) for a in argvs)
 
 
 def test_a_phase_branch_present_only_on_the_host_is_carried_not_failed() -> None:
     results = _host_clear(_host_carry_run([], {"epic/i/p"}))
     assert results[0]["status"] == "done"
-    assert results[0]["reason"] == "carried ['p'] past main on jarvis"
+    assert results[0]["reason"] == "carried ['p'] past main on host-a"
 
 
 def test_a_host_worktree_holding_the_carried_branch_is_removed_on_the_host_before_the_add() -> None:
     argvs: list = []
     results = _host_clear(_host_carry_run(argvs, {"epic/i/p", "epic/i/p--t"}, host_listing=f"{_MAIN_WORKTREE}\n\n{_P_WORKTREE}\n"))
     assert results[0]["status"] == "done"
-    assert results[0]["reason"] == "deleted ['epic/i/p--t'] in /w/app on jarvis; carried ['p'] past main on jarvis"
-    remove = [*SSH_BOUND, "me@jarvis", "git -C /w/app worktree remove --force /w/app/.worktrees/i-p"]
-    add = [*SSH_BOUND, "me@jarvis", "git -C /w/app worktree add /tmp/cox-carry-abc epic/i/p"]
+    assert results[0]["reason"] == "deleted ['epic/i/p--t'] in /w/app on host-a; carried ['p'] past main on host-a"
+    remove = [*SSH_BOUND, "me@host-a", "git -C /w/app worktree remove --force /w/app/.worktrees/i-p"]
+    add = [*SSH_BOUND, "me@host-a", "git -C /w/app worktree add /tmp/cox-carry-abc epic/i/p"]
     assert argvs.index(remove) < argvs.index(add)
-    assert [*SSH_BOUND, "me@jarvis", "git -C /w/app branch -D epic/i/p"] not in argvs
+    assert [*SSH_BOUND, "me@host-a", "git -C /w/app branch -D epic/i/p"] not in argvs
 
 
 def test_a_phase_branch_only_the_chair_holds_is_pushed_to_the_host_then_carried_there() -> None:
     argvs: list = []
     results = _host_clear(_host_carry_run(argvs, set(), chair_branches=frozenset({"epic/i/p"})))
-    assert results[0]["reason"] == "carried ['p'] past main on jarvis"
-    push = ["git", "-C", "/w/app", "push", "me@jarvis:/w/app", "refs/heads/epic/i/p:refs/heads/epic/i/p"]
-    assert argvs.index(push) < argvs.index([*SSH_BOUND, "me@jarvis", "git -C /w/app worktree add /tmp/cox-carry-abc epic/i/p"])
+    assert results[0]["reason"] == "carried ['p'] past main on host-a"
+    push = ["git", "-C", "/w/app", "push", "me@host-a:/w/app", "refs/heads/epic/i/p:refs/heads/epic/i/p"]
+    assert argvs.index(push) < argvs.index([*SSH_BOUND, "me@host-a", "git -C /w/app worktree add /tmp/cox-carry-abc epic/i/p"])
 
 
 def test_a_conflict_on_the_host_raises_carry_conflict() -> None:
@@ -914,7 +914,7 @@ def test_a_conflict_on_the_host_raises_carry_conflict() -> None:
     assert [r["status"] for r in results] == ["done", "recorded"]
     assert results[1]["action"]["cause"] == "carry_conflict"
     assert "src/app.py" in results[1]["reason"]
-    assert [*SSH_BOUND, "me@jarvis", "git -C /tmp/cox-carry-abc merge --abort"] in argvs
+    assert [*SSH_BOUND, "me@host-a", "git -C /tmp/cox-carry-abc merge --abort"] in argvs
 
 
 def test_a_phase_branch_missing_on_both_machines_is_nothing_to_carry() -> None:
@@ -929,14 +929,14 @@ def test_a_phase_branch_missing_on_both_machines_is_nothing_to_carry() -> None:
 def test_a_host_sync_failure_fails_the_clear_and_holds_the_relaunch_it_would_also_fail() -> None:
     results = _host_clear(_host_carry_run([], {"epic/i/p"}, fail=("bash",)), relaunch=True)
     assert [r["status"] for r in results] == ["failed", "skipped"]
-    assert results[0]["reason"] == "updating /w/app on jarvis before the carry: boom: bash"
+    assert results[0]["reason"] == "updating /w/app on host-a before the carry: boom: bash"
 
 
 def test_a_host_with_no_ssh_destination_fails_the_clear_instead_of_carrying_locally() -> None:
     argvs: list = []
     results = _host_clear(_host_carry_run(argvs, {"epic/i/p"}), ssh="")
     assert results[0]["status"] == "failed"
-    assert "jarvis" in results[0]["reason"]
+    assert "host-a" in results[0]["reason"]
     assert argvs == []
 
 
@@ -978,7 +978,7 @@ def test_a_host_carry_runs_through_a_real_shell_against_real_git(tmp_path) -> No
 
     results = _host_clear(run, repo=app)
     assert results[0]["status"] == "done", results[0]["reason"]
-    assert results[0]["reason"] == "carried ['p'] past main on jarvis"
+    assert results[0]["reason"] == "carried ['p'] past main on host-a"
     assert f"worktree {held}\n" not in _git("-C", app, "worktree", "list", "--porcelain")
     assert _git("-C", app, "show", "epic/i/p:b.txt") == "b.txt"
     assert _git("-C", app, "show", "epic/i/p:c.txt") == "c.txt"
@@ -1094,7 +1094,7 @@ def test_the_login_edge_passes_the_provider_profile_s_runner_and_env_names(monke
     monkeypatch.setattr(chair_exec.chair_login_check, "check_login_on_host", fake_check_login_on_host)
     deps = chair_exec.edge_deps(
         tmp_path, tmp_path, "chair-loop", 1, run_id=lambda a: "", repo_for=lambda a: "", record=lambda a: None,
-        host="omarchy", harness_python="python",
+        host="host-b", harness_python="python",
         provider_profile=lambda: {"runner": "openai-compatible", "auth_env": "MY_API_KEY"},
     )
     deps.check_login("shed")
@@ -1104,7 +1104,7 @@ def test_the_login_edge_passes_the_provider_profile_s_runner_and_env_names(monke
 def _edge(tmp_path, **kwargs) -> Deps:
     return chair_exec.edge_deps(
         tmp_path, tmp_path, "chair-loop", 1, run_id=lambda a: "", repo_for=lambda a: "", record=lambda a: None,
-        host="omarchy", harness_python="python", **kwargs,
+        host="host-b", harness_python="python", **kwargs,
     )
 
 
@@ -1210,7 +1210,7 @@ def test_an_epic_launch_names_the_initiative_by_its_work_path(kind: str) -> None
 
 
 def test_a_launch_with_a_host_ends_with_on_that_host() -> None:
-    assert argv_for({"kind": "launch_epic", "initiative": "x", "host": "jarvis"})[-2:] == ["--on", "jarvis"]  # type: ignore[index]
+    assert argv_for({"kind": "launch_epic", "initiative": "x", "host": "host-a"})[-2:] == ["--on", "host-a"]  # type: ignore[index]
     assert argv_for({"kind": "launch_epic", "initiative": "x"}) == ["cox", "route", "launch", "epic", "--initiative", "work/x", "--no-claim"]
 
 
@@ -1232,10 +1232,10 @@ def test_the_loop_takes_the_lease_under_its_own_host_though_the_action_names_non
     monkeypatch.setattr(chair_exec.chair, "acquire_lease", lambda runs_dir, session, pid, host, steal=False: taken.append((session, pid, host)) or "")
     deps = chair_exec.edge_deps(
         tmp_path, tmp_path, "chair-loop", 42, run_id=lambda a: "", repo_for=lambda a: "", record=lambda a: None,
-        host="omarchy", harness_python="/venv/bin/python",
+        host="host-b", harness_python="/venv/bin/python",
     )
     perform([{"kind": "take_lease", "epoch": 1, "reason": "takeover expired at 2026-09-27T23:00:00+00:00"}], deps, lambda: 1, False)
-    assert taken == [("chair-loop", 42, "omarchy")]
+    assert taken == [("chair-loop", 42, "host-b")]
 
 
 def test_a_command_past_its_timeout_is_exit_124_not_an_exception() -> None:
@@ -1686,7 +1686,7 @@ def _landed_result(repo: str, pr_url: str, commit: str) -> dict:
 
 
 def test_smoke_targets_keeps_only_the_named_repos() -> None:
-    # An action's repo is the initiative frontmatter's checkout path, e.g. `repo: /home/x/repos/coxswain-tools`.
+    # An action's repo is the initiative frontmatter's checkout path, e.g. `repo: /home/user/repos/coxswain-tools`.
     tools = _landed_result("/x/coxswain-tools", "https://github.com/org/coxswain-tools/pull/42", "abc123")
     umbrella = _landed_result("/x/coxswain", "https://github.com/org/coxswain/pull/9", "def456")
     assert smoke_targets([tools, umbrella]) == [{"repo": "/x/coxswain-tools", "pr": 42, "commit": "abc123"}]
@@ -1724,7 +1724,7 @@ def test_draft_apply_plan_approve_moves_the_written_stale_task_from_todo_to_read
     perform([_stale_action()], _stale_deps([], tmp_path), lambda: 1, False)
     initiative_text = (tmp_path / "work" / "demo" / "initiative.md").read_text(encoding="utf-8")
     ticket_text = (tmp_path / "work" / "demo" / "phase-1" / "t1.md").read_text(encoding="utf-8")
-    plan = plan_approve(initiative_text, {"t1": ticket_text}, None, "pat", datetime(2026, 9, 27, tzinfo=UTC))
+    plan = plan_approve(initiative_text, {"t1": ticket_text}, None, "operator", datetime(2026, 9, 27, tzinfo=UTC))
     assert plan.moves == (("t1", "todo", "ready"),)
 
 
@@ -1823,7 +1823,7 @@ def _sleeps(calls: list) -> list:
 
 def test_two_same_host_launches_sleep_once_between_them(tmp_path: Path) -> None:
     calls: list = []
-    _staggered(calls, tmp_path, [_epic("a", "jarvis"), _epic("b", "jarvis")])
+    _staggered(calls, tmp_path, [_epic("a", "host-a"), _epic("b", "host-a")])
     assert [c[0] for c in _touched(calls)] == ["run", "sleep", "run"]
     assert _sleeps(calls) == [("sleep", 20.0)]
 
@@ -1836,20 +1836,20 @@ def test_launches_with_no_host_share_the_local_machine(tmp_path: Path) -> None:
 
 def test_two_different_host_launches_never_sleep(tmp_path: Path) -> None:
     calls: list = []
-    _staggered(calls, tmp_path, [_epic("a", "jarvis"), _epic("b", "friday")])
+    _staggered(calls, tmp_path, [_epic("a", "host-a"), _epic("b", "friday")])
     assert _sleeps(calls) == []
 
 
 def test_a_third_launch_on_the_first_host_waits_and_order_is_kept(tmp_path: Path) -> None:
     calls: list = []
-    results = _staggered(calls, tmp_path, [_epic("a", "jarvis"), _epic("b", "friday"), _epic("c", "jarvis")])
+    results = _staggered(calls, tmp_path, [_epic("a", "host-a"), _epic("b", "friday"), _epic("c", "host-a")])
     assert _sleeps(calls) == [("sleep", 20.0)]
     assert [c[0] for c in _touched(calls)] == ["run", "run", "sleep", "run"]
     assert [r["action"]["initiative"] for r in results] == ["a", "b", "c"]
 
 
 def test_launch_stagger_s_overrides_the_default_and_zero_skips_the_sleep(tmp_path: Path) -> None:
-    actions = [_epic("a", "jarvis"), _epic("b", "jarvis")]
+    actions = [_epic("a", "host-a"), _epic("b", "host-a")]
     five: list = []
     _staggered(five, tmp_path, actions, launch_stagger_s=5.0)
     zero: list = []
@@ -1860,7 +1860,7 @@ def test_launch_stagger_s_overrides_the_default_and_zero_skips_the_sleep(tmp_pat
 
 def test_a_fenced_launch_does_not_start_a_stagger(tmp_path: Path) -> None:
     calls: list = []
-    _staggered(calls, tmp_path, [_epic("a", "jarvis", epoch=0), _epic("b", "jarvis")])
+    _staggered(calls, tmp_path, [_epic("a", "host-a", epoch=0), _epic("b", "host-a")])
     assert _sleeps(calls) == []
 
 

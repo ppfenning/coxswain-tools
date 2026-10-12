@@ -93,7 +93,7 @@ def test_console_once_shows_a_host_beat_as_local_clock_plus_age(monkeypatch, cap
 
     def gather(runs_dir, work_dir, now, local_name, local_capacity, spend):
         seen["beat"] = (datetime.fromisoformat(now) - timedelta(seconds=120)).isoformat()
-        host = {"name": "jarvis", "state": "up", "capacity": 2, "beat_at": seen["beat"], "versions_json": "{}"}
+        host = {"name": "host-a", "state": "up", "capacity": 2, "beat_at": seen["beat"], "versions_json": "{}"}
         return {"drafts": [], "hosts": [host], "lanes": [], "chair": [], "needs_chair": []}
 
     monkeypatch.setattr(console_screen, "gather", gather)

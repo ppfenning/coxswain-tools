@@ -111,7 +111,7 @@ def test_hosted_decompose_places_two_intakes_one_locally_and_one_on_the_host():
     facts = _hosted(2, intake=["i1", "i2"])
     assert plan_fill(facts, 1, hosted_decompose=True) == [
         {"kind": "launch_decompose", "intake_ids": ["i1"]},
-        {"kind": "launch_decompose", "intake_ids": ["i2"], "host": "jarvis"},
+        {"kind": "launch_decompose", "intake_ids": ["i2"], "host": "host-a"},
     ]
 
 
@@ -119,7 +119,7 @@ def test_hosted_decompose_takes_the_host_lane_before_an_epic_in_the_same_pass():
     facts = _hosted(1, initiatives=[_init("a"), _init("b")], intake=["i1", "i2"])
     assert plan_fill(facts, 1, hosted_decompose=True) == [
         {"kind": "launch_epic", "initiative": "a"},
-        {"kind": "launch_decompose", "intake_ids": ["i1"], "host": "jarvis"},
+        {"kind": "launch_decompose", "intake_ids": ["i1"], "host": "host-a"},
     ]
 
 
@@ -154,27 +154,27 @@ def test_no_pull_when_intake_exists():
 
 
 def _hosted(free: int, **over) -> Facts:
-    return _facts(dispatch={"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 4 - free}]}, **over)
+    return _facts(dispatch={"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "host-a", "live_runs": 4 - free}]}, **over)
 
 
 def test_epics_past_the_local_lanes_fill_a_host_after_the_local_ones():
     facts = _hosted(2, initiatives=[_init("a"), _init("b"), _init("c")])
     assert plan_fill(facts, 1) == [
         {"kind": "launch_epic", "initiative": "a"},
-        {"kind": "launch_epic", "initiative": "b", "host": "jarvis"},
-        {"kind": "launch_epic", "initiative": "c", "host": "jarvis"},
+        {"kind": "launch_epic", "initiative": "b", "host": "host-a"},
+        {"kind": "launch_epic", "initiative": "c", "host": "host-a"},
     ]
 
 
 def test_a_hosts_own_capacity_replaces_max_in_flight_in_its_free_count():
-    dispatch = {"max_in_flight": 1, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 1, "capacity": 3}]}
+    dispatch = {"max_in_flight": 1, "live_runs": 0, "hosts": [{"name": "host-a", "live_runs": 1, "capacity": 3}]}
     facts = _facts(dispatch=dispatch, initiatives=[_init("a"), _init("b"), _init("c")])
-    assert [a.get("host") for a in plan_fill(facts, 1)] == [None, "jarvis", "jarvis"]
+    assert [a.get("host") for a in plan_fill(facts, 1)] == [None, "host-a", "host-a"]
 
 
 def test_a_host_with_a_free_lane_launches_an_epic_when_no_local_lane_is_free():
     assert plan_fill(_hosted(1, initiatives=[_init("a")]), 0) == [
-        {"kind": "launch_epic", "initiative": "a", "host": "jarvis"}
+        {"kind": "launch_epic", "initiative": "a", "host": "host-a"}
     ]
 
 
@@ -228,36 +228,36 @@ def _login_host(name: str, login_ok: bool) -> dict:
 
 
 def test_a_blocked_hosts_free_count_is_zero_even_with_no_live_runs():
-    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 0}]}
-    facts = _facts(dispatch=dispatch, initiatives=[_init("a")], login_hosts=[_login_host("jarvis", False)])
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "host-a", "live_runs": 0}]}
+    facts = _facts(dispatch=dispatch, initiatives=[_init("a")], login_hosts=[_login_host("host-a", False)])
     assert plan_fill(facts, 0) == []
 
 
 def test_an_unblocked_host_with_free_capacity_still_receives_a_launch():
     facts = _hosted(1, initiatives=[_init("a")], login_hosts=[_login_host("other", False)])
-    assert plan_fill(facts, 0) == [{"kind": "launch_epic", "initiative": "a", "host": "jarvis"}]
+    assert plan_fill(facts, 0) == [{"kind": "launch_epic", "initiative": "a", "host": "host-a"}]
 
 
 def test_consumed_host_lanes_keeps_fill_off_a_lane_a_relaunch_just_took():
     facts = _hosted(1, initiatives=[_init("a")])
-    assert plan_fill(facts, 0, consumed_host_lanes={"jarvis": 1}) == []
+    assert plan_fill(facts, 0, consumed_host_lanes={"host-a": 1}) == []
 
 
 def _reserved(free: int, **over) -> Facts:
     """One lane host with `free` lanes, and the local lanes reserved for decomposes."""
-    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 4 - free}], "local_lanes": "decompose"}
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "host-a", "live_runs": 4 - free}], "local_lanes": "decompose"}
     return _facts(dispatch=dispatch, **over)
 
 
 def test_reserved_local_lanes_place_every_epic_on_a_host():
     facts = _reserved(1, initiatives=[_init("a"), _init("b")])
-    assert plan_fill(facts, 2) == [{"kind": "launch_epic", "initiative": "a", "host": "jarvis"}]
+    assert plan_fill(facts, 2) == [{"kind": "launch_epic", "initiative": "a", "host": "host-a"}]
 
 
 def test_reserved_single_local_lane_takes_one_decompose_even_with_a_host_free():
     facts = _reserved(2, initiatives=[_init("a")], intake=["i1", "i2"])
     assert plan_fill(facts, 1) == [
-        {"kind": "launch_epic", "initiative": "a", "host": "jarvis"},
+        {"kind": "launch_epic", "initiative": "a", "host": "host-a"},
         {"kind": "launch_decompose", "intake_ids": ["i1"]},
     ]
 
@@ -266,7 +266,7 @@ def test_reserved_hosted_decompose_takes_the_only_host_lane_and_the_epic_waits()
     facts = _reserved(1, initiatives=[_init("a")], intake=["i1", "i2"])
     assert plan_fill(facts, 1, hosted_decompose=True) == [
         {"kind": "launch_decompose", "intake_ids": ["i1"]},
-        {"kind": "launch_decompose", "intake_ids": ["i2"], "host": "jarvis"},
+        {"kind": "launch_decompose", "intake_ids": ["i2"], "host": "host-a"},
     ]
 
 
@@ -278,8 +278,8 @@ def test_reserved_local_lanes_take_one_decompose_each():
 def test_reserved_mode_with_a_host_free_still_sends_epics_to_the_host_and_decomposes_to_local_lanes():
     facts = _reserved(2, initiatives=[_init("a"), _init("b")], intake=["i1", "i2", "i3"])
     assert plan_fill(facts, 3) == [
-        {"kind": "launch_epic", "initiative": "a", "host": "jarvis"},
-        {"kind": "launch_epic", "initiative": "b", "host": "jarvis"},
+        {"kind": "launch_epic", "initiative": "a", "host": "host-a"},
+        {"kind": "launch_epic", "initiative": "b", "host": "host-a"},
         {"kind": "launch_decompose", "intake_ids": ["i1"]},
         {"kind": "launch_decompose", "intake_ids": ["i2"]},
         {"kind": "launch_decompose", "intake_ids": ["i3"]},

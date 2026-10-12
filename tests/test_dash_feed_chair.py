@@ -8,7 +8,7 @@ FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "dash_feed_v1.json").
 
 AT = datetime(2026, 9, 29, 0, 0, tzinfo=UTC)  # 09-28 20:00 EDT; local midnight is 09-28 04:00Z
 ROW = {"holder": "chair", "state": "live"}
-LEASE = {"holder": "chair@omarchy:12345", "epoch": 7}
+LEASE = {"holder": "chair@host-b:12345", "epoch": 7}
 RECORD = {"claude_session": "a1b2c3d4-0000", "heartbeat_at": "2026-09-28T23:59:56+00:00"}
 STATUS = ("09-28 19:59 EDT", "chair 09-28 19:59 EDT | landed 2, launched 1")
 ACTION = {"kind": "land", "target": "dash-feed/p2-feed", "since": "2026-09-28T23:59:50Z"}
@@ -24,7 +24,7 @@ ROWS = [
 def test_chair_section_from_staged_inputs_equals_the_fixture_chair_block():
     chair = dash_feed._chair_v1(
         ROW, LEASE, RECORD, AT, STATUS, ACTION, ROWS, 1,
-        last_housekeeping_at="2026-09-28T23:00:00Z", inbox_entries=[{"to": "pat"}], drafts=[1, 2],
+        last_housekeeping_at="2026-09-28T23:00:00Z", inbox_entries=[{"to": "operator"}], drafts=[1, 2],
     )
 
     assert chair == FIXTURE["chair"]
@@ -53,15 +53,15 @@ def test_tick_age_reads_the_eastern_stamp_and_is_none_when_absent_or_unreadable(
 
 # The store's rows: the lease row with the tick in its `status` JSON, and `chair_actions` rows with ISO `ts`.
 STORE_LEASE = {
-    "name": "chair", "holder": "chair@omarchy:12345", "epoch": 7,
+    "name": "chair", "holder": "chair@host-b:12345", "epoch": 7,
     "heartbeat_at": "2026-09-28T23:59:56+00:00", "expires_at": "2026-09-29T00:05:00+00:00",
     "status": json.dumps({"tick_at": "2026-09-28T23:59:00+00:00", "status": STATUS[1], "current_action": ACTION}),
 }
 HOUSEKEEPING = {"ts": "2026-09-28T23:00:00Z", "kind": "housekeeping", "status": "done"}
-ENTRIES = [{"to": "pat", "ref": "coxswain://needs_chair/some-task"}]
+ENTRIES = [{"to": "operator", "ref": "coxswain://needs_chair/some-task"}]
 
 
-def _stage_local(runs, *, epoch=7, holder="chair@omarchy:12345"):
+def _stage_local(runs, *, epoch=7, holder="chair@host-b:12345"):
     (runs / "chair.lease.json").write_text(json.dumps({"holder": holder, "epoch": epoch}), encoding="utf-8")
     (runs / "chair.json").write_text(json.dumps(RECORD), encoding="utf-8")
     (runs / "chair-loop.log").write_text(STATUS[1] + "\n", encoding="utf-8")
@@ -93,4 +93,4 @@ def test_the_store_row_wins_when_the_local_record_files_disagree(tmp_path, monke
 
     chair = dash_feed._chair_section(tmp_path, {"holder": "old@elsewhere:1", "state": "stale"}, ENTRIES, [1, 2], AT)
 
-    assert (chair["epoch"], chair["holder"], chair["host"], chair["liveness"]) == (7, "chair", "omarchy", "live")
+    assert (chair["epoch"], chair["holder"], chair["host"], chair["liveness"]) == (7, "chair", "host-b", "live")

@@ -33,7 +33,7 @@ def shape(tmp_path):
         {"role": "build", "task_id": "t02", "cost_usd": 0.25, "model": "haiku", "tier": "cheap"},
     ]
     _write(runs / "r1.usage.json", json.dumps({"calls": calls}))
-    chair = {"session": "chair-2026-09-24", "pid": 9597, "host": "omarchy", "runs": [], "claude_session": _SESSION}
+    chair = {"session": "chair-2026-09-24", "pid": 9597, "host": "host-b", "runs": [], "claude_session": _SESSION}
     _write(runs / "chair.json", json.dumps(chair))
     work = tmp_path / "work"
     _write(work / "init" / "p1" / "t01.md", "---\nid: t01\nattempts:\n  - run: r1\n    cause: code\n---\n")

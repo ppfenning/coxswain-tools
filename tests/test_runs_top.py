@@ -72,7 +72,7 @@ def test_a_row_with_no_short_id_shows_the_run_key():
 
 
 def test_a_remote_row_carries_its_short_id():
-    assert remote_row("acme-1", "jarvis", 5, short_id="I7-2").short_id == "I7-2"
+    assert remote_row("acme-1", "host-a", 5, short_id="I7-2").short_id == "I7-2"
 
 
 def test_row_with_a_ceiling_carries_the_applied_tier_and_effort():
@@ -223,7 +223,7 @@ def test_the_machine_column_follows_run_and_the_run_cell_is_the_bare_run():
 
 
 def test_a_local_row_shows_the_host_it_was_given():
-    assert render([row("a-1", True, [], [], [], host="omarchy")], 200)[1].split()[:2] == ["a-1", "omarchy"]
+    assert render([row("a-1", True, [], [], [], host="host-b")], 200)[1].split()[:2] == ["a-1", "host-b"]
 
 
 def test_a_remote_row_shows_its_lane_host():

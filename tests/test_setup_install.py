@@ -27,7 +27,7 @@ def _plan(**overrides):
         "plugins": True,
         "hook": True,
         "config_dir": "/config",
-        "claude_settings_path": "/home/.claude/settings.json",
+        "claude_settings_path": "/home/user/.claude/settings.json",
     }
     kwargs.update(overrides)
     return install_plan(**kwargs)

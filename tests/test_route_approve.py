@@ -52,11 +52,11 @@ class FakeStore:
         return draft_apply.Store(self.mode, self.rows, self.set_state)
 
 
-def approve(work: Path, store: FakeStore, task: str | None = None, by: str | None = "pat") -> int:
+def approve(work: Path, store: FakeStore, task: str | None = None, by: str | None = "operator") -> int:
     return draft_apply.approve(work, "demo", task, by, store.edge(), clock=lambda: NOW, user=lambda: "os-user")
 
 
-def decline(work: Path, store: FakeStore, reason: str = "not now", by: str | None = "pat") -> int:
+def decline(work: Path, store: FakeStore, reason: str = "not now", by: str | None = "operator") -> int:
     return draft_apply.decline(work, "demo", reason, by, store.edge(), clock=lambda: NOW, user=lambda: "os-user")
 
 
@@ -66,7 +66,7 @@ def test_approve_turns_todo_ready_and_clears_draft(tmp_path):
     assert (state_of(work, "a"), state_of(work, "b")) == ("state: ready", "state: ready")
     text = (work / "demo" / "initiative.md").read_text()
     assert "draft: false" in text
-    assert f"approved_by: pat\napproved_at: {STAMP}\n" in text
+    assert f"approved_by: operator\napproved_at: {STAMP}\n" in text
 
 
 def test_approve_by_defaults_to_the_os_user(tmp_path):
@@ -114,7 +114,7 @@ def test_a_missing_initiative_refuses(tmp_path, capsys):
 def test_store_mode_calls_set_state_once_per_moved_task_expecting_todo(tmp_path):
     work, store = make_work(tmp_path), FakeStore("store")
     assert approve(work, store) == 0
-    assert store.calls == [("demo", "a", "ready", "pat", "todo"), ("demo", "b", "ready", "pat", "todo")]
+    assert store.calls == [("demo", "a", "ready", "operator", "todo"), ("demo", "b", "ready", "operator", "todo")]
 
 
 def test_store_mode_decline_sets_dropped(tmp_path):
@@ -168,9 +168,9 @@ def test_cli_wires_both_commands_to_the_files(tmp_path, capsys):
     work = make_work(ws)
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"team: acme\nworkspace_dir: {ws}\n")
-    assert cli.main(["route", "approve", "demo", "--task", "a", "--by", "pat", "--profile", str(profile)]) == 0
+    assert cli.main(["route", "approve", "demo", "--task", "a", "--by", "operator", "--profile", str(profile)]) == 0
     assert (state_of(work, "a"), state_of(work, "b")) == ("state: ready", "state: todo")
-    assert cli.main(["route", "decline", "demo", "--reason", "later", "--by", "pat", "--profile", str(profile)]) == 0
+    assert cli.main(["route", "decline", "demo", "--reason", "later", "--by", "operator", "--profile", str(profile)]) == 0
     assert state_of(work, "b") == "state: dropped"
     assert cli.main(["route", "approve", "demo", "--profile", str(profile)]) != 0
     assert "not a draft" in capsys.readouterr().out

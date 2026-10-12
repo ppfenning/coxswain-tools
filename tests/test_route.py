@@ -13,7 +13,7 @@ cartridges_dir: /opt/cartridges
 skills_roots: [/opt/skills-a, /opt/skills-b]
 provider_profile: /opt/providers/acme.yaml
 harness_dir: /opt/coxswain-graphs
-workspace_dir: /home/acme/workspace
+workspace_dir: /home/user/workspace
 assume: y
 """
 
@@ -25,7 +25,7 @@ def test_parse_profile_reads_scalars_and_lists():
     assert profile["skills_roots"] == ["/opt/skills-a", "/opt/skills-b"]
     assert profile["provider_profile"] == "/opt/providers/acme.yaml"
     assert profile["harness_dir"] == "/opt/coxswain-graphs"
-    assert profile["workspace_dir"] == "/home/acme/workspace"
+    assert profile["workspace_dir"] == "/home/user/workspace"
     assert profile["assume"] == "y"
 
 
@@ -149,7 +149,7 @@ def test_parse_profile_has_no_chair_key_when_the_block_is_absent():
         "skills_roots": ["/opt/skills-a", "/opt/skills-b"],
         "provider_profile": "/opt/providers/acme.yaml",
         "harness_dir": "/opt/coxswain-graphs",
-        "workspace_dir": "/home/acme/workspace",
+        "workspace_dir": "/home/user/workspace",
         "assume": "y",
     }
 
@@ -442,7 +442,7 @@ def test_harness_argv_builds_the_epic_command_line():
         "--provider-profile",
         "/opt/providers/acme.yaml",
         "--runs-dir",
-        "/home/acme/workspace/runs",
+        "/home/user/workspace/runs",
         "--assume",
         "y",
         "--run-id",
@@ -452,7 +452,7 @@ def test_harness_argv_builds_the_epic_command_line():
         "--repo",
         "/repos/widget",
         "--workdir",
-        "/home/acme/workspace",
+        "/home/user/workspace",
     ]
 
 
@@ -480,7 +480,7 @@ def test_harness_argv_builds_the_decompose_command_line():
         "--provider-profile",
         "/opt/providers/acme.yaml",
         "--runs-dir",
-        "/home/acme/workspace/runs",
+        "/home/user/workspace/runs",
         "--assume",
         "y",
         "--run-id",
@@ -490,7 +490,7 @@ def test_harness_argv_builds_the_decompose_command_line():
         "--initiative-id",
         "myidea",
         "--workdir",
-        "/home/acme/workspace",
+        "/home/user/workspace",
     ]
 
 
@@ -499,7 +499,7 @@ def test_harness_argv_appends_task_ids_for_decompose_when_given():
     argv = route.harness_argv(
         profile, "decompose", "myidea-1", idea="/intake/myidea.md", initiative_id="myidea", task_ids="ordinal",
     )
-    assert argv[-4:] == ["--task-ids", "ordinal", "--workdir", "/home/acme/workspace"]
+    assert argv[-4:] == ["--task-ids", "ordinal", "--workdir", "/home/user/workspace"]
 
 
 def test_harness_argv_omits_task_ids_for_decompose_when_absent():
@@ -537,7 +537,7 @@ def test_harness_argv_appends_fix_attempts_for_epic_when_given():
     argv = route.harness_argv(
         profile, "epic", "myinit-1", initiative="/work/myinit", repo="/repos/widget", fix_attempts=3,
     )
-    assert argv[argv.index("--repo") + 2 :] == ["--fix-attempts", "3", "--workdir", "/home/acme/workspace"]
+    assert argv[argv.index("--repo") + 2 :] == ["--fix-attempts", "3", "--workdir", "/home/user/workspace"]
 
 
 def test_harness_argv_omits_fix_attempts_for_epic_when_absent():
@@ -624,10 +624,10 @@ def test_overlay_never_raises_on_off_ladder_values():
 
 
 def test_child_env_prepends_both_venv_bins_and_leaves_other_keys_untouched():
-    environ = {"PATH": "/usr/bin:/bin", "HOME": "/home/acme", "LANG": "C.UTF-8"}
+    environ = {"PATH": "/usr/bin:/bin", "HOME": "/home/user", "LANG": "C.UTF-8"}
     env = route.child_env(environ, harness_dir="/opt/coxswain-graphs", repo="/repos/widget")
     assert env["PATH"] == "/repos/widget/.venv/bin:/opt/coxswain-graphs/.venv/bin:/usr/bin:/bin"
-    assert env["HOME"] == "/home/acme"
+    assert env["HOME"] == "/home/user"
     assert env["LANG"] == "C.UTF-8"
     assert environ["PATH"] == "/usr/bin:/bin"  # input untouched
 
@@ -664,7 +664,7 @@ FIXTURE_PROFILE = {
     "skills_roots": ["/opt/skills-a", "/opt/skills-b"],
     "provider_profile": "/opt/providers/acme.yaml",
     "harness_dir": "/opt/coxswain-graphs",
-    "workspace_dir": "/home/acme/workspace",
+    "workspace_dir": "/home/user/workspace",
     "assume": "a",
 }
 
@@ -825,7 +825,7 @@ def test_context_document_keys_on_exactly_the_profile_fields():
     assert doc["skills_roots"] == ["/opt/skills-a", "/opt/skills-b"]
     assert doc["provider_profile"] == "/opt/providers/acme.yaml"
     assert doc["harness_dir"] == "/opt/coxswain-graphs"
-    assert doc["workspace_dir"] == "/home/acme/workspace"
+    assert doc["workspace_dir"] == "/home/user/workspace"
     assert doc["assume"] == "a"
     assert doc["intake"] == FIXTURE_INTAKE
     assert doc["runs"] == FIXTURE_RUNS
@@ -1720,8 +1720,8 @@ def test_lint_items_flags_a_reach_violation():
 def test_lint_items_does_not_flag_an_absolute_path_inside_the_repo():
     # work-shape.md §3: reach excludes a path "that is not inside the target repository".
     items = [{"task": "t1", "phase": "build", "surfaces": [],
-              "body": "see /home/acme/widgets/agent_tools/route.py for the schema"}]
-    problems = route.lint_items(items, "/home/acme/widgets", ())
+              "body": "see /home/user/widgets/agent_tools/route.py for the schema"}]
+    problems = route.lint_items(items, "/home/user/widgets", ())
     assert problems == []
 
 
@@ -1981,7 +1981,7 @@ def _cross_item(body="", surfaces=()):
 
 
 def test_lint_items_flags_a_file_under_another_repositorys_package():
-    problems = route.lint_items(_cross_item("edit harness/cli.py"), "/home/x/coxswain-tools", ())
+    problems = route.lint_items(_cross_item("edit harness/cli.py"), "/home/user/coxswain-tools", ())
     assert problems == [route.Problem(
         "t1", "cross_repo", "names harness/cli.py, which lives in coxswain-graphs",
         "paste the code the build needs into the ticket: a build reads only its own repository",
@@ -1990,23 +1990,23 @@ def test_lint_items_flags_a_file_under_another_repositorys_package():
 
 def test_lint_items_does_not_flag_a_file_in_its_own_repository():
     items = _cross_item("edit agent_tools/run_store.py", ["agent_tools/run_store.py"])
-    assert route.lint_items(items, "/home/x/coxswain-tools", ()) == []
+    assert route.lint_items(items, "/home/user/coxswain-tools", ()) == []
 
 
 def test_lint_items_stands_cross_repo_down_for_an_unknown_or_missing_repo():
     items = _cross_item("edit harness/cli.py")
-    assert route.lint_items(items, "/home/x/widgets", ()) == []
+    assert route.lint_items(items, "/home/user/widgets", ()) == []
     assert route.lint_items(items, None, ()) == []
 
 
 def test_lint_items_never_counts_tests_or_docs_as_cross_repo():
     items = _cross_item("see docs/design/x.md", ["tests/test_x.py"])
-    assert route.lint_items(items, "/home/x/coxswain-tools", ()) == []
+    assert route.lint_items(items, "/home/user/coxswain-tools", ()) == []
 
 
 def test_lint_items_reports_one_cross_repo_problem_for_a_path_named_twice():
     items = _cross_item("edit `harness/cli.py`, then harness/cli.py again", ["harness/cli.py"])
-    problems = route.lint_items(items, "/home/x/coxswain-tools/", ())
+    problems = route.lint_items(items, "/home/user/coxswain-tools/", ())
     assert [p.rule for p in problems] == ["cross_repo"]
 
 

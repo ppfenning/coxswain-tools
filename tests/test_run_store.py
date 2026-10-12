@@ -510,7 +510,7 @@ PHASES_COLUMNS = (
 
 def manifest(run_id, phase, ts="2026-09-25T04:40:00+00:00"):
     return {
-        "cartridge_sha": "abc123", "cartridge_team": "pat", "gate_diffs": [], "human_minutes": 1.5, "overlay_sha": None,
+        "cartridge_sha": "abc123", "cartridge_team": "example-team", "gate_diffs": [], "human_minutes": 1.5, "overlay_sha": None,
         "principal": "epic-swarm", "proposals": [], "provider_profile": "default", "run_id": f"{run_id}:{phase}",
         "totals": {"cost_usd": 0.1}, "ts": ts,
     }

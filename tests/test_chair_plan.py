@@ -248,7 +248,7 @@ def test_a_stale_to_draft_is_kept_at_the_hard_stop_alongside_needs_chair(monkeyp
 
 
 def _hosted_dispatch() -> dict:
-    return {"max_in_flight": 1, "live_runs": 1, "hosts": [{"name": "jarvis", "live_runs": 0}]}
+    return {"max_in_flight": 1, "live_runs": 1, "hosts": [{"name": "host-a", "live_runs": 0}]}
 
 
 def test_a_relaunch_past_the_local_cap_carries_the_free_lane_hosts_name(monkeypatch):
@@ -256,7 +256,7 @@ def test_a_relaunch_past_the_local_cap_carries_the_free_lane_hosts_name(monkeypa
     facts = _facts(dispatch=_hosted_dispatch(), run_exited={"a": True})
     assert plan_tick(facts) == [
         {"kind": "clear_branches", "initiative": "a", "epoch": 7},
-        {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "host-a", "epoch": 7},
     ]
 
 
@@ -265,7 +265,7 @@ def test_only_one_of_two_overflow_launches_gets_the_single_free_host_lane(monkey
     facts = _facts(dispatch=_hosted_dispatch(), run_exited={"a": True})
     assert plan_tick(facts) == [
         {"kind": "clear_branches", "initiative": "a", "epoch": 7},
-        {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "host-a", "epoch": 7},
     ]
 
 
@@ -277,16 +277,16 @@ def test_a_rescue_past_the_cap_is_dropped_even_with_a_free_lane_host(monkeypatch
 
 def test_a_home_with_a_free_lane_gets_the_relaunch_on_a_tie_and_its_clear_stays_local(monkeypatch):
     _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
-    # friday outweighs jarvis, so _place_on_hosts ranking would pick friday; the tie goes to home, jarvis.
+    # friday outweighs host-a, so _place_on_hosts ranking would pick friday; the tie goes to home, host-a.
     dispatch = {
         "max_in_flight": 1,
         "live_runs": 1,
-        "hosts": [{"name": "jarvis", "live_runs": 0, "weight": 1}, {"name": "friday", "live_runs": 0, "weight": 10}],
+        "hosts": [{"name": "host-a", "live_runs": 0, "weight": 1}, {"name": "friday", "live_runs": 0, "weight": 10}],
     }
-    facts = _facts(dispatch=dispatch, run_exited={"a": True}, home={"a": "jarvis"})
+    facts = _facts(dispatch=dispatch, run_exited={"a": True}, home={"a": "host-a"})
     assert plan_tick(facts) == [
         {"kind": "clear_branches", "initiative": "a", "epoch": 7},
-        {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "host-a", "epoch": 7},
     ]
 
 
@@ -312,9 +312,9 @@ def test_a_home_with_no_free_lane_plans_nothing_for_it_while_a_homeless_relaunch
     dispatch = {
         "max_in_flight": 1,
         "live_runs": 1,
-        "hosts": [{"name": "jarvis", "live_runs": 1, "capacity": 1}, {"name": "friday", "live_runs": 0}],
+        "hosts": [{"name": "host-a", "live_runs": 1, "capacity": 1}, {"name": "friday", "live_runs": 0}],
     }
-    facts = _facts(dispatch=dispatch, run_exited={"a": True, "b": True}, home={"a": "jarvis"})
+    facts = _facts(dispatch=dispatch, run_exited={"a": True, "b": True}, home={"a": "host-a"})
     assert plan_tick(facts) == [
         {"kind": "clear_branches", "initiative": "b", "epoch": 7},
         {"kind": "relaunch", "initiative": "b", "host": "friday", "epoch": 7},
@@ -326,7 +326,7 @@ def test_a_homeless_initiative_places_as_before(monkeypatch):
     facts = _facts(dispatch=_hosted_dispatch(), run_exited={"a": True}, home={"z": "elsewhere"})
     assert plan_tick(facts) == [
         {"kind": "clear_branches", "initiative": "a", "epoch": 7},
-        {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "host-a", "epoch": 7},
     ]
 
 
@@ -338,7 +338,7 @@ def _two_host_dispatch() -> dict:
     return {
         "max_in_flight": 1,
         "live_runs": 1,
-        "hosts": [{"name": "jarvis", "live_runs": 0}, {"name": "friday", "live_runs": 0}],
+        "hosts": [{"name": "host-a", "live_runs": 0}, {"name": "friday", "live_runs": 0}],
     }
 
 
@@ -347,15 +347,15 @@ def test_a_home_with_a_lapsed_login_moves_the_relaunch_with_a_fetch_planned_firs
     facts = _facts(
         dispatch=_two_host_dispatch(),
         run_exited={"a": True},
-        home={"a": "jarvis"},
+        home={"a": "host-a"},
         approved=[_home_approved("a-3")],
-        login_hosts=[_login_host("jarvis", login_ok=False, checked_at=_NOW.isoformat())],
+        login_hosts=[_login_host("host-a", login_ok=False, checked_at=_NOW.isoformat())],
     )
     assert plan_tick(facts) == [
         {"kind": "fetch", "run": "a-3", "repo": "r", "initiative": "a", "epoch": 7},
         {"kind": "clear_branches", "initiative": "a", "carry": ["p"], "epoch": 7},
         {"kind": "relaunch", "initiative": "a", "host": "friday", "epoch": 7},
-        {"kind": "needs_chair", "host": "jarvis", "cause": "login_lapsed", "epoch": 7},
+        {"kind": "needs_chair", "host": "host-a", "cause": "login_lapsed", "epoch": 7},
     ]
 
 
@@ -363,7 +363,7 @@ def test_a_home_with_a_lost_lane_moves_the_relaunch():
     facts = _facts(
         dispatch=_two_host_dispatch(),
         run_exited={"a": True},
-        home={"a": "jarvis"},
+        home={"a": "host-a"},
         approved=[_home_approved("a-3")],
         lost_runs={"a": "a-3"},
     )
@@ -381,9 +381,9 @@ def test_a_moved_home_fetches_its_newest_run_not_the_first_approved_row(monkeypa
     facts = _facts(
         dispatch=_two_host_dispatch(),
         run_exited={"a": True},
-        home={"a": "jarvis"},
+        home={"a": "host-a"},
         approved=[older, _home_approved("a-10")],
-        login_hosts=[_login_host("jarvis", login_ok=False, checked_at=_NOW.isoformat())],
+        login_hosts=[_login_host("host-a", login_ok=False, checked_at=_NOW.isoformat())],
     )
     assert plan_tick(facts)[0] == {"kind": "fetch", "run": "a-10", "repo": "r", "initiative": "a", "epoch": 7}
 
@@ -393,13 +393,13 @@ def test_a_stuck_home_with_no_run_to_fetch_does_not_move_and_reaches_the_chair(m
     facts = _facts(
         dispatch=_two_host_dispatch(),
         run_exited={"a": True},
-        home={"a": "jarvis"},
+        home={"a": "host-a"},
         approved=[_home_approved("")],
-        login_hosts=[_login_host("jarvis", login_ok=False, checked_at=_NOW.isoformat())],
+        login_hosts=[_login_host("host-a", login_ok=False, checked_at=_NOW.isoformat())],
     )
     assert plan_tick(facts) == [
         {"kind": "needs_chair", "initiative": "a", "cause": "home_unfetchable", "epoch": 7},
-        {"kind": "needs_chair", "host": "jarvis", "cause": "login_lapsed", "epoch": 7},
+        {"kind": "needs_chair", "host": "host-a", "cause": "login_lapsed", "epoch": 7},
     ]
 
 
@@ -417,7 +417,7 @@ def test_a_chair_homed_relaunch_moves_to_a_lane_host_when_local_lanes_are_decomp
     assert plan_tick(_chair_homed_facts(local_lanes="decompose")) == [
         {"kind": "fetch", "run": "a-3", "repo": "r", "initiative": "a", "epoch": 7},
         {"kind": "clear_branches", "initiative": "a", "carry": ["p"], "epoch": 7},
-        {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "host-a", "epoch": 7},
     ]
 
 
@@ -430,7 +430,7 @@ def test_an_unhomed_relaunch_never_takes_a_decompose_only_local_lane_even_when_t
     )
     planned = plan_tick(facts)
     relaunch = [a for a in planned if a["kind"] == "relaunch"]
-    assert relaunch and relaunch[0].get("host") in ("jarvis", "friday")
+    assert relaunch and relaunch[0].get("host") in ("host-a", "friday")
 
 
 @pytest.mark.parametrize("dispatch_extra", [{"live_runs": 0}, {"live_runs": 0, "local_lanes": "any"}])
@@ -447,9 +447,9 @@ def test_a_busy_but_live_home_with_no_run_to_fetch_stays_pinned_and_plans_nothin
     dispatch = {
         "max_in_flight": 1,
         "live_runs": 1,
-        "hosts": [{"name": "jarvis", "live_runs": 1, "capacity": 1}, {"name": "friday", "live_runs": 0}],
+        "hosts": [{"name": "host-a", "live_runs": 1, "capacity": 1}, {"name": "friday", "live_runs": 0}],
     }
-    facts = _facts(dispatch=dispatch, run_exited={"a": True}, home={"a": "jarvis"}, approved=[_home_approved("")])
+    facts = _facts(dispatch=dispatch, run_exited={"a": True}, home={"a": "host-a"}, approved=[_home_approved("")])
     assert plan_tick(facts) == []
 
 
@@ -458,14 +458,14 @@ def test_a_busy_but_live_home_moves_the_relaunch_to_the_freest_host_with_a_fetch
     dispatch = {
         "max_in_flight": 1,
         "live_runs": 1,
-        "hosts": [{"name": "jarvis", "live_runs": 1, "capacity": 1}, {"name": "friday", "live_runs": 0}],
+        "hosts": [{"name": "host-a", "live_runs": 1, "capacity": 1}, {"name": "friday", "live_runs": 0}],
     }
     facts = _facts(
         dispatch=dispatch,
         run_exited={"a": True},
-        home={"a": "jarvis"},
+        home={"a": "host-a"},
         approved=[_home_approved("a-3")],
-        login_hosts=[_login_host("jarvis")],
+        login_hosts=[_login_host("host-a")],
     )
     assert plan_tick(facts) == [
         {"kind": "fetch", "run": "a-3", "repo": "r", "initiative": "a", "epoch": 7},
@@ -899,19 +899,19 @@ def _login_host(name: str, login_ok: bool | None = None, checked_at: str | None 
 def test_needs_chair_login_lapsed_passes_through_at_the_hard_stop():
     facts = _facts(
         limits={"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False},
-        login_hosts=[_login_host("jarvis", login_ok=False, checked_at=_NOW.isoformat())],
+        login_hosts=[_login_host("host-a", login_ok=False, checked_at=_NOW.isoformat())],
     )
-    assert plan_tick(facts) == [{"kind": "needs_chair", "host": "jarvis", "cause": "login_lapsed", "epoch": 7}]
+    assert plan_tick(facts) == [{"kind": "needs_chair", "host": "host-a", "cause": "login_lapsed", "epoch": 7}]
 
 
 def test_a_due_host_yields_one_check_login_action():
-    facts = _facts(login_hosts=[_login_host("jarvis")], last_housekeeping_at=_NOW.isoformat())
-    assert plan_tick(facts, _NOW) == [{"kind": "check_login", "host": "jarvis", "epoch": 7}]
+    facts = _facts(login_hosts=[_login_host("host-a")], last_housekeeping_at=_NOW.isoformat())
+    assert plan_tick(facts, _NOW) == [{"kind": "check_login", "host": "host-a", "epoch": 7}]
 
 
 def test_a_host_neither_due_nor_blocked_yields_no_login_actions():
     facts = _facts(
-        login_hosts=[_login_host("jarvis", login_ok=True, checked_at=_NOW.isoformat())],
+        login_hosts=[_login_host("host-a", login_ok=True, checked_at=_NOW.isoformat())],
         last_housekeeping_at=_NOW.isoformat(),
     )
     assert plan_tick(facts, _NOW) == []
@@ -1136,11 +1136,11 @@ def test_a_tick_that_would_emit_two_housekeeping_actions_is_capped_at_one_and_la
 
 
 def test_an_initiative_with_unfinished_work_is_homed_on_its_newest_runs_host():
-    assert initiative_homes({"demo": "jarvis"}, {"demo"}) == {"demo": "jarvis"}
+    assert initiative_homes({"demo": "host-a"}, {"demo"}) == {"demo": "host-a"}
 
 
 def test_an_initiative_with_no_unfinished_work_has_no_home_entry():
-    assert initiative_homes({"demo": "jarvis"}, set()) == {}
+    assert initiative_homes({"demo": "host-a"}, set()) == {}
 
 
 def test_an_empty_newest_run_host_maps_to_the_local_machine():
@@ -1148,10 +1148,10 @@ def test_an_empty_newest_run_host_maps_to_the_local_machine():
 
 
 def test_a_run_on_the_chairs_own_host_homes_its_initiative_on_this_machine():
-    """Local runs record the chair's hostname (2026-10-05: bp-macbook), not a blank; homed by name, placement
-    looked for a lane host called bp-macbook and dropped every relaunch homed on the chair's machine."""
-    assert initiative_homes({"demo": "bp-macbook", "other": "jarvis"}, {"demo", "other"}, local_host="bp-macbook") == {
-        "demo": "", "other": "jarvis"}
+    """Local runs record the chair's hostname (2026-10-05: chair-host), not a blank; homed by name, placement
+    looked for a lane host called chair-host and dropped every relaunch homed on the chair's machine."""
+    assert initiative_homes({"demo": "chair-host", "other": "host-a"}, {"demo", "other"}, local_host="chair-host") == {
+        "demo": "", "other": "host-a"}
 
 
 def _remote(**overrides) -> Facts:

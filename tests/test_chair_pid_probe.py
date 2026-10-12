@@ -174,12 +174,12 @@ def test_the_real_chair_bundle_feeds_the_probe_its_runs_dir_ssh_edge_and_local_h
 
 def test_the_real_chair_bundle_probes_with_the_profiles_lane_hosts(monkeypatch, tmp_path):
     profile = tmp_path / "p.yaml"
-    profile.write_text("lane_hosts:\n  - name: jarvis\n    ssh: me@jarvis\n    workspace_dir: /ws\n")
+    profile.write_text("lane_hosts:\n  - name: host-a\n    ssh: me@host-a\n    workspace_dir: /ws\n")
     calls: list[tuple] = []
     monkeypatch.setattr(cli.chair_pid_probe, "read_pid_probe", lambda *args: calls.append(args) or {})
     deps = cli._chair_run_deps(tmp_path, {}, "chair", 1, "h", False, print, profile, "files")
     assert deps.facts_deps.pid_probe() == {}
-    assert tuple(calls[0][3]) == (LaneHost("jarvis", "me@jarvis", "/ws"),)
+    assert tuple(calls[0][3]) == (LaneHost("host-a", "me@host-a", "/ws"),)
 
 
 def test_the_real_chair_bundle_probes_with_no_profile_hosts_when_lane_hosts_is_malformed(monkeypatch, tmp_path):

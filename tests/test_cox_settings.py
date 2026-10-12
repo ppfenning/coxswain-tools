@@ -17,7 +17,7 @@ GROUPED = {
         SettingRow("models and tiers", "cartridge", "policy.review_tier", "opus", "cartridge.yaml", False),
     ],
     "profile files": [
-        SettingRow("profile files", "profile", "team", "pat", "profile.yaml", False),
+        SettingRow("profile files", "profile", "team", "operator", "profile.yaml", False),
     ],
 }
 
@@ -36,7 +36,7 @@ def test_json_shape():
             }]},
             {"name": "profile files", "rows": [{
                 "section": "profile files", "scope": "profile", "key": "team",
-                "value": "pat", "source_file": "profile.yaml", "tracked": False, "pat_only": False,
+                "value": "operator", "source_file": "profile.yaml", "tracked": False, "pat_only": False,
             }]},
         ]
     }
@@ -51,7 +51,7 @@ def test_text_rendering_marks_pat_only_rows():
         '  cartridge:policy.review_tier = "opus"  (cartridge.yaml, local)  [pat-only]\n'
         "\n"
         "profile files\n"
-        '  profile:team = "pat"  (profile.yaml, local)'
+        '  profile:team = "operator"  (profile.yaml, local)'
     )
 
 
@@ -93,13 +93,13 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 def _workspace(tmp_path: Path, track: bool) -> tuple[Path, Path]:
-    """A profile naming `<tmp>/cartridges/pat/cartridge.yaml`, which is committed in a repo when `track`."""
-    cartridge_dir = tmp_path / "cartridges" / "pat"
+    """A profile naming `<tmp>/cartridges/example-team/cartridge.yaml`, which is committed in a repo when `track`."""
+    cartridge_dir = tmp_path / "cartridges" / "example-team"
     cartridge_dir.mkdir(parents=True)
     cartridge = cartridge_dir / "cartridge.yaml"
     cartridge.write_text(CARTRIDGE, encoding="utf-8")
     profile = tmp_path / "profile.yaml"
-    profile.write_text("team: pat\ncartridges_dir: " + str(tmp_path / "cartridges") + "\n", encoding="utf-8")
+    profile.write_text("team: example-team\ncartridges_dir: " + str(tmp_path / "cartridges") + "\n", encoding="utf-8")
     if track:
         _git(cartridge_dir, "init", "-q")
         _git(cartridge_dir, "config", "user.name", "Casey Caller")
@@ -110,9 +110,9 @@ def _workspace(tmp_path: Path, track: bool) -> tuple[Path, Path]:
 
 
 def test_target_path_by_scope():
-    profile = {"team": "pat", "cartridges_dir": "/c"}
+    profile = {"team": "example-team", "cartridges_dir": "/c"}
     assert cox_settings.target_path("profile", Path("/p/profile.yaml"), profile) == Path("/p/profile.yaml")
-    assert cox_settings.target_path("cartridge", Path("/p/profile.yaml"), profile) == Path("/c/pat/cartridge.yaml")
+    assert cox_settings.target_path("cartridge", Path("/p/profile.yaml"), profile) == Path("/c/example-team/cartridge.yaml")
     assert cox_settings.target_path("cartridge", Path("/p/profile.yaml"), {}) is None
     assert cox_settings.target_path("nope", Path("/p/profile.yaml"), profile) is None
 
