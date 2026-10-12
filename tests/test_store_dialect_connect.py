@@ -1,11 +1,12 @@
 from pathlib import Path
 
-import psycopg
 import pytest
-from psycopg.rows import dict_row
 
 from agent_tools import chair_tick_status, run_store, store_connect
 from agent_tools.store_dialect import READ_ONLY_OPTION, connect_readonly_url
+
+psycopg = pytest.importorskip("psycopg")
+dict_row = pytest.importorskip("psycopg.rows").dict_row
 
 
 @pytest.fixture
