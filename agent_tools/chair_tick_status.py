@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_tools import run_store
+from agent_tools import run_store, store_connect
 from agent_tools.chair import LEASE_NAME
 from agent_tools.store_dialect import is_postgres, placeholder
 
@@ -35,11 +35,7 @@ def _open_writable(runs_dir: Path) -> tuple[Any, str] | None:
     `run_store._open` is read-only (`mode=ro`, `read_only = True`), so an UPDATE through it always fails."""
     url = run_store._store_url(runs_dir)
     if is_postgres(url):
-        try:
-            import psycopg
-        except ImportError:
-            return None
-        return psycopg.connect(url), placeholder(url)
+        return store_connect.connect(url), placeholder(url)
     path = run_store._sqlite_path(url)
     return (sqlite3.connect(path), placeholder(url)) if path.exists() else None
 

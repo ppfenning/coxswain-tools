@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 POSTGRES_SCHEMES = ("postgres", "postgresql")
 READ_ONLY_OPTION = "-c default_transaction_read_only=on"
+URL_OVERRIDE_KEYS = ("connect_timeout", "keepalives_idle", "keepalives_interval", "keepalives_count")
 MISSING_PSYCOPG = "a postgres store needs psycopg: pip install 'coxswain-tools[postgres]'"
 
 
@@ -35,5 +36,14 @@ def connect_readonly_url(url: str):
     # and AccessShare locks, until close; a slow or stalled reader (the notifier, 2026-10-12) then sits "idle in
     # transaction" and blocks VACUUM and DDL. `conn.read_only` only shapes the BEGINs psycopg issues, so autocommit
     # enforces read-only on the server for every implicit transaction instead.
-    options = " ".join(filter(None, (conninfo_to_dict(url).get("options"), READ_ONLY_OPTION)))
-    return psycopg.connect(url, row_factory=dict_row, autocommit=True, options=options)
+    from agent_tools import store_connect  # deferred: store_connect imports MISSING_PSYCOPG from this module
+
+    parts = conninfo_to_dict(url)
+    # Values the URL sets win over the helper's defaults: pass them back as the matching override.
+    overrides = {key: int(parts[key]) for key in URL_OVERRIDE_KEYS if key in parts}
+    kwargs = store_connect.connect_kwargs(url, **overrides)
+    if "keepalives" in parts:
+        kwargs.pop("keepalives")
+    statement_timeout = kwargs["options"]
+    options = " ".join(filter(None, (parts.get("options"), READ_ONLY_OPTION, statement_timeout)))
+    return psycopg.connect(**{**kwargs, "options": options}, row_factory=dict_row, autocommit=True)
