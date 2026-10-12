@@ -4961,18 +4961,42 @@ else:
         out["overlay_errors"] = overlay_errors(overlay_text)
     except Exception as exc:
         out["overlay_errors"] = [f"{type(exc).__name__}: {exc}"]
+provider_profile = os.environ.get("AGENT_TOOLS_PROVIDER_PROFILE")
+if provider_profile is not None:
+    try:
+        from core.model_freshness import freshness_warnings
+    except ImportError:
+        out["freshness"] = None  # a core too old for the check: the doctor prints one skip row
+    else:
+        try:
+            import core
+            from pathlib import Path
+            from core.catalog import load_catalog
+            from core.profile import load_profile
+            catalog_path = Path(core.__file__).resolve().parent.parent / "providers" / "catalog.yaml"
+            catalog = load_catalog(catalog_path)
+            profile = catalog if isinstance(catalog, list) else load_profile(provider_profile, catalog_path)
+            errors = catalog if isinstance(catalog, list) else profile if isinstance(profile, list) else None
+            if errors is None:
+                out["freshness"] = list(freshness_warnings(profile, catalog))
+            else:
+                out["freshness"] = ["model freshness not checked: " + str(errors[0] if errors else "unknown error")]
+        except Exception as exc:
+            out["freshness"] = [f"model freshness not checked: {type(exc).__name__}: {exc}"]
 print(json.dumps(out))
 '''
 
 
 def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roots: list, raw_roots: list | None = None,
-                     overlay_text: str | None = None) -> dict:
+                     overlay_text: str | None = None, provider_profile: str | None = None) -> dict:
     """One `python -c` call into the harness venv (spec: setup doctor). Any
     failure to get parseable JSON back is folded into `core_import` as the
     stderr tail, never raised."""
     env = dict(os.environ)
     if overlay_text is not None:
         env["AGENT_TOOLS_OVERLAY_TEXT"] = overlay_text
+    if provider_profile is not None:
+        env["AGENT_TOOLS_PROVIDER_PROFILE"] = provider_profile
     try:
         proc = subprocess.run(
             [python_path, "-c", _CORE_PROBE_SCRIPT, cartridges_dir, team, *skills_roots],
@@ -4995,6 +5019,8 @@ def _run_core_probe(python_path: str, cartridges_dir: str, team: str, skills_roo
              "skill_index": parsed.get("skill_index", {})}
     if "overlay_errors" in parsed:
         facts["overlay_errors"] = parsed["overlay_errors"]
+    if "freshness" in parsed:
+        facts["freshness_lines"] = parsed["freshness"]
     if "plugins" in parsed:
         facts["plugins_harness"] = parsed["plugins"]
     # Exactly one of `provenance`/`provenance_error` is set below, on every
@@ -5169,7 +5195,8 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     if facts["harness_python_exists"]:
         overlay_text = _read_text_or_none(repo / ".agent" / "cartridge.yaml")
         facts.update(_run_core_probe(str(venv_python), expand(profile.get("cartridges_dir", "")), profile.get("team", ""),
-                                     [expand(r) for r in roots], raw_roots=roots, overlay_text=overlay_text))
+                                     [expand(r) for r in roots], raw_roots=roots, overlay_text=overlay_text,
+                                     provider_profile=expand(profile.get("provider_profile", "")) or None))
     if profile.get("provider_profile"):
         facts.update(_provider_facts(expand(profile["provider_profile"])))
         if profile.get("workspace_dir"):
@@ -5240,6 +5267,10 @@ def _setup_doctor(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser() if a.repo else Path.cwd()
     facts = _gather_doctor_facts(_profile_path(a), repo)
     rows = doctor.checks(facts)
+    if "freshness_lines" in facts:
+        lines = facts["freshness_lines"]
+        fn = (lambda *_: lines) if isinstance(lines, list) else None
+        rows = [*rows, *doctor.freshness_rows(None, None, None, fn)]
     rc = doctor.exit_code(rows)
     # Informational: outside rows, so outside rc. Reuses the text the facts already read.
     parquet = _parquet_traces_line(_doctor_profile(facts["profile_text"]))
