@@ -1,7 +1,8 @@
 """Pure core for the routing layer: profile parsing and naming, plus the one thin edge `cox route file`
-writes a file through. Every function here but `write_filed_item` and `set_initiative_priority` takes plain
-arguments and returns plain values, with no file reads and no env access. `set_initiative_priority` is a
-second edge that writes through `write_filed_item`. `write_filed_item` is the exception the name says it is: it
+writes a file through. Every function here but `write_filed_item`, `set_initiative_priority` and
+`list_open_queue` takes plain arguments and returns plain values, with no file reads and no env access.
+`set_initiative_priority` is a second edge that writes through `write_filed_item`, and `list_open_queue` an edge
+that only reads the store. `write_filed_item` is the exception the name says it is: it
 decides through two pure helpers (`_unrecorded_row_warning`, `_filed_write_error`) what to print, and does
 no more I/O than the one store call and the one file write the ticket asks it to order."""
 
@@ -17,7 +18,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-from agent_tools import chair, decompose_empty, queue_rows, run_store
+from agent_tools import chair, decompose_empty, open_queue_priority, queue_rows, run_store
 from agent_tools.intake_state import intake_group
 from agent_tools.pacing import Assessment
 
@@ -45,6 +46,7 @@ __all__ = [
     "launch_gate",
     "launch_input",
     "lint_items",
+    "list_open_queue",
     "merge_same_phase",
     "next_priority",
     "next_run_id",
@@ -53,6 +55,8 @@ __all__ = [
     "parse_frontmatter",
     "parse_pid",
     "parse_profile",
+    "priority_rows",
+    "priority_target",
     "priority_text",
     "pull_plan",
     "ready_tasks",
@@ -1571,11 +1575,70 @@ def priority_text(original: str, value: int) -> str:
     return f"{opening}{header}{original[close_index:]}"
 
 
+def _int_or_zero(value: object) -> int:
+    try:
+        return int(value or 0)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return 0
+
+
+def priority_rows(stored: Sequence[Mapping]) -> list[open_queue_priority.Row]:
+    """Pure: one core `Row` per stored task or intake row. The priority is the row's top-level `priority`, else
+    the copy in `extra`; a missing or non-integer one reads as 0."""
+    def priority(row: Mapping) -> int:
+        extra = row.get("extra")
+        top = row.get("priority")
+        return _int_or_zero(top if top is not None else extra.get("priority") if isinstance(extra, Mapping) else None)
+
+    return [
+        open_queue_priority.Row(
+            str(r.get("initiative") or r.get("task_id") or ""), str(r["kind"]), str(r.get("state") or ""), priority(r)
+        )
+        for r in stored
+        if r.get("kind") in ("task", "intake")
+    ]
+
+
+def priority_target(rows: Sequence[open_queue_priority.Row], initiative: str, flag: str) -> tuple[int, list[str]]:
+    """Pure: `(value, lines to print)` for `top`, `bottom`, `up` or `down`. `top` and `bottom` name the open
+    maximum or minimum they measured against, and say so when nothing else is open or the initiative is already
+    in place; `up` and `down` pass the nearest open neighbour and print nothing."""
+    core = open_queue_priority
+    if flag == "up":
+        return core.target_for_up(list(rows), initiative), []
+    if flag == "down":
+        return core.target_for_down(list(rows), initiative), []
+    if flag not in ("top", "bottom"):
+        raise ValueError(f"unknown priority flag: {flag!r}")
+    current = max((r.priority for r in rows if r.initiative_id == initiative), default=0)
+    top = flag == "top"
+    target = (core.target_for_top if top else core.target_for_bottom)(list(rows), initiative)
+    edge = "maximum" if top else "minimum"
+    if target.measured is None:
+        return target.value, [f"{initiative}: nothing else is open, priority stays {target.value}"]
+    in_place = current > target.measured if top else current < target.measured
+    if in_place:
+        return target.value, [f"{initiative}: already at the {flag}, priority {target.value} against open {edge} {target.measured}"]
+    return target.value, [f"{initiative}: open {edge} elsewhere is {target.measured}, setting priority {target.value}"]
+
+
+def list_open_queue(runs_dir: Path) -> int:
+    """Edge: print the open queue, highest priority first, one line per initiative. Reads the store, writes nothing."""
+    entries = open_queue_priority.open_queue(priority_rows(run_store.read_queue(runs_dir)))
+    if not entries:
+        print("routing: the open queue is empty")
+        return 0
+    for line in open_queue_priority.format_listing(entries):
+        print(line)
+    return 0
+
+
 def set_initiative_priority(runs_dir: Path, ws: Path, initiative: str, flag: int | str) -> int:
     """Edge: one priority on every `work/<initiative>/<phase>/*.md` under `ws`, the store first and the file
-    second through `write_filed_item`, as `cox route file` orders them. `up` and `down` step from the highest
-    current priority, so one call leaves the initiative's items all equal. Stops at the first file that fails
-    to write. Returns 0, or non-zero after printing one line."""
+    second through `write_filed_item`, as `cox route file` orders them. An int `flag` is `--set`; `top`,
+    `bottom`, `up` and `down` measure the open queue in the store through `priority_target`. One call leaves the
+    initiative's items all equal. Stops at the first file that fails to write. Returns 0, or non-zero after
+    printing one line."""
     root = ws / "work" / initiative
     paths = sorted(root.glob("*/*.md")) if Path(initiative).name == initiative else []
     if not paths:
@@ -1586,7 +1649,16 @@ def set_initiative_priority(runs_dir: Path, ws: Path, initiative: str, flag: int
     except OSError as exc:
         print(f"routing: cannot read the items of {initiative}: {exc}")
         return 1
-    value = next_priority(current_priority(texts), flag)
+    if isinstance(flag, int):
+        value = flag
+    else:
+        own = [
+            open_queue_priority.Row(initiative, "task", str(parse_frontmatter(t)[0].get("state") or ""), current_priority([t]))
+            for t in texts
+        ]
+        value, lines = priority_target([*priority_rows(run_store.read_queue(runs_dir)), *own], initiative, flag)
+        for line in lines:
+            print(line)
     for path, text in zip(paths, texts, strict=True):
         parts = path.relative_to(ws / "work").parts
         if write_filed_item(runs_dir, path, "task", parts, priority_text(text, value), priority=value) != 0:
