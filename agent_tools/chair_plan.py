@@ -316,10 +316,10 @@ def _without_carried_lands(lands: list[Action], carries: list[Action]) -> list[A
 
 
 def _landing_initiatives(facts: Facts, lands: list[Action]) -> frozenset[str]:
-    """Initiatives whose repo has a land in flight, plus those with a land_phase planned this tick."""
+    """Initiatives whose repo has a land in flight, plus those with a land_phase or partial_land planned this tick."""
     repos = frozenset(landing["repo"] for landing in facts.get("landing", []))
     in_repo = frozenset(i["id"] for i in facts["initiatives"] if i.get("repo") in repos)
-    return in_repo | frozenset(a["initiative"] for a in lands if a["kind"] == "land_phase")
+    return in_repo | frozenset(a["initiative"] for a in lands if a["kind"] in ("land_phase", "partial_land"))
 
 
 def _is_launch(action: Action) -> bool:
@@ -380,7 +380,7 @@ def _withhold_remote_unfetched(actions: list[Action], remote_unfetched: frozense
     ]
 
 
-_HOST_BOUND_KINDS = frozenset({"fetch", "clear_branches", "land", "land_phase"})
+_HOST_BOUND_KINDS = frozenset({"fetch", "clear_branches", "land", "land_phase", "partial_land"})
 
 
 def _withhold_blocked_hosts(actions: list[Action], facts: Facts) -> list[Action]:

@@ -34,6 +34,7 @@ from agent_tools import (
     cox_settings,
     forge_auto,
     host_cmd,
+    partial_land,
     remote_fetch,
     remote_lane,
     route,
@@ -91,6 +92,7 @@ class Result(TypedDict):
     needs_chair: NotRequired[Action]  # a refused land's classified needs_chair, escalated in place of the generic one;
     # or a clear_branches carry's conflicted-merge needs_chair, recorded alongside its own done result
     commit: NotRequired[str]  # a landed land's origin/main commit, from land_commit; set only when landed() was True
+    landed_commits: NotRequired[list[partial_land.LandedCommit]]  # a partial_land's every landed task commit, any status
 
 
 class LandSink(Protocol):
@@ -172,6 +174,7 @@ def stagger_seconds(value: object) -> float:
 
 
 _UNFENCED = ("standby", "take_lease", "steer_clear")  # not writes, so a stale or missing epoch does not stop them
+_LAND_KINDS = ("land", "land_phase", "partial_land")  # a partial_land is a run of task lands, blocked and escalated as one
 _REASON_CAP = 600
 LOCAL_ARGV_TIMEOUT_S = 900.0  # a local argv with no bound of its own; matches _CHECK_COMMAND_TIMEOUT_S
 LAND_TIMEOUT_S = 45 * 60.0  # the overall bound on one `cox runs land`; it outlives the checks it runs
@@ -369,7 +372,7 @@ def _land_async(action: Action, deps: Deps, sink: LandSink) -> Result:
     repo = action.get("repo", "")
     if sink.pending(repo):
         return _result(action, "in_progress", f"a land in {repo} is still running")
-    land = _land if action.get("kind") == "land" else _land_phase
+    land = {"land": _land, "partial_land": _partial_land}.get(action.get("kind", ""), _land_phase)
     return sink.submit(action, lambda: land(action, deps, {}))
 
 
@@ -511,6 +514,19 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
     return _land_result(action, repo, code, output)
+
+
+def _partial_land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
+    """The approved tasks of a partial phase, one task land each, through `partial_land.perform_partial_land`:
+    git runs through `deps.run`, and each task land is `_land`'s, so a refusal is classified and escalated as one."""
+    repo = action.get("repo", "")
+    if not repo or not action.get("task_ids"):
+        return _result(action, "refused", "partial_land needs a repo and approved task ids")
+    if repo in blocked:
+        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
+    if not partial_land.steps(action):  # recorded, not escalated: the run is learned once it is fetched
+        return _result(action, "recorded", "no approved task of the phase has a known run yet")
+    return partial_land.perform_partial_land(action, deps.run, lambda land: _land(land, deps, blocked))  # type: ignore[return-value]
 
 
 def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
@@ -921,14 +937,16 @@ _CARRIES_NEEDS_CHAIR = ("clear_branches", "review_landed", "carry_phase", "rebas
 def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     kind = action.get("kind")
     if (
-        kind in ("land", "land_phase") and deps.lands is not None
-        and argv_for(action) is not None and action.get("repo", "") not in blocked
+        kind in _LAND_KINDS and deps.lands is not None and action.get("repo", "") not in blocked
+        and (argv_for(action) is not None or (kind == "partial_land" and bool(partial_land.steps(action))))
     ):
         return _land_async(action, deps, deps.lands)
     if kind == "land":
         return _land(action, deps, blocked)
     if kind == "land_phase":
         return _land_phase(action, deps, blocked)
+    if kind == "partial_land":
+        return _partial_land(action, deps, blocked)
     if kind == "clear_branches":
         return _clear(action, deps, blocked)
     if kind == "review_landed":
@@ -1016,9 +1034,9 @@ def _ack_done_land_notices(deps: Deps) -> list[str]:
 
 
 def _note_uncounted(action: Action, blocked: dict[str, str], blocked_initiatives: dict[str, str]) -> None:
-    """A land_phase that names an initiative blocks only that initiative; any other land blocks its whole repo."""
+    """A land_phase or partial_land that names an initiative blocks only that initiative; any other land blocks its whole repo."""
     initiative = action.get("initiative", "")
-    if action.get("kind") == "land_phase" and initiative:
+    if action.get("kind") in ("land_phase", "partial_land") and initiative:
         blocked_initiatives[initiative] = _land_subject(action)
     else:
         blocked[action.get("repo", "")] = _land_subject(action)
@@ -1068,7 +1086,7 @@ def perform(
             result = _result(action, "fenced", "planned under another lease epoch")
         elif action.get("kind") == "relaunch" and initiative in uncleared:
             result = _result(action, "skipped", f"clear_branches for {initiative} was {uncleared[initiative]} this tick")
-        elif initiative in blocked_initiatives and action.get("kind") in ("land", "land_phase", "clear_branches", "relaunch", "launch_epic"):
+        elif initiative in blocked_initiatives and action.get("kind") in (*_LAND_KINDS, "clear_branches", "relaunch", "launch_epic"):
             result = _result(action, "skipped", f"an earlier land in {action.get('repo', '')} ({blocked_initiatives[initiative]}) was not counted")
         else:
             if action.get("kind") in LAUNCH_KINDS:
@@ -1077,14 +1095,14 @@ def perform(
                     sleep(deps.launch_stagger_s)
                 launched_hosts.add(launch_host)
             result = _execute(action, deps, blocked)
-        if action.get("kind") in ("land", "land_phase") and (result["status"] == "not_landed" or "needs_chair" in result):
+        if action.get("kind") in _LAND_KINDS and (result["status"] == "not_landed" or "needs_chair" in result):
             _note_uncounted(action, blocked, blocked_initiatives)
         if action.get("kind") == "clear_branches" and result["status"] != "done":
             uncleared[initiative] = result["status"]
         if result["status"] != "in_progress":  # the land's own result is recorded when it is collected
             deps.record(_recorded(result))
         results.append(result)
-        if action.get("kind") in ("land", "land_phase") and result["status"] not in ("landed", "fenced", "busy", "in_progress"):
+        if action.get("kind") in _LAND_KINDS and result["status"] not in ("landed", "fenced", "busy", "in_progress", "recorded"):
             escalated = _escalate(action, result)
             deps.record(_recorded(escalated))
             results.append(escalated)
