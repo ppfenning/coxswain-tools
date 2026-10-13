@@ -11,6 +11,7 @@ from datetime import datetime
 
 from agent_tools.chair_exec import LAUNCH_KINDS, Result
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
+from agent_tools.chair_runnable import WaitingInitiative
 from agent_tools.chair_types import EASTERN, Action, Facts, QueueFile, ReviewPr
 from agent_tools.notify import Notification
 from agent_tools.queue_export import is_ahead_of_store
@@ -19,7 +20,7 @@ __all__ = [
     "EASTERN", "Deps", "echo_line", "failed_items", "fetched_items", "file_ahead_items", "format_status",
     "housekeeping_fragment",
     "landing_items", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "partial_land_text",
-    "steered_items", "would_items", "write_status",
+    "steered_items", "waiting_item", "would_items", "write_status",
 ]
 
 
@@ -72,6 +73,12 @@ def needs_chair_items(actions: Sequence[Action]) -> list[str]:
         + [f"needs chair: {_scope(a)}:{a.get('cause', '?')}" for a in rest]
         + [partial_land_text(a) for a in partial]
     )
+
+
+def waiting_item(action: WaitingInitiative) -> str:
+    """`waiting: <initiative> (blocked by <phase>: N quarantined, M awaiting land)`."""
+    b = action.blocking
+    return f"waiting: {action.initiative} (blocked by {b.phase}: {b.quarantined} quarantined, {b.awaiting_land} awaiting land)"
 
 
 def file_ahead_items(files: Sequence[QueueFile]) -> list[str]:
@@ -189,8 +196,12 @@ def _stall(facts: Facts) -> str | None:
     return f"stall: {diagnosis}" if isinstance(diagnosis, str) and diagnosis else None
 
 
-def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Result], now: datetime) -> str:
-    """One line per tick. `now` must be timezone-aware; it is printed in Eastern time."""
+def format_status(
+    facts: Facts, all_actions: Sequence[Action | WaitingInitiative], results: Sequence[Result], now: datetime
+) -> str:
+    """One line per tick. `now` must be timezone-aware; it is printed in Eastern time. A WaitingInitiative is one `waiting:` part."""
+    actions = [a for a in all_actions if not isinstance(a, WaitingInitiative)]
+    waiting = [waiting_item(a) for a in all_actions if isinstance(a, WaitingInitiative)]
     limits, dispatch = facts["limits"], facts["dispatch"]
     stop = " hard stop" if limits["hard_stop"] else ""
     needs = [
@@ -219,6 +230,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         *([f"fetched: {', '.join(fetched)}"] if fetched else []),
         *([f"failed: {', '.join(failed)}"] if failed else []),
         *([f"steered: {', '.join(steered)}"] if steered else []),
+        *waiting,
         *([review] if review else []),
         *(f"skipped missing repo {p}" for p in facts.get("missing_repos", [])),
         ", ".join(needs) if needs else "needs chair: none",
