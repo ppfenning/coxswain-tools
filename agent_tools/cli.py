@@ -2307,38 +2307,57 @@ def _fetch_branch(repo: Path, branch: str) -> str | None:
     return None if r.returncode == 0 else (r.stderr.strip() or r.stdout.strip() or f"git fetch origin {branch} failed")
 
 
-def _merge_preflight(repo: Path, steps: Sequence[dict], i: int, pr_url: str, forge_module) -> str | None:
-    """Edge. Read the PR state before the `merge` at `steps[i]`; update a BEHIND branch and wait for its checks again.
+def _merge_updating(repo: Path, steps: Sequence[dict], i: int, pr_url: str, forge_module,
+                    guard: Callable[[str], str | None] | None = None,
+                    attempts: int | None = None) -> tuple[bool, str, str | None]:
+    """Edge. Run the `merge` at `steps[i]`, updating the PR branch first when it is BEHIND and again after each merge refused as behind.
 
-    Returns the line to print when the land must stop, None when the merge may run. No PR number, or a forge with no PRs, merges as before."""
+    Each update is one pass: the repo lease is renewed through `guard`, the branch updated, its checks awaited again, the merge tried.
+    At most `attempts` passes run, `land.MERGE_UPDATE_ATTEMPTS` when None (read at call time: `land` loads lazily). Returns `(ok, detail, halt)`: `halt` is the reason to stop at the merge, else the merge's own result.
+    No PR number, or a forge with no PRs, merges as before."""
+    step = steps[i]
+    attempts = land.MERGE_UPDATE_ATTEMPTS if attempts is None else attempts
     number = _pr_number(steps, i, pr_url)
     if number is None:
-        return None
+        return (*_execute_land_step(repo, step, forge_module), None)
     # Imported here: `agent_tools.cli` must not import a command module before one is dispatched.
     from agent_tools.forge import ForgeError, ForgeNotSupported
 
     try:
         decision, state = merge_gate(_settled_merge_state(lambda: forge_module.merge_state(number, repo=repo)))
     except ForgeNotSupported:
-        return None
+        return (*_execute_land_step(repo, step, forge_module), None)
     except ForgeError as exc:
-        return f"merge: cannot read the state of pull request #{number}: {exc}"
-    if decision == "merge":
-        return None
+        return False, "", f"merge: cannot read the state of pull request #{number}: {exc}"
     if decision == "stop":
-        return f"merge: pull request #{number} is {state}; not merging"
-    branch = steps[i]["branch"]
-    try:
-        forge_module.update_branch(number, repo=repo)
-    except ForgeError as exc:
-        return f"merge: cannot update pull request #{number}: {exc}"
-    print(f"land: pull request #{number} was BEHIND; updated its branch, waiting for checks again")
-    failed = _fetch_branch(repo, branch)
-    if failed is not None:
-        return f"merge: cannot fetch the updated {branch}: {failed}"
+        return False, "", f"merge: pull request #{number} is {state}; not merging"
     wait = next((s for s in reversed(steps[:i]) if s["kind"] == "wait_checks"), {"kind": "wait_checks"})
-    ok, detail = _execute_land_step(repo, {**wait, "branch": f"origin/{branch}"}, forge_module)
-    return None if ok else f"wait_checks: {detail}"
+    behind = decision == "update_then_merge"
+    refusal = ""
+    used = 0
+    while True:
+        if behind:
+            if used >= attempts:
+                return False, "", land.behind_stop(attempts, refusal)
+            used += 1
+            lost = guard("update_branch") if guard is not None else None
+            if lost is not None:
+                return False, "", lost
+            try:
+                forge_module.update_branch(number, repo=repo)
+            except ForgeError as exc:
+                return False, "", f"merge: cannot update pull request #{number}: {exc}"
+            print(f"land: pull request #{number} was BEHIND; updated its branch (update {used} of {attempts}), waiting for checks again")
+            failed = _fetch_branch(repo, step["branch"])
+            if failed is not None:
+                return False, "", f"merge: cannot fetch the updated {step['branch']}: {failed}"
+            ok, detail = _execute_land_step(repo, {**wait, "branch": f"origin/{step['branch']}"}, forge_module)
+            if not ok:
+                return False, "", f"wait_checks: {detail}"
+        ok, refusal = _execute_land_step(repo, step, forge_module)
+        if ok or not land.is_behind_refusal(refusal):
+            return ok, refusal, None
+        behind = True
 
 
 def _resolved_tracker(profile: dict, runs_dir: Path) -> str:
@@ -2851,9 +2870,9 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             # gh and git cannot delete a branch a worktree still holds.
             for branch in built:
                 _remove_land_worktree(repo, branch)
-            halt = _merge_preflight(repo, steps, i, pr, forge_module)
+            merged, merge_detail, halt = _merge_updating(repo, steps, i, pr, forge_module, guard)
             if halt is not None:
-                print(halt)
+                # `_note_stop` prints the reason; printing it here too would say it twice.
                 print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
                 _note_stop(repo, step, halt, stops)
                 return 1, reached, pr
@@ -2863,7 +2882,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 Path(step["path"]).parent.mkdir(parents=True, exist_ok=True)
                 Path(step["path"]).write_text(json.dumps(record, indent=2), encoding="utf-8")
             step = {**_mark_done_facts(step, pr, datetime.datetime.now(datetime.UTC).isoformat()), "by": by, "mode": mode}
-        ok, detail = _execute_land_step(repo, step, forge_module)
+        ok, detail = (merged, merge_detail) if step["kind"] == "merge" else _execute_land_step(repo, step, forge_module)
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
             steps = land.with_issue(steps, record, _land_item_facts(item_path)[1])
