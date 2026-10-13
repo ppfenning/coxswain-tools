@@ -106,6 +106,13 @@ class OverrunState:
     consecutive: int = 0
 
 
+@dataclass
+class PullState:
+    """The last workspace-pull failure this loop recorded; "" after a pull that succeeded."""
+
+    last_reason: str = ""
+
+
 class TickOverrun(Exception):
     """The facts stage did not return inside its bound; the tick was abandoned before plan and perform."""
 
@@ -159,6 +166,9 @@ class RunDeps:
     plan_held: PlanHeld = plan_tick_held
     gate_state: GateState = field(default_factory=GateState)
     overrun_state: OverrunState = field(default_factory=OverrunState)
+    # Returns "" on success or a one-line failure reason; run by every live tick right after the beat. None pulls nothing.
+    pull_workspace: Callable[[], str] | None = None
+    pull_state: PullState = field(default_factory=PullState)
     facts_bound: float = FACTS_BOUND_SECONDS
     # Notifier: `notify` is `dispatch`'s call shape; `notify_config` None is the off state; no `workspace` skips the step.
     notify: Callable[[list, NotifyConfig | None, Path, float], list[str]] = dispatch
@@ -306,6 +316,28 @@ def _publish_meter(deps: RunDeps, dry_run: bool, now: datetime) -> None:
         })
 
 
+def _pull_step(deps: RunDeps, dry_run: bool) -> str:
+    """Pull the workspace on a live tick and return the failure reason, "" when it pulled or did not run.
+
+    A failure is recorded as a `pull_workspace` action only when it differs from the last one recorded.
+    Nothing raised here leaves the tick: a pull that raises counts as a failure with the exception text.
+    """
+    if dry_run or deps.pull_workspace is None:
+        return ""
+    try:
+        reason = deps.pull_workspace()
+    except Exception as exc:
+        reason = str(exc) or type(exc).__name__
+    if reason and reason != deps.pull_state.last_reason:
+        # `status` is required: the store's record-action refuses a line without ts, epoch, kind and status.
+        with contextlib.suppress(Exception):
+            deps.exec_deps.record({"kind": "pull_workspace", "status": "recorded", "reason": reason})
+            deps.pull_state.last_reason = reason
+    elif not reason:
+        deps.pull_state.last_reason = ""
+    return reason
+
+
 def _publish_status(deps: RunDeps, dry_run: bool, line: str, now: datetime, stage_seconds: dict[str, float] | None = None) -> None:
     """Record the tick's status line as a `status` action, so the feed reads it from the store on any machine.
 
@@ -391,6 +423,9 @@ def tick_timed(
 ) -> tuple[str, dict[str, float | None], dict[str, float]]:
     """Beat first, then gather, plan, perform and format; a failure after perform still names what was performed.
 
+    A live tick with `pull_workspace` set pulls right after the beat, so a take_lease has pulled before it runs.
+    A failed pull never stops the tick; it adds a note to the line and one action per distinct reason.
+
     Returns the status line, the seconds of each stage (None for one that did not run) and the seconds of each facts source.
     A dry run never takes the lease, so it plans as the holder would to show the actions a live tick would take.
     The meter is published right after the beat, so a gather, plan or perform that raises cannot skip it.
@@ -401,6 +436,7 @@ def tick_timed(
     sources: dict[str, float] = {}
     deps.beat()
     _publish_meter(deps, dry_run, now)
+    pull_failure = _pull_step(deps, dry_run)
     gathered, facts_s = _gather_bounded(deps, sources, now, clock)
     facts = as_holder(gathered) if dry_run else gathered
     gate = _evaluate_gate(deps, now)
@@ -425,6 +461,7 @@ def tick_timed(
         line = error_line(exc, now, results)
     line = f"{line} | {chair_exec.NOT_PROBED}" if dry_run else line
     line = f"{line} | {note}" if note else line
+    line = f"{line} | workspace pull failed: {pull_failure}" if pull_failure else line
     line = f"{line} | {PROFILE_STALE_NOTE}" if facts.get("profile_stale") else line
     pushed = _notify_step(deps, dry_run, facts, actions, now)
     stages = {"facts": facts_s, "plan": plan_s, "perform": perform_s, "export": export_s}
