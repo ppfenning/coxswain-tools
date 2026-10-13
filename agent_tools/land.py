@@ -840,9 +840,23 @@ def pr_body(record: dict[str, Any], issue: str | int | None = None) -> str:
     return "\n".join(lines + ["", pr_footer(record.get("run"))])
 
 
-def land_log_row(ts: str, run: str, task: str | None, steps_reached: Sequence[str], exit_code: int, pr: str | None) -> dict[str, Any]:
-    """One `land.jsonl` line: step kinds in the order they ran, and an empty `pr` is `None`."""
-    return {"ts": ts, "run": run, "task": task, "steps_reached": list(steps_reached), "exit": exit_code, "pr": pr or None}
+def land_log_row(ts: str, run: str, task: str | None, steps_reached: Sequence[str], exit_code: int, pr: str | None,
+                 stop: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """One `land.jsonl` line: step kinds in the order they ran, and an empty `pr` is `None`. `stop` adds the keys of a stopped land."""
+    return {"ts": ts, "run": run, "task": task, "steps_reached": list(steps_reached), "exit": exit_code, "pr": pr or None,
+            **(stop or {})}
+
+
+_SQUASH_CONFLICT = re.compile(r"squash of .+ conflicts in: (?P<paths>.+)", re.DOTALL)
+
+
+def stop_fields(kind: str, detail: str, branch_sha: str | None, from_sha: str | None) -> dict[str, Any]:
+    """The land log keys for the step that stopped a land. A `squash_phase` merge conflict also names its paths and the two commits tried."""
+    base = {"stopped_step": kind, "stop_detail": detail}
+    conflict = _SQUASH_CONFLICT.fullmatch(detail) if kind == "squash_phase" else None
+    if conflict is None:
+        return base
+    return {**base, "conflict_paths": sorted(conflict["paths"].split(", ")), "branch_sha": branch_sha, "from_sha": from_sha}
 
 
 _READY_MERGED_NOTE = "land: work item was still ready (quarantined after approval, or run on another machine); merged, so done"

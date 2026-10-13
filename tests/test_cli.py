@@ -1274,3 +1274,72 @@ def test_chair_ask_with_no_operator_configured_addresses_operator(tmp_path, caps
     assert [e["to"] for e in _bus_lines(bus)] == ["operator"]
     assert _chair(profile, "decisions", "--open", "--json") == 0
     assert [d["id"] for d in json.loads(capsys.readouterr().out)] == [decision_id]
+
+
+def _git_repo(root: Path) -> Path:
+    root.mkdir()
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    for key, value in (("user.email", "t@e"), ("user.name", "t")):
+        sp.run(["git", "-C", str(root), "config", key, value], check=True)
+    return root
+
+
+def _commit(root: Path, text: str, message: str) -> str:
+    (root / "f.txt").write_text(text, encoding="utf-8")
+    sp.run(["git", "-C", str(root), "add", "-A"], check=True)
+    sp.run(["git", "-C", str(root), "commit", "-qm", message], check=True)
+    return sp.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _apply_land(repo: Path, runs_dir: Path, monkeypatch) -> int:
+    monkeypatch.setattr(cli, "_open_prs_for", lambda *a, **k: [])
+    monkeypatch.setattr(cli, "_sync_default_branch", lambda repo, branch: ("up_to_date", ""))
+    return cli._runs_land(_land_ns(repo=str(repo), runs_dir=str(runs_dir), apply=True, phase="seams", no_claim=True))
+
+
+def _land_rows(runs_dir: Path) -> list[dict]:
+    return [json.loads(line) for line in (runs_dir / "land.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def _phase_branch_repo(tmp_path: Path) -> Path:
+    repo = _git_repo(tmp_path / "repo")
+    _commit(repo, "original\n", "init")
+    sp.run(["git", "-C", str(repo), "checkout", "-qb", "epic/x/seams"], check=True)
+    _commit(repo, "epic change\n", "phase work")
+    sp.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True)
+    return repo
+
+
+def test_a_squash_conflict_is_logged_with_its_paths_and_both_commit_ids(phase_runs_dir, tmp_path, monkeypatch, capsys):
+    repo = _phase_branch_repo(tmp_path)
+    branch_sha = sp.run(["git", "-C", str(repo), "rev-parse", "epic/x/seams"], check=True, capture_output=True, text=True).stdout.strip()
+    from_sha = _commit(repo, "main change\n", "main moves")
+    rc = _apply_land(repo, phase_runs_dir, monkeypatch)
+    row = _land_rows(phase_runs_dir)[0]
+    assert rc == 1
+    assert (row["stopped_step"], row["stop_detail"]) == ("squash_phase", "squash of epic/x/seams conflicts in: f.txt")
+    assert (row["conflict_paths"], row["branch_sha"], row["from_sha"]) == (["f.txt"], branch_sha, from_sha)
+    assert capsys.readouterr().out.splitlines()[-1] == "land: stopped at squash_phase: squash of epic/x/seams conflicts in: f.txt"
+
+
+def test_a_stop_at_another_step_logs_the_step_and_its_text_only(phase_runs_dir, tmp_path, monkeypatch, capsys):
+    repo = _phase_branch_repo(tmp_path)
+    real = cli._execute_land_step
+    monkeypatch.setattr(cli, "_execute_land_step",
+                        lambda r, step, f=None: (False, "checks failed") if step["kind"] == "checks" else real(r, step, f))
+    rc = _apply_land(repo, phase_runs_dir, monkeypatch)
+    row = _land_rows(phase_runs_dir)[0]
+    assert rc == 1
+    assert (row["stopped_step"], row["stop_detail"]) == ("checks", "checks failed")
+    assert {"conflict_paths", "branch_sha", "from_sha"}.isdisjoint(row)
+    assert capsys.readouterr().out.splitlines()[-1] == "land: stopped at checks: checks failed"
+
+
+def test_a_land_that_completes_logs_none_of_the_stop_keys(phase_runs_dir, tmp_path, monkeypatch, capsys):
+    repo = _phase_branch_repo(tmp_path)
+    monkeypatch.setattr(cli, "_execute_land_step", lambda r, step, f=None: (True, "ok"))
+    rc = _apply_land(repo, phase_runs_dir, monkeypatch)
+    row = _land_rows(phase_runs_dir)[0]
+    assert rc == 0
+    assert {"stopped_step", "stop_detail", "conflict_paths", "branch_sha", "from_sha"}.isdisjoint(row)
+    assert "land: stopped at" not in capsys.readouterr().out
