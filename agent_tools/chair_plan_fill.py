@@ -1,6 +1,6 @@
 """Plan the free lanes: started epics, then unstarted ones, then intake decomposes, then a pull.
 
-Pure. free_lanes comes from the caller; this module never reads dispatch or limits.
+Pure. free_lanes comes from the caller; only host_free_slots reads dispatch and the optional limits lane_fraction.
 """
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
@@ -164,15 +164,23 @@ def _wants_pull(facts: Facts, lanes_left: int) -> bool:
     )
 
 
+def _scaled_lanes(capacity: int, lane_fraction: float) -> int:
+    """chair_facts.scaled_cap's rule, kept local because chair_facts imports chair_plan, which imports this module."""
+    return 0 if lane_fraction <= 0 else max(1, int(capacity * lane_fraction))
+
+
 def host_free_slots(facts: Facts) -> list[HostSlot]:
     dispatch = facts["dispatch"]
     blocked = chair_login_watch.login_blocked(facts.get("login_hosts", []))
+    fraction = facts.get("limits", {}).get("lane_fraction", 1.0)
     return [
         (
             h["name"],
             h.get("weight", 1),
             frozenset(h.get("capabilities", [])),
-            0 if h["name"] in blocked else max(0, h.get("capacity", dispatch["max_in_flight"]) - h["live_runs"]),
+            0
+            if h["name"] in blocked
+            else max(0, _scaled_lanes(h.get("capacity", dispatch["max_in_flight"]), fraction) - h["live_runs"]),
             0,
         )
         for h in dispatch["hosts"]
