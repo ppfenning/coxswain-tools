@@ -149,6 +149,7 @@ remote_fetch = _LazyModule("agent_tools.remote_fetch")
 remote_lane = _LazyModule("agent_tools.remote_lane")
 remote_launch = _LazyModule("agent_tools.remote_launch")
 review_pr = _LazyModule("agent_tools.review_pr")
+review_pr_close = _LazyModule("agent_tools.review_pr_close")
 route = _LazyModule("agent_tools.route")
 route_drift = _LazyModule("agent_tools.route_drift")
 route_edit = _LazyModule("agent_tools.route_edit")
@@ -2202,6 +2203,74 @@ _UNKNOWN_READS = 6
 _UNKNOWN_WAIT_S = 5.0
 
 
+_LOCAL_MERGE_SHA = re.compile(r"^merged \S+ into \S+ at ([0-9a-f]{7,40})$")
+
+
+def _landing_ref(detail: str, pr: str, number: int | None, default_branch: str) -> str:
+    """What a review PR's close comment names as the landing, never "": the sha the local forge's merge detail reports
+    (its exact `merged <branch> into <default> at <sha>` first line), else the merged PR's url, else the PR number the
+    land pinned (an adopted or resumed land opens no PR of its own), else the merge into `default_branch`.
+    `gh pr merge` reports no sha, so a github land is named by its PR."""
+    first = detail.splitlines()[0] if detail else ""
+    found = _LOCAL_MERGE_SHA.match(first)
+    if found:
+        return found.group(1)
+    if pr:
+        return pr
+    return f"PR #{number}" if number is not None else f"the merge into {default_branch}"
+
+
+def review_close_targets(initiative: str, task: str, prs: Sequence[Mapping]) -> tuple[list[tuple[int, str]], list[str]]:
+    """`(number, head)` of each of `prs` whose head is exactly the task's review branch, and one line per matching
+    row too malformed to close (no integer `number`); pure, never raises on a forge row."""
+    rows = [p for p in prs if isinstance(p, Mapping)]
+    targets, bad = [], []
+    for p in review_pr_close.review_prs_for_task(initiative, task, rows):
+        try:
+            targets.append((int(p["number"]), str(p["head"])))
+        except (KeyError, TypeError, ValueError):
+            bad.append(f"warning: review PR row {dict(p)!r} of {task} unreadable; not closed")
+    return targets, bad
+
+
+def _close_review_prs(repo: Path, initiative: str, task: str, ref: str, forge_module) -> list[str]:
+    """Close the landed task's open review PRs and delete their branches; the lines to print. Best effort: a forge
+    failure or a malformed forge row becomes a line, never an exception, and never stops the next PR. A PR the forge
+    reports already closed counts as closed, so a rerun is quiet."""
+    prefix = review_pr_close.review_branch(initiative, task)
+    try:
+        listed = forge.list_open_prs_by_prefix(forge_module, repo, prefix)
+    except Exception as exc:
+        listed = f"{type(exc).__name__}: {exc}"
+    if isinstance(listed, str):
+        return [f"warning: review PRs of {task} not closed: {listed}; land not undone"]
+    try:
+        targets, lines = review_close_targets(initiative, task, listed)
+    except Exception as exc:
+        return [f"warning: review PRs of {task} not closed ({type(exc).__name__}: {exc}); land not undone"]
+    for number, head in targets:
+        try:
+            ok, detail = forge.close_pr(forge_module, repo, number, review_pr_close.close_comment(ref, task))
+            if not ok:
+                lines.append(f"warning: review PR #{number} of {task} not closed: {detail}; land not undone")
+                continue
+            ok, detail = forge.delete_branch(forge_module, repo, head)
+            lines.append(f"closed review PR #{number} and deleted {head}" if ok else
+                         f"warning: closed review PR #{number}, branch {head} not deleted: {detail}")
+        except Exception as exc:
+            lines.append(f"warning: review PR #{number} of {task} failed ({type(exc).__name__}: {exc}); land not undone")
+    return lines
+
+
+def _step_initiative(step: dict, record: dict | None) -> str | None:
+    """The initiative a mark_done step's task belongs to: its record file's, else the land's own record's."""
+    try:
+        found = json.loads(Path(step["path"]).read_text(encoding="utf-8")).get("initiative")
+    except (KeyError, TypeError, OSError, ValueError, AttributeError):
+        found = None
+    return found or (record or {}).get("initiative")
+
+
 def merge_gate(state: str) -> tuple[str, str]:
     """`(decision, state)` from a PR's mergeStateStatus: BEHIND is updated first, DIRTY, BLOCKED and DRAFT stop, and
     anything else merges."""
@@ -2737,6 +2806,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                level: str, no_merge: bool, forge_module, built: list[str], by: str = _UNLABELED,
                mode: str = "files", guard: Callable[[str], str | None] | None = None) -> tuple[int, list[str], str]:
     pr = ""
+    landing = ""  # what a landed task's review PRs are closed against; "" until a merge succeeds
     reached: list[str] = []
     looped = False
     i = 0
@@ -2785,6 +2855,17 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print(detail)
             return 2, reached, pr
         print(f"{step['kind']}: {detail}")
+        if ok and step["kind"] == "merge":
+            landing = _landing_ref(detail, pr, _pr_number(steps, i, pr), step.get("default_branch", "main"))
+        if ok and step["kind"] == "mark_done":
+            initiative = _step_initiative(step, record)
+            if not landing:
+                print(f"review PRs of {step['task']} not closed: no merge ran in this land")
+            elif not initiative:
+                print(f"warning: review PRs of {step['task']} not closed: no initiative on its record")
+            else:
+                for line in _close_review_prs(repo, initiative, step["task"], landing, forge_module):
+                    print(line)
         if not ok and step["kind"] in ("cherry_pick", "squash_phase") and detail.startswith(_GENERATE_FAILED):
             # `_execute_land_step` detached it and deleted its branch; the next land's same step removes it.
             built.remove(step["onto"])
