@@ -1,7 +1,9 @@
 """The `quarantined` reader for `chair_facts.FactsDeps`: open quarantined work items as rows.
 
-A quarantine is a ready or blocked item with an attempt on its current body. The driver leaves the item's
-state alone and appends the attempt to its frontmatter; no state is ever `quarantined`."""
+A quarantine is a ready or blocked item with an attempt on its current body, or any item whose state is
+`quarantined`. Under work_state store the driver moves the store row to `quarantined` and the row's state
+overrides the file's, so that row is a quarantine whatever its ticket file says, attempts or none, and even
+with no file at all."""
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -10,6 +12,7 @@ from agent_tools import route, run_store
 from agent_tools.stats_chair import frontmatter_item
 
 OPEN_STATES = ("ready", "blocked")
+QUARANTINED = "quarantined"
 RUNAWAY_CAUSE = "runaway"
 
 Row = dict[str, str]
@@ -49,17 +52,29 @@ def newest_reason(attempts: Sequence[Attempt]) -> str:
 
 
 def quarantined_rows(items: Iterable[Item]) -> list[Row]:
-    """Rows for (path, state, body, attempts) items in state ready or blocked with an attempt on the current body, in input order.
+    """Rows for (path, state, body, attempts) items in state ready or blocked with an attempt on the current body, or
+    in state quarantined with or without one, in input order.
 
-    The row carries `run` and `reason` from the newest such attempt by `ts`."""
+    The row carries `run` and `reason` from the newest attempt on the current body by `ts`, both empty with none."""
     rows = []
     for path, state, body, attempts in items:
         on_body = attempts_on_current_body([a for a in attempts or [] if isinstance(a, Mapping)], body)
-        row = _row(path) if state in OPEN_STATES and on_body else None
+        row = _row(path) if (state in OPEN_STATES and on_body) or state == QUARANTINED else None
         if row is not None:
-            newest = max(on_body, key=lambda a: str(a.get("ts") or ""))
+            newest = max(on_body, key=lambda a: str(a.get("ts") or ""), default={})
             rows.append({**row, "run": str(newest.get("run") or ""), "reason": newest_reason(on_body)})
     return rows
+
+
+def store_only_quarantined(store_rows: Iterable[Mapping], seen: Iterable[Row]) -> list[Row]:
+    """Pure: a row per store row in state quarantined whose ticket file was not read, in input order, `run` and
+    `reason` empty: the store names the quarantine, so a missing file cannot hide it."""
+    named = {(r["initiative"], r["task"]) for r in seen}
+    return [
+        {"initiative": str(r.get("initiative") or ""), "phase": str(r.get("phase") or ""), "task": str(r.get("task_id") or ""), "run": "", "reason": ""}
+        for r in store_rows
+        if r.get("state") == QUARANTINED and (r.get("initiative"), r.get("task_id")) not in named
+    ]
 
 
 def _classify_cause(cause: str) -> str:
@@ -143,13 +158,16 @@ def read_work_items(
 def read_quarantined(
     root: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
 ) -> list[Row]:
-    """Edge. The open quarantines among `read_work_items(root, mode, files, store_rows)`."""
-    return quarantined_rows(
+    """Edge. The open quarantines among `read_work_items(root, mode, files, store_rows)`, then, under mode "store",
+    each store row in state quarantined that has no ticket file."""
+    rows = store_rows if store_rows is not None else (run_store.work_items(root / "runs") if mode == "store" else [])
+    found = quarantined_rows(
         (
             f"work/{item['initiative']}/{item['file']}",
             item["state"],
             item_body(text),
             frontmatter_item(text, p.stem).get("attempts"),
         )
-        for p, text, item in read_work_items(root, mode, files, store_rows)
+        for p, text, item in read_work_items(root, mode, files, rows)
     )
+    return [*found, *(store_only_quarantined(rows, found) if mode == "store" else [])]

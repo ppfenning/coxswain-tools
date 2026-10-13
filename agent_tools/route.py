@@ -1553,7 +1553,10 @@ def write_filed_item(
     a non-zero return either way, since a store row already taken makes the row the record a chair export
     recreates the file from, and a store that never took one leaves nothing else to fall back on. Returns 0 on
     the ordinary, no-surprise path. A `priority` is also sent as the row's top-level int `priority` key, beside
-    the frontmatter copy `parse_item` leaves in `extra`, which alone does not reach the store's priority column."""
+    the frontmatter copy `parse_item` leaves in `extra`, which alone does not reach the store's priority column.
+    A written file is recorded as the workspace's export baseline, so the export never holds it as a hand edit."""
+    from agent_tools import queue_export  # imported here: route loads on every cox start
+
     row = queue_rows.parse_item(kind, path_parts, text)
     sent = row if row is None or priority is None else {**row, "priority": priority}
     stored = sent is not None and run_store.upsert_row(runs_dir, sent)
@@ -1565,6 +1568,7 @@ def write_filed_item(
     except OSError as exc:
         print(_filed_write_error(path, stored, exc))
         return 1
+    queue_export.record_written_paths(Path(runs_dir).parent, [path])
     return 0
 
 
@@ -1814,11 +1818,14 @@ def set_intake_priority(runs_dir: Path, ws: Path, intake: Mapping, flag: int | s
         print(f"routing: the store did not take the priority for intake {task_id}")
         return 1
     if text is not None and "priority" in parse_frontmatter(text)[0]:
+        from agent_tools import queue_export  # imported here: route loads on every cox start
+
         try:
             path.write_text(priority_text(text, value), encoding="utf-8")
         except OSError as exc:
             print(_filed_write_error(path, True, exc))
             return 1
+        queue_export.record_written_paths(ws, [path])
     print(f"{task_id}: priority {value} on 1 item(s)")
     return 0
 

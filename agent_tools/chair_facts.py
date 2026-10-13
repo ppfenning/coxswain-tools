@@ -28,12 +28,15 @@ from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
 from agent_tools.chair_types import (
     EASTERN,
+    HELD_FILE_CAUSE,
+    QUARANTINED_CAUSE,
     STALE_CHECKOUT_CAUSE,
     ApprovedTask,
     CarryTask,
     DispatchFacts,
     EmptyDecomposeFacts,
     Facts,
+    HeldFile,
     HoldRecord,
     HostCheck,
     IdleStallInputs,
@@ -233,6 +236,7 @@ class FactsDeps:
     land_outcomes: Callable[[], Mapping[str, list[str]]] = lambda: {}  # initiative to resolved outcomes, oldest first; absent means {}
     handoff_stops: Callable[[], Sequence[Row]] = lambda: []  # chair_read_handoff_stops.read_handoff_stops rows; absent means []
     queue_files: Callable[[], list[QueueFile]] = lambda: []  # `read_queue_files` bound to the workspace and store; absent means []
+    held_files: Callable[[], Sequence[HeldFile]] = lambda: []  # `queue_export.read_held_record` bound to the workspace; absent means []
 
 
 def read_queue_files(workspace: Path, rows: Sequence[Row], stored: Mapping[tuple[str, str], str]) -> list[QueueFile]:
@@ -402,13 +406,16 @@ def quarantine_facts(
     `landing` is what `chair_plan_land.planned_tasks` plans this tick. A stranded row for one of those tasks
     that carries a run is left out, since its land handles it; a land that then fails raises its own needs_chair.
 
+    An open quarantine whose attempts name no cause (a store row in state quarantined whose ticket file never got the
+    attempt) reports `QUARANTINED_CAUSE`, so the status line never shows it with an empty cause.
+
     An initiative with a live run contributes nothing: a retry in flight is never planned again."""
     opened = list(dict.fromkeys(_key(q) for q in quarantined))
     landed_now = {(t["initiative"], t["phase"], t["id"]) for t in landing if t["run"]}
     # A stranded task that is also an open quarantine keeps the quarantine's newest cause, so it is not sent to the chair as stranded.
     stuck = [k for k in dict.fromkeys(_key(s) for s in stranded) if k not in opened and k not in landed_now]
     return [
-        *(_quarantine(k, newest_cause(attempts, k), attempts, has_patch) for k in opened if k[0] not in live),
+        *(_quarantine(k, newest_cause(attempts, k) or QUARANTINED_CAUSE, attempts, has_patch) for k in opened if k[0] not in live),
         *(_quarantine(k, STRANDED_CAUSE, attempts, has_patch) for k in stuck if k[0] not in live),
     ]
 
@@ -496,6 +503,16 @@ def decompose_stalled_keys(actions: Sequence[Row]) -> list[str]:
         f"{d['initiative']}|{d['run']}"
         for d in docs
         if d.get("kind") == "needs_chair" and d.get("cause") == "decompose_stalled" and d.get("initiative") and d.get("run")
+    ]
+
+
+def held_file_keys(actions: Sequence[Row]) -> list[str]:
+    """`<path>|<blob>` of each held_file needs_chair row, in row order."""
+    docs = [_action_doc(row) for row in actions]
+    return [
+        f"{d['path']}|{d.get('blob', '')}"
+        for d in docs
+        if d.get("kind") == "needs_chair" and d.get("cause") == HELD_FILE_CAUSE and d.get("path")
     ]
 
 
@@ -979,6 +996,8 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs) if deps.decompose_runs is not None else {},
         "decompose_stalled_reported": decompose_stalled_keys(action_rows),
         "env_stale_reported": stale_checkout_keys(action_rows),
+        "held_files": [dict(h) for h in deps.held_files()],  # type: ignore[misc]
+        "held_reported": held_file_keys(action_rows),
         "host_env": host_env_from_rows(login_hosts),
         "relaunch_loop_reported": relaunch_loop_keys(action_rows),
         "land_refusals": land_refusals_from_actions(action_rows, now),

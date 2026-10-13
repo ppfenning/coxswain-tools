@@ -16,6 +16,8 @@ from agent_tools.chair_land_conflict import LandConflict
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 STALE_CHECKOUT_CAUSE = "stale_checkout"  # the needs_chair cause for a lane host whose checkout environment is stale
 REVIEW_CLOSED_CAUSE = "review_closed"  # the needs_chair cause for a task whose review PR was closed without merging
+HELD_FILE_CAUSE = "held_file"  # the needs_chair cause for a ticket or intake file the export held as edited by hand
+QUARANTINED_CAUSE = "quarantined"  # the cause an open quarantine reports when no attempt names one
 
 
 class LeaseFacts(TypedDict):
@@ -358,6 +360,16 @@ class QueueFile(TypedDict):
     file_text: str | None
 
 
+class HeldFile(TypedDict):
+    """One file the last board export held as edited by hand: its workspace path, the initiative its path names ("" for
+    an intake), the reason, and the blob id of the text it holds, as `queue_export.read_held_record` reads them."""
+
+    path: str
+    initiative: str
+    reason: str
+    blob: str
+
+
 class PhaseTasks(TypedDict):
     """Every task of a phase that holds an approved or a quarantined task, as (id, state) in the phase's order."""
 
@@ -426,6 +438,9 @@ class Facts(TypedDict):
     # The facts edge fills it, the widen planner consumes it, and the widen_ticket executor consumes the action.
     handoff_stops: NotRequired[list[HandoffStop]]  # tickets stopped on a handoff; absent means none
     queue_files: NotRequired[list[QueueFile]]  # exported task tickets with their stored hash and file text; absent means none
+    held_files: NotRequired[list[HeldFile]]  # files the last board export held; absent means none
+    # `<path>|<blob>` of each held_file needs_chair already in the action log, so each held text is reported once. Absent means [].
+    held_reported: NotRequired[list[str]]
     # The launch budget's inputs, keyed by initiative id; absent means no history. The default limit applies when
     # max_launches_per_hour is absent.
     launch_history: NotRequired[dict[str, LaunchHistory]]

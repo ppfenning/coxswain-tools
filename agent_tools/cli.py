@@ -881,6 +881,7 @@ def _steward_propose(a: argparse.Namespace) -> int:
     for rel, path in targets.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(mapping[rel], encoding="utf-8")
+    queue_export.record_written(ws, mapping)
     written = [str(targets[rel]) for rel in sorted(mapping)]
     print(json.dumps(written) if a.json else "\n".join(written))
     return 0
@@ -2434,6 +2435,7 @@ def _close_approved_item(item_path: str | None, *, runs_dir: Path, by: str, merg
     new_text, message = land.approve_to_done(text, merged=merged)
     if new_text is not None:
         item.write_text(new_text, encoding="utf-8")
+        queue_export.record_written_paths(runs_dir.parent, [item.absolute()])
     if message:
         print(message)
     if mode == "store" or (new_text is None and message is not None):
@@ -3936,6 +3938,7 @@ def _write_mapping(mapping: dict, ws: Path, by: str = _UNLABELED):
         if shape is None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(mapping[rel], encoding="utf-8")
+            queue_export.record_written(ws, {rel: mapping[rel]})
         elif route.write_filed_item(runs_dir, path, *shape, mapping[rel]) != 0:
             return f"routing: {path} was recorded in the store but its own file did not write; see above"
         print(str(path))
@@ -4504,6 +4507,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             else:
                 initiative_md.parent.mkdir(parents=True, exist_ok=True)
                 initiative_md.write_text(initiative_content, encoding="utf-8")
+                queue_export.record_written_paths(workspace_dir, [initiative_md])
         run_id = route.next_run_id(_taken_run_names(runs_dir), a.initiative_id)
         needs = {"idea": a.idea, "initiative_id": a.initiative_id}
         if getattr(a, "task_ids", None):
@@ -4986,24 +4990,37 @@ def _launch_rows_then_export(
     return 0, [f"export: skipped {len(skipped)} contentless row(s): {', '.join(skipped)}"] if skipped else []
 
 
+def export_commit_excludes(held: Sequence[Mapping[str, str]]) -> list[str]:
+    """Pure: one `:(exclude)` pathspec per held file, so the export commit stages and commits around it."""
+    return [f":(exclude){row['path']}" for row in held if row.get("path")]
+
+
 def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...]) -> str:
     """Edge. Export the board, then commit the work/ and intake/ files; returns a tick-line note, "" when nothing is worth saying.
 
-    A git failure raises, so the tick reports it as an export failure. A failed push is a note, never a raise."""
+    The files the export held are left out of the commit: committing one would make the hand edit this workspace's HEAD
+    baseline, and the next export would overwrite it. A git failure raises, so the tick reports it as an export failure.
+    A failed push is a note, never a raise."""
     workspace = runs_dir.parent
     skipped = _export_board(runs_dir, workspace)  # fills the store from the files first; see _export_board
     git = ["git", "-C", str(workspace)]
-    paths = [name for name in ("work", "intake") if (workspace / name).exists()]  # git add refuses a path that matches nothing
-    if not paths:  # `git add -A --` with no path stages the whole tree
+    names = [name for name in ("work", "intake") if (workspace / name).exists()]  # git add refuses a path that matches nothing
+    if not names:  # `git add -A --` with no path stages the whole tree
         return "export: no work/ or intake/ directory to commit"
+    paths = [*names, *export_commit_excludes(queue_export.read_held_record(workspace))]
     add = subprocess.run([*git, "add", "-A", "--", *paths], capture_output=True, text=True)
     if add.returncode != 0:
         raise RuntimeError(f"git add: {add.stderr.strip()}")
-    if subprocess.run([*git, "diff", "--cached", "--quiet", "--", *paths]).returncode == 0:
+    # The staged files by name, not the trees: `git commit -- work` refuses a tree whose every file is held and untracked.
+    staged = subprocess.run([*git, "diff", "--cached", "--name-only", "-z", "--", *paths], capture_output=True, text=True)
+    if staged.returncode != 0:
+        raise RuntimeError(f"git diff: {staged.stderr.strip()}")
+    files = [name for name in staged.stdout.split("\0") if name]
+    if not files:
         committed = "export: no file changes"
     else:
         message = f"chair: export {len(ids)} changed row(s)"
-        commit = subprocess.run([*git, "commit", "-m", message, "--", *paths], capture_output=True, text=True)
+        commit = subprocess.run([*git, "commit", "-m", message, "--", *files], capture_output=True, text=True)
         if commit.returncode != 0:
             raise RuntimeError(f"git commit: {(commit.stderr or commit.stdout).strip()}")
         pushed = workspace_sync.push_workspace(workspace)
@@ -7992,6 +8009,7 @@ def _chair_run_deps(
         phase_tasks=lambda: chair_read_approved.read_phase_tasks(ws, mode, work_files(), store_rows()),
         phase_records=lambda tasks: chair_read_phase_records.read_phase_records(runs_dir, tasks),
         quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode, work_files(), store_rows()),
+        held_files=lambda: queue_export.read_held_record(ws),
         stranded=lambda: chair_read_stranded.read_stranded(*stranded_inputs()),
         missing_repos=missing_repos,
         reported_repos=reported_repos,
