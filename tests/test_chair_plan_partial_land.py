@@ -1,6 +1,7 @@
 from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_plan_partial import classify_phase, partial_land_action
-from agent_tools.chair_read_approved import mark_landed, phase_task_rows
+from agent_tools.chair_read_approved import land_records, mark_landed, phase_task_rows, with_runs
+from agent_tools.runs_stranded import stranded
 
 
 def _facts(tasks: list[tuple[str, str]], approved: list[dict] | None = None) -> dict:
@@ -94,3 +95,42 @@ def test_a_landed_approved_task_is_left_out_of_the_partial_land_task_ids():
 def test_mark_landed_marks_only_the_landed_approved_ids():
     items = [_item("a", "approved"), _item("b", "approved"), _item("c", "ready")]
     assert [i["state"] for i in mark_landed(items, {"a", "c"})] == ["done", "approved", "ready"]
+
+
+# --- the run an approved task lands from, when the initiative has run again ---
+
+_ITEMS = [
+    {"id": "a", "initiative": "i", "phase": "p", "state": "approved"},
+    {"id": "q", "initiative": "i", "phase": "p", "state": "quarantined"},
+]
+
+
+def _record(run: str, task: str, verdict: str = "approve", cause: str = "") -> dict:
+    """A task record as `_chair_stranded_inputs` reads it; `cause` is the quarantine kind the run gave it, if any."""
+    return {"run": run, "task": task, "phase": "p", "review": {"verdict": verdict}, "landed": False,
+            **({"cause": cause} if cause else {})}
+
+
+def _task_runs(records: list[dict], unsettled: frozenset[str] = frozenset()) -> dict:
+    """The planner input: the partial_land's task_runs, from the records through the same rows the chair reads."""
+    tasks = with_runs([{**_approved("a", False), "run": ""}], stranded(land_records(records, unsettled), _ITEMS))
+    return plan_lands(_facts([("a", "approved"), ("q", "quarantined")], tasks))[0]["task_runs"]
+
+
+def test_a_task_approved_in_run_n_keeps_run_n_after_run_n_plus_1_of_the_initiative():
+    # i-1 approved a, then quarantined it on its full checks; the chair approved it over that, and i-2 re-ran q.
+    records = [_record("i-1", "a", cause="code"), _record("i-1", "q", "revise", "review"), _record("i-2", "q", "revise", "code")]
+    assert _task_runs(records) == {"a": "i-1"}
+
+
+def test_with_only_run_n_the_map_is_unchanged():
+    assert _task_runs([_record("i-1", "a"), _record("i-1", "q", "revise", "review")]) == {"a": "i-1"}
+
+
+def test_a_task_approved_in_no_run_has_no_run():
+    assert _task_runs([_record("i-1", "a", "revise", "review"), _record("i-2", "q", "revise", "code")]) == {"a": ""}
+
+
+def test_a_newer_run_still_out_keeps_the_superseded_approval_from_landing():
+    # i-2 is live or remote and unfetched: it may hold the approval a now reads, so a waits for it.
+    assert _task_runs([_record("i-1", "a", cause="code")], frozenset({"i-2"})) == {"a": ""}
