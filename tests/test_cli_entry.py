@@ -2,15 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools.cli import main, should_exec_coxtop
-
-
-def test_coxtop_runs_only_on_two_terminals_with_coxtop_on_path_and_no_flags():
-    assert should_exec_coxtop(True, True, True, False) is True
-    assert should_exec_coxtop(False, True, True, False) is False
-    assert should_exec_coxtop(True, False, True, False) is False
-    assert should_exec_coxtop(True, True, False, False) is False
-    assert should_exec_coxtop(True, True, True, True) is False
+from agent_tools.cli import main
 
 
 def test_session_print_argv_prints_the_argv_and_cwd_bare_cox_printed_before(tmp_path: Path, monkeypatch, capsys):
@@ -57,16 +49,19 @@ def _terminal_with(monkeypatch, coxtop: bool) -> list:
     return calls
 
 
-def test_bare_cox_on_a_terminal_execs_coxtop_and_a_flag_keeps_the_session(tmp_path: Path, monkeypatch, capsys):
+def test_bare_cox_on_a_terminal_opens_the_session_even_with_coxtop_on_path(tmp_path: Path, monkeypatch, capsys):
     calls = _terminal_with(monkeypatch, coxtop=True)
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path}\nskills_roots: []\n")
-    with pytest.raises(_Execd):
-        main([])
-    assert calls == [("coxtop", ["coxtop"])]
+    with monkeypatch.context() as m:
+        m.setattr("agent_tools.cli._session_launch", lambda *a, **k: (["claude"], str(tmp_path), None))
+        m.setattr("agent_tools.cli._route_chair_take", lambda a: 1)
+        m.setattr("os.chdir", lambda p: None)
+        with pytest.raises(_Execd):
+            main([])
+    assert calls == [("claude", ["claude"])]
     capsys.readouterr()
     assert main(["--profile", str(profile), "--print-argv"]) == 0
-    assert calls == [("coxtop", ["coxtop"])]
     assert capsys.readouterr().out.splitlines()[-2:] == ["['claude']", str(tmp_path)]
 
 
