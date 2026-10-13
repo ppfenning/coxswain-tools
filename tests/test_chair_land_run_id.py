@@ -28,7 +28,7 @@ def _perform(action, code=0, output="merge: ok\nmark_done: ok"):
 def test_the_phase_land_names_the_run_holding_the_approved_record():
     facts = {"approved": approved_facts([TASK]), "initiatives": []}
     assert plan_lands(facts) == [
-        {"kind": "land_phase", "initiative": "x", "phase": "p", "repo": "/r", "run": "x-1", "epoch": None}
+        {"kind": "land_phase", "initiative": "x", "phase": "p", "repo": "/r", "run": "x-1", "epoch": None, "task_runs": {"t": "x-1"}}
     ]
 
 

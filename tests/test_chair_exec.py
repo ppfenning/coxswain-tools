@@ -1988,3 +1988,58 @@ def test_a_fenced_launch_does_not_start_a_stagger(tmp_path: Path) -> None:
 def test_stagger_seconds_reads_the_profile_value() -> None:
     values = [None, "x", "5", 0, -1, 7.5, True, float("inf")]
     assert [chair_exec.stagger_seconds(v) for v in values] == [20.0, 20.0, 5.0, 0.0, 20.0, 7.5, 20.0, 20.0]
+
+
+NO_PHASE_RECORD = "land: no phase record at /home/user/ws/runs/run-1:p1.json\n"
+
+
+def _phase_land_by_task_deps(calls: list, phase_code: int, phase_output: str) -> Deps:
+    """The land_phase answers `phase_code`/`phase_output`; every task land lands; git lists no sibling branches."""
+
+    def run(argv):
+        calls.append(("run", argv))
+        if argv[:3] == ["cox", "runs", "land"]:
+            return (phase_code, phase_output) if "--phase" in argv else (0, LANDED)
+        return 0, ""
+
+    return replace(_deps([]), run=run, record=lambda action: calls.append(("record", action["kind"])))
+
+
+def _phase_land_with_tasks() -> dict:
+    return {**_land_phase("p1", "r"), "initiative": "A", "task_runs": {"t1": "run-1", "t2": "run-1"}}
+
+
+def _cox_lands(calls: list) -> list:
+    return [c[1][3:6] for c in calls if c[0] == "run" and c[1][:3] == ["cox", "runs", "land"]]
+
+
+def test_a_land_phase_refused_for_a_missing_phase_record_lands_its_tasks_in_the_same_tick() -> None:
+    calls: list = []
+    results = perform([_phase_land_with_tasks()], _phase_land_by_task_deps(calls, 1, NO_PHASE_RECORD), lambda: 1, False)
+    assert _cox_lands(calls) == [["run-1", "--phase", "p1"], ["run-1", "--task", "t1"], ["run-1", "--task", "t2"]]
+    assert [(r["status"], r["action"]["kind"]) for r in results] == [("landed", "land_phase")]
+    assert results[0]["reason"].startswith(NO_PHASE_RECORD.strip())
+    assert ("record", "needs_chair") not in calls
+
+
+def test_a_land_phase_refused_for_another_reason_does_not_fall_back_to_task_lands() -> None:
+    calls: list = []
+    refusal = "land: refusing, /home/user/ws/app has uncommitted changes\n"
+    results = perform([_phase_land_with_tasks()], _phase_land_by_task_deps(calls, 2, refusal), lambda: 1, False)
+    assert _cox_lands(calls) == [["run-1", "--phase", "p1"]]
+    assert [r["status"] for r in results] == ["refused", "escalated"]
+
+
+def test_a_missing_phase_record_without_task_runs_stays_a_refusal() -> None:
+    calls: list = []
+    land = {**_land_phase("p1", "r"), "initiative": "A"}
+    results = perform([land], _phase_land_by_task_deps(calls, 1, NO_PHASE_RECORD), lambda: 1, False)
+    assert _cox_lands(calls) == [["run-1", "--phase", "p1"]]
+    assert [r["status"] for r in results] == ["refused", "escalated"]
+
+
+def test_lacks_phase_record_reads_only_a_failed_land_with_the_refusal_line() -> None:
+    assert [
+        chair_exec.lacks_phase_record(code, output)
+        for code, output in [(1, NO_PHASE_RECORD), (1, "fetch: ok\n" + NO_PHASE_RECORD), (0, NO_PHASE_RECORD), (1, LANDED)]
+    ] == [True, True, False, False]
