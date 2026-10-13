@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_tools import epic
+from agent_tools import analytics_snapshot, epic
 from agent_tools.lake_config import _LITERAL_SECRETS, _from_env
 from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeholder
 from agent_tools.store_url import TracesRoot, profile_traces_root, read_provider_profile, resolve_store_url
@@ -381,37 +381,57 @@ _SINCE_CALLS = " WHERE ts >= {p}"
 _SINCE_TASKS = " WHERE run_id IN (SELECT run_id FROM node_calls WHERE ts >= {p})"
 
 
-def task_verdict_rows(runs_dir: Path, since: str | None) -> list[dict[str, Any]]:
-    """Edge. One `stats_gates` task row per (run_id, task_id) in `task_records`; empty with no store or an unreadable one."""
+def _store_tuples(runs_dir: Path, template: str, params: Sequence[Any], keys: Sequence[str]) -> list[tuple]:
+    """Edge. The `keys` columns of `template` run on the store, as tuples; empty with no store or an unreadable one."""
     opened = _open(runs_dir)
     if opened is None:
         return []
     conn, p = opened
-    where, params = ("", ()) if since is None else (_SINCE_TASKS, (since,))
     try:
-        cursor = conn.execute(_sql("SELECT run_id, task_id, record_json FROM task_records" + where, p), params)
-        rows = [(r["run_id"], r["task_id"], _record_of(r["record_json"])) for r in cursor.fetchall()]
+        return [tuple(r[k] for k in keys) for r in conn.execute(_sql(template, p), tuple(params)).fetchall()]
     except _db_errors():
         return []
     finally:
         conn.close()
-    return _one_per_key([_task_verdict_row(record, run_id, task_id) for run_id, task_id, record in rows if record is not None])
+
+
+def _snapshot_rows(runs_dir: Path, template: str, params: Sequence[Any], keys: Sequence[str]) -> list[tuple]:
+    """Edge. Tuples of the `keys` columns of `template`: from the analytics snapshot on a Postgres store, else straight from the store.
+
+    The snapshot path falls back to the store query when DuckDB or the snapshot is unavailable. A SQLite store never
+    touches the snapshot, so it never warns."""
+
+    def fallback() -> list[tuple]:
+        return _store_tuples(runs_dir, template, params, keys)
+
+    url = _store_url(Path(runs_dir))
+    if not is_postgres(url):
+        return fallback()
+    profile = read_provider_profile(os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
+    return analytics_snapshot.query(
+        _sql(template, "?"),  # DuckDB binds with `?`, whatever the store's own token is
+        params,
+        runs_dir=runs_dir,
+        store_url=url,
+        now=time.time(),
+        max_age_s=analytics_snapshot.max_age_s(profile),
+        fallback=fallback,
+    )
+
+
+def task_verdict_rows(runs_dir: Path, since: str | None) -> list[dict[str, Any]]:
+    """Edge. One `stats_gates` task row per (run_id, task_id) in `task_records`; empty with no store or an unreadable one."""
+    where, params = ("", ()) if since is None else (_SINCE_TASKS, (since,))
+    rows = _snapshot_rows(runs_dir, "SELECT run_id, task_id, record_json FROM task_records" + where, params, ("run_id", "task_id", "record_json"))
+    records = [(run_id, task_id, _record_of(raw)) for run_id, task_id, raw in rows]
+    return _one_per_key([_task_verdict_row(record, run_id, task_id) for run_id, task_id, record in records if record is not None])
 
 
 def gate_call_rows(runs_dir: Path, since: str | None) -> list[dict[str, Any]]:
     """Edge. `stats_gates` call rows (role, run_id, task_id, cost_usd), `since` as above; empty with no store or an unreadable one."""
-    opened = _open(runs_dir)
-    if opened is None:
-        return []
-    conn, p = opened
+    keys = ("role", "run_id", "task_id", "cost_usd")
     where, params = ("", ()) if since is None else (_SINCE_CALLS, (since,))
-    try:
-        rows = conn.execute(_sql("SELECT role, run_id, task_id, cost_usd FROM node_calls" + where, p), params).fetchall()
-        return [{c: r[c] for c in ("role", "run_id", "task_id", "cost_usd")} for r in rows]
-    except _db_errors():
-        return []
-    finally:
-        conn.close()
+    return [dict(zip(keys, row, strict=True)) for row in _snapshot_rows(runs_dir, "SELECT role, run_id, task_id, cost_usd FROM node_calls" + where, params, keys)]
 
 
 def cost_since(runs_dir: Path, since: str, until: str | None = None) -> float | None:
@@ -520,18 +540,14 @@ _EFFICIENCY_TASKS = (
 
 def efficiency_rows(runs_dir: Path, since: str) -> dict[str, list[dict[str, Any]]]:
     """Edge. `calls` per (UTC day, task_id) from `since` on; `tasks` per task_id over all runs and time; empty with no store."""
-    opened = _open(runs_dir)
-    if opened is None:
-        return {"calls": [], "tasks": []}
-    conn, token = opened
-    try:
-        calls = [dict(r) for r in conn.execute(_sql(_EFFICIENCY_CALLS, token), (since,)).fetchall()]
-        tasks = [dict(r) for r in conn.execute(_EFFICIENCY_TASKS).fetchall()]
-    except _db_errors():
-        return {"calls": [], "tasks": []}
-    finally:
-        conn.close()
-    return {"calls": calls, "tasks": tasks}
+    call_keys = ("day", "task_id", "cost_usd", "turns", "cache_read_tokens", "input_total")
+    task_keys = ("task_id", "builds", "last_ts")
+    calls = _snapshot_rows(runs_dir, _EFFICIENCY_CALLS, (since,), call_keys)
+    tasks = _snapshot_rows(runs_dir, _EFFICIENCY_TASKS, (), task_keys)
+    return {
+        "calls": [dict(zip(call_keys, row, strict=True)) for row in calls],
+        "tasks": [dict(zip(task_keys, row, strict=True)) for row in tasks],
+    }
 
 
 def _attempts_columns(conn: Any, token: str) -> set[str]:
