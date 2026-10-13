@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
+import types
 
 from agent_tools import cli, host_cmd, run_store
 from agent_tools.checkout_env import CHECKOUT_ENV_KEY
@@ -445,3 +447,62 @@ def test_cox_host_remove_dry_run_deletes_nothing(tmp_path, monkeypatch, capsys):
 def test_removed_line_restores_a_null_ssh_row_with_its_name():
     row = {"name": "pi", "ssh": None, "capacity": 2, "state": "draining"}
     assert host_cmd.removed_line(row).splitlines()[-1] == "  restore: cox host add pi --ssh pi --capacity 2"
+
+
+def _env_host(record: dict | None) -> dict:
+    versions = {} if record is None else {CHECKOUT_ENV_KEY: record}
+    return {**HOST_A, "versions_json": json.dumps(versions)}
+
+
+FRESH = {"lock_hash": "a", "synced_hash": "a"}
+STALE = {"lock_hash": "b", "synced_hash": "a"}
+NEVER = {"lock_hash": "b", "synced_hash": None}
+
+
+def test_env_rows_print_a_fresh_repo_as_fresh_without_an_instruction():
+    assert host_cmd.env_rows(_env_host({"repo-x": FRESH})) == ["checkout env: repo-x fresh"]
+
+
+def test_env_rows_print_a_stale_repo_with_the_sync_instruction():
+    assert host_cmd.env_rows(_env_host({"repo-x": STALE})) == [
+        "checkout env: repo-x stale  on host-a, in repo-x, run: uv sync --frozen --all-extras"
+    ]
+
+
+def test_env_rows_print_a_never_synced_repo_with_the_sync_instruction():
+    assert host_cmd.env_rows(_env_host({"repo-x": NEVER})) == [
+        "checkout env: repo-x never_synced  on host-a, in repo-x, run: uv sync --frozen --all-extras"
+    ]
+
+
+def test_env_rows_print_one_row_per_repo():
+    assert host_cmd.env_rows(_env_host({"repo-x": FRESH, "repo-y": STALE})) == [
+        "checkout env: repo-x fresh",
+        "checkout env: repo-y stale  on host-a, in repo-y, run: uv sync --frozen --all-extras",
+    ]
+
+
+def test_env_rows_print_unknown_when_the_host_has_no_record():
+    assert host_cmd.env_rows(_env_host(None)) == ["checkout env: unknown"]
+
+
+def test_env_rows_print_unknown_for_unparseable_versions_json_and_raise_nothing():
+    assert host_cmd.env_rows({**HOST_A, "versions_json": "{not json"}) == ["checkout env: unknown"]
+
+
+def test_doctor_line_puts_the_env_rows_after_the_table_line():
+    lines = host_cmd.doctor_line(_env_host({"repo-x": FRESH}), NOW).splitlines()
+    assert lines[0].startswith("table: active") and lines[1:] == ["checkout env: repo-x fresh"]
+
+
+def test_host_doctor_exits_the_same_for_a_stale_host_as_for_a_fresh_one(monkeypatch, capsys):
+    def code_for(record: dict) -> int:
+        monkeypatch.setattr(cli, "_leader_runs_dir_or_refuse", lambda a: ({}, "runs", None))
+        monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [_env_host({"repo-x": record})])
+        monkeypatch.setattr(cli, "_host_ssh", lambda a, profile, runs_dir: LaneHost("host-a", "host-a", ""))
+        doctor = types.SimpleNamespace(doctor_on_host=lambda host, run, argv_for=None: (0, ["ok"]))
+        monkeypatch.setattr(cli, "remote_doctor", doctor)
+        return cli._host_doctor(argparse.Namespace(name="host-a"))
+
+    assert code_for(STALE) == code_for(FRESH) == 0
+    assert "checkout env: repo-x stale" in capsys.readouterr().out
