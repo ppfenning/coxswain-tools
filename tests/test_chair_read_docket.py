@@ -34,7 +34,7 @@ def _row(
 
 
 def _init(*ready: str) -> dict:
-    return {"id": "alpha", "started": False, "ready_tasks": [{"id": t, "needs": []} for t in ready], "landed": set()}
+    return {"id": "alpha", "started": False, "ready_tasks": [{"id": t, "phase": "p1", "needs": []} for t in ready], "landed": set()}
 
 
 def test_builder_output_maps_to_the_documented_keys():
@@ -44,8 +44,8 @@ def test_builder_output_maps_to_the_documented_keys():
             {
                 "id": "alpha",
                 "started": True,
-                "ready_tasks": [{"id": "t1", "needs": ["t0"], "requires": []}],
-                "waiting_tasks": [{"id": "t2", "needs": ["t9"], "requires": []}],
+                "ready_tasks": [{"id": "t1", "phase": "p1", "needs": ["t0"], "requires": []}],
+                "waiting_tasks": [{"id": "t2", "phase": "p1", "needs": ["t9"], "requires": []}],
                 "held_tasks": [],
                 "landed": {"t0"},
             }
@@ -78,7 +78,7 @@ def _alpha(
 
 def test_a_ready_row_with_all_needs_done_is_offered():
     rows = [_row("t0", "done"), _row("t1", "ready", ("t0",))]
-    assert docket_from_rows(rows, NOW) == _alpha([{"id": "t1", "needs": ["t0"], "requires": []}], started=True, landed=frozenset({"t0"}))
+    assert docket_from_rows(rows, NOW) == _alpha([{"id": "t1", "phase": "p1", "needs": ["t0"], "requires": []}], started=True, landed=frozenset({"t0"}))
 
 
 def test_a_todo_row_is_never_offered_even_with_satisfied_needs():
@@ -88,13 +88,13 @@ def test_a_todo_row_is_never_offered_even_with_satisfied_needs():
 def test_a_ready_row_with_an_undone_need_is_not_offered_but_carried_as_waiting():
     """Before this, the whole initiative was omitted, so the chair could never report what it waits on."""
     assert docket_from_rows([_row("t0", "todo"), _row("t1", "ready", ("t0",))], NOW) == _alpha(
-        [], waiting=[{"id": "t1", "needs": ["t0"], "requires": []}]
+        [], waiting=[{"id": "t1", "phase": "p1", "needs": ["t0"], "requires": []}]
     )
 
 
 def test_only_the_earliest_phase_with_a_ready_task_is_offered():
     rows = [_row("a1", "ready", phase="p1"), _row("b1", "ready", phase="p2")]
-    assert docket_from_rows(rows, NOW) == _alpha([{"id": "a1", "needs": [], "requires": []}])
+    assert docket_from_rows(rows, NOW) == _alpha([{"id": "a1", "phase": "p1", "needs": [], "requires": []}])
 
 
 def test_a_ready_row_behind_a_blocked_earlier_phase_is_withheld():
@@ -108,12 +108,12 @@ def test_a_claimed_row_with_a_live_lease_is_withheld():
 
 def test_the_same_row_is_offered_once_the_lease_expires():
     rows = [_row("t1", "ready", holder="lane-1", expires_at=NOW)]
-    assert docket_from_rows(rows, NOW) == _alpha([{"id": "t1", "needs": [], "requires": []}])
+    assert docket_from_rows(rows, NOW) == _alpha([{"id": "t1", "phase": "p1", "needs": [], "requires": []}])
 
 
 def test_the_same_row_is_offered_once_the_holder_is_empty():
     rows = [_row("t1", "ready", holder=None, expires_at="2026-09-27T23:00:00Z")]
-    assert docket_from_rows(rows, NOW) == _alpha([{"id": "t1", "needs": [], "requires": []}])
+    assert docket_from_rows(rows, NOW) == _alpha([{"id": "t1", "phase": "p1", "needs": [], "requires": []}])
 
 
 def _parsed_row(task_id: str, frontmatter: str) -> dict:
@@ -125,7 +125,7 @@ def _parsed_row(task_id: str, frontmatter: str) -> dict:
 def test_a_stored_rows_requires_frontmatter_reaches_its_ready_task():
     rows = [_parsed_row("t1", "state: ready\nrequires: [go]\n"), _parsed_row("t2", "state: ready\n")]
     assert docket_from_rows(rows, NOW)[0]["ready_tasks"] == [
-        {"id": "t1", "needs": [], "requires": ["go"]}, {"id": "t2", "needs": [], "requires": []},
+        {"id": "t1", "phase": "p1", "needs": [], "requires": ["go"]}, {"id": "t2", "phase": "p1", "needs": [], "requires": []},
     ]
 
 
@@ -136,7 +136,7 @@ def test_a_work_item_files_requires_frontmatter_reaches_its_ready_task():
         for stem, text in texts.items()
     ]
     assert docket_from_builder(route.initiative_summaries(items), items, 0, 4)["initiatives"][0]["ready_tasks"] == [
-        {"id": "t1", "needs": [], "requires": ["go"]}, {"id": "t2", "needs": [], "requires": []},
+        {"id": "t1", "phase": "p1", "needs": [], "requires": ["go"]}, {"id": "t2", "phase": "p1", "needs": [], "requires": []},
     ]
 
 
@@ -152,8 +152,20 @@ def test_a_task_whose_same_phase_need_is_approved_is_held_not_ready():
 
 def test_a_task_whose_same_phase_need_is_done_stays_ready_with_nothing_held():
     row = _alpha_row([_item("t0", "done"), _item("t1", "ready", ("t0",))])
-    assert row["ready_tasks"] == [{"id": "t1", "needs": ["t0"], "requires": []}]
+    assert row["ready_tasks"] == [{"id": "t1", "phase": "p1", "needs": ["t0"], "requires": []}]
     assert row["held_tasks"] == []
+
+
+def test_a_ready_task_carries_its_phase_from_the_builder_path():
+    row = _alpha_row([_item("t1", "ready", phase="p2"), _item("t2", "ready", ("t9",), phase="p2")])
+    assert [t["phase"] for t in row["ready_tasks"]] == ["p2"]
+    assert [t["phase"] for t in row["waiting_tasks"]] == ["p2"]
+
+
+def test_a_ready_task_carries_its_phase_from_the_rows_path():
+    (row,) = docket_from_rows([_row("t1", "ready", phase="p2"), _row("t2", "ready", ("t9",), phase="p2")], NOW)
+    assert row["ready_tasks"] == [{"id": "t1", "phase": "p2", "needs": [], "requires": []}]
+    assert row["waiting_tasks"] == [{"id": "t2", "phase": "p2", "needs": ["t9"], "requires": []}]
 
 
 def test_a_task_whose_approved_need_is_in_an_earlier_phase_is_not_held():

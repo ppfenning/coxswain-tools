@@ -444,6 +444,21 @@ def steer_streaks_from_actions(actions: Sequence[Row]) -> dict[str, int]:
     return reduce(_streak_step, map(_action_doc, ordered), {})
 
 
+def _waiting_step(reported: Mapping[str, str], doc: Row) -> dict[str, str]:
+    initiative = doc.get("initiative")
+    if doc.get("kind") == "waiting" and initiative:
+        return {**reported, initiative: f"{doc.get('phase')}|{doc.get('quarantined')}|{doc.get('awaiting_land')}"}
+    if doc.get("kind") in LAUNCH_KINDS and initiative:
+        return {k: v for k, v in reported.items() if k != initiative}
+    return dict(reported)
+
+
+def waiting_reported_from_actions(actions: Sequence[Row]) -> dict[str, str]:
+    """Initiative to `<phase>|<quarantined>|<awaiting_land>` of its newest waiting row, until a later launch of it."""
+    ordered = sorted(actions, key=lambda r: str(r.get("ts") or ""))
+    return reduce(_waiting_step, map(_action_doc, ordered), {})
+
+
 def windowed_actions(load: Callable[[datetime], Sequence[Row]], now: datetime) -> Callable[[], tuple[Row, ...]]:
     """The `FactsDeps.actions` source for one gather: `load(now)` runs on the first call, and every later call returns the same rows."""
     cell: list[tuple[Row, ...]] = []  # the one localised mutation: filled by the first call, never changed after
@@ -599,11 +614,11 @@ def initiative_facts(
             "id": i["id"],
             "started": bool(i["started"]),
             "ready_tasks": [
-                {"id": t["id"], "needs": list(t["needs"]), "requires": list(t.get("requires", []))}
+                {"id": t["id"], "phase": t["phase"], "needs": list(t["needs"]), "requires": list(t.get("requires", []))}
                 for t in i["ready_tasks"]
             ],
             "waiting_tasks": [
-                {"id": t["id"], "needs": list(t["needs"]), "requires": list(t.get("requires", []))}
+                {"id": t["id"], "phase": t["phase"], "needs": list(t["needs"]), "requires": list(t.get("requires", []))}
                 for t in i.get("waiting_tasks", [])
             ],
             "landed": set(i["landed"]),
@@ -927,6 +942,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "phase_tasks": list(deps.phase_tasks()),
         "running": running_initiatives(live, items, repos) if deps.tickets is not None else [],
         "steer_streaks": steer_streaks_from_actions(action_rows),
+        "waiting_reported": waiting_reported_from_actions(action_rows),
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],

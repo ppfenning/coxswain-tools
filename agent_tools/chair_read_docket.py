@@ -22,7 +22,7 @@ _BEGUN = frozenset({"in_progress", "approved"}) | route.TERMINAL
 
 
 def _task(i: Row) -> dict[str, Any]:
-    return {"id": i["id"], "needs": list(i["needs"]), "requires": queue_rows.requires_of(i)}
+    return {"id": i["id"], "phase": i["phase"], "needs": list(i["needs"]), "requires": queue_rows.requires_of(i)}
 
 
 def _held_needs(task: Row, own: Sequence[Row]) -> list[str]:
