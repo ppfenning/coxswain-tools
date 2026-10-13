@@ -1274,15 +1274,37 @@ def run_argv_split(argv: list[str], cwd: Path | None = None, timeout: float = LO
     return ArgvResult(done.returncode, done.stdout, done.stderr, done.stdout + done.stderr)
 
 
+def launch_verdict(stdout: str) -> str:
+    """The verdict of a failed `cox route launch`: its last "routing:" stdout line, with the lines after it joined on;
+    else its last non-empty stdout line; "" for empty stdout.
+
+    Launch prints each refusal last and then returns. So the last "routing:" line is the refusal, and the "routing:"
+    lines before it (usage hold, go_degraded advisory, usage stop overridden by --force, store unavailable) are notes
+    it printed and carried on past, as are "export:", "merged:" and "override:" lines. The lines after the refusal are
+    its own detail (the dirty repo's porcelain entries, the configured lane hosts), so they stay on the verdict line.
+    The leader guard's "refusing:" line comes before any "routing:" note, so the last line finds it."""
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    starts = [index for index, line in enumerate(lines) if line.startswith("routing:")]
+    if not starts:
+        return lines[-1] if lines else ""
+    head, *detail = lines[starts[-1]:]
+    return f"{head} {'; '.join(detail)}" if detail else head
+
+
 def run_argv(argv: list[str], cwd: Path | None = None, timeout: float = LOCAL_ARGV_TIMEOUT_S) -> tuple[int, str]:
     """Edge. The exit code and the mixed stdout-then-stderr text of `run_argv_split`.
 
-    A failed `cox runs fetch` is the exception: git's long stderr would push cox's own "fetch: verify: ..." verdict out
-    of the 600-character reason, so its text is `failed_reason`, verdict first. Other argvs keep the mixed text because
-    `land_refusal` reads git's stderr ("could not apply") out of it."""
+    A failed `cox runs fetch` or `cox route launch` is the exception: git's long stderr, or held-export warnings,
+    would push cox's own stdout verdict ("fetch: verify: ...", "routing: ...") out of the 600-character reason, so its
+    text is `failed_reason`, verdict first. Fetch prints its verdict first; launch's is picked by `launch_verdict`.
+    Other argvs keep the mixed text because `land_refusal` reads git's stderr ("could not apply") out of it."""
     done = run_argv_split(argv, cwd, timeout=timeout)
-    if done.returncode not in (0, 124, 127) and argv[:3] == ["cox", "runs", "fetch"]:
+    if done.returncode in (0, 124, 127):
+        return done.returncode, done.mixed
+    if argv[:3] == ["cox", "runs", "fetch"]:
         return done.returncode, failed_reason(done.stdout, done.stderr)
+    if argv[:3] == ["cox", "route", "launch"]:
+        return done.returncode, failed_reason(launch_verdict(done.stdout), done.stderr)
     return done.returncode, done.mixed
 
 

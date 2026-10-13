@@ -20,6 +20,7 @@ from agent_tools.chair_exec import (
     failed_reason,
     land_commit,
     land_refusal,
+    launch_verdict,
     perform,
     run_argv,
     run_lane_host,
@@ -154,6 +155,60 @@ def test_a_failed_fetch_records_the_verdict_first_through_run_argv(monkeypatch) 
     assert code == 2
     assert recorded["reason"].startswith("fetch: verify:")
     assert recorded["reason"].endswith(LAST_BRANCH)
+
+
+LAUNCH_ARGV = ["cox", "route", "launch", "epic", "--initiative", "work/i", "--no-claim", "--on", "host-a"]
+HELD_WARNINGS = "".join(f"warning: held export work/other-{n:03d}/export.json blocks nothing here\n" for n in range(50))
+USAGE_HOLD = "routing: usage hold: weekly 91% of the ceiling"
+
+
+def _failed_launch_reason(monkeypatch, stdout: str, stderr: str = HELD_WARNINGS) -> str:
+    done = chair_exec.ArgvResult(2, stdout, stderr, stdout + stderr)
+    monkeypatch.setattr(chair_exec, "run_argv_split", lambda *a, **k: done)
+    code, output = run_argv(LAUNCH_ARGV)
+    assert code == 2
+    return chair_exec._recorded({"action": {"kind": "launch_epic", "initiative": "i"}, "status": "failed", "reason": output})["reason"]
+
+
+def test_a_failed_launch_records_its_stdout_verdict_before_3kb_of_stderr_warnings(monkeypatch) -> None:
+    reason = _failed_launch_reason(monkeypatch, "routing: X\n")
+    assert len(HELD_WARNINGS) > 3000
+    assert reason.startswith("routing: X\n")
+    assert reason.endswith("blocks nothing here")
+    assert len(reason) <= 600
+
+
+def test_a_failed_launch_records_the_refusal_not_the_usage_hold_and_notes_printed_before_it(monkeypatch) -> None:
+    stdout = (
+        "export: skipped 1 contentless row(s): x\nmerged: t1 + t2 -> t1 (shared a.py)\noverride: launching i despite blocked t0\n"
+        f"{USAGE_HOLD}\nrouting: advisory: usage go_degraded: window 80%\nrouting: i-3 is already running (pid 42)\n"
+    )
+    assert _failed_launch_reason(monkeypatch, stdout).startswith("routing: i-3 is already running (pid 42)\n")
+
+
+def test_a_dirty_repo_launch_records_the_refusal_with_its_porcelain_entries(monkeypatch) -> None:
+    stdout = f"{USAGE_HOLD}\nrouting: /home/user/repo has uncommitted changes:\n M agent_tools/x.py\n?? notes.md\n\n"
+    reason = _failed_launch_reason(monkeypatch, stdout)
+    assert reason.startswith("routing: /home/user/repo has uncommitted changes: M agent_tools/x.py; ?? notes.md\n")
+
+
+def test_a_launch_refused_by_the_leader_guard_records_its_refusing_line(monkeypatch) -> None:
+    stdout = "export: skipped 1 contentless row(s): x\nrefusing: the landing loop is held by s-1 (live); pass --force to override\n"
+    assert _failed_launch_reason(monkeypatch, stdout, "").startswith("refusing: the landing loop is held by s-1")
+
+
+def test_a_launch_verdict_is_the_last_routing_line_with_what_follows_else_the_last_line() -> None:
+    assert launch_verdict(f"{USAGE_HOLD}\nrouting: launch on host-a failed at sync: exit 23\n") == "routing: launch on host-a failed at sync: exit 23"
+    assert launch_verdict("routing: unknown lane host: host-b\nconfigured: host-a\n") == "routing: unknown lane host: host-b configured: host-a"
+    assert launch_verdict("merged: a + b -> a (shared x)\nlaunch: refused\n") == "launch: refused"
+    assert launch_verdict("\n") == ""
+
+
+def test_a_launch_that_succeeds_times_out_or_cannot_run_keeps_the_mixed_text(monkeypatch) -> None:
+    for code in (0, 124, 127):
+        done = chair_exec.ArgvResult(code, f"{USAGE_HOLD}\nrun i-3\n", "warn\n", f"{USAGE_HOLD}\nrun i-3\nwarn\n")
+        monkeypatch.setattr(chair_exec, "run_argv_split", lambda *a, _done=done, **k: _done)
+        assert run_argv(LAUNCH_ARGV) == (code, done.mixed)
 
 
 def test_a_failed_land_keeps_the_mixed_text_so_the_conflict_line_survives(monkeypatch) -> None:
