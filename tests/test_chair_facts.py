@@ -15,11 +15,13 @@ from agent_tools.chair_facts import (
     gather_facts,
     harness_failures,
     idle_stall_inputs,
+    initiative_facts,
     land_refusals_from_actions,
     lease_facts,
     limits_facts,
     new_missing_repos,
     resolve_idle_stall_minutes,
+    waiting_reported_from_actions,
     windowed_actions,
 )
 from agent_tools.chair_idle_stall import diagnose, is_stalled
@@ -66,7 +68,7 @@ def _deps(
     has_patch: bool = False,
 ) -> FactsDeps:
     docket = {
-        "initiatives": [{"id": "i", "started": True, "ready_tasks": [{"id": "a", "needs": []}], "landed": ["z"]}],
+        "initiatives": [{"id": "i", "started": True, "ready_tasks": [{"id": "a", "phase": "p1", "needs": []}], "landed": ["z"]}],
         "busy_lanes": 1,
         "max_in_flight": 2,
     }
@@ -455,8 +457,45 @@ def test_a_ready_tasks_requires_frontmatter_reaches_the_facts():
     rows = [row("a", "state: ready\nrequires: [go]\n"), row("b", "state: ready\n")]
     facts = gather_facts(replace(_deps(), queue=lambda: rows), NOW)
     assert facts["initiatives"][0]["ready_tasks"] == [
-        {"id": "a", "needs": [], "requires": ["go"]}, {"id": "b", "needs": [], "requires": []},
+        {"id": "a", "phase": "p1", "needs": [], "requires": ["go"]}, {"id": "b", "phase": "p1", "needs": [], "requires": []},
     ]
+
+
+def test_initiative_facts_keeps_the_phase_of_a_ready_and_a_waiting_task():
+    docket = {
+        "initiatives": [
+            {
+                "id": "i", "started": False, "landed": [],
+                "ready_tasks": [{"id": "a", "phase": "p1", "needs": []}],
+                "waiting_tasks": [{"id": "b", "phase": "p2", "needs": ["x"], "requires": ["go"]}],
+            }
+        ]
+    }
+    (facts,) = initiative_facts(docket, set())
+    assert facts["ready_tasks"] == [{"id": "a", "phase": "p1", "needs": [], "requires": []}]
+    assert facts["waiting_tasks"] == [{"id": "b", "phase": "p2", "needs": ["x"], "requires": ["go"]}]
+
+
+WAITING = {"kind": "waiting", "initiative": "a", "phase": "p1", "quarantined": 1, "awaiting_land": 0}
+
+
+def test_one_waiting_row_holds_its_phase_quarantined_and_awaiting_land():
+    assert waiting_reported_from_actions([{"ts": "1", **WAITING}]) == {"a": "p1|1|0"}
+
+
+def test_two_waiting_rows_with_different_counts_hold_the_newer_key():
+    rows = [{"ts": "2", **WAITING, "quarantined": 2, "awaiting_land": 1}, {"ts": "1", **WAITING}]
+    assert waiting_reported_from_actions(rows) == {"a": "p1|2|1"}
+
+
+def test_a_launch_of_the_same_initiative_after_a_waiting_row_removes_the_key():
+    rows = [{"ts": "1", **WAITING}, {"ts": "2", "kind": "launch_epic", "initiative": "a"}]
+    assert waiting_reported_from_actions(rows) == {}
+
+
+def test_a_launch_of_another_initiative_leaves_the_waiting_key_alone():
+    rows = [{"ts": "1", **WAITING}, {"ts": "2", "kind": "launch_epic", "initiative": "b"}]
+    assert waiting_reported_from_actions(rows) == {"a": "p1|1|0"}
 
 
 def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
@@ -599,7 +638,7 @@ def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignor
     # "j" also appears (its quarantined-state row leaves it unlaunchable): the fixed point is "i"'s own facts.
     initiative_i = next(i for i in facts["initiatives"] if i["id"] == "i")
     assert initiative_i == {
-        "id": "i", "started": True, "ready_tasks": [{"id": "a", "needs": [], "requires": []}], "waiting_tasks": [],
+        "id": "i", "started": True, "ready_tasks": [{"id": "a", "phase": "p1", "needs": [], "requires": []}], "waiting_tasks": [],
         "landed": set(),
     }
     assert facts["intake"] == ["q1.md"]
