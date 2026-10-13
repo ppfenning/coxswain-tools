@@ -95,6 +95,7 @@ def test_snapshot_matches_committed_fixture():
             "cost_series": [["2026-09-28T23:40:00Z", 0.42, "plan"], ["2026-09-28T23:55:00Z", 0.84, "build"]],
             "short_id": "I412",
             "project": "coxswain-tools",
+            "end": "running",
         },
         {
             "run": "dash-feed-0",
@@ -109,6 +110,7 @@ def test_snapshot_matches_committed_fixture():
             "cost_series": [],
             "short_id": "I412",
             "project": "coxswain-tools",
+            "end": "landed",
         },
         {
             "run": "dash-feed-9",
@@ -123,6 +125,22 @@ def test_snapshot_matches_committed_fixture():
             "cost_series": [],
             "short_id": None,
             "project": None,
+            "end": {"kind": "quarantined", "cause": "review rejected twice"},
+        },
+        {
+            "run": "dash-feed-7",
+            "machine": "host-b",
+            "phase": "p2-feed",
+            "node": "build",
+            "attempt": 1,
+            "turns": 3,
+            "cost": 0.1,
+            "verdict": "none",
+            "status": "exited",
+            "cost_series": [],
+            "short_id": None,
+            "project": None,
+            "end": {"kind": "died", "cause": "schema_version"},
         },
     ]
     queue = [
