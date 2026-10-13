@@ -68,6 +68,8 @@ def test_snapshot_matches_committed_fixture():
         "hard_stop_fraction": 0.93,
         "five_hour_resets_at": "2026-09-29T02:00:00Z",
         "weekly_resets_at": "2026-10-04T04:00:00Z",
+        "weekly_target_fraction": 0.0,
+        "weekly_pace": "not_judged",
     }
     machines = [
         {
