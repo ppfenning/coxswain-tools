@@ -93,6 +93,7 @@ chair_read_lease = _LazyModule("agent_tools.chair_read_lease")
 chair_read_live = _LazyModule("agent_tools.chair_read_live")
 chair_read_lost = _LazyModule("agent_tools.chair_read_lost")
 chair_read_patch = _LazyModule("agent_tools.chair_read_patch")
+chair_read_phase_records = _LazyModule("agent_tools.chair_read_phase_records")
 chair_read_quarantined = _LazyModule("agent_tools.chair_read_quarantined")
 chair_read_record = _LazyModule("agent_tools.chair_read_record")
 chair_read_remote_unfetched = _LazyModule("agent_tools.chair_read_remote_unfetched")
@@ -7989,6 +7990,7 @@ def _chair_run_deps(
         docket=docket,
         approved=approved,
         phase_tasks=lambda: chair_read_approved.read_phase_tasks(ws, mode, work_files(), store_rows()),
+        phase_records=lambda tasks: chair_read_phase_records.read_phase_records(runs_dir, tasks),
         quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode, work_files(), store_rows()),
         stranded=lambda: chair_read_stranded.read_stranded(*stranded_inputs()),
         missing_repos=missing_repos,

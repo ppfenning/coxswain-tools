@@ -18,6 +18,10 @@ def test_a_stranded_phase_gives_one_carry_phase_and_no_land_for_that_phase():
     assert plan[0]["epoch"] == 7
 
 
+def test_a_stranded_phase_without_a_phase_record_is_not_landed_by_task_beside_its_carry():
+    plan = plan_tick(_facts(approved=[_approved("t1")], stranded=[_STRANDED], phase_records=[]))
+    assert _kinds(plan) == ["carry_phase"]
+
 def test_a_land_for_another_phase_is_kept_beside_the_carry():
     other = {**_approved("t2"), "phase": "q"}
     plan = plan_tick(_facts(approved=[_approved("t1"), other], stranded=[_STRANDED]))

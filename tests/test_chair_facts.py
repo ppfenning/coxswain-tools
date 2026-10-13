@@ -515,7 +515,7 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 
 
 def test_gather_facts_fills_every_key_from_the_fakes():
-    facts = gather_facts(_deps(), NOW)
+    facts = gather_facts(replace(_deps(), phase_records=lambda tasks: []), NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
     assert set(facts) == set(Facts.__annotations__) | {"login_hosts"}
@@ -803,3 +803,11 @@ def test_a_reader_without_psycopg_still_holds_off_a_land_the_recorder_wrote(tmp_
 
     monkeypatch.setattr(run_store, "_open", no_driver)
     assert _planned_kinds(tmp_path, NOW + timedelta(minutes=5)) == []
+
+
+def test_phase_records_reads_the_approved_tasks_and_is_absent_without_its_reader():
+    seen: list = []
+    deps = replace(_deps(), phase_records=lambda tasks: seen.append([t["id"] for t in tasks]) or ["i-1:p"])
+    assert gather_facts(deps, NOW)["phase_records"] == ["i-1:p"]
+    assert seen == [["a"]]
+    assert "phase_records" not in gather_facts(_deps(), NOW)

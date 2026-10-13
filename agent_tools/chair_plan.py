@@ -311,9 +311,9 @@ def _needs_chair_only(actions: list[Action]) -> list[Action]:
 
 
 def _without_carried_lands(lands: list[Action], carries: list[Action]) -> list[Action]:
-    """A phase planned for carry is not also landed this tick."""
+    """A phase planned for carry is not also landed this tick, by phase or by task."""
     carried = {(a["initiative"], a["phase"]) for a in carries if a["kind"] == "carry_phase"}
-    return [a for a in lands if not (a["kind"] == "land_phase" and (a["initiative"], a["phase"]) in carried)]
+    return [a for a in lands if not (a["kind"] in ("land_phase", "partial_land") and (a["initiative"], a["phase"]) in carried)]
 
 
 def _landing_initiatives(facts: Facts, lands: list[Action]) -> frozenset[str]:
