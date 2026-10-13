@@ -1421,3 +1421,22 @@ def test_a_widen_ticket_is_kept_at_the_hard_stop_while_a_relaunch_is_dropped():
     assert _kinds(plan_tick(running)) == ["clear_branches", "relaunch", "widen_ticket"]
     stopped = {**running, "limits": {**running["limits"], "hard_stop": True}}
     assert plan_tick(stopped) == [_widen("z", "z-1")]
+
+
+def test_a_stale_lane_host_is_skipped_and_its_needs_chair_passes_through_stamped():
+    hosts = [{"name": "stale", "live_runs": 0}, {"name": "fresh", "live_runs": 0}]
+    record = {"checkout_env": {"cox": {"lock_hash": "h2", "synced_hash": "h1"}}}
+    initiative = {**_initiative("a"), "started": False, "repo_dir": "cox"}
+    facts = _facts(
+        dispatch={"max_in_flight": 1, "live_runs": 1, "hosts": hosts}, initiatives=[initiative], host_env={"stale": record}
+    )
+    assert plan_tick(facts) == [
+        {"kind": "launch_epic", "initiative": "a", "host": "fresh", "epoch": 7},
+        {
+            "kind": "needs_chair",
+            "initiative": "a",
+            "cause": "stale_checkout",
+            "reason": "on stale, in cox, run: uv sync --frozen --all-extras (stale)",
+            "epoch": 7,
+        },
+    ]

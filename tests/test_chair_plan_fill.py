@@ -299,3 +299,76 @@ def test_local_lanes_any_plans_exactly_what_an_absent_key_plans():
         {"kind": "launch_decompose", "intake_ids": ["i1"]},
         {"kind": "launch_decompose", "intake_ids": ["i2"]},
     ]
+
+
+def _in_repo(id: str, repo_dir: str) -> dict:
+    return {**_init(id), "repo": f"/work/{repo_dir}", "repo_dir": repo_dir}
+
+
+def _env_hosts(**over) -> Facts:
+    hosts = [{"name": "stale", "live_runs": 3}, {"name": "fresh", "live_runs": 2}]
+    return _facts(dispatch={"max_in_flight": 4, "live_runs": 0, "hosts": hosts}, **over)
+
+
+def _record(repo_dir: str, synced: str | None, current: str = "h2") -> dict:
+    return {"checkout_env": {repo_dir: {"lock_hash": current, "synced_hash": synced}}}
+
+
+_STALE_NEEDS_CHAIR = {
+    "kind": "needs_chair",
+    "initiative": "a",
+    "cause": "stale_checkout",
+    "reason": "on stale, in cox, run: uv sync --frozen --all-extras (stale)",
+}
+
+
+def test_a_stale_host_is_skipped_for_a_fresh_one_and_one_needs_chair_names_it():
+    env = {"stale": _record("cox", "h1"), "fresh": _record("cox", "h2")}
+    facts = _env_hosts(initiatives=[_in_repo("a", "cox")], host_env=env)
+    assert plan_fill(facts, 0) == [{"kind": "launch_epic", "initiative": "a", "host": "fresh"}, _STALE_NEEDS_CHAIR]
+
+
+def test_a_never_synced_host_is_skipped_the_same_way():
+    facts = _env_hosts(initiatives=[_in_repo("a", "cox")], host_env={"stale": _record("cox", None)})
+    reason = "on stale, in cox, run: uv sync --frozen --all-extras (never_synced)"
+    assert plan_fill(facts, 0) == [
+        {"kind": "launch_epic", "initiative": "a", "host": "fresh"},
+        {**_STALE_NEEDS_CHAIR, "reason": reason},
+    ]
+
+
+def test_a_host_with_no_checkout_env_record_is_still_used_and_emits_nothing():
+    facts = _env_hosts(initiatives=[_in_repo("a", "cox")], host_env={"stale": {}})
+    assert plan_fill(facts, 0) == [{"kind": "launch_epic", "initiative": "a", "host": "stale"}]
+
+
+def test_an_already_reported_host_and_repo_is_still_skipped_with_no_needs_chair():
+    facts = _env_hosts(
+        initiatives=[_in_repo("a", "cox")], host_env={"stale": _record("cox", "h1")}, env_stale_reported=["stale|cox"]
+    )
+    assert plan_fill(facts, 0) == [{"kind": "launch_epic", "initiative": "a", "host": "fresh"}]
+
+
+def test_two_initiatives_of_one_repo_skipping_one_stale_host_emit_a_single_needs_chair():
+    facts = _env_hosts(
+        initiatives=[_in_repo("a", "cox"), _in_repo("b", "cox")], host_env={"stale": _record("cox", "h1")}
+    )
+    assert plan_fill(facts, 0) == [
+        {"kind": "launch_epic", "initiative": "a", "host": "fresh"},
+        {"kind": "launch_epic", "initiative": "b", "host": "fresh"},
+        _STALE_NEEDS_CHAIR,
+    ]
+
+
+def test_every_host_stale_and_no_local_lane_leaves_the_initiative_unplaced_with_one_needs_chair():
+    facts = _facts(
+        dispatch={"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "stale", "live_runs": 3}]},
+        initiatives=[_in_repo("a", "cox")],
+        host_env={"stale": _record("cox", "h1")},
+    )
+    assert plan_fill(facts, 0) == [_STALE_NEEDS_CHAIR]
+
+
+def test_a_host_stale_for_repo_a_still_receives_an_initiative_of_repo_b():
+    facts = _env_hosts(initiatives=[_in_repo("b", "other")], host_env={"stale": _record("cox", "h1")})
+    assert plan_fill(facts, 0) == [{"kind": "launch_epic", "initiative": "b", "host": "stale"}]
