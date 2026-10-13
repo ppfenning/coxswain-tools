@@ -680,3 +680,55 @@ def test_a_profile_with_no_notify_config_dispatches_none_and_sends_nothing(tmp_p
     tick(_notify_deps(Rig(), tmp_path, through_dispatch, config=None), False, NOW)
     assert seen == [None] and posts == []
     assert not (tmp_path / "notify-sent.json").exists()
+
+
+WAITING_PART = "waiting: a (blocked by p1: 1 quarantined, 0 awaiting land)"
+
+
+def _blocked_rig(reported=None, hard_stop=False, blocked=True):
+    """A rig whose facts hold initiative `a` with a ready p2 task; a p1 row with one quarantined task blocks it."""
+    rig = Rig()
+    initiative = {
+        "id": "a", "repo": "repo-a", "started": True,
+        "ready_tasks": [{"id": "a-t", "phase": "p2", "needs": []}], "landed": set(),
+    }
+    rows = [{"initiative": "a", "phase": "p1", "tasks": [("a-q", "quarantined")]}] if blocked else []
+
+    def gather(_deps, _now):
+        facts = _facts(rig.lease)
+        return {
+            **facts,
+            "limits": {**facts["limits"], "hard_stop": hard_stop},
+            "initiatives": [initiative],
+            "phase_tasks": rows,
+            "run_exited": {"a": True},
+            "waiting_reported": reported or {},
+        }
+
+    return rig, replace(rig.deps(), gather=gather)
+
+
+def test_a_blocked_initiative_shows_on_the_status_line():
+    _, deps = _blocked_rig()
+    assert WAITING_PART in tick(deps, False, NOW)
+
+
+def test_a_deduplicated_waiting_record_still_shows_on_the_status_line():
+    rig, deps = _blocked_rig(reported={"a": "p1|1|0"})
+    assert WAITING_PART in tick(deps, False, NOW)
+    assert [a for a in rig.recorded if a.get("kind") == "waiting"] == []
+
+
+def test_a_blocked_initiative_shows_on_the_status_line_under_the_hard_stop():
+    _, deps = _blocked_rig(hard_stop=True)
+    assert WAITING_PART in tick(deps, False, NOW)
+
+
+def test_a_blocked_initiative_shows_on_a_dry_run_status_line():
+    _, deps = _blocked_rig()
+    assert WAITING_PART in tick(deps, True, NOW)
+
+
+def test_no_blocked_initiative_leaves_no_waiting_part():
+    _, deps = _blocked_rig(blocked=False)
+    assert "waiting:" not in tick(deps, False, NOW)
