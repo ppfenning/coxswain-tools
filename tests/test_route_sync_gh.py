@@ -506,7 +506,7 @@ def test_route_file_intake_syncs_the_intake_item_too(tmp_path, monkeypatch):
     profile, ws = _file_profile(tmp_path)
     calls = []
     monkeypatch.setattr(subprocess, "run", _gh_for_file(calls))
-    rc = cli.main(["route", "file", "--profile", str(profile), "--repo", "acme/widgets", "--title", "Fix the thing", "--intake"])
+    rc = cli.main(["route", "file", "--profile", str(profile), "--repo", str(_checkout(tmp_path)), "--title", "Fix the thing", "--intake"])
     assert rc == 0 and len(_creates(calls)) == 1
     [written] = list((ws / "intake").glob("*.md"))
     assert "issue: 9" in written.read_text()
