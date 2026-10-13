@@ -161,6 +161,7 @@ class PhaseBranch(TypedDict):
 
 class ReadyTask(TypedDict):
     id: str
+    phase: str
     needs: list[str]
     requires: list[str]  # capabilities the ticket's own `requires:` frontmatter field names; empty when it names none
 
@@ -354,7 +355,7 @@ class QueueFile(TypedDict):
 
 
 class PhaseTasks(TypedDict):
-    """Every task of a phase that holds an approved task, as (id, state) in the phase's order."""
+    """Every task of a phase that holds an approved or a quarantined task, as (id, state) in the phase's order."""
 
     initiative: str
     phase: str
@@ -405,6 +406,8 @@ class Facts(TypedDict):
     running: NotRequired[list[RunningInitiative]]  # initiatives with a live lane on any machine; absent means none
     # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.
     steer_streaks: NotRequired[dict[str, int]]
+    # Each initiative's newest waiting row as `<phase>|<quarantined>|<awaiting_land>`, until a later launch of it.
+    waiting_reported: NotRequired[dict[str, str]]  # absent means {}
     stranded: NotRequired[list[StrandedPhase]]  # phases with approved work not landed; absent means none
     phase_branches: NotRequired[list[PhaseBranch]]  # phase branches against main; absent means none
     idle_stall: IdleStallInputs  # idle-lanes stall inputs; a later task fills it
@@ -423,7 +426,7 @@ class Facts(TypedDict):
     relaunch_loop_reported: NotRequired[list[str]]
     # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
     land_refusals: NotRequired[list[LandRefusal]]
-    phase_tasks: NotRequired[list[PhaseTasks]]  # per phase with an approved task, every task's state; absent means none
+    phase_tasks: NotRequired[list[PhaseTasks]]  # per phase with an approved or a quarantined task, every task's state; absent means none
 
 
 ActionKind = Literal[
@@ -458,6 +461,7 @@ ActionKind = Literal[
     "widen_ticket",
     "partial_land",
     "pull_workspace",
+    "waiting",
 ]
 
 
@@ -478,7 +482,8 @@ class Action(TypedDict, total=False):
     widen_ticket carries initiative, task_id, paths, additions and reason. partial_land carries initiative, phase,
     task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped;
     the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. A relaunch_loop needs_chair carries
-    initiative, cause and a reason naming both quarantined run ids."""
+    initiative, cause and a reason naming both quarantined run ids. waiting carries initiative, phase, quarantined and
+    awaiting_land and runs no command."""
 
     kind: ActionKind
     epoch: int
@@ -503,7 +508,8 @@ class Action(TypedDict, total=False):
     other: str  # a steer_clear names the running initiative it steers clear of
     paths: list[str]  # a steer_clear names the shared paths; a widen_ticket names the repo-relative files to add to surfaces
     task_ids: list[str]  # a partial_land names the approved task ids it would land, in phase order
-    quarantined: int  # a partial_land counts the phase's quarantined tasks
+    quarantined: int  # a partial_land or waiting counts the phase's quarantined tasks
+    awaiting_land: int  # a waiting counts the phase's approved tasks not yet landed
     task_runs: dict[str, str]  # a partial_land maps each approved task id to the run holding its approved record; "" when unknown
     pr_branch: str  # a carry_phase names the branch its pull request is opened from
     picks: list[CarryTask]  # a carry_phase lists the commits to cherry-pick, in order
