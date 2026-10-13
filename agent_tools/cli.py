@@ -5932,7 +5932,7 @@ def _dash(a: argparse.Namespace) -> int:
 
 
 def _home(a: argparse.Namespace) -> int:
-    # `--profile` skips towpath: towpath takes no profile, and bare `cox` treats the flag the same way
+    # `--profile` skips towpath: towpath takes no profile
     if a.profile is None and towpath_launch.launch(which=shutil.which, execv=os.execv, stdout=sys.stdout, stdin=sys.stdin):
         return 0
     return _route_context(argparse.Namespace(profile=a.profile, json=False))
@@ -6403,7 +6403,7 @@ HOME_GROUP = commands.Group(
 
 SESSION_GROUP = commands.Group(
     name="session", help="open the coxswain Claude session",
-    description="Open the coxswain Claude session: the argv bare `cox` used before towpath became the entry point.",
+    description="Open the coxswain Claude session, with the same argv bare `cox` uses.",
     epilog="examples:\n  cox session\n  cox session --print-argv\n  cox session -- -r resume-me",
     args=(
         commands.Arg(("--profile",), {"help": "the profile to launch claude against"}),
@@ -6943,8 +6943,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         epilog=(
             "examples:\n"
-            "  bare cox on a terminal opens towpath, the entry point and live dashboard\n"
-            "  cox session opens the coxswain Claude session\n"
+            "  bare cox opens the coxswain Claude session\n"
+            "  cox home opens the towpath dashboard\n"
+            "  cox session opens the coxswain Claude session, with the same argv\n"
             "  cox setup doctor checks this machine\n"
             "  cox route launch epic runs a filed initiative"
         ),
@@ -8830,19 +8831,6 @@ def _session_launch(launcher_profile: str | None, no_plugin: bool, extra_args: l
     return argv, str(Path(workspace).expanduser()), warning
 
 
-def should_exec_coxtop(stdin_is_tty: bool, stdout_is_tty: bool, coxtop_on_path: bool, flags_given: bool) -> bool:
-    """True only on a real terminal with coxtop installed and no launcher flag or extra argument given."""
-    return stdin_is_tty and stdout_is_tty and coxtop_on_path and not flags_given
-
-
-def _exec_coxtop_if_wanted(flags_given: bool, stdin_is_tty: bool, stdout_is_tty: bool, which: Callable[[str], str | None]) -> None:
-    """Edge: replaces this process with coxtop when `should_exec_coxtop` says
-    so, and returns only when it does not. The callers pass the terminal
-    probes and `shutil.which` in."""
-    if should_exec_coxtop(stdin_is_tty, stdout_is_tty, which("coxtop") is not None, flags_given):
-        os.execvp("coxtop", ["coxtop"])
-
-
 def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     """Bare `cox` (spec §7) and `cox session`: a real Claude Code session with
     the coxswain plugin loaded and the profile's workspace as cwd, off the
@@ -8925,7 +8913,6 @@ def main(argv: list[str] | None = None) -> int:
     head, tail = split if split is not None else (args, [])
     a = build_parser().parse_args(head)
     if not hasattr(a, "fn"):
-        _exec_coxtop_if_wanted(bool(args), sys.stdin.isatty(), sys.stdout.isatty(), shutil.which)
         return _launcher(a, tail)
     return a.fn(a)
 
