@@ -1137,8 +1137,11 @@ def escalation(land: Action) -> Action:
 
 
 def _escalate(land: Action, result: Result) -> Result:
+    """The escalated needs_chair row; a needs_chair that says what stopped it (a partial land's cherry_pick conflict
+    names its paths) keeps that after the land's subject and status."""
     raised = result.get("needs_chair") or escalation(land)
-    return _result(raised, "escalated", f"land {_land_subject(land)} {result['status']}")
+    why = str(raised.get("reason", ""))
+    return _result(raised, "escalated", f"land {_land_subject(land)} {result['status']}" + (f": {why}" if why else ""))
 
 
 _SMOKE_REPOS = frozenset({"coxswain-tools", "coxswain-graphs"})

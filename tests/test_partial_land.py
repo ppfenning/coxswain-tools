@@ -7,6 +7,7 @@ from agent_tools.cli import _land_approval_stop
 from agent_tools.partial_land import (
     already_done,
     backup_ref,
+    conflicting_paths,
     land_action,
     perform_partial_land,
     siblings,
@@ -396,3 +397,51 @@ def test_a_refused_partial_land_backs_off_like_a_land_phase():
     }
     assert plan_lands(facts, now) == []
     assert [a["kind"] for a in plan_lands(facts, now + timedelta(hours=3))] == ["partial_land"]
+
+
+# --- a land that stops at cherry_pick on a conflict ---
+
+CONFLICT_OUTPUT = (
+    "pick_branch: agents/i-1/a (a)\n"
+    "cherry_pick: cherry-pick of abc12345 conflicts in: tools/b.py, tools/a.py\n"
+    "error: could not apply abc12345... a\n"
+    "stopped; remaining: checks, push, pr_create, merge, mark_done\n"
+)
+CONFLICT = {
+    "status": "refused", "reason": CONFLICT_OUTPUT,
+    "needs_chair": {"kind": "needs_chair", "initiative": "i", "task_id": "a", "cause": "conflict", "epoch": 3},
+}
+
+
+def test_a_cherry_pick_conflict_gives_one_needs_chair_naming_the_task_and_every_file():
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/c": "ccc", "agents/i-1/q": "qqq"})
+    result = perform_partial_land(_action(("a", "c")), repo.git, _lander(repo, {"a": CONFLICT}))
+    assert (result["status"], result["needs_chair"]["cause"], result["needs_chair"]["reason"]) == (
+        "failed", "conflict", "task a conflicts in tools/a.py, tools/b.py; the land stopped at cherry_pick, nothing was merged",
+    )
+
+
+def test_the_siblings_are_restored_after_a_cherry_pick_conflict():
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/c": "ccc", "agents/i-1/q": "qqq"})
+    perform_partial_land(_action(("a", "c")), repo.git, _lander(repo, {"a": CONFLICT}))
+    assert repo.events == [("backup", "c"), ("backup", "q"), ("land", "a"), ("restore", "c"), ("restore", "q")]
+
+
+def test_a_failure_that_is_not_a_conflict_keeps_its_reason():
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/q": "qqq"})
+    refusal = {"kind": "needs_chair", "initiative": "i", "task_id": "a", "cause": "checks"}
+    failed = {"a": {"status": "refused", "reason": "checks: failing checks: test", "needs_chair": refusal}}
+    result = perform_partial_land(_action(("a",)), repo.git, _lander(repo, failed))
+    assert (result["status"], result["reason"], result["needs_chair"]) == ("refused", "task a: checks: failing checks: test", refusal)
+
+
+def test_conflicting_paths_are_sorted_and_empty_for_a_stop_that_is_not_a_conflict():
+    checks = {"status": "refused", "reason": "cherry_pick: cherry-picked abc onto pr/a\nchecks: failing checks: test\n"}
+    assert (conflicting_paths(CONFLICT), conflicting_paths(checks)) == (["tools/a.py", "tools/b.py"], [])
+
+
+def test_the_escalated_conflict_row_names_the_conflicting_paths():
+    actions = plan_lands(_facts([("a", "approved"), ("q", "quarantined")], [_approved("a")]))
+    repo = FakeRepo({"agents/i-1/a": "aaa", "agents/i-1/q": "qqq"})
+    results = perform([{**a, "epoch": 1} for a in actions], _deps([], repo, CONFLICT_OUTPUT, 1), lambda: 1, dry_run=False)
+    assert [(r["status"], "tools/a.py, tools/b.py" in r["reason"]) for r in results] == [("failed", True), ("escalated", True)]

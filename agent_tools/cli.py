@@ -1824,7 +1824,10 @@ def _cherry_pick_generated(wt: Path, sha: str, umbrella: str | None, echo: Calla
         resolved = {name: resolve(name) for name in conflicted}
         if not conflicted or any(text is None for text in resolved.values()):
             subprocess.run(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
-            return False, cp.stderr.strip() or cp.stdout.strip()
+            # The conflicts line leads, so the land prints it as `cherry_pick: ... conflicts in: ...` (what
+            # `partial_land.conflicting_paths` reads); git's own "could not apply" line follows for `land_refusal`.
+            named = f"cherry-pick of {sha[:8]} conflicts in: {', '.join(sorted(conflicted))}" if conflicted else ""
+            return False, "\n".join(filter(None, [named, cp.stderr.strip() or cp.stdout.strip()]))
         for name, text in resolved.items():
             (wt / name).write_text(text)
         subprocess.run(["git", "-C", str(wt), "add", *sorted(resolved)], capture_output=True, text=True)
@@ -7669,7 +7672,11 @@ def _chair_run_deps(
         return chair_read_live.read_live_initiatives(runs_dir, [row["id"] for row in docket()["initiatives"]], now_text())
 
     def approved() -> list:
-        stranded = chair_read_stranded.read_stranded(*stranded_inputs())
+        # The land's runs come from `land_records`: a code or ticket cause hides a record from the stranded report,
+        # but an approved item still lands from the run holding its approval.
+        records, items = stranded_inputs()
+        unsettled = chair_read_approved.read_unsettled_runs(runs_dir, records)
+        stranded = chair_read_stranded.read_stranded(chair_read_approved.land_records(records, unsettled), items)
         facts = chair_read_approved.read_fetch_facts(runs_dir, stranded)
         return chair_read_approved.with_runs(
             chair_read_approved.read_approved(ws, mode, work_files(), store_rows()), stranded, facts,

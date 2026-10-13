@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from agent_tools.chair_read_approved import approved_rows, read_approved, read_fetch_facts, with_runs
+from agent_tools.chair_read_approved import (
+    approved_rows,
+    read_approved,
+    read_fetch_facts,
+    read_unsettled_runs,
+    with_runs,
+)
 
 
 def _item(id: str, state: str, phase: str = "build", needs: list[str] | None = None) -> dict:
@@ -77,3 +83,16 @@ def test_a_task_with_no_run_needs_no_fetch() -> None:
 def test_the_edge_reads_the_remote_and_fetched_markers(tmp_path: Path) -> None:
     (tmp_path / "init-1.remote.json").write_text("{}", encoding="utf-8")
     assert read_fetch_facts(tmp_path, _STRANDED) == {"init-1": (True, False)}
+
+
+def test_a_newer_remote_run_is_unsettled_until_it_is_fetched(tmp_path: Path) -> None:
+    for run in ("init-1", "init-2", "init-3"):
+        (tmp_path / f"{run}.remote.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "init-3.fetched.json").write_text("{}", encoding="utf-8")
+    records = [{"run": "init-1", "task": "a", "cause": "code"}]
+    assert read_unsettled_runs(tmp_path, records) == {"init-2"}
+
+
+def test_no_marked_record_reads_no_runs(tmp_path: Path) -> None:
+    (tmp_path / "init-2.remote.json").write_text("{}", encoding="utf-8")
+    assert read_unsettled_runs(tmp_path, [{"run": "init-1", "task": "a", "cause": "harness"}]) == frozenset()
