@@ -4,6 +4,7 @@ import argparse
 import datetime
 
 from agent_tools import cli, host_cmd, run_store
+from agent_tools.checkout_env import CHECKOUT_ENV_KEY
 from agent_tools.lane_hosts import LaneHost
 
 NOW = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
@@ -116,7 +117,7 @@ def test_a_gather_that_cannot_run_is_null_and_never_raises():
     host_facts = result.pop("host_facts")
     assert result == {
         "cox": "0.20.0", "graphs": None, "cartridges": None, "claude": None, "login_ok": None,
-        "workspace_dir": None, "repos": [], "checkouts": {},
+        "workspace_dir": None, "repos": [], "checkouts": {}, CHECKOUT_ENV_KEY: {},
     }
     assert isinstance(host_facts["os"], str) and host_facts["os"]
     assert isinstance(host_facts["cpu_count"], int)
@@ -143,7 +144,64 @@ def test_the_beat_reads_login_from_claude_auth_status_json():
             "c": {"branch": "", "behind_main": 0},
             "t": {"branch": "", "behind_main": 0},
         },
+        CHECKOUT_ENV_KEY: {name: {"lock_hash": "v9", "synced_hash": "v9"} for name in ("h", "c", "t")},
     }
+
+
+def _env_run(lock: str | None, stamp: dict[str, str], check_code: int, calls: list[list[str]]):
+    def run(argv: list[str]) -> tuple[int, str]:
+        calls.append(argv)
+        if "hash-object" in argv:
+            return (0, f"{lock}\n") if lock else (128, "fatal: no such path")
+        if argv[0] == "cat":
+            return (0, stamp["v"] + "\n") if "v" in stamp else (1, "")
+        if argv[:3] == ["uv", "sync", "--check"]:
+            return check_code, ""
+        if argv[0] == "sh":
+            stamp["v"] = argv[-2]
+            return 0, ""
+        return 1, ""
+
+    return run
+
+
+def _env_of(run) -> dict:
+    return host_cmd.beat_versions(run, None, None, None, None, ["/srv/r"])[CHECKOUT_ENV_KEY]
+
+
+def _installs_nothing(calls: list[list[str]]) -> bool:
+    return all("install" not in c and (c[:2] != ["uv", "sync"] or "--check" in c) for c in calls)
+
+
+def test_a_repo_with_a_lockfile_and_an_equal_stamp_beats_with_both_hashes_equal():
+    calls: list[list[str]] = []
+    assert _env_of(_env_run("h1", {"v": "h1"}, 0, calls)) == {"r": {"lock_hash": "h1", "synced_hash": "h1"}}
+    assert _installs_nothing(calls)
+
+
+def test_a_failing_env_check_keeps_the_old_stamp_next_to_the_new_lock_hash():
+    calls: list[list[str]] = []
+    assert _env_of(_env_run("new", {"v": "old"}, 1, calls)) == {"r": {"lock_hash": "new", "synced_hash": "old"}}
+    assert all(c[0] != "sh" for c in calls) and _installs_nothing(calls)
+
+
+def test_a_passing_env_check_with_no_stamp_writes_it_and_reports_synced_equal_to_lock():
+    calls: list[list[str]] = []
+    assert _env_of(_env_run("h2", {}, 0, calls)) == {"r": {"lock_hash": "h2", "synced_hash": "h2"}}
+    assert any(c[0] == "sh" and c[-1] == "/srv/r/.venv/.cox-lock-hash" for c in calls) and _installs_nothing(calls)
+
+
+def test_a_repo_with_no_lockfile_reports_lock_hash_none():
+    calls: list[list[str]] = []
+    assert _env_of(_env_run(None, {}, 0, calls)) == {"r": {"lock_hash": None, "synced_hash": None}}
+    assert all(c[0] != "sh" for c in calls)
+
+
+def test_a_run_that_raises_reports_both_hashes_none_and_raises_nothing():
+    def run(argv: list[str]) -> tuple[int, str]:
+        raise OSError("no such tool")
+
+    assert _env_of(run) == {"r": {"lock_hash": None, "synced_hash": None}}
 
 
 def test_checkout_detail_reads_branch_and_commits_behind_main_through_run_with_no_fetch():
