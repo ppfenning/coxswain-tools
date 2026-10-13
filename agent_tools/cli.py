@@ -3930,6 +3930,11 @@ def _route_file(a: argparse.Namespace) -> int:
     if not a.title or not a.repo:
         print("routing: --title and --repo are required unless --from-intake is given")
         return 2
+    # Repos are siblings of the workspace: a bare name is resolved there, so the row never holds a name launch cannot read.
+    repo = route.resolve_repo(a.repo, ws.absolute().parent, route.is_git_checkout)
+    if isinstance(repo, route.RepoRefused):
+        print(repo.message)
+        return 2
     if a.body == "-":
         body = sys.stdin.read()
     elif a.body:
@@ -3942,9 +3947,9 @@ def _route_file(a: argparse.Namespace) -> int:
     try:
         if a.intake:
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-            mapping = route.intake_file(a.title, body, a.repo, date, ids=profile.get("ids", "slug"))
+            mapping = route.intake_file(a.title, body, repo, date, ids=profile.get("ids", "slug"))
         else:
-            mapping = route.initiative_files(a.title, body, a.repo, phase=a.phase)
+            mapping = route.initiative_files(a.title, body, repo, phase=a.phase)
     except ValueError as exc:
         print(f"routing: {exc}")
         return 2

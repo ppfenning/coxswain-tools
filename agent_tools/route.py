@@ -494,6 +494,37 @@ def allocate_intake_id() -> str:
     return parse_allocate_id(done.returncode, done.stdout or done.stderr)
 
 
+class RepoRefused(NamedTuple):
+    """`resolve_repo`'s refusal: the `--repo` value and the path it tried, which the message names."""
+
+    value: str
+    tried: str
+
+    @property
+    def message(self) -> str:
+        return f"routing: --repo {self.value!r} is not a git checkout (tried {self.tried})"
+
+
+def resolve_repo(value: str, repos_root: Path, is_checkout: Callable[[Path], bool]) -> str | RepoRefused:
+    """Pure. The `repo:` a `route file --repo <value>` writes.
+
+    An absolute path is kept as is. A bare name (one path component) is `<repos_root>/<name>`, written as that absolute
+    path when `is_checkout` says it is a git checkout; repos sit beside the workspace, so `repos_root` is the
+    workspace's parent. Anything else, or a bare name with no checkout there, is refused naming the path it tried."""
+    path = Path(value)
+    if path.is_absolute():
+        return value
+    if value in ("", ".", "..") or len(path.parts) != 1 or value.startswith("~"):
+        return RepoRefused(value, value)
+    candidate = repos_root / value
+    return str(candidate) if is_checkout(candidate) else RepoRefused(value, str(candidate))
+
+
+def is_git_checkout(path: Path) -> bool:
+    """Edge. A directory with a `.git` entry: a directory in a clone, a file in a worktree."""
+    return path.is_dir() and (path / ".git").exists()
+
+
 def intake_file(
     title: str,
     body: str,
