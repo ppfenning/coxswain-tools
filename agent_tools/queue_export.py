@@ -10,21 +10,25 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import json
 import logging
-from collections.abc import Callable, Mapping
+import subprocess
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from agent_tools.queue_rows import render_item, row_path
 
 Row = dict[str, Any]
 RowKey = tuple[str, str]  # (initiative, task_id): the store's key for a row's last-exported hash
+FileStatus = Literal["missing", "in_sync", "behind", "edited"]
 
 _LOG = logging.getLogger(__name__)
 
 _TREES = ("intake", "work")
 _KEEP_PREFIXES = ("intake/held/", "intake/done/")  # never deleted, whether or not a row names them
 _PATH_KEYS = {"task": ("initiative", "phase", "task_id"), "initiative": ("initiative",), "intake": ("task_id",)}
+_BASELINE_RECORD = "runs/.export-baseline.json"  # this workspace's own record of what its exports wrote; never shared
 
 
 class Export(NamedTuple):
@@ -48,9 +52,69 @@ def is_ahead_of_store(stored_hash: str | None, file_text: str) -> bool:
     return stored_hash is not None and text_hash(file_text) != stored_hash
 
 
-def may_overwrite(stored_hash: str | None, disk_text: str | None) -> bool:
-    """False only for a file that exists and is ahead of the store. No hash is unexposed history and is written."""
-    return disk_text is None or not is_ahead_of_store(stored_hash, disk_text)
+def blob_hash(text: str) -> str:
+    """The git blob id `text` would have, so a file's content compares directly with the blob committed at HEAD."""
+    data = text.encode()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def classify_file(file_hash: str | None, baselines: Collection[str], export_hash: str) -> FileStatus:
+    """Pure: where a workspace file stands against what the export would now write.
+
+    `baselines` are the hashes this workspace itself last produced for the file: the blob committed at HEAD and the
+    text its own last export wrote. The per-row hash in the shared store is never one of them, since another machine
+    records it. Missing is written; equal to the export is in_sync; equal to a baseline is behind and is rewritten
+    silently; anything else is edited and left alone, including a file with no baseline at all."""
+    if file_hash is None:
+        return "missing"
+    if file_hash == export_hash:
+        return "in_sync"
+    if file_hash in baselines:
+        return "behind"
+    return "edited"
+
+
+def may_overwrite(disk_text: str | None, baselines: Collection[str], export_text: str) -> bool:
+    """False only for a file the classifier calls edited: it exists and matches neither the export nor a baseline."""
+    file_hash = None if disk_text is None else blob_hash(disk_text)
+    return classify_file(file_hash, baselines, blob_hash(export_text)) != "edited"
+
+
+def committed_blob(workspace: Path, path: str) -> str | None:
+    """Edge: the blob id of `path` at the workspace's HEAD, None when it is untracked or git cannot answer."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(workspace), "rev-parse", "--verify", "--quiet", f"HEAD:./{path}"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    blob = done.stdout.strip()
+    return blob if done.returncode == 0 and blob else None
+
+
+def read_baseline_record(workspace: Path) -> dict[str, str]:
+    """Edge: this workspace's record of the blob ids its exports last wrote, empty when it is absent or unreadable."""
+    try:
+        record = json.loads((workspace / _BASELINE_RECORD).read_text())
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in record.items()} if isinstance(record, dict) else {}
+
+
+def write_baseline_record(workspace: Path, record: Mapping[str, str]) -> None:
+    """Edge: persist the workspace's baseline record; a failure only costs the fallback, so it is logged, not raised."""
+    full = workspace / _BASELINE_RECORD
+    try:
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(json.dumps(dict(sorted(record.items())), indent=1) + "\n")
+    except OSError as exc:
+        _LOG.warning("could not write the export baseline record %s: %s", full, exc)
+
+
+def recorded_baselines(record: Mapping[str, str], target: dict[str, str], now_equal: set[str]) -> dict[str, str]:
+    """Pure: `record` with each path in `now_equal` set to the blob id of its target text."""
+    return {**record, **{path: blob_hash(target[path]) for path in now_equal}}
 
 
 def store_hashes(runs_dir: Path) -> Hashes:
@@ -134,29 +198,52 @@ def hashes_to_record(target: dict[str, str], written: set[str], on_disk: dict[st
     return [(keys[path], digest) for path, digest in digests.items() if stored.get(keys[path]) != digest]
 
 
+def _edited_warning(workspace: Path, path: str) -> str:
+    return (
+        f"{workspace / path} was edited by hand: it matches neither this workspace's last committed or exported copy "
+        f"nor the store's export, so the export left it alone. Compare it first: git -C {workspace} diff HEAD -- {path}. "
+        f"To keep the edit, `cox route import --workspace {workspace}` overwrites the store with the file."
+    )
+
+
 def _write_guarded(
     workspace: Path, target: dict[str, str], writes: list[tuple[str, str]], on_disk: dict[str, str],
     keys: dict[str, RowKey], hashes: Hashes | None, force: bool,
 ) -> list[str]:
-    """Edge: write `writes` under `workspace`, except files ahead of the store, which are left untouched and logged once each.
-    Records the hash of every file that now holds its target text. Returns the paths written. `hashes=None` is no guard."""
+    """Edge: write `writes` under `workspace`, except files the classifier calls edited, which are left untouched and
+    logged once each. A file behind this workspace's own baseline is rewritten silently. Records the hash of every file
+    that now holds its target text, in the store and in the workspace's baseline record. Returns the paths written.
+    `hashes=None` is no guard."""
     stored = {} if hashes is None else hashes.stored
-    held = {path for path, _ in writes if hashes is not None and not force and not may_overwrite(stored.get(keys[path]), on_disk.get(path))}
+    record = {} if hashes is None else read_baseline_record(workspace)
+
+    def baselines(path: str) -> set[str]:
+        return {blob for blob in (committed_blob(workspace, path), record.get(path)) if blob}
+
+    held = {
+        path for path, text in writes
+        if hashes is not None and not force and path in on_disk and not may_overwrite(on_disk[path], baselines(path), text)
+    }
     for path in sorted(held):
-        _LOG.warning("%s was edited by hand and is ahead of the store, so the export left it alone. Import it with: cox route import --workspace %s", workspace / path, workspace)
+        _LOG.warning("%s", _edited_warning(workspace, path))
     written = [(path, text) for path, text in writes if path not in held]
     for path, text in written:
         full = workspace / path
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(text)
     if hashes is not None:
-        for (initiative, task_id), digest in hashes_to_record(target, {path for path, _ in written}, on_disk, keys, stored):
+        written_paths = {path for path, _ in written}
+        for (initiative, task_id), digest in hashes_to_record(target, written_paths, on_disk, keys, stored):
             hashes.record(initiative, task_id, digest)
+        now_equal = written_paths | {path for path, text in target.items() if on_disk.get(path) == text}
+        updated = recorded_baselines(record, target, now_equal)
+        if updated != record:
+            write_baseline_record(workspace, updated)
     return [path for path, _ in written]
 
 
 def export_file(workspace: Path, row: Row, *, force: bool = False, hashes: Hashes | None = None) -> Export:
-    """Edge: write the one file `row` renders under `workspace`, and record its hash. A file ahead of the store is left
+    """Edge: write the one file `row` renders under `workspace`, and record its hash. A hand-edited file is left
     untouched and logged unless `force`, which writes regardless. A contentless row writes nothing and is skipped."""
     if is_contentless(row):
         return Export([], skipped_ids([row]))
@@ -173,7 +260,8 @@ def export_files(workspace: Path, rows: list[Row], *, hashes: Hashes | None = No
     Returns the sorted paths touched and the ids of contentless rows skipped. Nothing under
     intake/held/ or intake/done/ is deleted. Rows with no content to export mean the store was
     unavailable or degraded, not an empty board, so the tree is left unchanged.
-    With `hashes`, a file ahead of the store is left untouched and logged instead of rewritten."""
+    With `hashes`, a hand-edited file is left untouched and logged instead of rewritten; one merely behind this
+    workspace's own baseline is rewritten."""
     skipped = skipped_ids(rows)
     if len(skipped) == len(rows):
         return Export([], skipped)
