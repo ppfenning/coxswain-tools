@@ -5316,13 +5316,13 @@ def _doctor_profile(text: str | None) -> dict | None:
 
 
 def _chair_unit_facts() -> dict:
-    """Edge: the installed chair unit's text, and per absolute PATH entry the names of cox and pytest executable there."""
+    """Edge: the installed chair unit's text, and per absolute PATH entry the names of the doctor's unit tools executable there."""
     text = _read_text_or_none(chair_service.unit_path(Path.home()))
     facts: dict = {"chair_unit_text": text}
     if text is not None:
         entries = [e for e in doctor.unit_path_entries(text) or [] if e.startswith("/")]
         facts["chair_unit_tools"] = {
-            e: [n for n in ("cox", "pytest") if (Path(e) / n).is_file() and os.access(Path(e) / n, os.X_OK)]
+            e: [n for n in doctor._UNIT_TOOLS if (Path(e) / n).is_file() and os.access(Path(e) / n, os.X_OK)]
             for e in entries
         }
     return facts

@@ -466,6 +466,8 @@ def test_an_installed_unit_is_judged_by_the_executables_on_its_path(tmp_path, mo
     assert rc == 1
     assert "FAIL" in line and "pytest" in line
     _write_executable(unit_bin / "pytest", "#!/bin/sh\n")
+    _write_executable(unit_bin / "claude", "#!/bin/sh\n")
+    _write_executable(unit_bin / "uv", "#!/bin/sh\n")
     assert main(["setup", "doctor", "--profile", str(profile)]) == 0
 
 

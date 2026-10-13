@@ -618,19 +618,44 @@ def test_unit_path_entries_reads_the_environment_path_line():
     assert doctor.unit_path_entries("[Service]\nExecStart=/x\n") is None
 
 
-def test_a_unit_path_with_cox_and_pytest_passes():
-    row = _unit_row(_UNIT.format(path="/opt/bin:/usr/bin"), {"/opt/bin": ["cox"], "/usr/bin": ["pytest"]})
+def test_a_unit_path_with_all_four_tools_passes():
+    row = _unit_row(_UNIT.format(path="/opt/bin:/usr/bin"),
+                    {"/opt/bin": ["cox", "claude"], "/usr/bin": ["uv", "pytest"]})
     assert row == {"check": "chair unit PATH", "ok": True, "detail": "2 entries"}
 
 
+def test_a_unit_path_with_every_tool_in_one_entry_passes():
+    row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["cox", "claude", "uv", "pytest"]})
+    assert row["ok"] is True
+
+
 def test_a_unit_path_without_cox_fails_naming_cox():
-    row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["pytest"]})
+    row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["claude", "uv", "pytest"]})
     assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: cox"}
 
 
+def test_a_unit_path_without_claude_fails_naming_claude():
+    row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["cox", "uv", "pytest"]})
+    assert row["ok"] is False
+    assert "claude" in row["detail"]
+
+
+def test_a_unit_path_without_uv_fails_naming_uv():
+    row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["cox", "claude", "pytest"]})
+    assert row["ok"] is False
+    assert "uv" in row["detail"]
+
+
 def test_a_unit_path_without_pytest_fails_naming_pytest():
-    row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["cox"]})
+    row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["cox", "claude", "uv"]})
     assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: pytest"}
+
+
+def test_two_missing_tools_are_named_in_tuple_order():
+    row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["cox", "uv"]})
+    assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: claude, pytest"}
+    row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["claude", "pytest"]})
+    assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: cox, uv"}
 
 
 def test_a_unit_with_no_path_line_fails_naming_the_line():
