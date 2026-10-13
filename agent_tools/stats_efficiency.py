@@ -53,6 +53,19 @@ def first_land_days(lands: Iterable[tuple[str, str]]) -> dict[str, str]:
     return {task: day for day, task in reversed(dated)}
 
 
+def lands_of(rows: Iterable[Mapping[str, str]]) -> list[tuple[str, str]]:
+    """(day, task_id) per landed row (`run_store.landed_tasks(...).rows`); a row with no usable `ts` has day ''."""
+    return [(ts[:10] if isinstance(ts := row.get("ts"), str) else "", str(row["task_id"])) for row in rows if row.get("task_id")]
+
+
+def coverage_start(lands: Iterable[tuple[str, str]]) -> str | None:
+    """The earliest dated day in `lands`, None when none is dated.
+
+    The landed set says only when tasks landed, never that a source was recording before its first land, so a day
+    before that first land is unknown rather than zero, whichever source the set came from."""
+    return min((day for day, _ in lands if day), default=None)
+
+
 def _log_day(line: str) -> str:
     try:
         row = json.loads(line)
@@ -118,7 +131,7 @@ def efficiency(
 
     `calls` are per (day, task_id) sums, `tasks` per task_id build counts and last call ts. A task's land counts on its
     first land day when that day is on or after `since`; a land at any time keeps the task's spend out of waste.
-    `log_start` is the day of the land log's first row, None with no dated row. A day before it, or every day when it is
+    `log_start` is the first day the lands cover (`coverage_start`), None with no dated land. A day before it, or every day when it is
     None, has landed, $/landed, first-try and waste None; the total takes those four from the covered days only."""
     by_task = {t["task_id"]: t for t in tasks}
     ever_landed = frozenset(task for _, task in lands)
@@ -151,7 +164,8 @@ def _cell(value: float | None, fmt: str) -> str:
     return "-" if value is None else format(value, fmt)
 
 
-def render_lines(rows: Sequence[EfficiencyRow], total: EfficiencyRow) -> list[str]:
+def render_lines(rows: Sequence[EfficiencyRow], total: EfficiencyRow, source: str | None = None) -> list[str]:
+    """The table, total last; with `source`, a first line `lands from: <source>` names where the lands came from."""
     head = ["day", "cost", "turns", "$/turn", "landed", "$/landed", "first-try", "waste", "cache-read"]
     body = [
         [
@@ -161,8 +175,10 @@ def render_lines(rows: Sequence[EfficiencyRow], total: EfficiencyRow) -> list[st
         for r in [*rows, total]
     ]
     widths = [max(len(line[i]) for line in [head, *body]) for i in range(len(head))]
-    return ["  ".join(cell.ljust(w) for cell, w in zip(line, widths, strict=True)).rstrip() for line in [head, *body]]
+    table = ["  ".join(cell.ljust(w) for cell, w in zip(line, widths, strict=True)).rstrip() for line in [head, *body]]
+    return table if source is None else [f"lands from: {source}", *table]
 
 
-def to_json(rows: Sequence[EfficiencyRow], total: EfficiencyRow) -> dict[str, Any]:
-    return {"days": [asdict(r) for r in rows], "total": asdict(total)}
+def to_json(rows: Sequence[EfficiencyRow], total: EfficiencyRow, source: str | None = None) -> dict[str, Any]:
+    out: dict[str, Any] = {"days": [asdict(r) for r in rows], "total": asdict(total)}
+    return out if source is None else {"source": source, **out}
