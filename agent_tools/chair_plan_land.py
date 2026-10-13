@@ -119,8 +119,32 @@ def backoff_held(facts: Facts, now: datetime | None = None) -> frozenset[str]:
     )
 
 
+def lacks_phase_record(facts: Facts, group: list[ApprovedTask], run: str, phase: str) -> bool:
+    """True when `phase_records` is known and omits `<run>:<phase>`: `cox runs land --phase` would refuse the run.
+
+    Absent `phase_records` is unknown, never lacking. A group still to fetch is never lacking either: its record may
+    arrive with the fetch, and a land_phase refused for it falls back to the task lands in the same tick."""
+    records = facts.get("phase_records")
+    return records is not None and f"{run}:{phase}" not in records and not any(t["needs_fetch"] for t in group)
+
+
+def by_task_action(initiative: str, phase: str, repo: str, run: str, task_runs: dict[str, str]) -> Action:
+    """The phase landed by task: one `cox runs land --task` per approved task, each from the run holding its record.
+
+    It is a partial_land with nothing quarantined, so each task land backs up and restores its siblings' branches
+    (a task land deletes every `agents/<run>/*` branch), and backoff, launch holds and blocking treat it as a phase land."""
+    return {  # type: ignore[typeddict-item]  # plan_tick stamps the epoch on every action
+        "kind": "partial_land", "initiative": initiative, "phase": phase, "task_ids": list(task_runs),
+        "quarantined": 0, "repo": repo, "run": run, "task_runs": task_runs,
+    }
+
+
 def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
     """A land_phase per completed phase, in `planned_tasks` order; the run it lands from is fetched first when it needs one.
+
+    Each land_phase carries `task_runs` (approved task id -> its run), so one refused for a missing phase record lands
+    its tasks one by one in the same tick. A group whose run lacks a phase record (`lacks_phase_record`) plans that
+    by-task land (`by_task_action`) instead of the land_phase.
 
     A group whose resolved run is empty gets one needs_chair (cause `no_run`) instead: a land_phase with an empty
     run has nowhere to land from, whatever moved the task to approved.
@@ -145,7 +169,14 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
         if run not in fetched and any(t["needs_fetch"] and t["run"] == run for t in group):
             actions.append(fetch_action(run, repo, initiative))
             fetched.add(run)
-        actions.append({"kind": "land_phase", "initiative": initiative, "phase": phase, "repo": repo, "run": run, "epoch": None})
+        task_runs = {t["id"]: t["run"] for t in group}
+        if lacks_phase_record(facts, group, run, phase):
+            actions.append(by_task_action(initiative, phase, repo, run, task_runs))
+            continue
+        actions.append({
+            "kind": "land_phase", "initiative": initiative, "phase": phase, "repo": repo, "run": run, "epoch": None,
+            "task_runs": task_runs,
+        })
     return actions + _partial_lands(facts, frozenset(_land_groups(facts)), now)
 
 

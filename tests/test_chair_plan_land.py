@@ -114,7 +114,7 @@ def test_a_repeated_id_keeps_its_first_occurrence_position_and_fields():
 
 def test_every_action_is_a_land_phase_with_no_epoch_yet():
     assert plan_lands(_facts([_task("a", "R")])) == [
-        {"kind": "land_phase", "initiative": "i", "phase": "a", "repo": "R", "run": "i-a", "epoch": None}
+        {"kind": "land_phase", "initiative": "i", "phase": "a", "repo": "R", "run": "i-a", "epoch": None, "task_runs": {"a": "i-a"}}
     ]
 
 
@@ -198,3 +198,42 @@ def test_newest_run_orders_a_non_numeric_suffix_first_instead_of_raising():
 
     assert newest_run({"i-2", "i-10", "i-x"}) == "i-10"
 
+
+
+def _by_task(task_runs: dict[str, str], phase: str = "p1", run: str = "i-1") -> dict:
+    return {
+        "kind": "partial_land", "initiative": "i", "phase": phase, "task_ids": list(task_runs), "quarantined": 0,
+        "repo": "r", "run": run, "task_runs": task_runs,
+    }
+
+
+def test_an_approved_task_whose_run_has_no_phase_record_is_landed_by_task():
+    facts: Facts = {**_facts([_task("a", run="i-1", phase="p1")]), "phase_records": []}
+    assert plan_lands(facts) == [_by_task({"a": "i-1"})]
+
+
+def test_an_approved_task_whose_run_has_a_phase_record_still_gets_a_land_phase():
+    land_phase = {
+        "kind": "land_phase", "initiative": "i", "phase": "p1", "repo": "r", "run": "i-1", "epoch": None,
+        "task_runs": {"a": "i-1"},
+    }
+    approved = [_task("a", run="i-1", phase="p1")]
+    assert plan_lands({**_facts(approved), "phase_records": ["i-1:p1"]}) == [land_phase]
+    assert plan_lands(_facts(approved)) == [land_phase]  # no phase_records fact: unknown, so a land_phase as before
+
+
+def test_a_record_of_another_run_or_phase_does_not_count_for_this_one():
+    facts: Facts = {**_facts([_task("a", run="i-1", phase="p1")]), "phase_records": ["i-1:p2", "i-2:p1"]}
+    assert plan_lands(facts) == [_by_task({"a": "i-1"})]
+
+
+def test_every_approved_task_of_a_phase_without_a_record_lands_by_task_in_one_action():
+    facts: Facts = {
+        **_facts([_task("a", run="i-1", phase="p1"), _task("b", run="i-2", phase="p1")]), "phase_records": ["i-1:p1"],
+    }
+    assert plan_lands(facts) == [_by_task({"a": "i-1", "b": "i-2"}, run="i-2")]
+
+
+def test_a_run_still_to_fetch_keeps_its_land_phase_since_the_record_may_come_with_the_fetch():
+    facts: Facts = {**_facts([_task("a", run="i-1", phase="p1", fetch=True)]), "phase_records": []}
+    assert _kinds(facts) == ["fetch", "land_phase"]

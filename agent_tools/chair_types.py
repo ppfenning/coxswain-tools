@@ -437,6 +437,8 @@ class Facts(TypedDict):
     # Squash conflicts a retry would repeat: the run's newest squash_phase stop, its branch and main unmoved. Absent means [].
     land_conflicts: NotRequired[list[LandConflict]]
     phase_tasks: NotRequired[list[PhaseTasks]]  # per phase with an approved or a quarantined task, every task's state; absent means none
+    # `<run>:<phase>` of each approved task's run and phase that has a phase record. Absent means unknown: plan land_phase.
+    phase_records: NotRequired[list[str]]
 
 
 ActionKind = Literal[
@@ -521,7 +523,7 @@ class Action(TypedDict, total=False):
     task_ids: list[str]  # a partial_land names the approved task ids it would land, in phase order
     quarantined: int  # a partial_land or waiting counts the phase's quarantined tasks
     awaiting_land: int  # a waiting counts the phase's approved tasks not yet landed
-    task_runs: dict[str, str]  # a partial_land maps each approved task id to the run holding its approved record; "" when unknown
+    task_runs: dict[str, str]  # a partial_land or land_phase maps each approved task id to the run holding its approved record; "" when unknown
     pr_branch: str  # a carry_phase names the branch its pull request is opened from
     picks: list[CarryTask]  # a carry_phase lists the commits to cherry-pick, in order
     branch: str  # a rebase_phase names the phase branch it rebases

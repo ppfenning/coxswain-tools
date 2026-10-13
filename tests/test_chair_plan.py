@@ -112,7 +112,7 @@ def test_a_hard_stop_returns_lands_and_needs_chair_and_no_launches():
         intake=["n1", "n2"],
     )
     assert plan_tick(facts) == [
-        {"kind": "land_phase", "initiative": "x", "phase": "p", "repo": "r", "run": "x-1", "epoch": 7},
+        {"kind": "land_phase", "initiative": "x", "phase": "p", "repo": "r", "run": "x-1", "epoch": 7, "task_runs": {"t1": "x-1"}},
         {"kind": "needs_chair", "initiative": "m", "task_id": "p", "cause": "scope", "epoch": 7},
     ]
 
@@ -1282,7 +1282,7 @@ def test_facts_without_host_keys_plan_as_before():
     facts = _facts(approved=[_fetching("x", "x-1")], initiatives=[_initiative("i")], run_exited={"i": True})
     assert plan_tick(facts) == [
         {"kind": "fetch", "run": "x-1", "repo": "r", "initiative": "x", "epoch": 7},
-        {"kind": "land_phase", "initiative": "x", "phase": "p", "repo": "r", "run": "x-1", "epoch": 7},
+        {"kind": "land_phase", "initiative": "x", "phase": "p", "repo": "r", "run": "x-1", "epoch": 7, "task_runs": {"x-t": "x-1"}},
         {"kind": "clear_branches", "initiative": "i", "epoch": 7},
         {"kind": "relaunch", "initiative": "i", "epoch": 7},
     ]

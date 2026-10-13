@@ -188,11 +188,19 @@ _GLOB_CHARS = frozenset("*?[]{}\\ \t")
 # Only the repo-lease line also says "<pid> on <host> is landing in <repo>", and only that one is worth retrying.
 _REFUSAL_PREFIX = "land: refusing, "
 _BUSY_MARK = " is landing in "
+# `cox runs land --phase` prints `land: no phase record at <path>` (cli.py) for a run with no phase record; a land by
+# task needs none, so this refusal alone falls back to the phase's task lands.
+_NO_PHASE_RECORD = "land: no phase record at "
 
 
 def _repo_busy(output: str) -> bool:
     """True when a line of the land's output is the repo-lease refusal: another land holds this repository."""
     return any(line.startswith(_REFUSAL_PREFIX) and _BUSY_MARK in line for line in output.splitlines())
+
+
+def lacks_phase_record(code: int, output: str) -> bool:
+    """True when the land exited non-zero and a line of its output is the missing-phase-record refusal."""
+    return code != 0 and any(line.startswith(_NO_PHASE_RECORD) for line in output.splitlines())
 
 
 def landed(code: int, output: str) -> bool:
@@ -525,10 +533,22 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Resu
     # Busy first: a repo-lease refusal exits non-zero like every other refusal, so `land_refusal` would escalate it.
     if _repo_busy(output):
         return _result(action, "busy", output)
+    if lacks_phase_record(code, output) and action.get("task_runs"):
+        return _land_by_task(action, output, deps, blocked)
     refusal = land_refusal(action, code, output)
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
     return _land_result(action, repo, code, output)
+
+
+def _land_by_task(action: Action, refused: str, deps: Deps, blocked: dict[str, Blocker]) -> Result:
+    """A land_phase refused for a missing phase record, landed by task in the same tick: its `task_runs` as a
+    partial_land's task lands, siblings backed up and restored. The result keeps the land_phase action, so its row
+    clears or counts toward the phase's backoff as a land_phase's would; the refusal leads the reason."""
+    by_task: Action = {**action, "task_ids": list(action["task_runs"]), "quarantined": 0}
+    result = _partial_land(by_task, deps, blocked)
+    reason = "\n".join(filter(None, [refused.strip(), "landing by task instead", result["reason"]]))
+    return {**result, "action": action, "reason": reason}
 
 
 def _partial_land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:

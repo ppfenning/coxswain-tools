@@ -220,6 +220,7 @@ class FactsDeps:
     run_commits: Callable[[], Sequence[Row]] = lambda: []  # approved commits per run, oldest first; absent means []
     phase_state: Callable[[], Sequence[Row]] = lambda: []  # per phase: its task ids and whether a phase land adds over main; absent means []
     phase_tasks: Callable[[], list[PhaseTasks]] = lambda: []  # per phase with an approved task, each task's state; absent means []
+    phase_records: Callable[[list[ApprovedTask]], list[str]] | None = None  # approved tasks to the `<run>:<phase>` of theirs with a phase record; absent means unknown
     branch_counts: Callable[[], Sequence[Row]] = lambda: []  # per phase branch: ahead, behind, tip against main; absent means []
     landing: Callable[[], Sequence[Row]] | None = None  # WorkerLands.landing; absent means []
     tuning: Callable[[datetime], tuple[Sequence[Row], str | None]] = lambda now: ([], None)  # chair_read_tuning.read_tuning bound to its db, runs dir and current tiers; absent means no rows and no last tune
@@ -998,6 +999,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "stale_days": resolve_stale_days(deps.stale_days()) if deps.stale_days is not None else DEFAULT_STALE_DAYS,
         "review_prs": list(deps.review_prs()),
         "phase_tasks": list(deps.phase_tasks()),
+        **({"phase_records": list(deps.phase_records(approved))} if deps.phase_records is not None else {}),
         "running": running_initiatives(live, items, repos) if deps.tickets is not None else [],
         "steer_streaks": steer_streaks_from_actions(action_rows),
         "waiting_reported": waiting_reported_from_actions(action_rows),
