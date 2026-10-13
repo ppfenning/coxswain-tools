@@ -177,7 +177,7 @@ def stagger_seconds(value: object) -> float:
     return seconds if math.isfinite(seconds) and seconds >= 0 else DEFAULT_LAUNCH_STAGGER_S
 
 
-_UNFENCED = ("standby", "take_lease", "steer_clear")  # not writes, so a stale or missing epoch does not stop them
+_UNFENCED = ("standby", "take_lease", "steer_clear", "waiting")  # not writes, so a stale or missing epoch does not stop them
 _LAND_KINDS = ("land", "land_phase", "partial_land")  # a partial_land is a run of task lands, blocked and escalated as one
 _REASON_CAP = 600
 LOCAL_ARGV_TIMEOUT_S = 900.0  # a local argv with no bound of its own; matches _CHECK_COMMAND_TIMEOUT_S
@@ -317,7 +317,7 @@ def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug") ->
         ] if initiative else None
     if kind == "pull":
         return ["cox", "route", "pull"]
-    if kind == "steer_clear":  # a deferral is only recorded; no command runs
+    if kind in ("steer_clear", "waiting"):  # recorded only; no command runs
         return None
     return None
 
@@ -983,6 +983,12 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _result(action, "recorded", action.get("reason", ""))  # `_recorded` overwrites reason, so carry it in the result
     if kind == "steer_clear":
         return _result(action, "recorded", _steer_reason(action))
+    if kind == "waiting":
+        return _result(
+            action,
+            "recorded",
+            f"blocked by {action['phase']}: {action['quarantined']} quarantined, {action['awaiting_land']} awaiting land",
+        )
     if kind == "fetch_exit":
         return _fetch_exit(action, deps)
     if kind == "widen_ticket":

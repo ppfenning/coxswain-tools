@@ -22,6 +22,7 @@ from agent_tools import (
     console_screen,
     courier,
     decisions,
+    pacing,
     route,
     run_store,
     usage_meter,
@@ -125,12 +126,27 @@ def _profile_ceilings() -> tuple[float | None, float | None]:
     return profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd")
 
 
-def _hard_stop_fraction(runs_dir: Path) -> float:
-    """The weekly hard stop the chair loop enforces, from the loader it uses on the same runs directory."""
+def _pacing_policy(runs_dir: Path) -> pacing.Policy:
+    """The pacing policy the chair loop enforces, from the loader it uses on the same runs directory."""
     # Deferred: cli.py imports this module, so a top-level import of cli is circular.
     from agent_tools import cli
 
-    return cli._resolved_pacing_policy(Path(runs_dir)).weekly_hard_stop_fraction
+    return cli._resolved_pacing_policy(Path(runs_dir))
+
+
+def _hard_stop_fraction(runs_dir: Path) -> float:
+    """The weekly hard stop the chair loop enforces."""
+    return _pacing_policy(runs_dir).weekly_hard_stop_fraction
+
+
+def _weekly_pace_keys(weekly: pacing.Window | None, policy: pacing.Policy, at: datetime) -> dict:
+    """The spend header's weekly target and verdict. The target reads 0.0 whenever the pace is not judged."""
+    pace = pacing.weekly_pace(weekly, policy, at)
+    judged = pace.verdict != "not_judged" and pace.target_fraction is not None
+    return {
+        "weekly_target_fraction": pace.target_fraction if judged else 0.0,
+        "weekly_pace": pace.verdict,
+    }
 
 
 def _profile_weekly_reset() -> usage_window.WeeklyReset | None:
@@ -161,7 +177,18 @@ def _newest_meter(*meters: usage_meter.Meter | None) -> usage_meter.Meter | None
     return max(seen, key=lambda m: m.observed_at, default=None)
 
 
-def _from_meter(meter: usage_meter.Meter, label: str, spend_source: str, at: datetime, hard_stop: float) -> dict:
+def _meter_week(meter: usage_meter.Meter) -> pacing.Window:
+    """The seven days ending at the meter's weekly reset, spent as a fraction of a ceiling of 1.0."""
+    reset = meter.seven_day.resets_at
+    return pacing.Window(
+        start=reset - timedelta(days=7), end=reset, spent_usd=meter.seven_day.used_percentage / 100,
+        ceiling_usd=1.0, burn_usd_per_hour=0.0, runs_in_flight=0,
+    )
+
+
+def _from_meter(
+    meter: usage_meter.Meter, label: str, spend_source: str, at: datetime, hard_stop: float, policy: pacing.Policy,
+) -> dict:
     return {
         "five_hour_fraction": meter.five_hour.used_percentage / 100,
         "five_hour_source": label,
@@ -172,6 +199,7 @@ def _from_meter(meter: usage_meter.Meter, label: str, spend_source: str, at: dat
         "hard_stop_fraction": hard_stop,
         "spend_source": spend_source,
         "spend_age_s": _age_s(meter.observed_at.isoformat(), at),
+        **_weekly_pace_keys(_meter_week(meter), policy, at),
     }
 
 
@@ -182,15 +210,18 @@ def _spend(runs_dir: Path, now: str, *, read_local=None, read_store=None, read_r
     one), else the profile's configured reset; the five-hour estimate keeps its rolling window.
     `spend_source` is "local meter", "meter store" or "estimate"; `spend_age_s` is the age of the meter that
     answered, or of the newest stale one an estimate went on, and None when no meter exists.
+    `weekly_target_fraction` and `weekly_pace` are the pacing policy's weekly verdict: over the seven days ending
+    at the meter's reset on the meter paths, over the gathered weekly window on the estimate path.
     `read_local`, `read_store` and `read_reset` default to the real readers, looked up at call time."""
     at = _parse_now(now)
+    policy = _pacing_policy(runs_dir)
     hard_stop_fraction = _hard_stop_fraction(runs_dir)
     local = (usage_meter.read if read_local is None else read_local)()
     if local is not None and usage_meter.fresh(local, at):
-        return _from_meter(local, "meter", "local meter", at, hard_stop_fraction)
+        return _from_meter(local, "meter", "local meter", at, hard_stop_fraction, policy)
     stored = _store_meter(run_store.latest_chair_meter if read_store is None else read_store, runs_dir)
     if stored is not None and usage_meter.fresh(stored, at):
-        return _from_meter(stored, "meter, store", "meter store", at, hard_stop_fraction)
+        return _from_meter(stored, "meter, store", "meter store", at, hard_stop_fraction, policy)
     newest = _newest_meter(local, stored)
     reset = (_profile_weekly_reset if read_reset is None else read_reset)()
     start = usage_window.weekly_start_from_reset(
@@ -217,6 +248,7 @@ def _spend(runs_dir: Path, now: str, *, read_local=None, read_store=None, read_r
         "hard_stop_fraction": hard_stop_fraction,
         "spend_source": "estimate",
         "spend_age_s": None if newest is None else _age_s(newest.observed_at.isoformat(), at),
+        **_weekly_pace_keys(weekly, policy, at),
     }
 
 
