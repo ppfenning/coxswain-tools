@@ -236,6 +236,17 @@ def _land_subject(action: Action) -> str:
     return task if task else (f"phase {phase}" if phase else "")
 
 
+@dataclass(frozen=True)
+class Blocker:
+    """The uncounted land that blocks a repo or initiative: the label a skip prints, and the initiative, phase and
+    step (empty when its output named none) that decide whether a later land may resume."""
+
+    label: str
+    initiative: str = ""
+    phase: str = ""
+    step: str = ""
+
+
 def branch_pattern(initiative: str) -> str | None:
     """`epic/<initiative>/*`, or None when the initiative is empty or could widen the glob."""
     if not initiative or "/" in initiative or _GLOB_CHARS & set(initiative):
@@ -352,13 +363,13 @@ def _land_timed_out(action: Action, argv: list[str]) -> Result:
     return _result(action, "failed", f"{' '.join(argv)}: timed out after {int(LAND_TIMEOUT_S // 60)} min")
 
 
-def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
+def _land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     repo = action.get("repo", "")
     argv = argv_for(action)
     if argv is None:
         return _result(action, "refused", "land needs a run id, a task_id and a repo")
     if repo in blocked:
-        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
+        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
     code, output = _run_land(deps, argv)
     if code == TIMED_OUT:
         return _land_timed_out(action, argv)
@@ -499,7 +510,7 @@ def _carry_forward(
     return merged, None, None
 
 
-def _land_phase(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
+def _land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     """Same shape as `_land`, one command for a whole phase: its own `mark_done:` lines mark every task in the
     phase done, so this only runs the command and reads its output."""
     repo = action.get("repo", "")
@@ -507,7 +518,7 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     if argv is None:
         return _result(action, "refused", "land_phase needs a run id, a phase and a repo")
     if repo in blocked:
-        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
+        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
     code, output = _run_land(deps, argv)
     if code == TIMED_OUT:
         return _land_timed_out(action, argv)
@@ -520,14 +531,14 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     return _land_result(action, repo, code, output)
 
 
-def _partial_land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
+def _partial_land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     """The approved tasks of a partial phase, one task land each, through `partial_land.perform_partial_land`:
     git runs through `deps.run`, and each task land is `_land`'s, so a refusal is classified and escalated as one."""
     repo = action.get("repo", "")
     if not repo or not action.get("task_ids"):
         return _result(action, "refused", "partial_land needs a repo and approved task ids")
     if repo in blocked:
-        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
+        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
     if not partial_land.steps(action):  # recorded, not escalated: the run is learned once it is fetched
         return _result(action, "recorded", "no approved task of the phase has a known run yet")
     return partial_land.perform_partial_land(action, deps.run, lambda land: _land(land, deps, blocked))  # type: ignore[return-value]
@@ -543,7 +554,7 @@ def _land_blocks_clear(landing: list[dict[str, str]], repo: str, initiative: str
     return not initiatives or any(i in ("", initiative) for i in initiatives)
 
 
-def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
+def _clear(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     initiative = action.get("initiative", "")
     pattern = branch_pattern(initiative)
     repo = deps.repo_for(action)
@@ -552,7 +563,7 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     if not repo:
         return _result(action, "refused", f"no repository resolved for initiative {initiative}")
     if repo in blocked:
-        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
+        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
     if deps.lands is not None and deps.lands.pending(repo) and _land_blocks_clear(deps.lands.landing(), repo, initiative):
         return _result(action, "skipped", f"a land in {repo} is still running")
     host = action.get("host", "")
@@ -948,7 +959,7 @@ def _steer_reason(action: Action) -> str:
 _CARRIES_NEEDS_CHAIR = ("clear_branches", "review_landed", "carry_phase", "rebase_phase", "revert_land", "rerun_main")
 
 
-def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
+def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     kind = action.get("kind")
     if (
         kind in _LAND_KINDS and deps.lands is not None and action.get("repo", "") not in blocked
@@ -1053,13 +1064,28 @@ def _ack_done_land_notices(deps: Deps) -> list[str]:
     return acked
 
 
-def _note_uncounted(action: Action, blocked: dict[str, str], blocked_initiatives: dict[str, str]) -> None:
+def _note_uncounted(
+    action: Action, result: Result, blocked: dict[str, Blocker], blocked_initiatives: dict[str, Blocker]
+) -> None:
     """A land_phase or partial_land that names an initiative blocks only that initiative; any other land blocks its whole repo."""
     initiative = action.get("initiative", "")
+    stop = land_stop(result.get("reason", ""))
+    blocker = Blocker(_land_subject(action), initiative, action.get("phase", ""), stop[0] if stop else "")
     if action.get("kind") in ("land_phase", "partial_land") and initiative:
-        blocked_initiatives[initiative] = _land_subject(action)
+        blocked_initiatives[initiative] = blocker
     else:
-        blocked[action.get("repo", "")] = _land_subject(action)
+        blocked[action.get("repo", "")] = blocker
+
+
+def _resumes_at_wait_checks(action: Action, blocker: Blocker) -> bool:
+    """A land_phase for the blocker's own initiative and phase, after a stop at wait_checks, resumes on its open PR."""
+    return (
+        action.get("kind") == "land_phase"
+        and blocker.step == "wait_checks"
+        and bool(blocker.phase)
+        and action.get("phase", "") == blocker.phase
+        and action.get("initiative", "") == blocker.initiative
+    )
 
 
 def perform(
@@ -1077,12 +1103,14 @@ def perform(
     from its output, and blocks its repo's later lands and land_phases this tick, except that a land_phase naming
     an initiative blocks only that initiative's later lands, clear_branches and relaunches. A land refused before
     its command runs blocks nothing. A launch_epic for an initiative whose land_phase was not counted is skipped too.
+    A land_phase for the same initiative and phase as an earlier land that stopped at wait_checks is not skipped:
+    it resumes from the open PR.
     With a land sink, a land returns `in_progress` at once and the actions after it run in the same tick. The lands
     that finished since the last tick are collected first, so their results lead this tick's.
     """
     results: list[Result] = []
-    blocked: dict[str, str] = {}  # repo -> task or phase of the uncounted land or land_phase that blocks its later lands and deletes
-    blocked_initiatives: dict[str, str] = {}  # initiative -> phase of its uncounted land_phase that skips its later lands
+    blocked: dict[str, Blocker] = {}  # repo -> the uncounted land or land_phase that blocks its later lands and deletes
+    blocked_initiatives: dict[str, Blocker] = {}  # initiative -> its uncounted land_phase that skips its later lands
     uncleared: dict[str, str] = {}  # initiative -> status of its clear_branches that did not finish done, this tick
     launched_hosts: set[str] = set()  # hosts a launch was attempted on this tick; "" is the loop's own machine
     if not dry_run:
@@ -1090,7 +1118,7 @@ def perform(
     for finished in deps.lands.collect() if deps.lands is not None and not dry_run else []:
         land = finished["action"]
         if finished["status"] == "not_landed" or "needs_chair" in finished:
-            _note_uncounted(land, blocked, blocked_initiatives)
+            _note_uncounted(land, finished, blocked, blocked_initiatives)
         deps.record(_recorded(finished))
         results.append(finished)
         if finished["status"] not in ("landed", "fenced", "busy"):
@@ -1102,21 +1130,27 @@ def perform(
             results.append(_result(action, "dry_run"))
             continue
         initiative = action.get("initiative", "")
+        holding = [b for b in (blocked_initiatives.get(initiative), blocked.get(action.get("repo", ""))) if b is not None]
+        resumes = bool(holding) and all(_resumes_at_wait_checks(action, b) for b in holding)
         if action.get("kind") not in _UNFENCED and is_fenced(action, current_epoch()):
             result = _result(action, "fenced", "planned under another lease epoch")
         elif action.get("kind") == "relaunch" and initiative in uncleared:
             result = _result(action, "skipped", f"clear_branches for {initiative} was {uncleared[initiative]} this tick")
-        elif initiative in blocked_initiatives and action.get("kind") in (*_LAND_KINDS, "clear_branches", "relaunch", "launch_epic"):
-            result = _result(action, "skipped", f"an earlier land in {action.get('repo', '')} ({blocked_initiatives[initiative]}) was not counted")
+        elif (
+            initiative in blocked_initiatives
+            and action.get("kind") in (*_LAND_KINDS, "clear_branches", "relaunch", "launch_epic")
+            and not resumes
+        ):
+            result = _result(action, "skipped", f"an earlier land in {action.get('repo', '')} ({blocked_initiatives[initiative].label}) was not counted")
         else:
             if action.get("kind") in LAUNCH_KINDS:
                 launch_host = action.get("host", "")
                 if launch_host in launched_hosts and deps.launch_stagger_s > 0:
                     sleep(deps.launch_stagger_s)
                 launched_hosts.add(launch_host)
-            result = _execute(action, deps, blocked)
+            result = _execute(action, deps, {} if resumes else blocked)
         if action.get("kind") in _LAND_KINDS and (result["status"] == "not_landed" or "needs_chair" in result):
-            _note_uncounted(action, blocked, blocked_initiatives)
+            _note_uncounted(action, result, blocked, blocked_initiatives)
         if action.get("kind") == "clear_branches" and result["status"] != "done":
             uncleared[initiative] = result["status"]
         if result["status"] != "in_progress":  # the land's own result is recorded when it is collected

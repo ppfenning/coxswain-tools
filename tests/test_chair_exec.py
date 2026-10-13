@@ -527,6 +527,36 @@ def test_an_uncounted_land_phase_skips_a_later_land_phase_in_its_repo() -> None:
     assert [c[1][5] for c in calls if c[0] == "run"] == ["p1"]
 
 
+def _stopped_at(step: str) -> str:
+    return f"merge: ok\nland: stopped at {step}: checks not green\n"
+
+
+def test_a_land_phase_stopped_at_wait_checks_does_not_skip_the_next_land_for_that_phase() -> None:
+    calls: list = []
+    land = {**_land_phase("p1", "r"), "initiative": "A"}
+    results = perform([land, land], _deps(calls, _stopped_at("wait_checks"), code=1), lambda: 1, False)
+    assert "skipped" not in [r["status"] for r in results]
+    assert [c[1][5] for c in calls if c[0] == "run"] == ["p1", "p1"]
+
+
+def test_a_land_phase_stopped_at_squash_phase_still_skips_the_next_land_for_that_phase() -> None:
+    calls: list = []
+    land = {**_land_phase("p1", "r"), "initiative": "A"}
+    results = perform([land, land], _deps(calls, _stopped_at("squash_phase"), code=1), lambda: 1, False)
+    skipped = [r for r in results if r["status"] == "skipped"]
+    assert [r["reason"] for r in skipped] == ["an earlier land in r (phase p1) was not counted"]
+    assert [c[1][5] for c in calls if c[0] == "run"] == ["p1"]
+
+
+def test_a_wait_checks_stop_in_another_phase_still_skips_the_next_land() -> None:
+    calls: list = []
+    first, second = ({**_land_phase(p, "r"), "initiative": "A"} for p in ("p1", "p2"))
+    results = perform([first, second], _deps(calls, _stopped_at("wait_checks"), code=1), lambda: 1, False)
+    skipped = [r for r in results if r["status"] == "skipped"]
+    assert [r["reason"] for r in skipped] == ["an earlier land in r (phase p1) was not counted"]
+    assert [c[1][5] for c in calls if c[0] == "run"] == ["p1"]
+
+
 def test_a_refused_land_phase_for_one_initiative_still_runs_another_initiative_s_relaunch_and_land_phase(tmp_path: Path) -> None:
     calls: list = []
     refused = {**_land_phase("p1", "r"), "initiative": "A"}
