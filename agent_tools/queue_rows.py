@@ -4,10 +4,12 @@ A row is a plain dict: kind, initiative, task_id, phase, state, needs, title, su
 `extra` holds every frontmatter key the named fields do not, so a parse then render loses nothing.
 Frontmatter is read with PyYAML's BaseLoader, so every scalar stays the literal string the file wrote, as in
 route.parse_frontmatter: `yes`, `1.10` and `2026-02-30` are never coerced to a bool, a float or a date.
+The one exception is `priority`: a numeric one is an int on both sides, so '9' in the store and 9 in a file never differ by type.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -21,6 +23,18 @@ _INTAKE_STAMPED_STATE = "done"  # cli._route_file_from_intake writes the stamped
 _INITIATIVE_LINE_STATES = ("landed", "decomposed")  # intake states that export to intake/ and carry an initiative
 # initiative.md names no state: route.initiative_states derives done from its tasks. The row holds the default.
 _INITIATIVE_STATE = _TASK_DEFAULT_STATE
+
+
+def coerce_priority(value: Any) -> Any:
+    """An int, or a str of an optionally signed integer, as an int; anything else comes back unchanged. A bool is not a priority."""
+    if isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        return int(value)
+    return value
+
+
+def _int_priority(extra: Mapping[str, Any]) -> dict[str, Any]:
+    """`extra` with a numeric `priority` as an int, so a file and the store never differ by type alone."""
+    return {**extra, **({"priority": coerce_priority(extra["priority"])} if "priority" in extra else {})}
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str] | None:
@@ -88,7 +102,7 @@ def parse_item(kind: str, path_parts: tuple[str, ...], text: str) -> Row | None:
         "title": str(fields.get("title") or ""),
         "surfaces": _strs(fields.get("surfaces")),
         "body": body,
-        "extra": {k: v for k, v in fields.items() if k not in lifted},
+        "extra": _int_priority({k: v for k, v in fields.items() if k not in lifted}),
     }
 
 
@@ -111,7 +125,7 @@ def render_item(row: Row) -> str:
     }
     kept = {k: v for k, v in named.items() if k == "state" or v}
     initiative = _initiative_line(row)
-    with_line = {**row["extra"], **({"initiative": initiative} if initiative else {})}
+    with_line = {**_int_priority(row["extra"]), **({"initiative": initiative} if initiative else {})}
     extra = {k: with_line[k] for k in sorted(with_line, key=str) if k not in kept}
     fields = {**kept, **extra}
     header = yaml.safe_dump(fields, sort_keys=False, allow_unicode=True, width=10**6) if fields else ""

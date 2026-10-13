@@ -84,7 +84,7 @@ def test_set_writes_five_store_first(tmp_path, monkeypatch):
     path, events = phase / "a.md", []
     _record_store(monkeypatch, path, events)
     assert _run(profile, "--set", "5") == 0
-    assert events == [("store", _item(None), "5")]
+    assert events == [("store", _item(None), 5)]
     assert path.read_text() == "---\nstate: ready\ntitle: T\npriority: 5\n---\nBody.\n"
 
 
@@ -93,7 +93,7 @@ def test_up_from_two_writes_three_store_first(tmp_path, monkeypatch):
     path, events = phase / "a.md", []
     _record_store(monkeypatch, path, events)
     assert _run(profile, "--up") == 0
-    assert events == [("store", _item(2), "3")]
+    assert events == [("store", _item(2), 3)]
     assert path.read_text() == _item(3)
 
 
@@ -103,7 +103,7 @@ def test_up_passes_the_nearest_higher_open_neighbour(tmp_path, monkeypatch):
     _neighbour(monkeypatch, 7)
     _record_store(monkeypatch, path, events)
     assert _run(profile, "--up") == 0
-    assert events == [("store", _item(2), "8")]
+    assert events == [("store", _item(2), 8)]
     assert path.read_text() == _item(8)
 
 
@@ -113,7 +113,7 @@ def test_down_passes_the_nearest_lower_open_neighbour(tmp_path, monkeypatch):
     _neighbour(monkeypatch, -3)
     _record_store(monkeypatch, path, events)
     assert _run(profile, "--down") == 0
-    assert events == [("store", _item(2), "-4")]
+    assert events == [("store", _item(2), -4)]
     assert path.read_text() == _item(-4)
 
 
@@ -122,7 +122,7 @@ def test_down_from_two_writes_one_store_first(tmp_path, monkeypatch):
     path, events = phase / "a.md", []
     _record_store(monkeypatch, path, events)
     assert _run(profile, "--down") == 0
-    assert events == [("store", _item(2), "1")]
+    assert events == [("store", _item(2), 1)]
     assert path.read_text() == _item(1)
 
 
