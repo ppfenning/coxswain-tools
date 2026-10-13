@@ -1,6 +1,22 @@
+import logging
+import subprocess
 from pathlib import Path
 
-from agent_tools.queue_export import export_files, export_rows, is_contentless, plan_export, skipped_ids
+import pytest
+
+from agent_tools.queue_export import (
+    Hashes,
+    blob_hash,
+    classify_file,
+    committed_blob,
+    export_files,
+    export_rows,
+    is_contentless,
+    may_overwrite,
+    plan_export,
+    read_baseline_record,
+    skipped_ids,
+)
 from agent_tools.queue_rows import render_item, row_path
 
 TASK_ROW = {
@@ -209,3 +225,122 @@ def test_export_files_keeps_held_and_done_deletes_stray(tmp_path: Path) -> None:
     assert (tmp_path / "intake" / "done" / "d.md").exists()
     assert not (tmp_path / "intake" / "stray.md").exists()
     assert "intake/stray.md" in touched
+
+
+# The hand-edit guard: a file is compared with this workspace's own baseline, never the store's per-row hash.
+
+GUARD_PATH = row_path(TASK_ROW)
+
+
+def _hashes(stored: dict | None = None) -> Hashes:
+    held = {} if stored is None else stored
+    return Hashes(held, lambda initiative, task_id, digest: held.update({(initiative, task_id): digest}) or True)
+
+
+def _git(workspace: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(workspace), *args], check=True, capture_output=True)
+
+
+def _commit(workspace: Path, path: str, text: str) -> None:
+    full = workspace / path
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(text)
+    _git(workspace, "init", "-q")
+    _git(workspace, "add", path)
+    _git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "baseline")
+
+
+@pytest.mark.parametrize(
+    ("file_hash", "baselines", "export_hash", "status"),
+    [
+        (None, {"b"}, "e", "missing"),
+        (None, set(), "e", "missing"),
+        ("e", {"b"}, "e", "in_sync"),
+        ("e", set(), "e", "in_sync"),
+        ("b", {"b"}, "e", "behind"),
+        ("r", {"b", "r"}, "e", "behind"),
+        ("x", {"b"}, "e", "edited"),
+        ("x", set(), "e", "edited"),
+    ],
+)
+def test_classify_file_on_literals(file_hash, baselines, export_hash, status) -> None:
+    assert classify_file(file_hash, baselines, export_hash) == status
+
+
+def test_may_overwrite_with_no_baseline_writes_only_a_missing_or_equal_file() -> None:
+    assert may_overwrite(None, set(), "new\n") is True
+    assert may_overwrite("new\n", set(), "new\n") is True
+    assert may_overwrite("old\n", set(), "new\n") is False
+    assert may_overwrite("old\n", {blob_hash("old\n")}, "new\n") is True
+
+
+def test_blob_hash_matches_git(tmp_path: Path) -> None:
+    _commit(tmp_path, "work/a.md", "some text\n")
+    assert committed_blob(tmp_path, "work/a.md") == blob_hash("some text\n")
+    assert committed_blob(tmp_path, "work/untracked.md") is None
+
+
+def test_committed_blob_outside_git_is_none(tmp_path: Path) -> None:
+    assert committed_blob(tmp_path / "nowhere", "work/a.md") is None
+
+
+def test_regression_another_host_recorded_the_store_hash_and_the_unedited_file_is_rewritten(tmp_path: Path, caplog) -> None:
+    older = {**TASK_ROW, "title": "Older body"}
+    _commit(tmp_path, GUARD_PATH, render_item(older))
+    hashes = _hashes({("queue", "codec"): blob_hash("another machine's newer export\n")})
+    with caplog.at_level(logging.WARNING):
+        touched, _ = export_files(tmp_path, [TASK_ROW], hashes=hashes)
+    assert touched == [GUARD_PATH]
+    assert (tmp_path / GUARD_PATH).read_text() == render_item(TASK_ROW)
+    assert caplog.records == []
+
+
+def test_file_behind_its_last_export_but_not_yet_committed_is_rewritten_silently(tmp_path: Path, caplog) -> None:
+    _commit(tmp_path, GUARD_PATH, render_item({**TASK_ROW, "title": "v1"}))
+    hashes = _hashes()
+    export_files(tmp_path, [{**TASK_ROW, "title": "v2"}], hashes=hashes)
+    assert read_baseline_record(tmp_path)[GUARD_PATH] == blob_hash(render_item({**TASK_ROW, "title": "v2"}))
+    with caplog.at_level(logging.WARNING):
+        touched, _ = export_files(tmp_path, [{**TASK_ROW, "title": "v3"}], hashes=hashes)
+    assert touched == [GUARD_PATH]
+    assert "v3" in (tmp_path / GUARD_PATH).read_text()
+    assert caplog.records == []
+
+
+def test_untracked_file_falls_back_to_the_workspace_record(tmp_path: Path, caplog) -> None:
+    hashes = _hashes()
+    export_files(tmp_path, [TASK_ROW], hashes=hashes)
+    with caplog.at_level(logging.WARNING):
+        touched, _ = export_files(tmp_path, [{**TASK_ROW, "title": "Newer"}], hashes=hashes)
+    assert touched == [GUARD_PATH]
+    assert caplog.records == []
+
+
+def test_untracked_file_with_no_baseline_is_left_alone_with_a_warning(tmp_path: Path, caplog) -> None:
+    (tmp_path / GUARD_PATH).parent.mkdir(parents=True)
+    (tmp_path / GUARD_PATH).write_text("hand written\n")
+    with caplog.at_level(logging.WARNING):
+        touched, _ = export_files(tmp_path, [TASK_ROW], hashes=_hashes())
+    assert touched == []
+    assert (tmp_path / GUARD_PATH).read_text() == "hand written\n"
+    assert len(caplog.records) == 1
+
+
+def test_edited_committed_file_is_left_alone_and_the_warning_leads_with_a_diff(tmp_path: Path, caplog) -> None:
+    _commit(tmp_path, GUARD_PATH, render_item(TASK_ROW))
+    (tmp_path / GUARD_PATH).write_text(render_item(TASK_ROW) + "\nhand edit\n")
+    with caplog.at_level(logging.WARNING):
+        touched, _ = export_files(tmp_path, [{**TASK_ROW, "title": "Changed in the store"}], hashes=_hashes())
+    assert touched == []
+    assert (tmp_path / GUARD_PATH).read_text().endswith("hand edit\n")
+    [record] = caplog.records
+    line = record.getMessage()
+    assert f"git -C {tmp_path} diff HEAD -- {GUARD_PATH}" in line
+    assert line.index("diff HEAD") < line.index("cox route import")
+    assert "overwrites the store with the file" in line
+
+
+def test_missing_file_is_written_and_in_sync_file_untouched(tmp_path: Path) -> None:
+    hashes = _hashes()
+    assert export_files(tmp_path, [TASK_ROW], hashes=hashes).touched == [GUARD_PATH]
+    assert export_files(tmp_path, [TASK_ROW], hashes=hashes).touched == []
