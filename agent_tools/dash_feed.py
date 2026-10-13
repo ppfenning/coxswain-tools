@@ -34,6 +34,7 @@ from agent_tools.chair_read_exits import exit_rows
 from agent_tools.chair_read_housekeeping import latest_housekeeping, read_last_housekeeping
 from agent_tools.chair_read_record import ACTION_LOG
 from agent_tools.chair_read_review_prs import read_review_prs
+from agent_tools.chair_read_schema_deaths import log_tail
 from agent_tools.chair_types import EASTERN, ReviewPr
 from agent_tools.dash_chair_action import read_current_action
 from agent_tools.dash_chair_attention import chair_attention
@@ -46,6 +47,7 @@ from agent_tools.dash_finished_runs import LIMIT, finished_runs
 from agent_tools.dash_history import build_history
 from agent_tools.dash_history import history_today as _history_today
 from agent_tools.dash_history_store import read_history_rows
+from agent_tools.dash_run_end import End, run_end
 from agent_tools.dash_spend_series import spend_series as _spend_series
 from agent_tools.draft_list import read_drafts
 from agent_tools.runs_detail import NODE_ORDER
@@ -57,6 +59,7 @@ _LANDED_STATES = ("done", "dropped")
 _LOGIN_CHECK_TIMEOUT_S = 15
 _DEFAULT_PROFILE_PATH = Path.home() / ".config" / "agent-tools" / "profile.yaml"
 _MAX_ROWS = 50
+_LOG_TAIL_BYTES = 4096
 _DECISION_PREFIX = "coxswain://decision/"
 _ASK_KEYS = ("options", "context", "asked_at", "note")
 # The graphs `cox route launch` starts (cli.py's route launch commands); courier `to` labels name graphs too.
@@ -573,13 +576,16 @@ def _task_slug(target: str, ids: Mapping[str, str]) -> str | None:
 def _runs_v1(
     lanes: Sequence[console_screen.LaneRow], local_name: str, records: Sequence[Mapping], now: datetime,
     calls_by_run: Mapping[str, Sequence[Mapping]] | None = None, short_ids: Mapping[str, str] | None = None,
-    projects: Mapping[str, str | None] | None = None,
+    projects: Mapping[str, str | None] | None = None, ends: Mapping[str, End] | None = None,
 ) -> list[dict]:
     """The live lanes as running rows, then the newest finished runs; a finished record of a live lane is dropped.
     Each row gains `cost_series` from its run's entry in `calls_by_run`; a run with no entry gets `[]`.
-    Each row gains `short_id` from `short_ids` and `project` from `projects`, by its run key's initiative slug."""
+    Each row gains `short_id` from `short_ids` and `project` from `projects`, by its run key's initiative slug.
+    Each row gains `end`: `running` for a lane, else its entry in `ends`, else `idle`. `status` is unchanged."""
     aware = now if now.tzinfo else now.replace(tzinfo=UTC)
-    rows = [*(_run_v1(lane, local_name) for lane in lanes), *finished_runs(records, {lane.run for lane in lanes}, aware)]
+    live = {lane.run for lane in lanes}
+    rows = [*(_run_v1(lane, local_name) for lane in lanes), *finished_runs(records, live, aware)]
+    ended = ends or {}
     by_run = calls_by_run or {}
     ids = short_ids or {}
     named = projects or {}
@@ -589,6 +595,7 @@ def _runs_v1(
             "cost_series": run_cost_series(_call_points(by_run.get(row["run"], ()))),
             "short_id": _short_id(_run_slug(row["run"]), ids),
             "project": _project(_run_slug(row["run"]), named),
+            "end": "running" if row["run"] in live else ended.get(row["run"], "idle"),
         }
         for row in rows
     ]
@@ -760,16 +767,48 @@ def _history_v1(
     return history, _history_today(*args, at, timezone(offset))
 
 
-def _history_edge(
-    runs_dir: Path, at: datetime, ids: Mapping[str, str], projects: Mapping[str, str | None],
-) -> tuple[list[dict], dict]:
-    """Edge: the feed's history from the store alone. An unreadable store gives no history and zero counts."""
+def _store_rows(runs_dir: Path, at: datetime) -> Mapping:
+    """Edge: the ended runs since local midnight, or the newest ones, with their task records. Read once.
+    An unreadable store gives no rows."""
     offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
     since = local_midnight(at, offset).astimezone(UTC).isoformat()
     try:
-        return _history_v1(read_history_rows(runs_dir, since), at, ids, projects)
+        return read_history_rows(runs_dir, since)
+    except Exception:  # the history and ends are garnish: a store failure must not take the feed down
+        return {}
+
+
+def _history_edge(
+    rows: Mapping, at: datetime, ids: Mapping[str, str], projects: Mapping[str, str | None],
+) -> tuple[list[dict], dict]:
+    """The feed's history from the store rows. Rows that cannot be read give no history and zero counts."""
+    try:
+        return _history_v1(rows, at, ids, projects)
     except Exception:  # the history is garnish: a store failure must not take the feed down
         return [], dict(_ZERO_HISTORY_TODAY)
+
+
+def _ends_v1(rows: Mapping, log_tails: Mapping[str, str]) -> dict[str, End]:
+    """Each ended run's id mapped to `run_end` over its task records and its log tail."""
+    tasks: dict[str, list[Mapping]] = {}
+    for record in rows.get("task_records", ()):
+        tasks.setdefault(str(record.get("run_id")), []).append(record)
+    return {
+        str(run["run_id"]): run_end(run, tasks.get(str(run["run_id"]), ()), log_tails.get(str(run["run_id"]), ""))
+        for run in rows.get("runs", ())
+        if run.get("run_id")
+    }
+
+
+def _ends_edge(runs_dir: Path, rows: Mapping) -> dict[str, End]:
+    """Edge: the ends of the store's ended runs, reading each run's log tail. A failure gives no ends."""
+    try:
+        tails = {
+            str(run["run_id"]): log_tail(runs_dir, str(run["run_id"]), _LOG_TAIL_BYTES) for run in rows.get("runs", ())
+        }
+        return _ends_v1(rows, tails)
+    except Exception:  # the ends are garnish: a store failure must not take the feed down
+        return {}
 
 
 def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None = None) -> dict:
@@ -802,13 +841,16 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     }
     short_ids = run_store.initiative_short_ids(runs_dir)
     projects = _projects(run_store.read_queue(runs_dir, kind="initiative"))
-    history, today = _history_edge(runs_dir, at, short_ids, projects)
+    store_rows = _store_rows(runs_dir, at)
+    history, today = _history_edge(store_rows, at, short_ids, projects)
     return snapshot(
         now,
         _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at),
         _spend_v1(sections["spend"]),
         [_machine_v1(row, at) for row in sections["hosts"]],
-        _runs_v1(sections["lanes"], local_name, records, at, calls_by_run, short_ids, projects),
+        _runs_v1(
+            sections["lanes"], local_name, records, at, calls_by_run, short_ids, projects, _ends_edge(runs_dir, store_rows),
+        ),
         [_queue_v1(row, short_ids, projects) for row in queue],
         queue_total,
         [*(_inbox_v1(entry, short_ids) for entry in inbox), *_review_inbox_v1(review_prs, short_ids)],
