@@ -55,12 +55,13 @@ def test_hand_edited_file_is_left_byte_identical_and_one_line_logged(tmp_path: P
     assert f"cox route import --workspace {tmp_path}" in line
 
 
-def test_row_with_no_hash_and_a_differing_file_is_written_and_recorded(tmp_path: Path) -> None:
+def test_untracked_differing_file_with_no_baseline_is_left_alone(tmp_path: Path) -> None:
     (tmp_path / PATH).parent.mkdir(parents=True)
     (tmp_path / PATH).write_text("older history\n")
     hashes = fake_store()
-    assert export_files(tmp_path, [ROW], hashes=hashes).touched == [PATH]
-    assert hashes.stored == {KEY: text_hash((tmp_path / PATH).read_text())}
+    assert export_files(tmp_path, [ROW], hashes=hashes).touched == []
+    assert (tmp_path / PATH).read_text() == "older history\n"
+    assert hashes.stored == {}
 
 
 def test_row_with_no_hash_and_an_equal_file_records_without_writing(tmp_path: Path) -> None:
