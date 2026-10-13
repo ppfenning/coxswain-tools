@@ -37,11 +37,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "LAUNCH_ERROR",
+    "MERGE_UPDATE_ATTEMPTS",
     "LeaseRenewal",
     "approve_to_done",
     "approved_state",
     "arbitration_verdict",
     "await_checks",
+    "behind_stop",
     "check_exit",
     "check_poll_result",
     "checks_argv",
@@ -49,6 +51,7 @@ __all__ = [
     "close_to_done",
     "gate_steps",
     "gate_stop",
+    "is_behind_refusal",
     "is_pending",
     "issue_closes",
     "land_log_row",
@@ -659,6 +662,20 @@ def wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: flo
 def merge_expects_check(output: str) -> bool:
     """Whether a refused merge's output is GitHub's `Required status check "<name>" is expected`; the check name is never matched."""
     return "Required status check" in output and "is expected" in output
+
+
+MERGE_UPDATE_ATTEMPTS = 3  # branch updates a land makes for one merge before it stops
+_BEHIND_PHRASE = "not up to date with the base branch"
+
+
+def is_behind_refusal(output: str) -> bool:
+    """Whether a failed merge's output says the head branch is behind the base branch."""
+    return _BEHIND_PHRASE in output
+
+
+def behind_stop(attempts: int, last: str) -> str:
+    """Why the land stops at the merge once `attempts` branch updates have not been enough; `last` is the final refusal."""
+    return f"still behind the base branch after {attempts} branch updates; last refusal: {last}"
 
 
 def rest_checks_argvs(sha: str) -> tuple[list[str], list[str]]:
