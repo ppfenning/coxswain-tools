@@ -868,11 +868,70 @@ def _phase_needs_problems(items) -> list:
     ]
 
 
-def lint_items(items, repo: str | None, grants) -> list:
+def top_dirs(paths) -> frozenset:
+    """First component of every path that sits in a directory; root-level files have none."""
+    return frozenset(p.split("/", 1)[0] for p in paths if "/" in p)
+
+
+_NEW_MARK = " (new)"
+
+
+def _split_surface(surface: str) -> tuple:
+    """(path, is_new): a trailing ' (new)' marks a file the ticket creates."""
+    if surface.endswith(_NEW_MARK):
+        return surface[: -len(_NEW_MARK)], True
+    return surface, False
+
+
+def _in_listing(path: str, paths) -> bool:
+    """A file is in the listing by name; a directory surface (trailing '/') when any file sits under it."""
+    return any(p.startswith(path) for p in paths) if path.endswith("/") else path in paths
+
+
+def _surface_problem(task: str, surface: str, paths, own_tops, other_repo_tops) -> list:
+    path, is_new = _split_surface(surface)
+    top = path.split("/", 1)[0]
+    owners = sorted(name for name, tops in other_repo_tops.items() if top in tops)
+    if top not in own_tops and len(owners) == 1:
+        return [Problem(task, "surface_wrong_repo",
+                        f"{task} surfaces {path}, which lives in {owners[0]}",
+                        f"file the work in {owners[0]}, or correct the path")]
+    present = _in_listing(path, paths)
+    if not is_new and not present:
+        return [Problem(task, "surface_missing",
+                        f"{task} surfaces {path}, which is not in the repository",
+                        f"correct the path, or mark it '{_NEW_MARK}' if the build creates it")]
+    if is_new and present:
+        return [Problem(task, "surface_exists",
+                        f"{task} marks {path} as new, but it already exists",
+                        f"drop the '{_NEW_MARK}' marker, or pick another name")]
+    return []
+
+
+def surface_problems(items, paths, other_repo_tops) -> list:
+    """Check each ticket surface against `paths`, the repo's file listing; no I/O.
+
+    A surface in another repo's top directories is surface_wrong_repo and never also surface_missing."""
+    own_tops = top_dirs(paths)
+    return [
+        p
+        for item in items
+        for surface in item.get("surfaces", [])
+        for p in _surface_problem(item.get("task", ""), surface, paths, own_tops, other_repo_tops)
+    ]
+
+
+def lint_items(items, repo: str | None, grants, *, checkout=None) -> list:
     """work-shape.md §3: reach, grant, size, cross_repo and coupling over a decomposed
-    DAG's parsed ticket items; no model, no I/O."""
+    DAG's parsed ticket items; no model, no I/O.
+
+    `checkout` is `(paths, other_repo_tops)`; when given, surface_missing, surface_exists and
+    surface_wrong_repo are added. None skips them."""
     problems = [p for item in items for p in _item_problems(item, repo, grants)]
-    return problems + _coupling_problems(items) + _phase_needs_problems(items)
+    base = problems + _coupling_problems(items) + _phase_needs_problems(items)
+    if checkout is None:
+        return base
+    return base + surface_problems(items, *checkout)
 
 
 def _ordered_union(lists) -> list:

@@ -1880,6 +1880,56 @@ def test_lint_items_allows_a_needs_edge_across_phases():
     assert [p.rule for p in problems if p.rule == "phase_needs"] == []
 
 
+_SURFACE_PATHS = frozenset({"agent_tools/route.py", "tests/test_route.py", "README.md"})
+_SURFACE_OTHERS = {"coxswain-graphs": frozenset({"harness", "runner"}), "coxswain-dash": frozenset({"src"})}
+
+
+def _surface_item(*surfaces):
+    return [{"task": "t1", "phase": "build", "surfaces": list(surfaces), "body": "work"}]
+
+
+def test_top_dirs_returns_first_components_and_skips_root_files():
+    paths = {"a/b.py", "a/c.py", "d/e/f.py", "README.md"}
+    assert route.top_dirs(paths) == frozenset({"a", "d"})
+
+
+def test_surface_problems_flags_an_unmarked_missing_surface():
+    problems = route.surface_problems(_surface_item("agent_tools/nope.py"), _SURFACE_PATHS, _SURFACE_OTHERS)
+    assert [(p.task, p.rule) for p in problems] == [("t1", "surface_missing")]
+    assert "agent_tools/nope.py" in problems[0].detail
+    assert "(new)" in problems[0].fix
+
+
+def test_surface_problems_flags_a_new_surface_that_already_exists():
+    problems = route.surface_problems(_surface_item("agent_tools/route.py (new)"), _SURFACE_PATHS, _SURFACE_OTHERS)
+    assert [(p.task, p.rule) for p in problems] == [("t1", "surface_exists")]
+    assert "agent_tools/route.py" in problems[0].detail
+
+
+def test_surface_problems_names_the_other_repo_for_a_foreign_top_directory():
+    problems = route.surface_problems(_surface_item("harness/run.py"), _SURFACE_PATHS, _SURFACE_OTHERS)
+    assert [p.rule for p in problems] == ["surface_wrong_repo"]
+    assert "coxswain-graphs" in problems[0].detail
+
+
+def test_surface_problems_passes_one_existing_and_one_new_surface():
+    items = _surface_item("agent_tools/route.py", "agent_tools/fresh.py (new)")
+    assert route.surface_problems(items, _SURFACE_PATHS, _SURFACE_OTHERS) == []
+
+
+def test_surface_problems_finds_a_directory_surface_by_the_files_under_it():
+    assert route.surface_problems(_surface_item("agent_tools/"), _SURFACE_PATHS, _SURFACE_OTHERS) == []
+    problems = route.surface_problems(_surface_item("agent_tools/gone/"), _SURFACE_PATHS, _SURFACE_OTHERS)
+    assert [p.rule for p in problems] == ["surface_missing"]
+
+
+def test_lint_items_checks_surfaces_only_when_checkout_is_given():
+    items = _surface_item("agent_tools/nope.py")
+    assert route.lint_items(items, "acme/widgets", ()) == []
+    problems = route.lint_items(items, "acme/widgets", (), checkout=(_SURFACE_PATHS, _SURFACE_OTHERS))
+    assert [p.rule for p in problems] == ["surface_missing"]
+
+
 def test_coupling_problems_flags_an_approved_ticket_sharing_a_surface_with_a_ready_one():
     # merge_same_phase never touches an `approved` ticket, so a same-phase
     # collision with it is a real problem, not one already folded away.
