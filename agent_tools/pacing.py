@@ -24,7 +24,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-__all__ = ["Assessment", "Policy", "Window", "assess"]
+__all__ = ["Assessment", "Policy", "WeeklyPace", "Window", "assess", "weekly_pace"]
+
+WEEKLY_MIN_ELAPSED = 0.05
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,18 @@ class Policy:
     hard_stop_fraction: float = 0.99
     weekly_hard_stop_fraction: float = 0.93
     min_elapsed_fraction: float = 0.10
+    weekly_target_fraction: float = 0.90
+    # (ratio bound, lane fraction) rungs, read in order by `weekly_pace`.
+    weekly_pace_lanes: tuple[tuple[float, float], ...] = ((0.8, 1.0), (1.0, 1.0), (1.15, 0.5), (1.3, 0.25))
+
+
+@dataclass(frozen=True)
+class WeeklyPace:
+    target_fraction: float | None
+    ratio: float | None
+    lane_fraction: float
+    verdict: str
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -133,6 +147,49 @@ def _weekly_stop(window: Window, policy: Policy, now: datetime, elapsed_fraction
         verdict="stop", tier_ceiling=policy.tier_ladder[-1], effort_ceiling=policy.effort_ladder[-1],
         hold_until=None,
         reason=f"weekly spend {weekly_fraction:.0%} of weekly ceiling (hard stop at {policy.weekly_hard_stop_fraction:.0%})",
+    )
+
+
+def _lane_fraction(ratio: float, lanes: tuple[tuple[float, float], ...]) -> float:
+    """Interior bounds are inclusive so a ratio of exactly 1.0 (on pace) keeps
+    its lane; at or above the last bound the lane is 0."""
+    if not lanes:
+        return 1.0
+    for bound, fraction in lanes[:-1]:
+        if ratio <= bound:
+            return fraction
+    last_bound, last_fraction = lanes[-1]
+    return last_fraction if ratio < last_bound else 0.0
+
+
+def _weekly_verdict(lane_fraction: float) -> str:
+    if lane_fraction >= 1.0:
+        return "full"
+    return "hold" if lane_fraction <= 0 else "reduced"
+
+
+def _not_judged(reason: str, target_fraction: float | None = None) -> WeeklyPace:
+    return WeeklyPace(target_fraction=target_fraction, ratio=None, lane_fraction=1.0,
+                      verdict="not_judged", reason=reason)
+
+
+def weekly_pace(weekly: Window | None, policy: Policy, now: datetime) -> WeeklyPace:
+    """Pure: the lane fraction the weekly spend pace allows at `now`. The weekly
+    hard stop is not part of this verdict; `assess` keeps it."""
+    spent_fraction = _weekly_fraction(weekly)
+    if weekly is None or spent_fraction is None:
+        return _not_judged("no usable weekly window or ceiling; pace not judged")
+    elapsed = _elapsed_fraction(weekly, now)
+    target = policy.weekly_target_fraction * elapsed
+    if elapsed < WEEKLY_MIN_ELAPSED:
+        return _not_judged(f"week {elapsed:.0%} elapsed, under {WEEKLY_MIN_ELAPSED:.0%}; pace not judged", target)
+    if target <= 0:
+        return _not_judged("weekly target is zero; pace not judged", target)
+    ratio = spent_fraction / target
+    lane = _lane_fraction(ratio, policy.weekly_pace_lanes)
+    return WeeklyPace(
+        target_fraction=target, ratio=ratio, lane_fraction=lane, verdict=_weekly_verdict(lane),
+        reason=f"weekly spend {spent_fraction:.0%} is {ratio:.2f}x the {target:.0%} target; lanes at {lane:.0%}",
     )
 
 
