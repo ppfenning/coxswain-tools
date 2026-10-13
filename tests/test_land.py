@@ -2184,6 +2184,7 @@ def test_cherry_pick_generated_leaves_a_same_line_conflict_unresolved_and_the_tr
     monkeypatch.setattr(cli, "_generate_and_amend", lambda wt, umbrella, echo: (True, ""))
     ok, detail = cli._cherry_pick_generated(root, sha, None, echo=lambda _: None)
     assert not ok
+    assert detail.splitlines()[0] == f"cherry-pick of {sha[:8]} conflicts in: f" and "could not apply" in detail
     assert not (root / ".git" / "CHERRY_PICK_HEAD").exists()
     status = sp.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True).stdout
     assert status.strip() == ""
