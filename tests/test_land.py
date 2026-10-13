@@ -2362,3 +2362,181 @@ def test_no_renewal_happens_once_the_wait_has_ended(how):
     renewed, polled = list(world.renewals), world.polls
     world.sleep(5000)
     assert (world.renewals, world.polls) == (renewed, polled)
+
+
+# --- review PRs closed after mark_done ---
+
+
+class _ReviewForge:
+    """A forge module whose merge reports a sha and whose review PRs live in memory."""
+
+    def __init__(self, prs, merge=(True, "merged pr/seams-task into main at abc1234"), close_fails=(), delete_fails=()):
+        self.open, self.merge_result = dict(prs), merge
+        self.close_fails, self.delete_fails = set(close_fails), set(delete_fails)
+        self.comments, self.deleted, self.listed = {}, [], []
+
+    def merge(self, _repo, _step):
+        return self.merge_result
+
+    def list_open_prs_by_prefix(self, _repo, prefix):
+        self.listed.append(prefix)
+        return [{"number": n, "head": h} for n, h in self.open.items() if h.startswith(prefix)]
+
+    def close_pr(self, _repo, number, comment):
+        if number in self.close_fails:
+            raise RuntimeError("forge down")
+        self.comments[number] = comment
+        self.open.pop(number, None)
+        return True, "closed"
+
+    def delete_branch(self, _repo, branch):
+        if branch in self.delete_fails:
+            return False, "no permission"
+        self.deleted.append(branch)
+        return True, "deleted"
+
+
+def _land_steps(tmp_path, task="seams-task"):
+    path = tmp_path / "runs/epic-x-5/tasks/seams" / f"{task}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_record(task=task)), encoding="utf-8")
+    return path, [{"kind": "merge", "squash": True, "branch": f"pr/{task}", "default_branch": "main"},
+                  {"kind": "mark_done", "task": task, "path": str(path)}]
+
+
+def _no_subprocess(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError(f"subprocess in the land path: {a}")
+
+    monkeypatch.setattr(sp, "run", boom)
+
+
+def test_review_close_targets_keep_only_the_exact_review_branch():
+    prs = [{"number": 1, "head": "review/x/seams-task"}, {"number": 2, "head": "review/x/seams-task-2"},
+           {"number": 3, "head": "review/x/other"}]
+    assert cli.review_close_targets("x", "seams-task", prs) == ([(1, "review/x/seams-task")], [])
+
+
+def test_a_malformed_review_pr_row_is_a_warning_never_an_exception():
+    prs = [{"number": "x7", "head": "review/x/seams-task"}, {"head": "review/x/seams-task"}, "junk",
+           {"number": 8, "head": "review/x/seams-task"}]
+    targets, bad = cli.review_close_targets("x", "seams-task", prs)
+    assert targets == [(8, "review/x/seams-task")]
+    assert len(bad) == 2 and all("unreadable; not closed" in line for line in bad)
+
+
+def test_landing_ref_is_the_local_sha_else_the_pr_url_else_the_pinned_pr_else_the_merge():
+    assert cli._landing_ref("merged pr/a into main at abc1234", "https://h/pull/3", 3, "main") == "abc1234"
+    assert cli._landing_ref("Squashed and merged pull request #3", "https://h/pull/3", 3, "main") == "https://h/pull/3"
+    assert cli._landing_ref("Squashed and merged\nUpdating 1234567..89abcde\nmoved at deadbeef", "", 42, "main") == "PR #42"
+    assert cli._landing_ref("Squashed and merged", "", None, "trunk") == "the merge into trunk"
+
+
+def test_a_landed_tasks_review_prs_are_closed_naming_the_sha_and_their_branches_deleted(tmp_path, monkeypatch, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task", 8: "review/x/seams-task", 9: "review/x/sibling-task"})
+    path, steps = _land_steps(tmp_path)
+    _no_subprocess(monkeypatch)
+    _, reached, _ = cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
+    assert reached == ["merge", "mark_done"]
+    assert forge.listed == ["review/x/seams-task"]
+    assert forge.comments == {7: "Landed seams-task as abc1234.", 8: "Landed seams-task as abc1234."}
+    assert forge.deleted == ["review/x/seams-task", "review/x/seams-task"]
+    assert forge.open == {9: "review/x/sibling-task"}
+    assert json.loads(path.read_text())["landed"] is True
+    assert "closed review PR #7 and deleted review/x/seams-task" in capsys.readouterr().out
+
+
+def test_a_forge_error_on_one_review_pr_blocks_neither_the_others_nor_mark_done(tmp_path, monkeypatch, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task", 8: "review/x/seams-task"}, close_fails={7})
+    path, steps = _land_steps(tmp_path)
+    _no_subprocess(monkeypatch)
+    _, reached, _ = cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
+    assert reached == ["merge", "mark_done"]
+    assert json.loads(path.read_text())["landed"] is True
+    assert list(forge.comments) == [8]
+    assert "review PR #7 of seams-task failed (RuntimeError: forge down)" in capsys.readouterr().out
+
+
+def test_a_branch_that_will_not_delete_is_logged_and_the_next_pr_is_still_closed(tmp_path, monkeypatch, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task", 8: "review/x/seams-task"}, delete_fails={"review/x/seams-task"})
+    _, steps = _land_steps(tmp_path)
+    _no_subprocess(monkeypatch)
+    cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
+    assert sorted(forge.comments) == [7, 8]
+    assert "branch review/x/seams-task not deleted: no permission" in capsys.readouterr().out
+
+
+def test_an_unlistable_forge_leaves_the_land_done_and_closes_nothing(tmp_path, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task"})
+    forge.list_open_prs_by_prefix = lambda _repo, _prefix: "could not list open pull requests: gh down"
+    path, steps = _land_steps(tmp_path)
+    cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
+    assert forge.comments == {}
+    assert json.loads(path.read_text())["landed"] is True
+    assert "gh down; land not undone" in capsys.readouterr().out
+
+
+def test_a_failed_merge_stops_before_mark_done_and_touches_no_review_pr(tmp_path):
+    forge = _ReviewForge({7: "review/x/seams-task"}, merge=(False, "not mergeable"))
+    path, steps = _land_steps(tmp_path)
+    rc, reached, _ = cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)
+    assert (rc, reached) == (1, ["merge"])
+    assert (forge.listed, forge.open) == ([], {7: "review/x/seams-task"})
+    assert "landed" not in json.loads(path.read_text())
+
+
+def test_rerunning_the_land_of_a_done_task_with_its_prs_already_closed_does_not_error(tmp_path, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task"})
+    _, steps = _land_steps(tmp_path)
+    assert cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)[1] == ["merge", "mark_done"]
+    assert forge.open == {}
+    # A stale listing still names #7: the forge answers "already closed" and "already gone", as forge_github does.
+    forge.list_open_prs_by_prefix = lambda _repo, _prefix: [{"number": 7, "head": "review/x/seams-task"}]
+    forge.close_pr = lambda _repo, _number, _comment: (True, "already closed")
+    forge.delete_branch = lambda _repo, _branch: (True, "already gone")
+    assert cli._land_execute(tmp_path, steps, [], None, None, "full", False, forge)[1] == ["merge", "mark_done"]
+    out = capsys.readouterr().out
+    assert "warning: review" not in out and "not closed" not in out
+
+
+class _GithubShapedForge(_ReviewForge):
+    """A github-shaped forge: the merge reports no sha, and an open PR is read and waited on by number."""
+
+    def __init__(self, prs):
+        super().__init__(prs, merge=(True, "Squashed and merged pull request #42\nUpdating 1234567..89abcde\nFast-forward"))
+        self.waited = []
+
+    def merge_state(self, number, repo=None):
+        return "CLEAN"
+
+    def wait_checks(self, _repo, _timeout, ref="HEAD"):
+        self.waited.append(ref)
+        return True, "checks green"
+
+
+def test_an_adopted_github_land_closes_the_review_prs_naming_the_adopted_pr(tmp_path, monkeypatch, capsys):
+    forge = _GithubShapedForge({7: "review/x/seams-task", 9: "review/x/sibling-task"})
+    path, tail = _land_steps(tmp_path)
+    planned = [{"kind": "cherry_pick", "branch": "agents/epic-x-5/seams-task", "onto": "pr/seams-task", "from": "main"},
+               {"kind": "checks", "checks": [], "worktree_of": "pr/seams-task"},
+               {"kind": "push", "branch": "pr/seams-task"},
+               {"kind": "pr_create", "title": "t", "body": "b", "head": "pr/seams-task", "base": "main"},
+               {"kind": "wait_checks", "branch": "pr/seams-task"}, *tail]
+    steps = land.resume_steps(planned, {"kind": "adopt", "pr": 42}, "pr/seams-task")
+    assert [s["kind"] for s in steps] == ["wait_checks", "merge", "mark_done"]
+    _no_subprocess(monkeypatch)
+    rc, reached, pr = cli._land_execute(tmp_path, steps, steps, None, None, "full", False, forge)
+    assert (rc, reached, pr) == (0, ["wait_checks", "merge", "mark_done"], "")
+    assert json.loads(path.read_text())["landed"] is True
+    assert forge.comments == {7: "Landed seams-task as PR #42."}
+    assert forge.deleted == ["review/x/seams-task"]
+    assert forge.open == {9: "review/x/sibling-task"}
+    assert "closed review PR #7 and deleted review/x/seams-task" in capsys.readouterr().out
+
+
+def test_a_mark_done_with_no_merge_in_the_land_says_why_nothing_was_closed(tmp_path, capsys):
+    forge = _ReviewForge({7: "review/x/seams-task"})
+    _, steps = _land_steps(tmp_path)
+    cli._land_execute(tmp_path, steps[1:], [], None, None, "full", False, forge)
+    assert forge.open == {7: "review/x/seams-task"}
+    assert "review PRs of seams-task not closed: no merge ran in this land" in capsys.readouterr().out
