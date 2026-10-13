@@ -1501,7 +1501,9 @@ def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> di
     merged = _git_out(repo, "merge-tree", "--write-tree", f"--merge-base={shas[0]}^", base, shas[0]) if len(shas) == 1 else None
     expected = merged.splitlines()[0] if merged else None
     if expected is None:
-        return {"kind": "refuse", "reason": f"cannot compute the cherry-picked tree of {cherry_pick['branch']} onto {base}"}
+        # Marked so `_land_leftover` can tell this refusal apart: only here does `land.leftover_gate` decide.
+        return {"kind": "refuse", "reason": f"cannot compute the cherry-picked tree of {cherry_pick['branch']} onto {base}",
+                "uncomputable_tree": True}
     if _git_out(repo, "cat-file", "-e", f"{expected}:.agent-generate") is not None:
         # The pushed tree is the one after generation and the amend, not the bare cherry-pick.
         expected, why = _generated_tree(repo, branch, base, shas[0], cherry_pick.get("umbrella"))
@@ -1540,12 +1542,42 @@ def _open_pr_exists(repo: Path, branch: str, forge_module=forge_github) -> bool 
     return prs if isinstance(prs, str) else bool(prs)
 
 
+def _leftover_gate_facts(repo: Path, branch: str, base: str, forge_module=forge_github) -> dict | None:
+    """Edge, read-only. The keyword facts `land.leftover_gate` decides on for `branch` against `base`, or None when
+    they cannot be read: the forge could not list open PRs, or a worktree has the branch checked out."""
+    prs = _open_prs_for(repo, branch, forge_module)
+    if isinstance(prs, str) or _branch_checked_out(repo, branch):
+        return None
+    local_tip = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    ancestor = (subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", local_tip, base],
+                               capture_output=True, text=True).returncode == 0) if local_tip else None
+    count = _git_out(repo, "rev-list", "--count", f"{base}..{local_tip}") if local_tip else None
+    return {"local_tip": local_tip, "is_ancestor_of_main": ancestor, "unique_commits": int(count) if count else None,
+            "remote_exists": _remote_branch_exists(repo, branch), "open_pr_number": prs[0] if prs else None}
+
+
+def _land_uncomputable(repo: Path, cherry_pick: dict, decision: dict, forge_module=forge_github) -> dict:
+    """Edge, read-only. `land.leftover_gate` over the `_land_resume` refusal that could not compute the cherry-picked
+    tree. A `recreate` becomes a `fresh` carrying `old_tip` and the refusal's reason, for `_land_recreate` to act on
+    under the repo lease; a `refuse` carries the gate's reason; no decision, or unreadable facts, leave it unchanged."""
+    branch = cherry_pick["onto"]
+    facts = _leftover_gate_facts(repo, branch, cherry_pick["from"], forge_module)
+    gated = land.leftover_gate(branch, **facts) if facts is not None else None
+    if gated is None:
+        return decision
+    if gated["kind"] == "refuse":
+        return {"kind": "refuse", "reason": gated["reason"]}
+    return {"kind": "fresh", "old_tip": gated["old_tip"], "reason": decision["reason"]}
+
+
 def _land_leftover(repo: Path, cherry_pick: dict, decision: dict, forge_module=forge_github) -> dict:
     """Edge, read-only. A `_land_resume` refusal over a `pr/<initiative>--<phase>` whose local or pushed tree differs,
     that has no open PR and that no worktree has checked out, is a leftover. `land.leftover_branch_decision` then
     turns it into a `fresh` carrying its `backup_refs`, both tips and the refusal's reason, for `_land_rebuild` to
-    act on under the repo lease. Any other decision, or a remote the fetch and `ls-remote` disagree about, comes
-    back unchanged."""
+    act on under the repo lease. The refusal that could not compute the tree goes to `_land_uncomputable` instead.
+    Any other decision, or a remote the fetch and `ls-remote` disagree about, comes back unchanged."""
+    if decision["kind"] == "refuse" and decision.get("uncomputable_tree"):
+        return _land_uncomputable(repo, cherry_pick, decision, forge_module)
     if decision["kind"] != "refuse" or "expected_tree" not in decision:
         return decision
     branch = cherry_pick["onto"]
@@ -1589,6 +1621,20 @@ def _land_rebuild(repo: Path, branch: str, rebuild: dict) -> str | None:
             return f"could not delete origin/{branch} at {remote_tip[:8]}: {gone}"
     dropped = _git_failure(repo, "update-ref", "-d", f"refs/heads/{branch}", local_tip) if local_tip else None
     return f"{branch} moved off {local_tip[:8]}: {dropped}" if dropped else None
+
+
+def _land_recreate(repo: Path, branch: str, old_tip: str) -> str | None:
+    """Edge. Delete the local `branch` if it still sits at `old_tip`; one already gone is fine. Runs under the repo
+    lease. Touches no remote and writes no backup ref. The reason it stopped, or None."""
+    if _branch_checked_out(repo, branch):
+        return f"{branch} is now checked out in a worktree"
+    tip = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    if tip is None:
+        return None
+    if tip != old_tip:
+        return f"{branch} moved off {old_tip[:8]}"
+    dropped = _git_failure(repo, "update-ref", "-d", f"refs/heads/{branch}", old_tip)
+    return f"{branch} moved off {old_tip[:8]}: {dropped}" if dropped else None
 
 
 def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None,
@@ -2703,12 +2749,13 @@ def _runs_land(a: argparse.Namespace) -> int:
     elif sync == "refuse":
         print(f"land: refusing, {sync_detail}")
         return 2
-    cherry_pick, rebuild = next((s for s in steps if s["kind"] == "cherry_pick"), None), None
+    cherry_pick, rebuild, recreate = next((s for s in steps if s["kind"] == "cherry_pick"), None), None, None
     if cherry_pick is not None:
         # An existing pr/<task> is not necessarily stale or foreign: a retried
         # push can leave a same-tree branch behind, and the rerun should reuse it.
         decision = _land_leftover(repo, cherry_pick, _land_resume(repo, cherry_pick, forge_module), forge_module)
         rebuild = decision if "backup_refs" in decision else None
+        recreate = decision if "old_tip" in decision else None
         if decision["kind"] == "refuse":
             print(f"land: refusing, branch {cherry_pick['onto']} already exists in {repo}: {decision['reason']}")
             return 2
@@ -2738,6 +2785,16 @@ def _runs_land(a: argparse.Namespace) -> int:
         if rebuild:
             saved = " and ".join(f"{tip[:8]} to {ref}" for ref, tip in rebuild["backup_refs"].items())
             print(f"land: backed up {saved}, rebuilding {cherry_pick['onto']}")
+        # An empty leftover holds nothing to back up; its local branch is deleted under the same lease.
+        dropped = ("no repo lease to recreate under" if not leased
+                   else _land_recreate(repo, cherry_pick["onto"], recreate["old_tip"])) if recreate else None
+        if dropped:
+            print(f"land: refusing, branch {cherry_pick['onto']} already exists in {repo}: {recreate['reason']}")
+            print(f"land: not recreated: {dropped}")
+            return 2, [], ""
+        if recreate:
+            print(f"land: {cherry_pick['onto']} at {recreate['old_tip'][:8]} holds nothing beyond {cherry_pick['from']}, "
+                  f"recreating it")
         return _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a),
                              mode=land_mode, guard=guard, stops=stops)
 
