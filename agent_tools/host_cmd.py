@@ -13,7 +13,14 @@ import platform
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from agent_tools.checkout_env import CHECKOUT_ENV_KEY, LOCKFILE_NAME, CheckoutEnvEntry
+from agent_tools.checkout_env import (
+    CHECKOUT_ENV_KEY,
+    LOCKFILE_NAME,
+    CheckoutEnvEntry,
+    blocks_launch,
+    host_env_verdict,
+    sync_instruction,
+)
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import ssh_argv
 
@@ -24,7 +31,7 @@ Run = Callable[[list[str]], tuple[int, str]]
 Row = Mapping[str, object]
 
 __all__ = [
-    "add_argv", "beat_argv", "beat_versions", "capacity_upsert_argv", "delete_argv", "dispatchable", "doctor_line", "format_host_list",
+    "add_argv", "beat_argv", "beat_versions", "capacity_upsert_argv", "delete_argv", "dispatchable", "doctor_line", "env_rows", "format_host_list",
     "host_line", "host_rows_to_lane_hosts", "local_host_add_argv", "local_host_missing", "local_workspace_dir", "recorded_repos", "remove_refusal",
     "removed_line", "row_capabilities", "row_capacities", "row_weights", "set_state_argv", "shadowed", "sync_host", "versions_report",
 ]
@@ -156,12 +163,29 @@ def host_line(row: Row, now: datetime.datetime, live_by_host: Mapping[str, int] 
     return f"{row['name']}  {state}  cap {row['capacity']}  beat {_age(row.get('beat_at'), now)}  login {_login(row)}"
 
 
+def env_rows(row: Row) -> list[str]:
+    """One row per repo in the stored `checkout_env` record, as the planner reads it; one unknown row when there is none."""
+    versions = _versions(row)
+    record = versions.get(CHECKOUT_ENV_KEY)
+    if not isinstance(record, dict) or not record:
+        return ["checkout env: unknown"]
+    name = str(row["name"])
+
+    def one(repo: str) -> str:
+        verdict = host_env_verdict(versions, repo)
+        base = f"checkout env: {repo} {verdict}"
+        return f"{base}  {sync_instruction(name, repo)}" if blocks_launch(verdict) else base
+
+    return [one(str(repo)) for repo in record]
+
+
 def doctor_line(row: Row | None, now: datetime.datetime) -> str:
-    """The table's line for `host doctor`: state, beat age, the recorded `login_ok` and workspace_dir."""
+    """The table's line for `host doctor`: state, beat age, the recorded `login_ok` and workspace_dir, then the env rows."""
     if row is None:
         return "not in the hosts table"
     workspace = _workspace(row) or "none recorded"
-    return f"table: {row['state']}  beat {_age(row.get('beat_at'), now)}  login_ok {json.dumps(_versions(row).get('login_ok'))}  workspace {workspace}"
+    table = f"table: {row['state']}  beat {_age(row.get('beat_at'), now)}  login_ok {json.dumps(_versions(row).get('login_ok'))}  workspace {workspace}"
+    return "\n".join([table, *env_rows(row)])
 
 
 def format_host_list(rows: Sequence[Row], now: datetime.datetime, live_by_host: Mapping[str, int] | None = None) -> list[str]:
