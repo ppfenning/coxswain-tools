@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from agent_tools.chair_decompose_streak import DecomposeStreak
 from agent_tools.chair_land_backoff import LandRefusal
+from agent_tools.chair_land_conflict import LandConflict
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 REVIEW_CLOSED_CAUSE = "review_closed"  # the needs_chair cause for a task whose review PR was closed without merging
@@ -426,6 +427,8 @@ class Facts(TypedDict):
     relaunch_loop_reported: NotRequired[list[str]]
     # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
     land_refusals: NotRequired[list[LandRefusal]]
+    # Squash conflicts a retry would repeat: the run's newest squash_phase stop, its branch and main unmoved. Absent means [].
+    land_conflicts: NotRequired[list[LandConflict]]
     phase_tasks: NotRequired[list[PhaseTasks]]  # per phase with an approved or a quarantined task, every task's state; absent means none
 
 

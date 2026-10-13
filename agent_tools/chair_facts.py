@@ -22,6 +22,7 @@ from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
 from agent_tools.chair_read_docket import docket_from_rows
 from agent_tools.chair_read_intake import intake_from_rows
+from agent_tools.chair_read_land_conflicts import read_land_conflicts
 from agent_tools.chair_read_quarantined import quarantined_from_rows
 from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
@@ -938,6 +939,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "decompose_stalled_reported": decompose_stalled_keys(action_rows),
         "relaunch_loop_reported": relaunch_loop_keys(action_rows),
         "land_refusals": land_refusals_from_actions(action_rows, now),
+        "land_conflicts": read_land_conflicts(deps.runs_dir(), repos),
         "launch_history": launch_history_from_actions(action_rows, quarantine, now),
         "max_launches_per_hour": resolve_max_launches_per_hour(
             deps.max_launches_per_hour() if deps.max_launches_per_hour is not None else None
