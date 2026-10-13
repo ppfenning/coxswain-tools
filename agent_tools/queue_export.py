@@ -13,7 +13,7 @@ import hashlib
 import json
 import logging
 import subprocess
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
@@ -78,6 +78,36 @@ def may_overwrite(disk_text: str | None, baselines: Collection[str], export_text
     """False only for a file the classifier calls edited: it exists and matches neither the export nor a baseline."""
     file_hash = None if disk_text is None else blob_hash(disk_text)
     return classify_file(file_hash, baselines, blob_hash(export_text)) != "edited"
+
+
+HELD_REASON = "edited by hand: matches neither this workspace's committed or exported copy nor the export"
+
+
+class Held(NamedTuple):
+    """A file the export leaves alone: its workspace-relative path, the initiative its path names, and why."""
+
+    path: str
+    initiative: str
+    reason: str
+
+
+def initiative_of(path: str) -> str:
+    """The `<initiative>` of `work/<initiative>/...`; "" for any other path, such as an intake file."""
+    parts = path.split("/")
+    return parts[1] if len(parts) > 2 and parts[0] == "work" else ""
+
+
+def held_files(
+    writes: Sequence[tuple[str, str]], on_disk: Mapping[str, str], baselines: Mapping[str, Collection[str]]
+) -> list[Held]:
+    """Pure: every planned write the export holds, in path order. The writer's own predicate, and the one place it
+    lives: only a path in `writes` (its text differs from the export) is judged, and it is held when it is on disk
+    and `may_overwrite` refuses it against its `baselines`. A file already equal to its export is never held."""
+    return [
+        Held(path, initiative_of(path), HELD_REASON)
+        for path, text in sorted(writes)
+        if path in on_disk and not may_overwrite(on_disk[path], baselines.get(path, ()), text)
+    ]
 
 
 def committed_blob(workspace: Path, path: str) -> str | None:
@@ -206,6 +236,25 @@ def _edited_warning(workspace: Path, path: str) -> str:
     )
 
 
+def _write_baselines(
+    workspace: Path, record: Mapping[str, str], writes: Sequence[tuple[str, str]], on_disk: Mapping[str, str]
+) -> dict[str, set[str]]:
+    """Edge: the baselines of each planned write already on disk: its blob at HEAD and its last exported blob."""
+    return {
+        path: {blob for blob in (committed_blob(workspace, path), record.get(path)) if blob}
+        for path, _ in writes
+        if path in on_disk
+    }
+
+
+def read_held(workspace: Path, rows: list[Row]) -> list[Held]:
+    """Edge: the files `export_files` would hold for `rows` under `workspace`, all of them, without writing anything."""
+    workspace = Path(workspace)
+    on_disk = _read_files(workspace)
+    writes, _ = plan_export(rows, on_disk)
+    return held_files(writes, on_disk, _write_baselines(workspace, read_baseline_record(workspace), writes, on_disk))
+
+
 def _write_guarded(
     workspace: Path, target: dict[str, str], writes: list[tuple[str, str]], on_disk: dict[str, str],
     keys: dict[str, RowKey], hashes: Hashes | None, force: bool,
@@ -216,14 +265,8 @@ def _write_guarded(
     `hashes=None` is no guard."""
     stored = {} if hashes is None else hashes.stored
     record = {} if hashes is None else read_baseline_record(workspace)
-
-    def baselines(path: str) -> set[str]:
-        return {blob for blob in (committed_blob(workspace, path), record.get(path)) if blob}
-
-    held = {
-        path for path, text in writes
-        if hashes is not None and not force and path in on_disk and not may_overwrite(on_disk[path], baselines(path), text)
-    }
+    guarded = hashes is not None and not force
+    held = {h.path for h in held_files(writes, on_disk, _write_baselines(workspace, record, writes, on_disk))} if guarded else set()
     for path in sorted(held):
         _LOG.warning("%s", _edited_warning(workspace, path))
     written = [(path, text) for path, text in writes if path not in held]
