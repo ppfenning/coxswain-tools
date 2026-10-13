@@ -160,9 +160,18 @@ def _five_hour(limits: dict) -> str:
     return f"5h {fraction:.0%} ({limits.get('window_source', 'est')})"
 
 
+def _weekly_pace(limits: dict) -> str:
+    """` target <target>% <verdict>` for a judged pace; empty when `weekly_pace` is a `not_judged` string, absent, or has no target."""
+    target, verdict = limits.get("weekly_target_fraction"), limits.get("weekly_pace")
+    return "" if target is None or verdict in (None, "not_judged") else f" target {target:.0%} {verdict}"
+
+
 def _weekly(limits: dict) -> str:
-    """`weekly <fraction>/<hard stop fraction> (<source>)`, with `since <window_start_day>` when the edge supplies one."""
-    base = f"weekly {limits['weekly_fraction']:.0%}/{limits['hard_stop_fraction']:.0%} ({limits.get('weekly_source', 'est')})"
+    """`weekly <fraction>/<hard stop fraction> (<source>)`, then the judged pace, then `since <window_start_day>` when the edge supplies one."""
+    base = (
+        f"weekly {limits['weekly_fraction']:.0%}/{limits['hard_stop_fraction']:.0%} ({limits.get('weekly_source', 'est')})"
+        f"{_weekly_pace(limits)}"
+    )
     window_start_day = limits.get("window_start_day")
     return base if window_start_day is None else f"{base} since {window_start_day}"
 
