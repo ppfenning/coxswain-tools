@@ -611,16 +611,16 @@ ENV = {"coxswain-tools": {"lock_hash": "a", "synced_hash": "b"}}
 
 
 def test_a_hosts_row_with_a_checkout_env_record_appears_under_its_host_name():
-    rows = [{"name": "jarvis", "versions_json": json.dumps({"checkout_env": ENV})}]
-    assert host_env_from_rows(rows) == {"jarvis": ENV}
+    rows = [{"name": "host-a", "versions_json": json.dumps({"checkout_env": ENV})}]
+    assert host_env_from_rows(rows) == {"host-a": ENV}
 
 
 def test_a_hosts_row_without_the_checkout_env_key_gives_an_empty_dict():
-    assert host_env_from_rows([{"name": "jarvis", "versions_json": '{"cox": "1"}'}]) == {"jarvis": {}}
+    assert host_env_from_rows([{"name": "host-a", "versions_json": '{"cox": "1"}'}]) == {"host-a": {}}
 
 
 def test_an_unparseable_versions_json_gives_an_empty_dict_and_raises_nothing():
-    assert host_env_from_rows([{"name": "jarvis", "versions_json": "{not json"}]) == {"jarvis": {}}
+    assert host_env_from_rows([{"name": "host-a", "versions_json": "{not json"}]) == {"host-a": {}}
 
 
 def test_repo_dir_name_is_the_last_path_component_of_a_repo():
@@ -634,10 +634,10 @@ def test_an_initiative_row_keeps_its_repo_path_and_gains_its_repo_directory_name
 
 
 def test_a_stale_checkout_needs_chair_row_gives_its_host_and_repo_key():
-    stale = {"kind": "needs_chair", "cause": "stale_checkout", "host": "jarvis", "repo": "coxswain-tools"}
-    lapsed = {"kind": "needs_chair", "cause": "login_lapsed", "host": "jarvis"}
+    stale = {"kind": "needs_chair", "cause": "stale_checkout", "host": "host-a", "repo": "coxswain-tools"}
+    lapsed = {"kind": "needs_chair", "cause": "login_lapsed", "host": "host-a"}
     rows = [{"action_json": json.dumps(stale)}, {"action_json": json.dumps(lapsed)}]
-    assert stale_checkout_keys(rows) == ["jarvis|coxswain-tools"]
+    assert stale_checkout_keys(rows) == ["host-a|coxswain-tools"]
 
 
 def test_absent_callables_give_an_empty_host_env_and_env_stale_reported():
