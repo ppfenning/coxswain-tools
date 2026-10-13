@@ -5,16 +5,20 @@ from pathlib import Path
 import pytest
 
 from agent_tools.queue_export import (
+    HELD_REASON,
     Hashes,
+    Held,
     blob_hash,
     classify_file,
     committed_blob,
     export_files,
     export_rows,
+    held_files,
     is_contentless,
     may_overwrite,
     plan_export,
     read_baseline_record,
+    read_held,
     skipped_ids,
 )
 from agent_tools.queue_rows import render_item, row_path
@@ -344,3 +348,42 @@ def test_missing_file_is_written_and_in_sync_file_untouched(tmp_path: Path) -> N
     hashes = _hashes()
     assert export_files(tmp_path, [TASK_ROW], hashes=hashes).touched == [GUARD_PATH]
     assert export_files(tmp_path, [TASK_ROW], hashes=hashes).touched == []
+
+
+# --- held_files: every file the export holds, with its initiative ---
+
+HAND = "hand edit\n"
+
+
+def test_held_files_returns_every_held_file_with_its_initiative_in_path_order() -> None:
+    paths = ["work/beta/p1/c.md", "work/alpha/p2/b.md", "work/alpha/p1/a.md"]
+    writes = [(path, "export\n") for path in paths]
+    assert held_files(writes, dict.fromkeys(paths, HAND), {}) == [
+        Held("work/alpha/p1/a.md", "alpha", HELD_REASON),
+        Held("work/alpha/p2/b.md", "alpha", HELD_REASON),
+        Held("work/beta/p1/c.md", "beta", HELD_REASON),
+    ]
+
+
+def test_held_files_is_empty_when_every_planned_write_is_behind_its_baseline() -> None:
+    writes = [("work/a/p1/x.md", "export\n")]
+    assert held_files(writes, {"work/a/p1/x.md": HAND}, {"work/a/p1/x.md": {blob_hash(HAND)}}) == []
+
+
+def test_a_file_already_equal_to_its_export_is_not_held_even_with_no_baseline() -> None:
+    # Not a planned write: the writer heals its hash instead of holding it, so the list must not name it either.
+    assert held_files([], {"work/a/p1/x.md": "export\n"}, {}) == []
+
+
+def test_a_planned_write_with_no_file_on_disk_is_not_held() -> None:
+    assert held_files([("work/a/p1/new.md", "export\n")], {}, {}) == []
+
+
+def test_read_held_names_exactly_the_files_the_export_then_leaves_alone(tmp_path: Path) -> None:
+    other = {**TASK_ROW, "initiative": "other", "task_id": "x"}
+    for row in (TASK_ROW, other):
+        (tmp_path / row_path(row)).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / row_path(row)).write_text(HAND)
+    held = read_held(tmp_path, [TASK_ROW, other])
+    touched, _ = export_files(tmp_path, [TASK_ROW, other], hashes=_hashes())
+    assert ([h.path for h in held], touched) == (sorted([GUARD_PATH, row_path(other)]), [])
