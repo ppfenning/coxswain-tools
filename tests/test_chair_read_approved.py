@@ -2,6 +2,7 @@ from pathlib import Path
 
 from agent_tools.chair_read_approved import (
     approved_rows,
+    phase_task_rows,
     read_approved,
     read_fetch_facts,
     read_unsettled_runs,
@@ -17,6 +18,11 @@ def test_an_approved_item_yields_one_row_with_the_five_keys() -> None:
     assert approved_rows([_item("a", "approved")]) == [
         {"id": "a", "initiative": "init", "repo": "r", "phase": "build", "phase_done": True, "needs": [], "run": "", "needs_fetch": False}
     ]
+
+
+def test_a_quarantined_only_phase_yields_a_phase_tasks_row() -> None:
+    items = [_item("a", "quarantined", "p1"), _item("b", "ready", "p1"), _item("c", "ready", "p2")]
+    assert phase_task_rows(items) == [{"initiative": "init", "phase": "p1", "tasks": [("a", "quarantined"), ("b", "ready")]}]
 
 
 def test_a_draft_item_is_skipped() -> None:

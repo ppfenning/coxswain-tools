@@ -56,8 +56,8 @@ def approved_rows(items: Sequence[Item]) -> list[ApprovedTask]:
 
 
 def phase_task_rows(items: Sequence[Item]) -> list[PhaseTasks]:
-    """One row per (initiative, phase) holding an approved item, listing every item of the phase as (id, state)."""
-    keys = dict.fromkeys((i["initiative"], i["phase"]) for i in items if i["state"] == "approved")
+    """One row per (initiative, phase) holding an approved or a quarantined item, listing every item of the phase as (id, state)."""
+    keys = dict.fromkeys((i["initiative"], i["phase"]) for i in items if i["state"] in ("approved", "quarantined"))
     return [
         {
             "initiative": initiative,
