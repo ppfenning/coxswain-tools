@@ -356,13 +356,13 @@ def _stats_efficiency(a: argparse.Namespace) -> int:
     runs_dir = Path(a.runs_dir)
     since = (now - datetime.timedelta(days=a.days - 1)).date().isoformat()
     stored = run_store.efficiency_rows(runs_dir, since)
-    log = (_read_text_or_none(runs_dir / "land.jsonl") or "").splitlines()
-    lands = stats_efficiency.landed_lands(log)
-    rows, total = stats_efficiency.efficiency(stored["calls"], stored["tasks"], lands, since, now, stats_efficiency.first_log_day(log))
+    landed = run_store.landed_tasks(runs_dir, "", "9999")
+    lands = stats_efficiency.lands_of(landed.rows)
+    rows, total = stats_efficiency.efficiency(stored["calls"], stored["tasks"], lands, since, now, stats_efficiency.coverage_start(lands))
     if a.json:
-        print(json.dumps(stats_efficiency.to_json(rows, total), indent=2))
+        print(json.dumps(stats_efficiency.to_json(rows, total, landed.source), indent=2))
     else:
-        print("\n".join(stats_efficiency.render_lines(rows, total)))
+        print("\n".join(stats_efficiency.render_lines(rows, total, landed.source)))
     return 0
 
 
