@@ -279,7 +279,7 @@ def _cast_row(facts: Mapping, cascade: bool) -> dict:
 
 
 _UNIT_PATH_LINE = "Environment=PATH="
-_UNIT_TOOLS = ("cox", "pytest")
+_UNIT_TOOLS = ("cox", "claude", "uv", "pytest")
 
 
 def unit_path_entries(text: str) -> list[str] | None:
