@@ -336,13 +336,58 @@ def _rewrite_issue_line(text: str, issue: str) -> str:
     return text
 
 
+def issue_row(rel_parts: tuple[str, ...], text: str) -> dict | None:
+    """Pure: the partial key of the row a written file names, with its `issue`, or None when the file names no row
+    or carries no issue. The caller merges the issue into the stored row's `extra`."""
+    from agent_tools import queue_rows, store_fill
+
+    shape = store_fill.shape_of(rel_parts)
+    row = None if shape is None else queue_rows.parse_item(*shape, text)
+    if row is None or "issue" not in row["extra"]:
+        return None
+    return {"kind": row["kind"], "initiative": row["initiative"], "task_id": row["task_id"], "issue": row["extra"]["issue"]}
+
+
+def _store_issue(root: Path, path: Path, text: str) -> bool:
+    """Edge: True when the store row the file names now carries its `issue`, so the export writes the line back
+    instead of dropping it. False when the file names no stored row or the store does not take it."""
+    from agent_tools import run_store
+
+    try:
+        named = issue_row(path.relative_to(root).parts, text)
+    except ValueError:
+        return False
+    if named is None:
+        return False
+    runs_dir = root / "runs"
+    stored = next(
+        (
+            r for r in run_store.read_queue(runs_dir, named["initiative"])
+            if r.get("task_id") == named["task_id"] and r.get("kind") == named["kind"]
+        ),
+        None,
+    )
+    if stored is None:
+        return False
+    extra = {**(stored.get("extra") or {}), "issue": named["issue"]}
+    return run_store.upsert_row(runs_dir, {"initiative": named["initiative"], "task_id": named["task_id"], "extra": extra})
+
+
 def _writeback(root: Path, item_id: str, issue: str) -> None:
+    """Write the issue line into the item's file, then into its store row. Only once the store holds it too is the
+    file recorded as the workspace's export baseline: an issue the store lacks would be dropped by the next export,
+    so that file is left for the export guard to hold and report instead."""
+    from agent_tools import queue_export
+
     if not issue:
         return
     path = _find_item_file(root, item_id)
     if path is None:
         return
-    path.write_text(_rewrite_issue_line(path.read_text(), issue))
+    text = _rewrite_issue_line(path.read_text(), issue)
+    path.write_text(text)
+    if _store_issue(root, path, text):
+        queue_export.record_written_paths(root, [path])
 
 
 def _resolved_issue(step: dict, ctx: dict):

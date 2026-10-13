@@ -94,6 +94,32 @@ def parse_workspace(files: list[tuple[tuple[str, ...], str]]) -> tuple[list[Row]
     return [row for row in rows if row is not None], sum(row is None for row in rows)
 
 
+def inserted_texts(files: list[tuple[tuple[str, ...], str]], existing: list[Row]) -> dict[str, str]:
+    """Pure: workspace-relative path to text for each file whose row the fill inserts, first file per key as
+    `plan_fill` takes it. Such a file is the store's own copy of the row: a decompose wrote it, so it is recorded
+    as the workspace's export baseline and a later store change rewrites it instead of holding it as a hand edit."""
+    stored = {_key(row) for row in existing}
+    texts: dict[str, str] = {}
+    seen: set[tuple[str, str]] = set()
+    for parts, text in files:
+        shape = shape_of(parts)
+        row = None if shape is None else queue_rows.parse_item(*shape, text)
+        if row is None or _key(row) in stored or _key(row) in seen:
+            continue
+        seen.add(_key(row))
+        texts["/".join(parts)] = text
+    return texts
+
+
+def _record_inserted(ws: Path, files: list[tuple[tuple[str, ...], str]], existing: list[Row]) -> None:
+    """Edge: record the files whose rows were just inserted as the workspace's export baseline."""
+    from agent_tools import queue_export  # imported here: queue_export reads shape_of from this module
+
+    texts = inserted_texts(files, existing)
+    if texts:
+        queue_export.record_written(ws, texts)
+
+
 def format_summary(plan: Plan, skipped: int) -> str:
     return f"inserted {plan.inserted}, filled {plan.filled}, unchanged {plan.unchanged}, skipped {skipped}"
 
@@ -142,12 +168,14 @@ def fill_workspace(ws: Path) -> str:
     existing = _read_store(runs_dir)
     if existing is None:
         raise RuntimeError(_UNREADABLE)
-    parsed, skipped = parse_workspace(_workspace_files(ws))
+    files = _workspace_files(ws)
+    parsed, skipped = parse_workspace(files)
     plan = plan_fill(parsed, existing)
     for row in plan.writes:
         detail = run_store.upsert_row_detail(runs_dir, row)
         if detail:
             raise RuntimeError(f"store-fill: store refused {row['initiative']}/{row['task_id']}: {detail}")
+    _record_inserted(ws, files, existing)
     return format_summary(plan, skipped)
 
 
@@ -176,5 +204,6 @@ def main(a: argparse.Namespace) -> int:
             print(f"store-fill: store refused {row['initiative']}/{row['task_id']}: {detail}")
             print(f"store-fill: wrote {written} of {len(plan.writes)} rows before the refusal")
             return 2
+    _record_inserted(ws, files, existing)
     print(format_summary(plan, skipped))
     return 0

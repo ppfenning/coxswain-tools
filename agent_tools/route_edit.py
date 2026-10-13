@@ -4,8 +4,8 @@
 `route_guard` whether the target may change, and writes the store first and the file second, the order
 `cox route file` uses. The id and the path never change on an edit.
 
-unknown: the store has no row kind for `work/<id>/initiative.md` (`queue_rows.parse_item` returns None for it and
-`route_import` skips it), so an initiative edit rewrites that file only. An initiative's task rows are not touched.
+An initiative edit writes its title, body and frontmatter into the store's initiative row first, when there is one, then
+rewrites `work/<id>/initiative.md`. An initiative's task rows are not touched.
 `live_runs` is required, with no default, so a caller cannot skip the live-run check by omission. Build it as
 `{lane.run for lane in run_store.live_lanes(runs_dir, now)}`; a lane carries no initiative, so the guard refuses on any live run.
 A store that cannot take an intake's row is one printed warning from `route.write_filed_item` and the file is still written.
@@ -25,7 +25,7 @@ from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-from agent_tools import queue_export, route, route_guard, run_store, store_cli
+from agent_tools import queue_export, queue_rows, route, route_guard, run_store, store_cli
 
 DONE = route_guard.DONE
 REFUSED = route_guard.REFUSED
@@ -116,14 +116,37 @@ def plan_edit(
     return new_text, diff
 
 
+def initiative_content(stored: dict, new_text: str) -> dict | None:
+    """Pure: the partial row that carries an edited initiative.md into its stored initiative row: title, body and the
+    file's frontmatter merged over the stored `extra` (which keeps keys such as `phases` the file never names), never
+    `state`. None when the text parses to no initiative row."""
+    parsed = queue_rows.parse_item("initiative", (stored["initiative"], "initiative.md"), new_text)
+    if parsed is None:
+        return None
+    extra = {**(stored.get("extra") or {}), **parsed["extra"]}
+    return {"initiative": stored["initiative"], "task_id": stored["task_id"], "title": parsed["title"], "body": parsed["body"], "extra": extra}
+
+
+def _store_initiative(runs_dir: Path, initiative: str, new_text: str) -> bool:
+    """Edge: True when the store holds no initiative row to update, or took the edit; False when it refused it."""
+    stored = next((r for r in run_store.read_queue(runs_dir, initiative, kind="initiative") if r.get("task_id") == initiative), None)
+    partial = None if stored is None else initiative_content(stored, new_text)
+    return partial is None or run_store.upsert_row(runs_dir, partial)
+
+
 def _rewrite(path: Path, runs_dir: Path, is_intake: bool, new_text: str) -> str | None:
-    """Edge: the store first and the file second for an intake; the file alone for an initiative. A reason on failure."""
+    """Edge: the store first and the file second, for an intake and for an initiative. A reason on failure.
+    The written file is recorded as the workspace's export baseline (`write_filed_item` records an intake), but an
+    initiative.md only once its store row holds the edit: else the next export would put the old text back."""
     if is_intake:
         return None if route.write_filed_item(runs_dir, path, "intake", (path.name,), new_text) == 0 else f"could not write {path}"
+    stored = _store_initiative(runs_dir, path.parent.name, new_text)
     try:
         path.write_text(new_text, encoding="utf-8")
     except OSError as exc:
         return f"could not write {path}: {exc}"
+    if stored:
+        queue_export.record_written_paths(path.parents[2], [path])  # work/<id>/initiative.md under the workspace
     return None
 
 

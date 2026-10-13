@@ -58,7 +58,16 @@ def test_the_body_sha_is_twelve_hex_digits_of_the_stripped_body():
 
 
 def test_an_item_in_any_other_state_gives_no_row():
-    assert [quarantined_rows([(PATH, state, BODY, [ON_BODY])]) for state in ("quarantined", "done", "approved")] == [[]] * 3
+    assert [quarantined_rows([(PATH, state, BODY, [ON_BODY])]) for state in ("done", "approved", "in_progress")] == [[]] * 3
+
+
+def test_a_quarantined_item_gives_a_row_with_or_without_an_attempt_on_its_body():
+    stale = {**ON_BODY, "body_sha": "0" * 12}
+    assert [quarantined_rows([(PATH, "quarantined", BODY, attempts)]) for attempts in ([ON_BODY], [stale], None)] == [
+        [{"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1", "reason": ""}],
+        [{"initiative": "a", "phase": "p1", "task": "t1", "run": "", "reason": ""}],
+        [{"initiative": "a", "phase": "p1", "task": "t1", "run": "", "reason": ""}],
+    ]
 
 
 def test_a_path_not_shaped_work_initiative_phase_task_md_gives_no_row():
@@ -84,6 +93,29 @@ def test_under_files_mode_the_file_state_holds_and_the_store_is_not_read(tmp_pat
 def test_under_store_mode_a_done_store_row_hides_a_file_once_quarantined(tmp_path, monkeypatch):
     _world(tmp_path, monkeypatch, [{"initiative": "a", "task_id": "t1", "state": "done"}])
     assert read_quarantined(tmp_path, "store") == []
+
+
+def test_regression_under_store_mode_a_quarantined_store_row_surfaces_whatever_its_file_says(tmp_path, monkeypatch):
+    # 2026-10-13: the driver set the store row to quarantined while the held ticket file still said ready with no
+    # attempt on its body. The store-state override dropped the row (only ready/blocked counted), so the status line
+    # read "needs chair: none" for an hour.
+    item = tmp_path / "work" / "a" / "p1" / "t1.md"
+    item.parent.mkdir(parents=True)
+    item.write_text(f"---\nstate: ready\n---\n{BODY}")
+    store = [{"initiative": "a", "task_id": "t1", "phase": "p1", "state": "quarantined"}]
+    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: store)
+    assert read_quarantined(tmp_path, "store") == [{"initiative": "a", "phase": "p1", "task": "t1", "run": "", "reason": ""}]
+
+
+def test_under_store_mode_a_quarantined_store_row_with_no_file_still_surfaces(tmp_path, monkeypatch):
+    store = [
+        {"initiative": "a", "task_id": "gone", "phase": "p2", "state": "quarantined"},
+        {"initiative": "a", "task_id": "other", "phase": "p2", "state": "ready"},
+    ]
+    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: store)
+    assert (read_quarantined(tmp_path, "store"), read_quarantined(tmp_path, "files")) == (
+        [{"initiative": "a", "phase": "p2", "task": "gone", "run": "", "reason": ""}], [],
+    )
 
 
 ROW = {

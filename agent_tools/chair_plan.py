@@ -36,6 +36,7 @@ from agent_tools.chair_rebase import plan_rebase
 from agent_tools.chair_revert import revert_check
 from agent_tools.chair_runnable import Blocking, TaskView, WaitingInitiative, runnable_verdict
 from agent_tools.chair_types import (
+    HELD_FILE_CAUSE,
     Action,
     ApprovedTask,
     DispatchFacts,
@@ -459,6 +460,24 @@ def _login_needs_chair_actions(facts: Facts) -> list[Action]:
     return chair_login_watch.login_needs_chair(facts.get("login_hosts", []))
 
 
+def plan_held_files(facts: Facts) -> list[Action]:
+    """One needs_chair per file the last board export held, naming its path, unless the same held text (`path|blob`)
+    was already reported: a hand edit reaches the chair once, never silently, and a new edit to the file again."""
+    reported = set(facts.get("held_reported", []))
+    return [
+        {
+            "kind": "needs_chair",
+            "initiative": held["initiative"],
+            "cause": HELD_FILE_CAUSE,
+            "path": held["path"],
+            "blob": held["blob"],
+            "reason": f"{held['path']}: {held['reason']}; keep it with `cox route import`, or restore the export",
+        }
+        for held in facts.get("held_files", [])
+        if f"{held['path']}|{held['blob']}" not in reported
+    ]
+
+
 def _empty_decompose_needs_chair_actions(facts: Facts) -> list[Action]:
     """One needs_chair per empty_decompose entry: a decomposed intake whose ended decompose run left zero stored task items."""
     return [
@@ -690,6 +709,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
+    held_needs_chair = plan_held_files(facts)
     stalled_intake, decompose_stalled_needs_chair = _decompose_gate(facts)
     review = plan_review(facts)
     unstarted_waiting_chair = _unstarted_waiting_chair(facts["initiatives"])
@@ -727,6 +747,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *widen,
             *login_needs_chair,
             *empty_decompose_needs_chair,
+            *held_needs_chair,
             *decompose_stalled_needs_chair,
             *review,
             *unstarted_waiting_chair,
@@ -779,6 +800,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *widen,
         *login_needs_chair,
         *empty_decompose_needs_chair,
+        *held_needs_chair,
         *decompose_stalled_needs_chair,
         *review,
         *unstarted_waiting_chair,

@@ -12,7 +12,7 @@ from datetime import datetime
 from agent_tools.chair_exec import LAUNCH_KINDS, Result
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_runnable import WaitingInitiative
-from agent_tools.chair_types import EASTERN, Action, Facts, QueueFile, ReviewPr
+from agent_tools.chair_types import EASTERN, HELD_FILE_CAUSE, Action, Facts, QueueFile, ReviewPr
 from agent_tools.notify import Notification
 from agent_tools.queue_export import is_ahead_of_store
 
@@ -62,15 +62,21 @@ def partial_land_text(action: Action) -> str:
     return f"partial-land: {_scope(action)} {len(action.get('task_ids', []))} approved, {action.get('quarantined', 0)} quarantined"
 
 
+def _needs_scope(action: Action) -> str:
+    """The file a held_file needs_chair names, so an intake (no initiative) is still named; else `_scope`."""
+    return action["path"] if action.get("cause") == HELD_FILE_CAUSE and action.get("path") else _scope(action)
+
+
 def needs_chair_items(actions: Sequence[Action]) -> list[str]:
-    """Runaway-ceiling entries first, each bare (`RUNAWAY <scope>`); then `needs chair: <scope>:<cause>`; then a `partial-land:` per partial_land."""
+    """Runaway-ceiling entries first, each bare (`RUNAWAY <scope>`); then `needs chair: <scope>:<cause>`, a held file's
+    scope being its path; then a `partial-land:` per partial_land."""
     chair_actions = [a for a in actions if a.get("kind") == "needs_chair"]
     runaway = [a for a in chair_actions if a.get("cause") == RUNAWAY_CAUSE]
     rest = [a for a in chair_actions if a.get("cause") != RUNAWAY_CAUSE]
     partial = [a for a in actions if a.get("kind") == "partial_land"]
     return (
         [f"RUNAWAY {_scope(a)}" for a in runaway]
-        + [f"needs chair: {_scope(a)}:{a.get('cause', '?')}" for a in rest]
+        + [f"needs chair: {_needs_scope(a)}:{a.get('cause', '?')}" for a in rest]
         + [partial_land_text(a) for a in partial]
     )
 
