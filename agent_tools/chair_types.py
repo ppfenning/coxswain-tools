@@ -68,6 +68,9 @@ class LimitsFacts(TypedDict):
     window_source: str  # "meter" when the five-hour figure came from a fresh status-line meter entry, else "est"
     weekly_source: str  # the same reading as window_source, for the weekly figure
     smoke_hold: HoldRecord | None  # a held post-land smoke failure, read without importing chair_smoke.py
+    lane_fraction: NotRequired[float]  # the weekly pace verdict's share of max_in_flight; 1.0 when not judged
+    weekly_target_fraction: NotRequired[float | None]  # the weekly spend target at this moment; None when not judged
+    weekly_pace: NotRequired[str]  # the weekly verdict word: full, reduced, hold or not_judged
 
 
 class HostLanes(TypedDict):

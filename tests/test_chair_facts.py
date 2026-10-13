@@ -259,6 +259,9 @@ def test_weekly_spend_of_85_percent_is_a_hard_stop_with_no_launches():
         "window_source": "est",
         "weekly_source": "est",
         "smoke_hold": None,
+        "lane_fraction": 1.0,
+        "weekly_target_fraction": 0.005357142857142857,
+        "weekly_pace": "not_judged",
     }
 
 

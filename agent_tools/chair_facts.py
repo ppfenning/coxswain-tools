@@ -298,21 +298,35 @@ def window_start_day(start: datetime) -> str:
     return f"{WEEKDAYS[local.weekday()]} {local:%H:%M %Z}"
 
 
+def scaled_cap(max_in_flight: int, lane_fraction: float) -> int:
+    """`max_in_flight` scaled by the lane fraction and rounded down. A positive fraction never rounds to 0 lanes."""
+    if lane_fraction <= 0:
+        return 0
+    return max(1, int(max_in_flight * lane_fraction))
+
+
 def limits_facts(
     assessment: pacing.Assessment, policy: pacing.Policy, weekly: pacing.Window | None, max_in_flight: int,
-    window_source: str = "est", weekly_source: str = "est", runs_dir: str = "",
+    window_source: str = "est", weekly_source: str = "est", runs_dir: str = "", now: datetime | None = None,
 ) -> LimitsFacts:
-    """`launch_cap` is the whole lane budget on a launching verdict and none on `hold` or `stop`.
+    """`launch_cap` is the smaller of the 5-hour and weekly verdicts: none on a 5-hour `hold` or `stop`, otherwise
+    `max_in_flight` scaled by the weekly lane fraction. The weekly verdict never raises the cap.
+    With no `now` the weekly pace is not judged and the lane fraction is 1.0.
 
     `smoke_hold` comes from `chair_smoke.read_hold(runs_dir)`, so a caller such as `chair_plan._launch_cap`
     or the status line sees a held post-land smoke failure, cause and all, without reading the filesystem
     itself. An empty `runs_dir` (the default) never touches the filesystem and reads as no hold."""
     fraction = weekly_fraction(weekly)
+    pace = pacing.weekly_pace(weekly, policy, now) if now is not None else None
+    lane_fraction = pace.lane_fraction if pace is not None else 1.0
     return {
         "hard_stop": fraction >= policy.weekly_hard_stop_fraction,
         "weekly_fraction": fraction,
         "hard_stop_fraction": policy.weekly_hard_stop_fraction,
-        "launch_cap": max_in_flight if assessment.verdict in LAUNCHING_VERDICTS else 0,
+        "launch_cap": scaled_cap(max_in_flight, lane_fraction) if assessment.verdict in LAUNCHING_VERDICTS else 0,
+        "lane_fraction": lane_fraction,
+        "weekly_target_fraction": pace.target_fraction if pace is not None else None,
+        "weekly_pace": pace.verdict if pace is not None else "not_judged",
         "go_degraded": assessment.verdict == "go_degraded",
         "five_hour_fraction": assessment.spent_fraction,
         "window_start_day": window_start_day(weekly.start) if weekly is not None else None,
@@ -894,7 +908,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
             assessment, policy, weekly, dispatch["max_in_flight"], deps.window_source(), deps.weekly_source(),
-            deps.runs_dir(),
+            deps.runs_dir(), now=now,
         ),
         "dispatch": dispatch,
         "approved": approved,
