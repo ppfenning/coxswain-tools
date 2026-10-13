@@ -197,6 +197,7 @@ tracker = _LazyModule("agent_tools.tracker")
 usage_meter = _LazyModule("agent_tools.usage_meter")
 usage_window = _LazyModule("agent_tools.usage_window")
 work_state = _LazyModule("agent_tools.work_state")
+workspace_sync = _LazyModule("agent_tools.workspace_sync")
 
 # Argument defaults the parser needs at build time, copied so `--help` imports no command module.
 # tests/test_cli_lazy_dispatch.py pins each to the module constant it copies.
@@ -4890,7 +4891,7 @@ def _launch_rows_then_export(
 def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...]) -> str:
     """Edge. Export the board, then commit the work/ and intake/ files; returns a tick-line note, "" when nothing is worth saying.
 
-    A git failure raises, so the tick reports it as an export failure."""
+    A git failure raises, so the tick reports it as an export failure. A failed push is a note, never a raise."""
     workspace = runs_dir.parent
     skipped = _export_board(runs_dir, workspace)  # fills the store from the files first; see _export_board
     git = ["git", "-C", str(workspace)]
@@ -4907,7 +4908,8 @@ def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...]) -> str:
         commit = subprocess.run([*git, "commit", "-m", message, "--", *paths], capture_output=True, text=True)
         if commit.returncode != 0:
             raise RuntimeError(f"git commit: {(commit.stderr or commit.stdout).strip()}")
-        committed = f"export: committed {len(ids)} row(s)"
+        pushed = workspace_sync.push_workspace(workspace)
+        committed = f"export: committed {len(ids)} row(s)" + (f"; {pushed}" if pushed else "")
     return f"{committed}; skipped {len(skipped)} contentless row(s): {', '.join(skipped)}" if skipped else committed
 
 
@@ -7968,6 +7970,7 @@ def _chair_run_deps(
         ),
         export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
         notify_config=notify_core.config_from_profile(profile), workspace=ws,
+        pull_workspace=None if dry_run else (lambda: workspace_sync.pull_workspace(ws)),
     )
 
 
