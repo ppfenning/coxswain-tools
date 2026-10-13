@@ -156,6 +156,33 @@ def already_done(result: Mapping[str, Any]) -> bool:
     return result.get("status") == "refused" and any(line.startswith(ALREADY_DONE) for line in lines)
 
 
+# The step line `cox runs land` prints when its cherry_pick stops on a conflict it could not resolve
+# (cli.py `_cherry_pick_generated` and `_gather_failed`): `cherry_pick: cherry-pick of <what> conflicts in: a, b`.
+CHERRY_PICK_STEP = "cherry_pick: "
+CONFLICTS_IN = " conflicts in: "
+
+
+def conflicting_paths(result: Mapping[str, Any]) -> list[str]:
+    """The sorted, de-duplicated paths a task land that stopped at cherry_pick on a conflict names; empty for a land
+    that landed or stopped anywhere else."""
+    if result.get("status") == "landed":
+        return []
+    lines = str(result.get("reason", "")).splitlines()
+    named = [line.split(CONFLICTS_IN, 1)[1] for line in lines if line.startswith(CHERRY_PICK_STEP) and CONFLICTS_IN in line]
+    return sorted({path.strip() for listing in named for path in listing.split(",") if path.strip()})
+
+
+def conflict_needs_chair(action: Action, task: str, paths: Sequence[str], raised: Mapping[str, Any]) -> Action:
+    """The one needs_chair a cherry_pick conflict raises: the land's own (cause `conflict`), naming the task and paths."""
+    base: Action = {
+        "kind": "needs_chair", "initiative": action.get("initiative", ""), "task_id": task, "epoch": action.get("epoch", 0),
+    }
+    return {  # type: ignore[return-value]
+        **base, **raised, "cause": "conflict",
+        "reason": f"task {task} conflicts in {', '.join(paths)}; the land stopped at cherry_pick, nothing was merged",
+    }
+
+
 def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]:
     """Edge. Each approved task in turn: back up its siblings, run its task land, restore the siblings even when the
     land failed. A land that does not land stops the sequence; later tasks wait for the next tick.
@@ -168,7 +195,8 @@ def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]
     restored, the task is not landed, and the result is `failed`; tasks landed earlier in the tick stay landed.
 
     The result is the partial_land's: `landed` when every planned task landed, else the failing land's status and
-    any needs_chair it raised; `recorded` when no task has a known run, `failed` when a backup or restore failed.
+    any needs_chair it raised; a land that stopped at cherry_pick on a conflict is `failed`, its one needs_chair
+    naming the task and the conflicting paths (`conflicting_paths`), and it is never retried here; `recorded` when no task has a known run, `failed` when a backup or restore failed.
     Whatever the status, `landed_commits` lists every task land that reached main this tick, one entry per commit."""
     repo = action.get("repo", "")
     done: list[str] = []
@@ -194,6 +222,9 @@ def perform_partial_land(action: Action, git: Run, land: Land) -> dict[str, Any]
             restore_error = _restore(git, repo, run, backed)
             if already_done(last):
                 elsewhere.append(task)
+            elif paths := conflicting_paths(last):
+                raised = conflict_needs_chair(action, task, paths, last.get("needs_chair", {}))
+                return {**_outcome(action, "failed", done, raised["reason"], commits=commits), "needs_chair": raised}
             elif last.get("status") != "landed":
                 return {
                     **_outcome(
