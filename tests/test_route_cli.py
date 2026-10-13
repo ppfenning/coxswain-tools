@@ -12,6 +12,7 @@ import pytest
 import yaml
 from test_run_store import ROW, leases_table, store
 
+from agent_tools import checkout as checkout_module
 from agent_tools import leader, pacing, route, run_store, usage_window
 from agent_tools.cli import main
 from agent_tools.pacing import Window
@@ -2005,3 +2006,105 @@ def test_route_remove_of_an_intake_moves_it_and_marks_its_row_done(tmp_path, mon
     assert main(["route", "remove", "idea", "--reason", "stale", "--by", "operator"]) == 0
     assert (tmp_path / "intake" / "done" / "idea.md").is_file()
     assert [(r["initiative"], r["task_id"], r["state"]) for r in upserts] == [("intake", "idea", "done")]
+
+
+def _lint_world(
+    tmp_path, surfaces, *, home="coxswain-tools", home_files=("agent_tools/a.py",), others=None, body="Add the flag."
+):
+    """`(initiative_dir, repo)`: one ticket naming `surfaces`, a `home` repo holding `home_files`,
+    and sibling repos from `others` ({name: files}). Plain directories: `read_checkout` walks them."""
+    repos = {home: home_files, **(others or {})}
+    for name, files in repos.items():
+        for rel in files:
+            (tmp_path / name / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / name / rel).write_text("x\n")
+    phase = tmp_path / "work" / "demo" / "p1"
+    phase.mkdir(parents=True)
+    (phase / "t1.md").write_text(
+        f"---\nid: t1\ntitle: One\nphase: p1\nstate: ready\nsurfaces: [{', '.join(surfaces)}]\n---\n{body}\n",
+    )
+    return tmp_path / "work" / "demo", tmp_path / home
+
+
+def _lint(initiative_dir, repo, capsys):
+    rc = main(["route", "lint", str(initiative_dir), "--repo", str(repo)])
+    return rc, capsys.readouterr().out
+
+
+def test_route_lint_fails_an_unmarked_surface_missing_from_the_repo(tmp_path, capsys):
+    initiative_dir, repo = _lint_world(tmp_path, ["agent_tools/b.py"])
+    rc, out = _lint(initiative_dir, repo, capsys)
+    assert rc == 2
+    assert "t1 surface_missing: t1 surfaces agent_tools/b.py, which is not in the repository" in out
+
+
+def test_route_lint_fails_a_new_marked_surface_that_already_exists(tmp_path, capsys):
+    initiative_dir, repo = _lint_world(tmp_path, ["agent_tools/a.py (new)"])
+    rc, out = _lint(initiative_dir, repo, capsys)
+    assert rc == 2
+    assert "t1 surface_exists: t1 marks agent_tools/a.py as new, but it already exists" in out
+
+
+def test_route_lint_names_the_second_repository_for_a_surface_under_its_directory(tmp_path, capsys):
+    initiative_dir, repo = _lint_world(tmp_path, ["harness/y.py"], others={"coxswain-graphs": ["harness/x.py"]})
+    rc, out = _lint(initiative_dir, repo, capsys)
+    assert rc == 2
+    assert "t1 surface_wrong_repo: t1 surfaces harness/y.py, which lives in coxswain-graphs" in out
+
+
+def test_route_lint_passes_a_ticket_whose_surfaces_exist_or_are_marked_new(tmp_path, capsys):
+    initiative_dir, repo = _lint_world(tmp_path, ["agent_tools/a.py", "agent_tools/b.py (new)"])
+    assert _lint(initiative_dir, repo, capsys) == (0, "")
+
+
+def test_route_lint_refuses_chair_nope_in_the_task_rule_detail_fix_line_coupling_uses(tmp_path, capsys):
+    # The decompose gate lives in graphs/delivery/initiative_decompose.py, outside this repo (work-shape.md §3).
+    # This pins the exit code and the full `task rule: detail -> fix` line a caller reads, the shape coupling prints.
+    initiative_dir, repo = _lint_world(tmp_path, ["agent_tools/chair_nope.py"])
+    rc, out = _lint(initiative_dir, repo, capsys)
+    assert (rc, out.splitlines()) == (2, [
+        "t1 surface_missing: t1 surfaces agent_tools/chair_nope.py, which is not in the repository"
+        " -> correct the path, or mark it ' (new)' if the build creates it",
+    ])
+
+
+def test_route_lint_reads_no_other_repo_for_an_unregistered_home(tmp_path, capsys):
+    # cross_repo stands down for a repo basename outside _REPO_ROOTS; the surface check does too.
+    initiative_dir, repo = _lint_world(
+        tmp_path, ["core/x.py (new)"], home="widgets", home_files=("src/a.py",),
+        others={"coxswain-cartridges": ["core/a.py"]},
+    )
+    assert _lint(initiative_dir, repo, capsys) == (0, "")
+
+
+def test_route_lint_reads_only_the_home_repo_when_every_surface_is_under_its_own_tops(tmp_path, monkeypatch, capsys):
+    initiative_dir, repo = _lint_world(tmp_path, ["agent_tools/a.py"], others={"coxswain-graphs": ["harness/x.py"]})
+    real = checkout_module.read_checkout
+    read = []
+    monkeypatch.setattr(checkout_module, "read_checkout", lambda path: read.append(Path(path)) or real(path))
+    assert _lint(initiative_dir, repo, capsys) == (0, "")
+    assert read == [repo]
+
+
+@pytest.mark.parametrize("kind", ["missing", "empty", "unreadable"])
+def test_route_lint_output_is_unchanged_when_the_repo_lists_no_files(tmp_path, monkeypatch, capsys, kind):
+    if kind == "unreadable" and os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 directory")
+    body = "Add the flag.\nDone when `cox route lint` exits 0."
+    initiative_dir, _ = _lint_world(tmp_path, ["agent_tools/chair_nope.py"], body=body)
+    repo = tmp_path / "repo"
+    if kind != "missing":
+        repo.mkdir()
+    if kind == "unreadable":
+        (repo / "agent_tools").mkdir()
+        (repo / "agent_tools" / "a.py").write_text("x\n")
+        repo.chmod(0o000)
+    try:
+        after = _lint(initiative_dir, repo, capsys)
+        monkeypatch.setattr("agent_tools.cli._lint_checkout", lambda repo, items: None)
+        before = _lint(initiative_dir, repo, capsys)
+    finally:
+        if kind == "unreadable":
+            repo.chmod(0o755)
+    assert after == before
+    assert after[0] == 0 and " grant: " in after[1] and "surface_" not in after[1]
