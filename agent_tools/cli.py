@@ -13,6 +13,7 @@ import importlib.metadata
 import importlib.util
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -5833,6 +5834,25 @@ def _resolved_gate_level(runs_dir: Path) -> str:
     return level if level in _GATE_LEVELS else "ticket"
 
 
+def _is_number(value: object) -> bool:
+    """A finite int or float; a bool, NaN or Infinity is not one."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _number_or(raw: object, default: float) -> float:
+    return float(raw) if _is_number(raw) else default
+
+
+def _weekly_pace_lanes(
+    raw: object, default: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    """`raw` as pairs if it is a list of two-number lists, so `[]` is `()`: no throttling. Else `default` whole."""
+    ok = isinstance(raw, list) and all(
+        isinstance(pair, list) and len(pair) == 2 and all(_is_number(n) for n in pair) for pair in raw
+    )
+    return tuple((float(a), float(b)) for a, b in raw) if ok else default
+
+
 def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
     """The cartridge's resolved `policy.pacing`, read from
     `<runs_dir>/policy.pacing.json` when a landing step has dropped one there;
@@ -5840,7 +5860,8 @@ def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
     absent, unreadable, or not a mapping — same skip-not-raise contract as
     `records.ceiling_for`'s own `<run_id>.ceiling.json` handling. A key the
     file omits falls back to the matching `DEFAULT_POLICY` field, not to a
-    guess. The file's `max_in_flight` is not a `Policy` field: `chair run`
+    guess. A malformed `weekly_target_fraction` or `weekly_pace_lanes` also
+    falls back; the ladder falls back whole. The file's `max_in_flight` is not a `Policy` field: `chair run`
     reads it as its lane cap after the team cartridge's (`_chair_max_in_flight`, 3 when absent)."""
     default = usage_window.DEFAULT_POLICY
     text = _read_text_or_none(runs_dir / "policy.pacing.json")
@@ -5859,6 +5880,8 @@ def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
         min_headroom_usd=float(raw.get("min_headroom_usd", default.min_headroom_usd)),
         hard_stop_fraction=float(raw.get("hard_stop_fraction", default.hard_stop_fraction)),
         weekly_hard_stop_fraction=float(raw.get("weekly_hard_stop_fraction", default.weekly_hard_stop_fraction)),
+        weekly_target_fraction=_number_or(raw.get("weekly_target_fraction"), default.weekly_target_fraction),
+        weekly_pace_lanes=_weekly_pace_lanes(raw.get("weekly_pace_lanes"), default.weekly_pace_lanes),
     )
 
 
