@@ -6,7 +6,16 @@ import pytest
 import yaml
 
 from agent_tools.cli import main
-from agent_tools.stats_efficiency import efficiency, first_land_days, first_log_day, landed_lands, render_lines, to_json
+from agent_tools.stats_efficiency import (
+    coverage_start,
+    efficiency,
+    first_land_days,
+    first_log_day,
+    landed_lands,
+    lands_of,
+    render_lines,
+    to_json,
+)
 
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 SINCE = "2026-09-20"
@@ -222,3 +231,65 @@ def test_the_command_on_a_runs_dir_with_no_store_prints_an_empty_total(tmp_path,
 def test_days_below_one_is_refused(tmp_path, capsys):
     assert main(["stats", "efficiency", "--runs-dir", str(tmp_path), "--days", "0"]) == 2
     assert "--days must be at least 1" in capsys.readouterr().err
+
+
+def _landed_row(run, task, ts):
+    return {"run_id": run, "task_id": task, "ts": ts}
+
+
+def test_lands_of_reads_day_and_task_from_landed_rows_and_skips_a_row_with_no_task():
+    rows = [_landed_row("i", "t1", "2026-09-22T10:00:00+00:00"), _landed_row("i", "", "2026-09-22T10:00:00+00:00"), {"run_id": "i", "task_id": "t2", "ts": None}]
+    assert lands_of(rows) == [("2026-09-22", "t1"), ("", "t2")]
+
+
+def test_a_task_record_without_a_landed_flag_counts_when_it_is_in_the_landed_set():
+    tasks = [{"task_id": "t1", "builds": 1, "last_ts": "2026-09-22T10:00:00+00:00", "outcome": "failed"}]
+    lands = lands_of([_landed_row("init", "t1", "2026-09-22T12:00:00+00:00")])
+    rows, total = efficiency([_call("2026-09-22", "t1", 3.0, 2, 0, 0)], tasks, lands, SINCE, NOW, coverage_start(lands))
+    assert (rows[0].landed, rows[0].cost_per_landed, rows[0].waste_share, total.landed) == (1, 3.0, 0.0, 1)
+
+
+def test_coverage_starts_at_the_first_land_so_earlier_days_in_the_window_are_unknown_not_zero():
+    lands = lands_of([_landed_row("i", "t2", "2026-09-23T10:00:00+00:00"), _landed_row("i", "t3", "2026-09-24T09:00:00+00:00")])
+    calls = [_call("2026-09-21", "t1", 1.0, 1, 0, 0), _call("2026-09-23", "t2", 1.0, 1, 0, 0), _call("2026-09-24", "t3", 1.0, 1, 0, 0)]
+    rows, _ = efficiency(calls, [], lands, SINCE, NOW, coverage_start(lands))
+    assert coverage_start(lands) == "2026-09-23"
+    assert [r.landed for r in rows] == [None, 1, 1]
+    assert coverage_start([("", "t1")]) is None and coverage_start([]) is None
+
+
+@pytest.mark.parametrize("source", ["work_items", "land_records"])
+def test_render_lines_and_to_json_name_the_lands_source(source):
+    rows, total = efficiency(CALLS, TASKS, LANDS, SINCE, NOW, "2026-09-01")
+    lines = render_lines(rows, total, source)
+    assert lines[0] == f"lands from: {source}"
+    assert lines[1:] == render_lines(rows, total)
+    assert to_json(rows, total, source)["source"] == source
+    assert "source" not in to_json(rows, total)
+
+
+def test_the_command_counts_lands_from_done_work_items_and_prints_the_source(tmp_path, monkeypatch, capsys):
+    day = (datetime.now(UTC) - timedelta(days=3)).date().isoformat()
+    _store(tmp_path, monkeypatch, [
+        ("c1", "x-1", 1, "t1", "build", 2.0, 4, 0, 10, f"{day}T10:00:00+00:00"),
+        ("c2", "x-1", 2, "t2", "build", 1.0, 2, 0, 10, f"{day}T11:00:00+00:00"),
+    ])
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("CREATE TABLE work_items (initiative TEXT, task_id TEXT, state TEXT, updated_at TEXT)")
+    conn.executemany("INSERT INTO work_items VALUES (?, ?, ?, ?)", [
+        ("x", "t1", "done", f"{day}T12:00:00+00:00"), ("x", "t2", "quarantined", f"{day}T12:00:00+00:00"),
+    ])
+    conn.commit()
+    conn.close()
+    assert main(["stats", "efficiency", "--runs-dir", str(tmp_path), "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["source"] == "work_items"
+    assert (out["total"]["landed"], out["total"]["cost_per_landed"], out["total"]["waste_share"]) == (1, 3.0, pytest.approx(1.0 / 3.0))
+    assert main(["stats", "efficiency", "--runs-dir", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "lands from: work_items"
+
+
+def test_the_command_falls_back_to_the_land_log_and_says_so(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path / "none.yaml"))
+    assert main(["stats", "efficiency", "--runs-dir", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "lands from: land_records"
