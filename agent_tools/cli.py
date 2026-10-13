@@ -108,6 +108,7 @@ chair_run = _LazyModule("agent_tools.chair_run")
 chair_service = _LazyModule("agent_tools.chair_service")
 chair_service_host = _LazyModule("agent_tools.chair_service_host")
 chair_smoke = _LazyModule("agent_tools.chair_smoke")
+checkout = _LazyModule("agent_tools.checkout")
 cleanup = _LazyModule("agent_tools.cleanup")
 console_screen = _LazyModule("agent_tools.console_screen")
 courier = _LazyModule("agent_tools.courier")
@@ -4988,6 +4989,26 @@ def _merge_initiative_tickets(initiative_dir: Path) -> list[dict]:
     return [item for item in merged_items if item.get("state") != "dropped"]
 
 
+_SURFACE_RULES = ("surface_missing", "surface_exists", "surface_wrong_repo")
+
+
+def _lint_checkout(repo: str | None, items: list[dict]) -> tuple[frozenset[str], dict[str, frozenset]] | None:
+    """`(paths, other_repo_tops)` for `lint_items`; None when `repo` is unset or lists no files."""
+    paths = checkout.read_checkout(repo) if repo else frozenset()
+    if not paths:
+        return None
+    home = os.path.basename(repo.rstrip("/"))
+    surface_tops = {s.split("/", 1)[0] for item in items for s in item.get("surfaces", []) if "/" in s}
+    foreign = surface_tops - route.top_dirs(paths)
+    # Stands down like cross_repo: an unregistered repo, or no surface outside the repo's own top directories,
+    # reads no other repo. Wrong belief this guards: that every repo with Coxswain siblings is a Coxswain repo.
+    # Other repos are found only as flat siblings of `repo`; in a worktree with no siblings each listing is
+    # empty, other_repo_tops is {}, and surface_wrong_repo stays silent rather than misfiring.
+    names = [name for name in route._REPO_ROOTS if name != home] if home in route._REPO_ROOTS and foreign else []
+    tops = {name: route.top_dirs(checkout.read_checkout(Path(repo).parent / name)) for name in names}
+    return paths, {name: found for name, found in tops.items() if found}
+
+
 def _route_lint(a: argparse.Namespace) -> int:
     """work-shape.md §3: `cox route lint <initiative>`, before dispatch.
     `--repo` falls back to the initiative's own `repo:` frontmatter; only
@@ -5004,10 +5025,10 @@ def _route_lint(a: argparse.Namespace) -> int:
             repo = init_fields.get("repo")
     if not repo:
         print(f"routing: no repo found for {a.initiative_dir}; reach check skipped")
-    problems = route.lint_items(items, repo, ("pytest", "git status", "git diff"))
+    problems = route.lint_items(items, repo, ("pytest", "git status", "git diff"), checkout=_lint_checkout(repo, items))
     for problem in problems:
         print(f"{problem.task} {problem.rule}: {problem.detail} -> {problem.fix}")
-    return 2 if any(p.rule in ("reach", "coupling", "phase_needs") for p in problems) else 0
+    return 2 if any(p.rule in ("reach", "coupling", "phase_needs", *_SURFACE_RULES) for p in problems) else 0
 
 
 def _route_groups(a: argparse.Namespace) -> int:
