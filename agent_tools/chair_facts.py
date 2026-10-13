@@ -28,6 +28,7 @@ from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
 from agent_tools.chair_types import (
     EASTERN,
+    STALE_CHECKOUT_CAUSE,
     ApprovedTask,
     CarryTask,
     DispatchFacts,
@@ -53,6 +54,7 @@ from agent_tools.chair_types import (
     RunRecord,
     StrandedPhase,
 )
+from agent_tools.checkout_env import CHECKOUT_ENV_KEY
 
 HARNESS_CAUSE = "harness"
 RESCUE_FAILED_CAUSE = "rescue_failed"
@@ -496,6 +498,39 @@ def decompose_stalled_keys(actions: Sequence[Row]) -> list[str]:
     ]
 
 
+def stale_checkout_keys(actions: Sequence[Row]) -> list[str]:
+    """`<host>|<repo>` of each stale_checkout needs_chair row, in row order."""
+    docs = [_action_doc(row) for row in actions]
+    return [
+        f"{d['host']}|{d['repo']}"
+        for d in docs
+        if d.get("kind") == "needs_chair"
+        and d.get("cause") == STALE_CHECKOUT_CAUSE
+        and d.get("host")
+        and d.get("repo")
+    ]
+
+
+def _checkout_env_of(versions_json: object) -> dict:
+    raw = versions_json if isinstance(versions_json, (str, bytes)) else None
+    try:
+        versions = json.loads(raw) if raw is not None else versions_json
+    except ValueError:
+        return {}
+    entries = versions.get(CHECKOUT_ENV_KEY) if isinstance(versions, dict) else None
+    return dict(entries) if isinstance(entries, dict) else {}
+
+
+def host_env_from_rows(hosts: Sequence[Row]) -> dict[str, dict]:
+    """Host name to the checkout_env record in its versions_json; {} when the key is absent or the JSON unreadable."""
+    return {h["name"]: _checkout_env_of(h.get("versions_json")) for h in hosts if h.get("name")}
+
+
+def repo_dir_name(repo: str) -> str:
+    """The last path component of an initiative's `repo:`, the key of the beat's checkout_env record; "" when empty."""
+    return repo.rstrip("/").rpartition("/")[2]
+
+
 _LOOP_RUNS = re.compile(r"runs (\S+) and (\S+) were both quarantined")
 
 
@@ -638,7 +673,11 @@ def initiative_facts(
             ],
             "landed": set(i["landed"]),
             **({"ready_surfaces": list(surfaces.get(i["id"], []))} if surfaces is not None else {}),
-            **({"repo": repos[i["id"]]} if repos is not None and i["id"] in repos else {}),
+            **(
+                {"repo": repos[i["id"]], "repo_dir": repo_dir_name(repos[i["id"]])}
+                if repos is not None and i["id"] in repos
+                else {}
+            ),
         }
         for i in docket["initiatives"]
         if i["id"] not in live
@@ -905,6 +944,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     intake = intake_paths_from_rows(rows) if rows else list(deps.intake())
     quarantine = quarantine_facts(quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives))
     action_rows = list(deps.actions()) if deps.actions is not None else []
+    login_hosts = deps.hosts()
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
@@ -937,6 +977,8 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         ),
         "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs) if deps.decompose_runs is not None else {},
         "decompose_stalled_reported": decompose_stalled_keys(action_rows),
+        "env_stale_reported": stale_checkout_keys(action_rows),
+        "host_env": host_env_from_rows(login_hosts),
         "relaunch_loop_reported": relaunch_loop_keys(action_rows),
         "land_refusals": land_refusals_from_actions(action_rows, now),
         "land_conflicts": read_land_conflicts(deps.runs_dir(), repos),
@@ -946,7 +988,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         ),
         "newest_run_host": newest_run_host,
         "run_hosts": run_host_facts(deps.run_hosts()),
-        "login_hosts": deps.hosts(),
+        "login_hosts": login_hosts,
         "last_housekeeping_at": deps.history() if deps.history is not None else None,
         "housekeeping_hours": resolve_housekeeping_hours(deps.housekeeping_hours())
         if deps.housekeeping_hours is not None

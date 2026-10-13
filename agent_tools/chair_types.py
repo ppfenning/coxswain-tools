@@ -14,6 +14,7 @@ from agent_tools.chair_land_backoff import LandRefusal
 from agent_tools.chair_land_conflict import LandConflict
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
+STALE_CHECKOUT_CAUSE = "stale_checkout"  # the needs_chair cause for a lane host whose checkout environment is stale
 REVIEW_CLOSED_CAUSE = "review_closed"  # the needs_chair cause for a task whose review PR was closed without merging
 
 
@@ -182,6 +183,8 @@ class InitiativeFacts(TypedDict):
     waiting_tasks: NotRequired[list[ReadyTask]]  # state ready, held back by a need not in `landed`
     landed: set[str]
     repo: NotRequired[str]  # the repository the initiative launches into; absent means unknown
+    # The directory name of `repo`, the key of a host's checkout_env record; absent or "" means unknown.
+    repo_dir: NotRequired[str]
     ready_surfaces: NotRequired[list[str]]  # the union of the surfaces of its ready tasks; absent means none
 
 
@@ -396,6 +399,10 @@ class Facts(TypedDict):
     decompose_streaks: NotRequired[dict[str, DecomposeStreak]]
     # `<initiative>|<newest run id>` of each decompose_stalled needs_chair already in the action log. Absent means [].
     decompose_stalled_reported: NotRequired[list[str]]
+    # Host name to the checkout_env record in that host's versions_json; {} for a host whose beat lacks it. Absent means {}.
+    host_env: NotRequired[dict[str, dict]]
+    # `<host>|<repo>` of each stale_checkout needs_chair already in the action log. Absent means [].
+    env_stale_reported: NotRequired[list[str]]
     # Each initiative's newest run's host, "" meaning the local machine; an initiative absent here has no run yet.
     newest_run_host: dict[str, str]
     # An initiative with unfinished work from its newest run (a carried partial phase or an approved task not yet
@@ -474,7 +481,8 @@ class Action(TypedDict, total=False):
     harness_failures or any retry cap. check_login carries host, performs an ssh call and a store
     write, and like mark_lost never touches the attempts table. needs_chair carries either
     initiative and cause, or host and cause when the entry names a lane host rather than an
-    initiative; when host is present cause is "login_lapsed" and there is no initiative key.
+    initiative; when host is present cause is "login_lapsed" or "stale_checkout" and there is no initiative key.
+    A stale_checkout needs_chair also carries repo, the repo directory name keyed in the host's checkout_env record.
     review_landed carries initiative, phase, task_id, repo, url and merged_at. steer_clear carries
     initiative, other and paths: the launch of initiative is deferred because it shares paths with other.
     carry_phase carries initiative, phase, pr_branch and picks; rebase_phase carries initiative, phase, branch,
