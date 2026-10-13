@@ -454,6 +454,7 @@ ActionKind = Literal[
     "rerun_main",
     "widen_ticket",
     "partial_land",
+    "pull_workspace",
 ]
 
 
