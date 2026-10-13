@@ -4,6 +4,7 @@ from collections.abc import Collection
 from datetime import datetime
 
 from agent_tools.chair_land_backoff import suppressing
+from agent_tools.chair_land_conflict import standing
 from agent_tools.chair_plan_partial import partial_land_action
 from agent_tools.chair_types import Action, ApprovedTask, Facts, InitiativeFacts
 
@@ -100,12 +101,21 @@ def _backing_off(facts: Facts, initiative: str, phase: str, run: str, now: datet
     return now is not None and bool(run) and suppressing(facts.get("land_refusals", []), initiative, phase, run, now) is not None
 
 
+def _conflict_stands(facts: Facts, initiative: str, phase: str, run: str) -> bool:
+    return bool(run) and standing(facts.get("land_conflicts", []), initiative, phase, run) is not None
+
+
+def _land_skipped(facts: Facts, initiative: str, phase: str, run: str, now: datetime | None) -> bool:
+    """A land backing off, or one whose identical squash conflict still stands, plans nothing this tick."""
+    return _backing_off(facts, initiative, phase, run, now) or _conflict_stands(facts, initiative, phase, run)
+
+
 def backoff_held(facts: Facts, now: datetime | None = None) -> frozenset[str]:
-    """Initiatives with a land this tick would plan but its backoff suppresses; they stay held from launches."""
+    """Initiatives with a land this tick would plan but its backoff or a standing conflict suppresses; they stay held from launches."""
     return frozenset(
         initiative
         for (initiative, phase), group in _land_groups(facts).items()
-        if _backing_off(facts, initiative, phase, newest_run({t["run"] for t in group}), now)
+        if _land_skipped(facts, initiative, phase, newest_run({t["run"] for t in group}), now)
     )
 
 
@@ -117,7 +127,10 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
 
     With `now`, a group whose (initiative, phase, run) is inside a `land_refusals` backoff window plans nothing:
     no fetch, no land_phase, no needs_chair, since perform already escalates each failed land. `backoff_held` names
-    those initiatives, so the caller keeps holding them from launches as a planned land_phase would."""
+    those initiatives, so the caller keeps holding them from launches as a planned land_phase would.
+
+    A group whose (initiative, phase, run) has a `land_conflicts` entry plans nothing either: the identical squash
+    conflict still stands, and the executor already recorded its needs_chair. `backoff_held` names those too."""
     fetched: set[str] = set()
     actions: list[Action] = []  # type: ignore[assignment]  # plan_tick stamps the epoch on every action below
     for (initiative, phase), group in _land_groups(facts).items():
@@ -126,7 +139,7 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
         if not run:
             actions.append({"kind": "needs_chair", "initiative": initiative, "cause": "no_run"})
             continue
-        if _backing_off(facts, initiative, phase, run, now):
+        if _land_skipped(facts, initiative, phase, run, now):
             continue
         # The fetch follows the run the land names: fetching an older run of a carried phase leaves the land's run absent.
         if run not in fetched and any(t["needs_fetch"] and t["run"] == run for t in group):
@@ -141,7 +154,7 @@ def _partial_lands(facts: Facts, whole: frozenset[tuple[str, str]], now: datetim
 
     Each gains the repo, `task_runs` (approved task id -> the run holding its record, from `approved`) and `run`, the
     newest of those runs; a fetch leads it when one of its runs is remote and unfetched. A phase inside its
-    `land_refusals` backoff plans nothing, as a land_phase would."""
+    `land_refusals` backoff, or with a standing `land_conflicts` entry for its run, plans nothing, as a land_phase would."""
     skip = whole | awaiting_phases(facts)
     approved = {(t["initiative"], t["phase"], t["id"]): t for t in facts["approved"]}
     actions: list[Action] = []
@@ -153,7 +166,7 @@ def _partial_lands(facts: Facts, whole: frozenset[tuple[str, str]], now: datetim
         rows = [approved[key] for t in action["task_ids"] if (key := (p["initiative"], p["phase"], t)) in approved]
         task_runs = {t["id"]: t["run"] for t in rows}
         run = newest_run(set(task_runs.values()) - {""}) if any(task_runs.values()) else ""
-        if _backing_off(facts, p["initiative"], p["phase"], run, now):
+        if _land_skipped(facts, p["initiative"], p["phase"], run, now):
             continue
         for t in rows:
             if t["needs_fetch"] and t["run"] and t["run"] not in fetched:
