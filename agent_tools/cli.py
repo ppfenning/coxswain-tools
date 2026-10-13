@@ -6682,7 +6682,9 @@ class _VersionAction(argparse.Action):
     def __call__(
         self, parser: argparse.ArgumentParser, namespace: argparse.Namespace, values: object, option_string: str | None = None
     ) -> None:
-        print(version_line(importlib.metadata.version("coxswain-tools")))
+        from agent_tools.version_info import package_version  # local: keeps the import off every other command's path
+
+        print(version_line(package_version()))
         parser.exit(0)
 
 
@@ -8352,10 +8354,9 @@ def _chair_service_host_repos(profile: Mapping) -> dict[str, str]:
 
 
 def _package_version() -> str | None:
-    try:
-        return importlib.metadata.version("coxswain-tools")
-    except importlib.metadata.PackageNotFoundError:
-        return None
+    from agent_tools.version_info import package_version
+
+    return package_version()
 
 
 def _host_beat(a: argparse.Namespace) -> int:
