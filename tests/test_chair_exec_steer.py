@@ -35,6 +35,27 @@ def test_steer_clear_is_never_epoch_fenced():
     assert ran == []
 
 
+WAITING = {"kind": "waiting", "initiative": "x", "phase": "p1", "quarantined": 1, "awaiting_land": 2, "epoch": 0}
+
+
+def test_waiting_has_no_argv():
+    assert argv_for(WAITING) is None
+
+
+def test_waiting_is_recorded_without_running_a_command():
+    results, ran, recorded = _run(WAITING, 0)
+    assert results[0]["status"] == "recorded"
+    assert results[0]["reason"] == "blocked by p1: 1 quarantined, 2 awaiting land"
+    assert ran == []
+    assert recorded[0]["initiative"] == "x"
+
+
+def test_waiting_is_never_epoch_fenced():
+    results, ran, _ = _run(WAITING, -1)
+    assert results[0]["status"] == "recorded"
+    assert ran == []
+
+
 def test_steer_clear_reason_is_cut_to_200_characters():
     action = {**STEER, "paths": ["p" * 150, "q" * 150]}
     results, _, _ = _run(action, 0)
