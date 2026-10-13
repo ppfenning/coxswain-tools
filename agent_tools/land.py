@@ -235,7 +235,8 @@ def phase_resume(facts: dict[str, Any] | None, pr_branch: str) -> dict[str, Any]
     """What a phase land does about an existing `pr_branch`. `facts` carries
     `local_tip`, `remote_tip`, `pr` and `pr_head`, each None when absent.
     `wait` resumes at the open PR, `recreate` rebuilds a stale local branch
-    nothing else holds, `refuse` names a divergence, else `fresh`. Any no-PR leftover local branch is recreated."""
+    nothing else holds, `refuse` names a divergence, else `fresh`. A no-PR leftover local branch is recreated, unless
+    optional `unique_commits` is positive, which refuses; optional `is_ancestor_of_main` feeds `leftover_gate`."""
     f = facts or {}
     local, remote, pr, head = f.get("local_tip"), f.get("remote_tip"), f.get("pr"), f.get("pr_head")
     if pr is not None:
@@ -245,7 +246,10 @@ def phase_resume(facts: dict[str, Any] | None, pr_branch: str) -> dict[str, Any]
             return {"kind": "refuse", "reason": f"local branch {pr_branch} at {local} differs from open pull request #{pr} head {head}"}
         return {"kind": "wait", "pr": pr}
     if local is not None:
-        return {"kind": "recreate"}
+        gated = leftover_gate(pr_branch, local_tip=local, is_ancestor_of_main=f.get("is_ancestor_of_main"),
+                              unique_commits=f.get("unique_commits"), remote_exists=remote is not None,
+                              open_pr_number=None)
+        return gated if gated is not None and gated["kind"] == "refuse" else {"kind": "recreate"}
     return {"kind": "fresh"}
 
 
@@ -531,21 +535,41 @@ def _backup_refs(branch: str, local_tip: str | None, remote_tip: str | None) -> 
             **({f"refs/backup/origin/{branch}": remote_tip} if remote_tip else {})}
 
 
+def leftover_gate(branch: str, *, local_tip: str | None, is_ancestor_of_main: bool | None,
+                  unique_commits: int | None, remote_exists: bool, open_pr_number: int | None) -> dict[str, Any] | None:
+    """Decision from facts alone, no tree needed: refuse on an open PR (`reason` names `#<n>`), then on commits
+    not on main (`reason` names the count and the branch), recreate (`old_tip`, nothing to back up) for a local
+    ancestor of main with no remote and no open PR, else None."""
+    if open_pr_number is not None:
+        return {"kind": "refuse", "reason": f"{branch} has open pull request #{open_pr_number}"}
+    if unique_commits:
+        return {"kind": "refuse", "reason": f"{branch} has {unique_commits} commits not on main"}
+    if local_tip is not None and is_ancestor_of_main and not remote_exists:
+        return {"kind": "recreate", "old_tip": local_tip}
+    return None
+
+
 def leftover_branch_decision(branch: str, remote_exists: bool, open_pr: bool, local_tree: str | None,
-                             expected_tree: str, *, local_commit: str | None, remote_commit: str | None = None,
-                             remote_tree: str | None = None) -> dict[str, Any]:
-    """What a land does about a leftover `pr/<initiative>--<phase>`. Only an open PR refuses. Without one, a
-    local tree that differs, a pushed `remote_tree` that differs (main moved), or a remote-only branch yields
-    `back_up_and_rebuild`, carrying both tips and `backup_refs` (ref to tip); land never deletes those refs."""
+                             expected_tree: str | None, *, local_commit: str | None, remote_commit: str | None = None,
+                             remote_tree: str | None = None, is_ancestor_of_main: bool | None = None,
+                             unique_commits: int | None = None, open_pr_number: int | None = None) -> dict[str, Any]:
+    """What a land does about a leftover `pr/<initiative>--<phase>`. `leftover_gate` rules come first and need no
+    `expected_tree`; its kinds are `refuse` (`reason`) and `recreate` (`old_tip`). Otherwise only an open PR refuses.
+    Without one, a local tree that differs, a pushed `remote_tree` that differs (main moved), or a remote-only
+    branch yields `back_up_and_rebuild`, carrying both tips and `backup_refs` (ref to tip); land never deletes them."""
+    gated = leftover_gate(branch, local_tip=None if open_pr else local_commit, is_ancestor_of_main=is_ancestor_of_main,
+                          unique_commits=unique_commits, remote_exists=remote_exists, open_pr_number=open_pr_number)
+    if gated is not None:
+        return gated
     if local_tree is None and not remote_exists:
         return {"kind": "fresh"}
-    remote_stale = remote_tree is not None and remote_tree != expected_tree
-    if local_tree == expected_tree and not remote_stale:
+    remote_stale = expected_tree is not None and remote_tree is not None and remote_tree != expected_tree
+    if expected_tree is not None and local_tree == expected_tree and not remote_stale:
         return {"kind": "reuse"}
     if open_pr:
         differing = [f"{side} tree {tree} differs from the cherry-picked tree {expected_tree}"
                      for side, tree in (("local", local_tree), ("remote", remote_tree))
-                     if tree is not None and tree != expected_tree]
+                     if expected_tree is not None and tree is not None and tree != expected_tree]
         return {"kind": "refuse", "reason": "; ".join(differing) or f"{branch} has an open pull request"}
     refs = _backup_refs(branch, local_commit, remote_commit)
     return {"kind": "back_up_and_rebuild", "backup_ref": f"refs/backup/{branch}" if local_commit else None,
