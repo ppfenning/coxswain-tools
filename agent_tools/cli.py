@@ -2700,6 +2700,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         planned = land.resume_steps(planned, decision, cherry_pick["onto"])
     # Steps start here: every return from now on is logged. Earlier returns are not.
     repo_lost: list[str] = []
+    stops: list[dict] = []
 
     def walk(task_guard):
         repo_guard = _repo_lease_guard(
@@ -2718,7 +2719,7 @@ def _runs_land(a: argparse.Namespace) -> int:
             saved = " and ".join(f"{tip[:8]} to {ref}" for ref, tip in rebuild["backup_refs"].items())
             print(f"land: backed up {saved}, rebuilding {cherry_pick['onto']}")
         return _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a),
-                             mode=land_mode, guard=guard)
+                             mode=land_mode, guard=guard, stops=stops)
 
     repo_holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
     got = land_repo_lease.acquire(runs_dir, str(repo), repo_holder, 1200)
@@ -2739,7 +2740,8 @@ def _runs_land(a: argparse.Namespace) -> int:
                                lambda: _land_store_stop(runs_dir, record, item_path) if record else None, walk)
     rc, reached, pr = walked if walked is not None else (2, [], "")  # a refused lease stops before any step, and is logged too
     task = record["task"] if record else None
-    _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), run_id, task, reached, rc, pr))
+    _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), run_id, task, reached, rc, pr,
+                                                   stops[0] if stops else None))
     _lake_after_land(a, runs_dir, rc, reached)
     return rc
 
@@ -2790,23 +2792,38 @@ def _lake_after_land(a: argparse.Namespace, runs_dir: Path, rc: int, reached: Se
 
 def _land_execute(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
                   level: str, no_merge: bool, forge_module=forge_github, by: str = _UNLABELED,
-                  mode: str = "files", guard: Callable[[str], str | None] | None = None) -> tuple[int, list[str], str]:
+                  mode: str = "files", guard: Callable[[str], str | None] | None = None,
+                  stops: list[dict] | None = None) -> tuple[int, list[str], str]:
     """Walk `steps`; return the exit code, the step kinds run in order, and the PR url ("" when none opened).
 
     A pr branch's land worktree is dropped before `merge` and on every stop; the branch itself stays.
-    `guard(kind)`, when given, runs before each step; a reason back stops the land with exit 2 before that step."""
+    `guard(kind)`, when given, runs before each step; a reason back stops the land with exit 2 before that step.
+    `stops`, when given, receives the land log keys of the step that stopped the land."""
     built: list[str] = []
     try:
         return _land_walk(repo, steps, planned, record, item_path, level, no_merge, forge_module, built, by=by, mode=mode,
-                          guard=guard)
+                          guard=guard, stops=stops)
     finally:
         for branch in built:
             _remove_land_worktree(repo, branch)
 
 
+def _note_stop(repo: Path, step: dict, detail: str, stops: list[dict] | None) -> None:
+    """Edge. Print the closing `land: stopped at` line and hand the log keys to `stops`.
+
+    A squash conflict resolves its branch and from refs here; neither moves when the squash is refused."""
+    squash = step["kind"] == "squash_phase"
+    fields = land.stop_fields(step["kind"], detail, _git_out(repo, "rev-parse", step["branch"]) if squash else None,
+                              _git_out(repo, "rev-parse", step["from"]) if squash else None)
+    print(f"land: stopped at {step['kind']}: {detail}")
+    if stops is not None:
+        stops.append(fields)
+
+
 def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict | None, item_path: str | None,
                level: str, no_merge: bool, forge_module, built: list[str], by: str = _UNLABELED,
-               mode: str = "files", guard: Callable[[str], str | None] | None = None) -> tuple[int, list[str], str]:
+               mode: str = "files", guard: Callable[[str], str | None] | None = None,
+               stops: list[dict] | None = None) -> tuple[int, list[str], str]:
     pr = ""
     landing = ""  # what a landed task's review PRs are closed against; "" until a merge succeeds
     reached: list[str] = []
@@ -2838,6 +2855,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             if halt is not None:
                 print(halt)
                 print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
+                _note_stop(repo, step, halt, stops)
                 return 1, reached, pr
         if step["kind"] == "mark_done":
             if record is not None and not Path(step["path"]).exists():
@@ -2855,6 +2873,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             # not an ordinary failure, and it fires before `push` so a check
             # that never ran leaves no pushed branch behind.
             print(detail)
+            _note_stop(repo, step, detail, stops)
             return 2, reached, pr
         print(f"{step['kind']}: {detail}")
         if ok and step["kind"] == "merge":
@@ -2883,6 +2902,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
         if not ok:
             remaining = [s["kind"] for s in steps[i + 1:]]
             print("stopped; remaining: " + ", ".join(remaining))
+            _note_stop(repo, step, detail, stops)
             return 1, reached, pr
         if step["kind"] == "wait_checks" and no_merge:
             print("stopping after wait_checks (--no-merge)")

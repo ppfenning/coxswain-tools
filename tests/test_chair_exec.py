@@ -578,6 +578,42 @@ def test_an_unclassified_land_phase_escalates_as_stranded_naming_its_phase() -> 
     assert results[1]["reason"] == "land phase p1 not_landed"
 
 
+def test_a_squash_phase_stop_escalates_as_land_conflict_with_its_detail_once() -> None:
+    action = {**_land_phase("p1", "r"), "initiative": "alpha"}
+    output = "merge: ok\nland: stopped at squash_phase: CONFLICT (content) in src/a.py\n"
+    results = perform([action], _deps([], output, code=1), lambda: 1, False)
+    assert results[0]["status"] == "refused"
+    raised = [r for r in results if r["action"]["kind"] == "needs_chair"]
+    assert len(raised) == 1
+    assert raised[0]["action"]["cause"] == "land_conflict"
+    assert raised[0]["reason"] == (
+        "land phase p1 stopped at squash_phase: CONFLICT (content) in src/a.py. Rebase the phase branch onto main, or re-run the phase."
+    )
+    assert raised[0]["reason"].count("src/a.py") == 1
+
+
+def test_a_wait_checks_stop_escalates_as_stranded_with_its_step_and_detail() -> None:
+    action = {**_land_phase("p1", "r"), "initiative": "alpha"}
+    output = "wait_checks: failing checks: lint\nland: stopped at wait_checks: checks still pending\n"
+    results = perform([action], _deps([], output, code=1), lambda: 1, False)
+    assert results[1]["action"]["cause"] == STRANDED_CAUSE
+    assert results[1]["reason"] == "land phase p1 stopped at wait_checks: checks still pending"
+
+
+def test_a_squash_phase_stop_with_a_clean_exit_is_also_a_land_conflict() -> None:
+    action = {**_land_phase("p1", "r"), "initiative": "alpha"}
+    results = perform([action], _deps([], "land: stopped at squash_phase: CONFLICT in src/a.py\n"), lambda: 1, False)
+    assert results[0]["status"] == "not_landed"
+    assert results[1]["action"]["cause"] == "land_conflict"
+
+
+def test_a_land_phase_output_without_a_stop_line_keeps_its_reason() -> None:
+    action = {**_land_phase("p1", "r"), "initiative": "alpha"}
+    results = perform([action], _deps([], "merge: ok\nsome other line\n"), lambda: 1, False)
+    assert results[1]["action"]["cause"] == STRANDED_CAUSE
+    assert results[1]["reason"] == "land phase p1 not_landed"
+
+
 def test_a_land_action_still_works_unchanged() -> None:
     calls: list = []
     results = perform([_land("t1", "r")], _deps(calls), lambda: 1, False)

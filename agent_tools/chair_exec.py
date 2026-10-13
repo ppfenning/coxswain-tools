@@ -1142,9 +1142,44 @@ def escalation(land: Action) -> Action:
     }
 
 
+LAND_CONFLICT_CAUSE = "land_conflict"
+_LAND_STOP_RE = re.compile(r"^land: stopped at (\S+): (.*)$", re.MULTILINE)
+_LAND_CONFLICT_ROUTE = "Rebase the phase branch onto main, or re-run the phase."
+
+
+def land_stop(output: str) -> tuple[str, str] | None:
+    """The `(step, detail)` of the last `land: stopped at <step>: <detail>` line in a land's output, else None."""
+    stops = _LAND_STOP_RE.findall(output)
+    return (stops[-1][0], stops[-1][1].strip()) if stops else None
+
+
+def _stopped_land(land: Action, result: Result) -> Result | None:
+    """The escalated needs_chair for a phase land whose output names the step it stopped at, else None.
+
+    A real stop exits nonzero and arrives `refused` with `land_refusal`'s guessed cause; the stop line replaces
+    that guess. A squash_phase stop is a conflict on the phase branch, so it takes its own cause and a routing
+    sentence."""
+    stop = (
+        land_stop(result["reason"])
+        if land.get("kind") == "land_phase" and result["status"] in ("not_landed", "refused")
+        else None
+    )
+    if stop is None:
+        return None
+    step, detail = stop
+    reason = f"land {_land_subject(land)} stopped at {step}: {detail}"
+    raised = escalation(land)
+    if step == "squash_phase":
+        return _result({**raised, "cause": LAND_CONFLICT_CAUSE}, "escalated", f"{reason}. {_LAND_CONFLICT_ROUTE}")  # type: ignore[typeddict-item]
+    return _result(raised, "escalated", reason)
+
+
 def _escalate(land: Action, result: Result) -> Result:
     """The escalated needs_chair row; a needs_chair that says what stopped it (a partial land's cherry_pick conflict
     names its paths) keeps that after the land's subject and status."""
+    stopped = _stopped_land(land, result)
+    if stopped is not None:
+        return stopped
     raised = result.get("needs_chair") or escalation(land)
     why = str(raised.get("reason", ""))
     return _result(raised, "escalated", f"land {_land_subject(land)} {result['status']}" + (f": {why}" if why else ""))
