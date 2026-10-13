@@ -34,6 +34,7 @@ from agent_tools.chair_plan_tune import plan_tune
 from agent_tools.chair_plan_widen import plan_widen
 from agent_tools.chair_rebase import plan_rebase
 from agent_tools.chair_revert import revert_check
+from agent_tools.chair_runnable import Blocking, TaskView, WaitingInitiative, runnable_verdict
 from agent_tools.chair_types import (
     Action,
     ApprovedTask,
@@ -630,6 +631,57 @@ def _without_widened(actions: list[Action], widened: frozenset[tuple[str, str]])
     ]
 
 
+def _task_views(initiative: InitiativeFacts, rows: Sequence[Mapping]) -> tuple[tuple[TaskView, ...], tuple[str, ...]]:
+    """The initiative's tasks for `runnable_verdict`, and the sorted phases they span.
+
+    A ready row task with no ready_tasks or waiting_tasks entry is claimed or held, so it is passed as `claimed`."""
+    entries = {t["id"]: t for t in [*initiative.get("waiting_tasks", []), *initiative["ready_tasks"]]}
+    in_rows = {task_id for row in rows for task_id, _ in row["tasks"]}
+    from_rows = tuple(
+        TaskView(
+            task_id,
+            row["phase"],
+            "claimed" if state == "ready" and task_id not in entries else state,
+            tuple(entries[task_id]["needs"]) if state == "ready" and task_id in entries else (),
+        )
+        for row in rows
+        for task_id, state in row["tasks"]
+    )
+    queued = tuple(
+        TaskView(t["id"], t.get("phase", ""), "ready", tuple(t["needs"])) for t in entries.values() if t["id"] not in in_rows
+    )
+    done = tuple(TaskView(task_id, "", "done") for task_id in sorted(initiative["landed"]) if task_id not in in_rows)
+    phases = tuple(sorted({*(row["phase"] for row in rows), *(t.phase for t in queued)}))
+    return (*from_rows, *queued, *done), phases
+
+
+def waiting_initiatives(facts: Facts) -> list[WaitingInitiative]:
+    """Initiatives with a phase_tasks row and no runnable task, by initiative id; one with no row is never blocked."""
+    rows = facts.get("phase_tasks", [])
+    verdicts = [
+        (initiative["id"], runnable_verdict(*_task_views(initiative, mine)))
+        for initiative in facts["initiatives"]
+        for mine in [[row for row in rows if row["initiative"] == initiative["id"]]]
+        if mine
+    ]
+    return [WaitingInitiative(initiative, verdict) for initiative, verdict in sorted(verdicts, key=lambda v: v[0]) if isinstance(verdict, Blocking)]
+
+
+def _waiting_actions(waiting: Sequence[WaitingInitiative], reported: Mapping[str, str]) -> list[Action]:
+    """One waiting action per initiative whose `<phase>|<quarantined>|<awaiting_land>` differs from what was last reported."""
+    return [
+        {
+            "kind": "waiting",
+            "initiative": w.initiative,
+            "phase": w.blocking.phase,
+            "quarantined": w.blocking.quarantined,
+            "awaiting_land": w.blocking.awaiting_land,
+        }
+        for w in waiting
+        if f"{w.blocking.phase}|{w.blocking.quarantined}|{w.blocking.awaiting_land}" != reported.get(w.initiative)
+    ]
+
+
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts = _with_dead_pid_lost(raw_facts, now)
     reverts = revert_check(facts.get("landed_main", []))
@@ -655,7 +707,12 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
-    recovered = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts, now)], held)
+    recoverable = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts, now)], held)
+    waiting = waiting_initiatives(facts)
+    waiting_ids = frozenset(w.initiative for w in waiting)
+    waiting_actions = _waiting_actions(waiting, facts.get("waiting_reported", {}))
+    # A blocked initiative's relaunch and its paired clear_branches go; the waiting action records why.
+    recovered = [a for a in recoverable if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)]
     if facts["limits"]["hard_stop"]:
         return [
             *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
@@ -673,6 +730,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *decompose_stalled_needs_chair,
             *review,
             *unstarted_waiting_chair,
+            *waiting_actions,
         ]
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
@@ -698,6 +756,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         # A relaunch the budget or the loop rule refused must not go out again as a launch_epic.
         | refused_launches(facts, now)
         | backoff_held(facts, now)
+        | waiting_ids
     )
     claimed = claimed_by(recover_actions, facts)
     filled = plan_fill(
@@ -723,6 +782,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *decompose_stalled_needs_chair,
         *review,
         *unstarted_waiting_chair,
+        *waiting_actions,
     ]
 
 
