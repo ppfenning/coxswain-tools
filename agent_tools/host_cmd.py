@@ -13,8 +13,12 @@ import platform
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+from agent_tools.checkout_env import CHECKOUT_ENV_KEY, LOCKFILE_NAME, CheckoutEnvEntry
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import ssh_argv
+
+# Where a checkout records the lock hash its environment last matched, inside the environment directory.
+STAMP_RELATIVE_PATH = ".venv/.cox-lock-hash"
 
 Run = Callable[[list[str]], tuple[int, str]]
 Row = Mapping[str, object]
@@ -275,12 +279,48 @@ def _checkouts(run: Run, repos: Sequence[str]) -> dict:
     return dict(_checkout_detail(run, repo) for repo in repos)
 
 
+def _env_check_argv(repo: str) -> list[str]:
+    # unknown: `--check` is the uv flag that exits non-zero when the environment lags uv.lock and
+    # installs nothing; confirm against the host's `uv sync --help`.
+    return ["uv", "sync", "--check", "--frozen", "--all-extras", "--directory", repo]
+
+
+def _env_matches(run: Run, repo: str) -> bool:
+    """True only when the read-only environment check exits 0; any failure is False."""
+    try:
+        code, _ = run(_env_check_argv(repo))
+    except Exception:
+        return False
+    return code == 0
+
+
+def _record_stamp(run: Run, repo: str, lock_hash: str | None) -> None:
+    """Write lock_hash into the checkout's stamp when the read-only check says the environment matches it.
+    A mismatch, a failed check or a failed write leaves the stamp as it was."""
+    if lock_hash is None or not _env_matches(run, repo):
+        return
+    try:
+        run(["sh", "-c", 'printf %s "$1" > "$2"', "sh", lock_hash, f"{repo}/{STAMP_RELATIVE_PATH}"])
+    except Exception:
+        return
+
+
+def _checkout_env(run: Run, repo: str) -> tuple[str, CheckoutEnvEntry]:
+    """`(repo dir name, {lock_hash, synced_hash})`. The stamp is attempted before it is read, so a
+    matching environment reports synced_hash equal to lock_hash. A failed read yields None."""
+    lock_hash = _out(run, ["git", "-C", repo, "hash-object", LOCKFILE_NAME])
+    _record_stamp(run, repo, lock_hash)
+    synced_hash = _out(run, ["cat", f"{repo}/{STAMP_RELATIVE_PATH}"])
+    return Path(repo).name, {"lock_hash": lock_hash, "synced_hash": synced_hash}
+
+
 def beat_versions(
     run: Run, package_version: str | None, harness_dir: str | None, cartridges_dir: str | None,
     workspace_dir: str | None = None, repos: Sequence[str] = (),
 ) -> dict:
-    """This machine's versions, plus its workspace_dir, checkout paths, host facts and per-checkout branch
-    and commits-behind-main. `cox --version` text if it answers, else the package version."""
+    """This machine's versions, plus its workspace_dir, checkout paths, host facts, per-checkout branch
+    and commits-behind-main, and per-checkout lock and synced hashes. `cox --version` text if it answers,
+    else the package version."""
     def tag(directory: str | None) -> str | None:
         return _out(run, ["git", "-C", directory, "describe", "--tags"]) if directory else None
 
@@ -291,6 +331,7 @@ def beat_versions(
     return {
         **versions, "workspace_dir": workspace_dir, "repos": list(repos),
         "host_facts": _host_facts(), "checkouts": _checkouts(run, repos),
+        CHECKOUT_ENV_KEY: dict(_checkout_env(run, repo) for repo in repos),
     }
 
 
