@@ -19,7 +19,7 @@ from itertools import accumulate
 from pathlib import Path
 from typing import NamedTuple
 
-from agent_tools import chair, decompose_empty, open_queue_priority, queue_rows, run_store
+from agent_tools import chair, decompose_empty, open_queue_priority, queue_rows, repo_path, run_store
 from agent_tools.intake_state import intake_group
 from agent_tools.pacing import Assessment
 
@@ -716,14 +716,23 @@ def _is_route(path: str) -> bool:
     return path.startswith("/") and path.split("/")[1] not in _FS_ROOTS
 
 
-def _inside_repo(path: str, repo: str) -> bool:
+def _inside_repo(path: str, repo: str, home: str | None = None) -> bool:
     """§3 excludes a path only when it is inside `repo`; wrong belief this
     guards: that any absolute/workspace/~ path is automatically reach-unsafe.
     A path is a prefix match on `repo` (a filesystem root, not a slug) —
-    plain-data comparison, no filesystem read.
+    plain-data comparison, no filesystem read. With `home`, both sides are
+    contracted first, so `~/r/x/a.py` and its absolute spelling are both inside `~/r/x`.
     """
+    if home is not None:
+        path, repo = repo_path.contract(path, home), repo_path.contract(repo, home) if repo else repo
     root = repo.rstrip("/") if repo else ""
     return bool(root) and (path == root or path.startswith(root + "/"))
+
+
+def _home_paths(text: str, home: str) -> list[str]:
+    """Rooted tokens of `text` spelled absolutely under a home directory, first sight, no repeats."""
+    rooted = (p for p in _UNSAFE_PATH.findall(text) if p.startswith("/"))
+    return list(dict.fromkeys(p for p in rooted if repo_path.contract(p, home) != p))
 
 
 def _cross_repo_paths(text: str, repo: str | None) -> list[tuple[str, str]]:
@@ -783,8 +792,8 @@ def _run_commands(body: str) -> frozenset[str]:
     )
 
 
-def _item_problems(item: dict, repo: str | None, grants) -> list:
-    """reach, grant, size and cross_repo, each scoped to one ticket item. `repo` falsy
+def _item_problems(item: dict, repo: str | None, grants, home: str | None = None) -> list:
+    """reach, grant, size, cross_repo and (with `home`) home_path, each scoped to one ticket item. `repo` falsy
     (no repo could be resolved) stands the reach rule down instead of
     flagging every path — there is no target to check against. An unknown
     repo basename stands cross_repo down for the same reason."""
@@ -795,7 +804,7 @@ def _item_problems(item: dict, repo: str | None, grants) -> list:
         Problem(task, "reach", f"{p!r} is outside {repo!r}",
                 "move the artifact into the repository or drop the reference")
         for p in _UNSAFE_PATH.findall(text)
-        if not _inside_repo(p, repo) and not _is_route(p)
+        if not _inside_repo(p, repo, home) and not _is_route(p)
     ] if repo else []
     grant = [
         Problem(task, "grant", f"command {cmd!r} is not in this role's grant",
@@ -811,7 +820,12 @@ def _item_problems(item: dict, repo: str | None, grants) -> list:
                 "paste the code the build needs into the ticket: a build reads only its own repository")
         for path, other in _cross_repo_paths(text, repo)
     ]
-    return reach + grant + size + cross_repo
+    home_path = [
+        Problem(task, "home_path", f"{p!r} is an absolute path under a home directory",
+                f"write {repo_path.contract(p, home)!r} instead")
+        for p in (_home_paths(text, home) if home is not None else [])
+    ]
+    return reach + grant + size + cross_repo + home_path
 
 
 def _coupling_problems(items) -> list:
@@ -921,13 +935,15 @@ def surface_problems(items, paths, other_repo_tops) -> list:
     ]
 
 
-def lint_items(items, repo: str | None, grants, *, checkout=None) -> list:
+def lint_items(items, repo: str | None, grants, *, checkout=None, home: str | None = None) -> list:
     """work-shape.md §3: reach, grant, size, cross_repo and coupling over a decomposed
     DAG's parsed ticket items; no model, no I/O.
 
+    `home` is a home directory; when given, paths compare in tilde form and home_path is added.
+
     `checkout` is `(paths, other_repo_tops)`; when given, surface_missing, surface_exists and
     surface_wrong_repo are added. None skips them."""
-    problems = [p for item in items for p in _item_problems(item, repo, grants)]
+    problems = [p for item in items for p in _item_problems(item, repo, grants, home)]
     base = problems + _coupling_problems(items) + _phase_needs_problems(items)
     if checkout is None:
         return base
