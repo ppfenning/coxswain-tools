@@ -141,12 +141,12 @@ def _mode(settings: Path) -> str:
 
 def test_record_store_mode_round_trips_and_keeps_other_keys(tmp_path):
     settings = tmp_path / "settings.yaml"
-    settings.write_text("team: acme\noperator: pat\n", encoding="utf-8")
+    settings.write_text("team: acme\noperator: dev\n", encoding="utf-8")
     record_store_mode("shared", settings)
     assert _mode(settings) == "shared"
     record_store_mode("files", settings)
     parsed = route.parse_profile(settings.read_text(encoding="utf-8"))
-    assert (parsed["store"]["mode"], parsed["team"], parsed["operator"]) == ("files", "acme", "pat")
+    assert (parsed["store"]["mode"], parsed["team"], parsed["operator"]) == ("files", "acme", "dev")
 
 
 def test_record_store_mode_refusal_gives_the_reason(tmp_path):
