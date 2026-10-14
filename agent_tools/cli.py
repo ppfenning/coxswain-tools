@@ -4449,9 +4449,11 @@ def _route_launch(a: argparse.Namespace) -> int:
         if not repo:
             print(f"routing: no --repo given and no repo: in {initiative_md}")
             return 2
+        home = os.path.expanduser("~")
+        local_repo = repo_path.expand(repo, home)
         try:
             status = subprocess.run(
-                ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+                ["git", "status", "--porcelain"], cwd=local_repo, capture_output=True, text=True, check=True,
             )
         except (OSError, subprocess.CalledProcessError) as exc:
             print(f"routing: cannot read git status for {repo}: {exc}")
@@ -4472,12 +4474,12 @@ def _route_launch(a: argparse.Namespace) -> int:
                 print(taken)
                 return 2
             run_id = a.run_id
-        needs = {"initiative": str(initiative_dir), "repo": repo}
+        needs = {"initiative": str(initiative_dir), "repo": local_repo if host is None else repo}
         if a.graph == "rescue":
             needs["task"] = a.task
         elif a.fix_attempts is not None:
             needs["fix_attempts"] = a.fix_attempts
-        env_repo = repo
+        env_repo = needs["repo"]
     elif a.graph == "decompose":
         idea_path = Path(a.idea)
         if not idea_path.exists():
@@ -4554,7 +4556,7 @@ def _route_launch(a: argparse.Namespace) -> int:
 
     if host is not None:
         launch_harness = str(Path(harness_dir).expanduser()) if harness_dir else None
-        return _route_launch_on_host(a, host, runs_dir, run_id, env_repo or None, launch_harness)
+        return _route_launch_on_host(a, host, runs_dir, run_id, env_repo or None, launch_harness, home=os.path.expanduser("~"))
 
     if overlaid_path is not None:
         overlaid_path.write_text(yaml.safe_dump(overlaid_provider_profile, sort_keys=True), encoding="utf-8")
@@ -4686,7 +4688,7 @@ def _pid_probe_ssh(argv: list[str]) -> tuple[int, str] | None:
 
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
-    harness_dir: str | None = None,
+    harness_dir: str | None = None, *, home: str | None = None,
 ) -> int:
     """Copies the initiative to `host` and starts the lane there; writes only `<run>.remote.json`, and only on success."""
     run, locate = _remote_edge(runs_dir.parent)
@@ -4703,7 +4705,7 @@ def _route_launch_on_host(
         )
     result = remote_launch.launch_on_host(
         host, _initiative_path(runs_dir, a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
-        preflight=preflight,
+        preflight=preflight, home=home,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
@@ -4909,7 +4911,7 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
         return (remote_fetch.task_repos(run_dir) or recorded) if only is None else only
 
     result = remote_fetch.fetch_run(host, run_id, runs_dir, repo_paths, run_cmd, locate,
-                                    lease_released=lease_released, ended_at=ended_at)
+                                    lease_released=lease_released, ended_at=ended_at, home=os.path.expanduser("~"))
     if isinstance(result, remote_fetch.FetchError):
         detail = f"{run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message
         return ("live" if result.step == "refuse" else "failed"), [f"fetch: {result.step}: {detail}"], host.name
@@ -5106,10 +5108,15 @@ def _route_lint(a: argparse.Namespace) -> int:
             repo = init_fields.get("repo")
     if not repo:
         print(f"routing: no repo found for {a.initiative_dir}; reach check skipped")
-    problems = route.lint_items(items, repo, ("pytest", "git status", "git diff"), checkout=_lint_checkout(repo, items))
+    home = os.path.expanduser("~")
+    # `lint_items` compares the recorded form against `home`; the checkout listing needs a real directory.
+    checkout_repo = repo_path.expand(repo, home) if repo else repo
+    problems = route.lint_items(
+        items, repo, ("pytest", "git status", "git diff"), checkout=_lint_checkout(checkout_repo, items), home=home,
+    )
     for problem in problems:
         print(f"{problem.task} {problem.rule}: {problem.detail} -> {problem.fix}")
-    return 2 if any(p.rule in ("reach", "coupling", "phase_needs", *_SURFACE_RULES) for p in problems) else 0
+    return 2 if any(p.rule in ("reach", "coupling", "phase_needs", "home_path", *_SURFACE_RULES) for p in problems) else 0
 
 
 def _route_groups(a: argparse.Namespace) -> int:
