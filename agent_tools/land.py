@@ -20,7 +20,6 @@ the record and the branches with `git log`, then walks the plan through
 
 from __future__ import annotations
 
-import importlib.metadata
 import json
 import re
 import shlex
@@ -842,14 +841,8 @@ def issue_closes(issue: str | int | None) -> str | None:
 
 
 def pr_footer(run: str | None) -> str:
-    """The trailing line every PR body ends with: the installed `coxswain-tools`
-    version, the distribution `cli._package_version` reads, never fetched over
-    the network; "unknown" when it is not installed; `run` appended when set."""
-    try:
-        version = importlib.metadata.version("coxswain-tools")
-    except importlib.metadata.PackageNotFoundError:
-        version = "unknown"
-    footer = f"🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) {version}"
+    """The trailing line every PR body ends with; it carries no version, and `run` is appended only when set."""
+    footer = "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain)"
     return f"{footer} · run {run}" if run is not None else footer
 
 
