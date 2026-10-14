@@ -3,12 +3,12 @@ from agent_tools.store_probe import OBJECT_STORE, POSTGRES, ProbeResult
 
 PG_URL = "postgresql://cox_user:hunter2/secret@db.example.com:5432/cox"
 TRACES = "s3://cox-traces/runs"
-SQLITE_URL = "sqlite:////home/me/.cox/runs/cox.db"
+SQLITE_URL = "sqlite:////home/user/.cox/runs/cox.db"
 OK_PROBES = [ProbeResult(POSTGRES, True, "reachable"), ProbeResult(OBJECT_STORE, True, "reachable")]
 
 
 def test_files_mode_is_one_ok_row_about_local_files():
-    rows = doctor.store_rows("files", SQLITE_URL, "/home/me/.cox/runs/traces", [])
+    rows = doctor.store_rows("files", SQLITE_URL, "/home/user/.cox/runs/traces", [])
     assert rows == [
         {"check": "shared store", "ok": True, "detail": "the run store and traces are local files, which is the default"}
     ]
@@ -60,12 +60,12 @@ def test_shared_mode_with_sqlite_url_is_one_warn_row():
 
 
 def test_shared_mode_with_local_path_is_one_warn_row():
-    rows = doctor.store_rows("shared", "/home/me/.cox/runs/cox.db", TRACES, [])
+    rows = doctor.store_rows("shared", "/home/user/.cox/runs/cox.db", TRACES, [])
     assert [r.get("warn") for r in rows] == [True]
 
 
 def test_files_mode_with_postgres_url_is_one_warn_row():
-    rows = doctor.store_rows("files", PG_URL, "/home/me/.cox/runs/traces", [])
+    rows = doctor.store_rows("files", PG_URL, "/home/user/.cox/runs/traces", [])
     assert rows == [
         {
             "check": "shared store",
@@ -78,7 +78,7 @@ def test_files_mode_with_postgres_url_is_one_warn_row():
 
 
 def test_shared_mode_with_local_traces_says_so_instead_of_an_empty_bucket():
-    rows = doctor.store_rows("shared", PG_URL, "/home/me/.cox/runs/traces", OK_PROBES)
+    rows = doctor.store_rows("shared", PG_URL, "/home/user/.cox/runs/traces", OK_PROBES)
     assert rows[0]["detail"] == "shared store reachable: postgres host db.example.com, traces are local files"
 
 
