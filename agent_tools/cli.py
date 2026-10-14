@@ -5822,9 +5822,38 @@ def _versions(a: argparse.Namespace) -> int:
     facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
               "provider_cli_on_path": False}
     schema_versions = _schema_versions(str(root / "harness"), str(root / "cartridges"))
-    display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s,
+    from agent_tools import versions_hint
+    from agent_tools.version_info import UNKNOWN, package_version
+
+    def git_out(*args: str) -> str | None:
+        try:
+            done = subprocess.run(["git", "-C", *args], capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    umbrella_tag = git_out(str(root / "coxswain"), "describe", "--tags") or None
+    release = package_version()
+    release_tag = None if release == UNKNOWN else release
+    hint = versions_hint.umbrella_hint(umbrella_tag, release_tag)
+
+    def offered(component: str) -> frozenset[str]:
+        return frozenset((git_out(str(root / component), "tag", "--list") or "").split())
+
+    def label(component: str, pinned: str | None, status: str) -> str:
+        # Only a drift row pinned at the umbrella's own release is explained by a stale umbrella; a component
+        # with its own numbering keeps "drift". `git tag --list` runs for those rows alone.
+        if hint is None or umbrella_tag is None or release_tag is None or status != "drift" or not pinned:
+            return status
+        if not versions_hint.same_release(pinned, umbrella_tag):
+            return status
+        return versions_hint.status_label(status, pinned, release_tag, offered(component))
+
+    display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": label(c, p, s),
                 "schema": schema.cell(schema_versions.get(c)) if c in schema_versions else "?"}
                for c, p, i, s in install.rows(manifest, facts)]
+    if hint:
+        print(hint)
     print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status", "schema"]))
     return 0
 
