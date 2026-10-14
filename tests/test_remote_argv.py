@@ -1,10 +1,12 @@
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from agent_tools.remote_argv import (
+    auth_status_argv,
     doctor_argv,
     env_check_argv,
     git_fetch_argv,
@@ -25,6 +27,39 @@ def test_ssh_argv_joins_the_remote_command_into_one_quoted_word():
         "me@box",
         "echo 'a b' 'it'\"'\"'s'",
     ]
+
+
+_SSH_HEAD = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3", "me@box"]
+_LOGIN_SCRIPT = "'exec \"${SHELL:-/bin/sh}\" -l -i -c \"$1\"'"
+
+
+def test_ssh_argv_runs_the_auth_status_command_in_the_login_shell():
+    assert ssh_argv("me@box", auth_status_argv()) == [
+        *_SSH_HEAD,
+        f"/bin/sh -c {_LOGIN_SCRIPT} login-shell 'claude auth status'",
+    ]
+
+
+def test_ssh_argv_runs_the_lane_launch_command_in_the_login_shell():
+    inner = "cox route launch epic --initiative /ws/work/init --run-id r1 --label lbl --no-claim"
+    assert ssh_argv("me@box", launch_argv("/ws/work/init", "r1", "lbl")) == [
+        *_SSH_HEAD,
+        f"/bin/sh -c {_LOGIN_SCRIPT} login-shell '{inner}'",
+    ]
+
+
+def test_ssh_argv_keeps_an_inner_command_with_spaces_and_quotes_intact_in_the_login_shell():
+    inner = ["claude", "say", "a b", "it's"]
+    word = ssh_argv("me@box", inner)[-1]
+    assert word == (
+        f"/bin/sh -c {_LOGIN_SCRIPT} login-shell "
+        "'claude say '\"'\"'a b'\"'\"' '\"'\"'it'\"'\"'\"'\"'\"'\"'\"'\"'s'\"'\"''"
+    )
+    assert shlex.split(word)[-1] == shlex.join(inner)
+
+
+def test_ssh_argv_leaves_a_non_claude_command_unwrapped():
+    assert ssh_argv("me@box", env_check_argv("X"))[-1] == "printenv X"
 
 
 def test_ssh_argv_bounds_the_connect_and_a_silent_connection_without_batch_mode():

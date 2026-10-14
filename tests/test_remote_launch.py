@@ -93,11 +93,7 @@ def test_launch_plan_is_the_rsync_argv_then_the_ssh_argv():
     host = LaneHost("box2", "me@box2", "/ws")
     assert launch_plan(host, "init-x", "init-x-1", "l") == [
         [*RSYNC_BOUND, "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
-        [
-            *SSH_BOUND,
-            "me@box2",
-            "cox route launch epic --initiative /ws/work/init-x --run-id init-x-1 --label l --no-claim",
-        ],
+        ssh_argv("me@box2", launch_argv("/ws/work/init-x", "init-x-1", "l")),
     ]
 
 
@@ -112,11 +108,7 @@ def test_launch_plan_with_a_repo_returns_three_argv():
     assert launch_plan(host, "init-x", "init-x-1", "l", repo="/r") == [
         [*RSYNC_BOUND, "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
         ssh_argv("me@box2", sync_argv("/r")),
-        [
-            *SSH_BOUND,
-            "me@box2",
-            "cox route launch epic --initiative /ws/work/init-x --run-id init-x-1 --label l --no-claim",
-        ],
+        ssh_argv("me@box2", launch_argv("/ws/work/init-x", "init-x-1", "l")),
     ]
 
 

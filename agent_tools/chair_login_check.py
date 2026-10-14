@@ -13,6 +13,11 @@ false `login_lapsed`. A host whose name equals `socket.gethostname()` runs `clau
 out. A logged-out reply therefore runs one `claude -p` to renew before it counts as a failure, unless the
 refresh token itself is expired. A failure blocks the host only on its second in a row.
 
+A host authenticated by an env-provided `oauth_token` reports `loggedIn` true, but only to a login shell
+that reads the startup file exporting it. The wrong belief was that the plain-shell reply was the host's
+status: it reads logged out, and neither the renew nor the keychain lookup can see the token. `ssh_argv`
+supplies the login shell, so a token host takes the logged-in return in `_claude_check` and never renews.
+
 A host running a `runner` other than `claude-code` has no `claude` CLI to ask, so its readiness check
 reads `env_names` (a provider profile's `auth_env`/`endpoint_env`) off the host instead, one `printenv`
 per name, over the same local/ssh split. `claude` is never invoked on that branch.

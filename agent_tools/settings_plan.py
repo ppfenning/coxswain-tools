@@ -30,7 +30,7 @@ from agent_tools import chair_cap, route
 
 # Private names, imported the way settings_model.py imports them.
 from agent_tools.editor_model import _MISSING, _get, _set_nested
-from agent_tools.settings_model import Setting, setting_for
+from agent_tools.settings_model import STORE_MODES, Setting, setting_for
 
 # Cartridge keys the chair reads, with the reader it calls and the rule it enforces.
 _CHAIR_READS = {
@@ -95,7 +95,7 @@ def _parts(scope: str, doc: dict, path: str) -> list[str]:
 
 # Private names of route, the profile parser's own key sets.
 _PROFILE_SPEND_KEYS = route._SPEND_KEYS | route._SPEND_TEXT_KEYS
-_PROFILE_BLOCKS = ("spend", "chair")
+_PROFILE_BLOCKS = ("spend", "chair", "store")
 
 
 def _profile_scalar(value: object) -> str:
@@ -167,6 +167,8 @@ def plan_set(
     value = _coerce(_get(doc, ".".join(parts)), raw)
     if isinstance(value, PlanError):
         return PlanError(f"{scope}:{key}: {value.reason}")
+    if setting.scope == "profile" and setting.path == "store.mode" and value not in STORE_MODES:
+        return PlanError(f"store.mode must be one of {', '.join(STORE_MODES)}, got '{value}'")
     new_text = _dump(setting.scope, _set_nested(doc, parts, value))
     chair_error = _chair_error(setting, new_text)
     if chair_error is not None:

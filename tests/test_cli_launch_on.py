@@ -7,6 +7,7 @@ from test_route_cli import _init_repo, _unmeasured_window, _wait_for, _write_har
 
 from agent_tools import cli, route, usage_window
 from agent_tools.cli import main
+from agent_tools.remote_argv import auth_status_argv, ssh_argv
 
 needs_rsync = pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync is not installed")
 SSH_BOUND = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
@@ -145,7 +146,7 @@ def test_on_a_host_not_logged_in_refuses_before_copying_and_writes_no_remote_rec
     out = capsys.readouterr().out
     assert rc == 2
     assert "routing: launch on box failed at auth: claude auth: not logged in on the host (run claude auth login there)" in out
-    assert asked == [[*SSH_BOUND, "me@box", "claude auth status"]]
+    assert asked == [ssh_argv("me@box", auth_status_argv())]
     assert calls == []
     assert _run_files(ws) == []
 
@@ -322,7 +323,7 @@ def test_on_an_unreadable_provider_profile_keeps_the_claude_auth_check(tmp_path,
     _no_local_process(monkeypatch)
     monkeypatch.setattr(cli, "_host_auth_output", lambda a: asked.append(a) or '{"loggedIn": true}')
     assert main([*argv, "--on", "box"]) == 0
-    assert asked == [[*SSH_BOUND, "me@box", "claude auth status"]]
+    assert asked == [ssh_argv("me@box", auth_status_argv())]
 
 
 def test_on_a_non_claude_runner_checks_the_auth_env_var_and_never_asks_claude_auth(tmp_path, monkeypatch):
