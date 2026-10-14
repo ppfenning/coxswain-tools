@@ -5162,13 +5162,38 @@ def _lint_checkout(repo: str | None, items: list[dict]) -> tuple[frozenset[str],
     return paths, {name: found for name, found in tops.items() if found}
 
 
+def _route_lint_dir(a: argparse.Namespace) -> Path | None:
+    """Edge. The lint argument as an existing directory, else as an initiative id under the profile's
+    `workspace_dir/work`. None, after printing an error that names both forms, when neither exists."""
+    given = Path(a.initiative_dir)
+    if given.is_dir():
+        return given
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(text) if text is not None else {}
+    except route.ProfileError:
+        profile = {}
+    workspace = profile.get("workspace_dir", "")
+    by_id = Path(workspace).expanduser() / "work" / a.initiative_dir if workspace else None
+    if by_id is not None and by_id.is_dir():
+        return by_id
+    print(
+        f"routing: {a.initiative_dir} is neither an initiative directory nor a known initiative id "
+        "(pass a directory path, or an initiative id found under work/ in the profile's workspace_dir)"
+    )
+    return None
+
+
 def _route_lint(a: argparse.Namespace) -> int:
     """work-shape.md §3: `cox route lint <initiative>`, before dispatch.
     `--repo` falls back to the initiative's own `repo:` frontmatter; only
     when neither names one does the reach rule stand down, and that is
     said once here rather than left for `lint_items` to flag every path.
+    A skipped reach check with any surface listed fails: skipping is never a pass.
     """
-    initiative_dir = Path(a.initiative_dir)
+    initiative_dir = _route_lint_dir(a)
+    if initiative_dir is None:
+        return 2
     items = _merge_initiative_tickets(initiative_dir)
     repo = a.repo
     if not repo:
@@ -5176,6 +5201,7 @@ def _route_lint(a: argparse.Namespace) -> int:
         if init_path.exists():
             init_fields, _ = route.parse_frontmatter(init_path.read_text(encoding="utf-8"))
             repo = init_fields.get("repo")
+    skipped_with_surfaces = not repo and any(item.get("surfaces") for item in items)
     if not repo:
         print(f"routing: no repo found for {a.initiative_dir}; reach check skipped")
     home = os.path.expanduser("~")
@@ -5186,7 +5212,10 @@ def _route_lint(a: argparse.Namespace) -> int:
     )
     for problem in problems:
         print(f"{problem.task} {problem.rule}: {problem.detail} -> {problem.fix}")
-    return 2 if any(p.rule in ("reach", "coupling", "phase_needs", "home_path", *_SURFACE_RULES) for p in problems) else 0
+    if skipped_with_surfaces:
+        print("routing: surfaces are listed but the reach check was skipped; name a repo with repo: or --repo")
+    failing = ("reach", "coupling", "phase_needs", "home_path", *_SURFACE_RULES)
+    return 2 if skipped_with_surfaces or any(p.rule in failing for p in problems) else 0
 
 
 def _route_groups(a: argparse.Namespace) -> int:
