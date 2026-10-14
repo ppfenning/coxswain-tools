@@ -1,5 +1,6 @@
 """Pure argv builders for ssh, rsync and git fetch; a location is a caller-formed string."""
 
+import json
 import re
 import shlex
 
@@ -39,6 +40,21 @@ def doctor_argv() -> list[str]:
 
 def auth_status_argv() -> list[str]:
     return ["claude", "auth", "status"]
+
+
+def json_object_in(output: str) -> dict | None:
+    """The first JSON object in `output`, or None. A login shell can print startup noise around it."""
+    decoder = json.JSONDecoder()
+    for start, char in enumerate(output):
+        if char != "{" or (start and output[start - 1] != "\n"):
+            continue
+        try:
+            value, _ = decoder.raw_decode(output[start:])
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
 
 
 def env_check_argv(var: str) -> list[str]:

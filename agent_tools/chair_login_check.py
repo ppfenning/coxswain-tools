@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from agent_tools import chair_login_watch, host_cmd
-from agent_tools.remote_argv import auth_status_argv, env_check_argv, ssh_argv
+from agent_tools.remote_argv import auth_status_argv, env_check_argv, json_object_in, ssh_argv
 
 BLOCK_AFTER_FAILURES = 2
 REASON_OUTPUT_CHARS = 200
@@ -75,11 +75,8 @@ def _remote_argv(host_name: str, ssh: str, argv: list[str]) -> list[str]:
 def _stdout_verdict(stdout: str) -> bool | None:
     """True when stdout is JSON with `loggedIn` true; False for any other JSON object; None when stdout is
     not a JSON object."""
-    try:
-        status = json.loads(stdout)
-    except ValueError:
-        return None
-    return status.get("loggedIn") is True if isinstance(status, dict) else None
+    status = json_object_in(stdout)
+    return status.get("loggedIn") is True if status is not None else None
 
 
 def _failure_reason(returncode: int, output: str) -> str:

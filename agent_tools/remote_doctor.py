@@ -1,19 +1,15 @@
 """Edge: run `cox setup doctor` on a lane host over ssh; the caller prints what comes back."""
 
-import json
 from collections.abc import Callable
 
 from agent_tools.lane_hosts import LaneHost
-from agent_tools.remote_argv import auth_status_argv, doctor_argv, env_check_argv, ssh_argv
+from agent_tools.remote_argv import auth_status_argv, doctor_argv, env_check_argv, json_object_in, ssh_argv
 
 
 def auth_verdict(output: str) -> str | None:
     """None when `claude auth status` output is JSON with `loggedIn` true; otherwise the refusal line."""
-    try:
-        status = json.loads(output)
-    except ValueError:
-        return f"claude auth: status unreadable: {output.strip()[:80]}"
-    if not isinstance(status, dict):
+    status = json_object_in(output)
+    if status is None:
         return f"claude auth: status unreadable: {output.strip()[:80]}"
     if status.get("loggedIn") is True:
         return None
