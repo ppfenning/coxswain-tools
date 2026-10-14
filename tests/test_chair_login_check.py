@@ -3,6 +3,7 @@ import json
 from agent_tools import chair_login_check
 from agent_tools.chair_exec import ArgvResult
 from agent_tools.chair_login_check import check_login_on_host
+from agent_tools.remote_argv import auth_status_argv, ssh_argv
 
 NOW = "2026-09-28T00:00:00+00:00"
 SSH_BOUND = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
@@ -71,7 +72,7 @@ def test_a_logged_in_host_merges_login_ok_true_and_now_and_keeps_existing_keys()
     assert versions["login_checked_at"] == NOW
     assert versions["login_failures"] == 0
     assert versions["cox"] == "1.2.3"
-    assert calls == [[*SSH_BOUND, "user@shed", "claude auth status"]]
+    assert calls == [ssh_argv("user@shed", auth_status_argv())]
 
 
 def test_a_stderr_line_before_the_json_still_parses_as_logged_in() -> None:
@@ -98,7 +99,7 @@ def test_a_different_host_than_the_loop_s_own_is_still_checked_over_ssh(monkeypa
 
     check_login_on_host("shed", "user@shed", {}, NOW, run, _recording_cli([]))
 
-    assert calls == [[*SSH_BOUND, "user@shed", "claude auth status"]]
+    assert calls == [ssh_argv("user@shed", auth_status_argv())]
 
 
 def test_a_claude_code_runner_call_builds_the_same_argv_and_never_calls_env_check_argv(monkeypatch) -> None:
@@ -112,7 +113,7 @@ def test_a_claude_code_runner_call_builds_the_same_argv_and_never_calls_env_chec
 
     check_login_on_host("shed", "user@shed", {}, NOW, run, _recording_cli(captured), runner="claude-code")
 
-    assert calls == [[*SSH_BOUND, "user@shed", "claude auth status"]]
+    assert calls == [ssh_argv("user@shed", auth_status_argv())]
     assert captured[0] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0}
 
 
