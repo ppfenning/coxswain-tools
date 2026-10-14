@@ -4,11 +4,13 @@ phase) builds a Facts mapping and hands it to `checks`."""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 
-from agent_tools import records, route, schema
+from agent_tools import records, route, schema, store_dialect
+from agent_tools.store_probe import OBJECT_STORE, POSTGRES, ProbeResult
 
-__all__ = ["checks", "exit_code", "freshness_rows", "parquet_line", "render", "unit_path_entries"]
+__all__ = ["checks", "exit_code", "freshness_rows", "parquet_line", "render", "store_rows", "unit_path_entries"]
 
 _MISSING = object()
 _SKIPPED = "skipped: no profile"
@@ -362,6 +364,68 @@ def freshness_rows(
         return [_warn_row(_FRESHNESS_SKIPPED)]
     lines = freshness_fn(profile, catalog) if vendor_ids is None else freshness_fn(profile, catalog, vendor_ids)
     return [_warn_row(line) for line in lines]
+
+
+_STORE_CHECK = "shared store"
+
+
+def _shared_row(ok: bool, detail: str, check: str = _STORE_CHECK, warn: bool = False) -> dict:
+    row = {"check": check, "ok": ok, "detail": detail}
+    return {**row, "warn": True} if warn else row
+
+
+_HOST = re.compile(r"[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\]")
+_BUCKET = re.compile(r"[A-Za-z0-9._-]+")
+_DSN_KEY = re.compile(r"(^|\s)(host|hostaddr|dbname|user|password|port|sslmode)=")
+_REQUIRED_PROBES = (POSTGRES, OBJECT_STORE)
+
+
+def _authority(url: str) -> str:
+    """Text after the last `@`, so a `/` inside a password cannot end the userinfo early, up to the path."""
+    return re.split(r"[/?#]", url.partition("://")[2].rpartition("@")[2], maxsplit=1)[0]
+
+
+def _host_of(url: str) -> str:
+    """The bare host, or "" unless it is a plain hostname or IP literal."""
+    authority = _authority(url)
+    host = authority.partition("]")[0] + "]" if authority.startswith("[") else authority.partition(":")[0]
+    return host if _HOST.fullmatch(host) else ""
+
+
+def _traces_phrase(traces_url: str) -> str:
+    if not traces_url.lower().startswith("s3://"):
+        return "traces are local files"
+    bucket = _authority(traces_url)
+    return f"traces bucket {bucket if _BUCKET.fullmatch(bucket) else 'unnamed'}"
+
+
+def _is_dsn(url: str) -> bool:
+    return "://" not in url and _DSN_KEY.search(url) is not None
+
+
+def store_rows(mode: str, store_url: str, traces_url: str, probe_results: list[ProbeResult]) -> list[dict]:
+    """Rows for the chosen store. Warnings keep `ok` True. A row never holds a URL, user, password or key."""
+    if _is_dsn(store_url):
+        return [_shared_row(False, "the storage setting is a connection string, not a URL; use a postgres URL")]
+    try:
+        shared_url = store_dialect.is_postgres(store_url)
+    except ValueError:
+        return [_shared_row(False, "the storage URL could not be parsed; check its format")]
+    if mode == "files":
+        if shared_url:
+            return [_shared_row(True, "the profile points at a shared store while the setting says files", warn=True)]
+        return [_shared_row(True, "the run store and traces are local files, which is the default")]
+    if mode == "shared":
+        if not shared_url:
+            return [_shared_row(True, "the setting says shared while the profile still points at local files", warn=True)]
+        seen = {r.component for r in probe_results}
+        problems = [_shared_row(False, r.detail, check=f"{_STORE_CHECK} {r.component}") for r in probe_results if not r.ok]
+        unprobed = [_shared_row(False, _NOT_CHECKED, check=f"{_STORE_CHECK} {c}") for c in _REQUIRED_PROBES if c not in seen]
+        if problems or unprobed:
+            return problems + unprobed
+        host = _host_of(store_url) or "unnamed"
+        return [_shared_row(True, f"shared store reachable: postgres host {host}, {_traces_phrase(traces_url)}")]
+    return [_shared_row(False, "the store setting is neither files nor shared; set it to one of those")]
 
 
 def exit_code(rows: list[dict]) -> int:
