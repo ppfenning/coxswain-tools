@@ -30,6 +30,7 @@ from pathlib import PurePath
 from typing import TYPE_CHECKING, Any
 
 from agent_tools.card_commits import card_commit_steps
+from agent_tools.card_pr import card_pr_steps
 from agent_tools.chair_plan_land import fetch_action
 
 if TYPE_CHECKING:
@@ -308,8 +309,8 @@ def mark_done(tasks: Sequence[str], merged: Collection[str]) -> list[str]:
 
 
 def _card_phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
-                     repo_facts: dict[str, Any] | None, repo: str) -> list[dict[str, Any]]:
-    """apply_task per approved task of `repo` onto the record's `card_branch`, checks, push, mark_done; never a PR or merge."""
+                     repo_facts: dict[str, Any] | None, repo: str, default_branch: str = "main") -> list[dict[str, Any]]:
+    """apply_task per approved task of `repo` onto the record's `card_branch`, checks, push, mark_done; then one pr_create when the record has `last_phase`. Never a merge."""
     branch = phase_record["card_branch"]
     if not repo:
         return [{"kind": "refuse", "reason": f"card-mode land onto {branch} needs the repo name; none was given"}]
@@ -323,12 +324,16 @@ def _card_phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], 
     skipped = [i.get("id") for i in items if i.get("status") == "approved" and i.get("id") not in done]
     left = [{"kind": "note", "unmerged": skipped,
              "reason": f"{', '.join(skipped)}: approved item not applied to {branch}; left in current state"}] if skipped else []
+    # `last_phase` is set by the caller on the initiative's final phase; the card finds the PR by its head branch.
+    pr = card_pr_steps(phase_record.get("initiative"), {repo: {"task_ids": [s["task"] for s in applied],
+                                                             "default_branch": default_branch}}) if phase_record.get("last_phase") else []
     return [
         *applied,
         {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": branch},
         {"kind": "push", "branch": branch},
         *[{"kind": "mark_done", "task": s["task"]} for s in applied],
         *left,
+        *pr,
     ]
 
 
@@ -357,7 +362,7 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     if refusal is not None:
         return [{"kind": "refuse", "reason": refusal}]
     if phase_record.get("card_branch"):
-        return _card_phase_plan(phase_record, items, task_records, repo_facts, repo)
+        return _card_phase_plan(phase_record, items, task_records, repo_facts, repo, default_branch)
     run, phase, initiative = phase_record.get("run"), phase_record.get("phase"), phase_record.get("initiative")
     phase_branch = f"epic/{initiative}/{phase}"
     pr_branch = f"pr/{initiative}--{phase}"
