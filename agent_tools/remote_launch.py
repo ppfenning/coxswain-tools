@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from agent_tools import repo_path
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import (
     agent_refspec,
@@ -33,7 +34,7 @@ class Relaunch:
 
     prior_run: str
     tasks: tuple[str, ...] = ()
-    local_repo: str | None = None  # None: the chair's checkout is at the same path as the lane host's `repo`
+    local_repo: str | None = None  # None: the chair's checkout is `repo` expanded against the chair's home
 
 
 def _relaunch_branches(initiative: str, relaunch: Relaunch) -> list[tuple[str, str]]:
@@ -53,6 +54,8 @@ def launch_plan(
     repo: str | None = None,
     harness_dir: str | None = None,
     relaunch: Relaunch | None = None,
+    *,
+    home: str | None = None,
 ) -> list[list[str]]:
     """The argv that `launch_on_host` runs in order: the rsync push, then, when `harness_dir` is
     given, the sync of the harness on the lane host, then, when `repo` is given, the sync of `repo`
@@ -61,8 +64,9 @@ def launch_plan(
 
     rsync needs the parent of the destination to exist; the copy keeps the local work/<id> layout.
     `route launch` reads --initiative as a path from its cwd, and an ssh command starts in the home directory.
-    `repo` is the same path on both machines (each keeps it under ~/repos/<name>), so it is passed
-    through unchanged rather than rewritten under host.workspace_dir; so is `harness_dir`."""
+    `repo` may be tilde-prefixed or recorded under another machine's home, so with `home` given it is mapped
+    per use: home-relative for the ssh sync, tilde form for the push destination, expanded for the local side.
+    Without `home` it is passed through unchanged. `harness_dir` is always passed through unchanged."""
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
     src = f"work/{initiative}"
     remote_dir = f"{host.workspace_dir.rstrip('/')}/{src}"
@@ -71,12 +75,20 @@ def launch_plan(
     rsync_step = rsync_push_argv(src, place(remote_dir), mirror=True)
     launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label))
     harness_steps = [] if harness_dir is None else [ssh_argv(host.ssh, sync_argv(harness_dir))]
-    repo_steps = [] if repo is None else [ssh_argv(host.ssh, sync_argv(repo))]
+    sync_repo = None if repo is None or home is None else repo_path.host_form(repo, home)
+    push_dest = None if repo is None or home is None else repo_path.contract(repo, home)
+    local_default = None if repo is None or home is None else repo_path.expand(repo, home)
+    repo_steps = [] if repo is None else [ssh_argv(host.ssh, sync_argv(repo if sync_repo is None else sync_repo))]
     push_steps = (
         []
         if relaunch is None or repo is None
         else [
-            branch_push_argv(repo if relaunch.local_repo is None else relaunch.local_repo, host.ssh, repo, refspec)
+            branch_push_argv(
+                relaunch.local_repo or local_default or repo,
+                host.ssh,
+                push_dest or repo,
+                refspec,
+            )
             for _, refspec in _relaunch_branches(initiative, relaunch)
         ]
     )
@@ -107,6 +119,7 @@ def launch_on_host(
     relaunch: Relaunch | None = None,
     *,
     preflight: str | None = None,
+    home: str | None = None,
 ) -> dict | LaunchError:
     """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on."""
     if preflight is not None:
@@ -115,7 +128,7 @@ def launch_on_host(
         return LaunchError(
             "push", f"a relocated relaunch to {host.name} has no repo to push epic/{initiative}/* into: nothing was run"
         )
-    plan = launch_plan(host, initiative, run_id, label, locate, repo, harness_dir, relaunch)
+    plan = launch_plan(host, initiative, run_id, label, locate, repo, harness_dir, relaunch, home=home)
     rsync_argv, ssh_cmd = plan[0], plan[-1]
     pushed = run(rsync_argv)
     if pushed != 0:
