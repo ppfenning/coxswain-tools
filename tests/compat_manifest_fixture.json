@@ -1,0 +1,19 @@
+{
+  "components": [
+    {
+      "name": "cox",
+      "version": "0.39.0",
+      "requires": {
+        "towpath": {"min": "0.38.0", "max": "0.39.0"}
+      }
+    },
+    {
+      "name": "towpath",
+      "version": "0.38.0",
+      "requires": {
+        "cox": {"min": "0.38.0", "max": "0.39.0"}
+      }
+    }
+  ],
+  "feed_schema_version": 1
+}
