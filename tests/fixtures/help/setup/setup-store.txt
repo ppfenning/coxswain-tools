@@ -1,0 +1,23 @@
+usage: cox setup store [-h] [--store STORE] [--host HOST] [--port PORT] [--database DATABASE]
+                       [--user USER] [--bucket BUCKET] [--endpoint ENDPOINT] [--region REGION]
+                       [--password-env PASSWORD_ENV] [--access-key-env ACCESS_KEY_ENV]
+                       [--secret-key-env SECRET_KEY_ENV] [--dry-run] [--allow-unreachable]
+
+options:
+  -h, --help            show this help message and exit
+  --store STORE         files or shared; asked in a terminal when omitted, else files
+  --host HOST           shared: Postgres host
+  --port PORT           shared: Postgres port
+  --database DATABASE   shared: Postgres database
+  --user USER           shared: Postgres user
+  --bucket BUCKET       shared: S3 bucket for traces
+  --endpoint ENDPOINT   shared: S3 endpoint URL
+  --region REGION       shared: S3 region
+  --password-env PASSWORD_ENV
+                        shared: NAME of the variable holding the Postgres password
+  --access-key-env ACCESS_KEY_ENV
+                        shared: NAME of the variable holding the S3 access key id
+  --secret-key-env SECRET_KEY_ENV
+                        shared: NAME of the variable holding the S3 secret key
+  --dry-run             validate and print; write and probe nothing
+  --allow-unreachable   exit 0 even when a probe fails

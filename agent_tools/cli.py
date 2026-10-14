@@ -177,6 +177,8 @@ runs_top_screen = _LazyModule("agent_tools.runs_top_screen")
 schema = _LazyModule("agent_tools.schema")
 settings_model = _LazyModule("agent_tools.settings_model")
 setup_install = _LazyModule("agent_tools.setup_install")
+setup_store = _LazyModule("agent_tools.setup_store")
+setup_store_io = _LazyModule("agent_tools.setup_store_io")
 sources = _LazyModule("agent_tools.sources")
 stats_causes = _LazyModule("agent_tools.stats_causes")
 stats_chair = _LazyModule("agent_tools.stats_chair")
@@ -194,6 +196,7 @@ steward = _LazyModule("agent_tools.steward")
 steward_draft = _LazyModule("agent_tools.steward_draft")
 store_cli = _LazyModule("agent_tools.store_cli")
 store_dialect = _LazyModule("agent_tools.store_dialect")
+store_probe = _LazyModule("agent_tools.store_probe")
 store_url = _LazyModule("agent_tools.store_url")
 towpath_launch = _LazyModule("agent_tools.towpath_launch")
 tracker = _LazyModule("agent_tools.tracker")
@@ -5638,6 +5641,157 @@ def _setup_install(a: argparse.Namespace) -> int:
     return 0
 
 
+# (attribute, prompt label, flag). The first seven are connection details; the last three name environment variables.
+_STORE_DETAILS = (
+    ("host", "Postgres host", "--host"),
+    ("port", "Postgres port", "--port"),
+    ("database", "Postgres database", "--database"),
+    ("user", "Postgres user", "--user"),
+    ("bucket", "S3 bucket", "--bucket"),
+    ("endpoint", "S3 endpoint (http:// or https://)", "--endpoint"),
+    ("region", "S3 region", "--region"),
+)
+# (SharedConnection field, attribute, prompt label, flag)
+_STORE_CREDENTIALS = (
+    ("pg_password", "password_env", "Environment variable holding the Postgres password", "--password-env"),
+    ("s3_access_key_id", "access_key_env", "Environment variable holding the S3 access key id", "--access-key-env"),
+    ("s3_secret_access_key", "secret_key_env", "Environment variable holding the S3 secret key", "--secret-key-env"),
+)
+
+
+def _git_exclude_file(directory: Path) -> Path | None:
+    """Edge. The enclosing repository's info/exclude; None outside a repository or without git."""
+    try:
+        done = subprocess.run(["git", "rev-parse", "--git-path", "info/exclude"], cwd=directory,
+                              capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    found = done.stdout.strip()
+    return directory / found if done.returncode == 0 and found else None
+
+
+@contextlib.contextmanager
+def _env_overlay(overlay: Mapping[str, str]):
+    """Edge. `store_probe` reads the S3 keys from os.environ under the names in the profile; the user's own variables
+    may differ, so the resolved values sit under those names for the probes only and the environment is restored."""
+    saved = {name: os.environ.get(name) for name in overlay}
+    os.environ.update(overlay)
+    try:
+        yield
+    finally:
+        for name, old in saved.items():
+            if old is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old
+
+
+def _probe_store(profile: Mapping, overlay: Mapping[str, str]) -> list:
+    """Edge, the default probes: one read-only Postgres connection and one bucket head. Never starts either service."""
+    with _env_overlay(overlay):
+        return [store_probe.probe_postgres(profile["storage_url"]),
+                store_probe.probe_object_store(profile["object_store"], profile["traces_url"])]
+
+
+def _asked_or_given(value, label: str, ask: Callable[[str], str], interactive: bool):
+    if value is not None:
+        return value
+    return ask(f"{label}: ").strip() if interactive else ""
+
+
+def _store_choice(a: argparse.Namespace, ask: Callable[[str], str], interactive: bool) -> str | None:
+    """Edge. The flag beats the prompt; no terminal means the default, with no prompt. None when the value is invalid."""
+    default = setup_store.default_store_choice()
+    if a.store is not None:
+        return setup_store.parse_store_choice(a.store)
+    if not interactive:
+        return default
+    answer = ask(f"Store for run records: {default} or shared [{default}]: ")
+    return setup_store.parse_store_choice(answer) if answer.strip() else default
+
+
+def _store_files(a: argparse.Namespace, settings_path: Path) -> int:
+    if a.dry_run:
+        print("dry run: would record store.mode files; nothing was written")
+        return 0
+    try:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        setup_store_io.apply_files_choice(settings_path)
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print("store: files; store.mode recorded and no shared profile written")
+    return 0
+
+
+def _store_shared(a: argparse.Namespace, settings_path: Path, env: Mapping[str, str], ask: Callable[[str], str],
+                  interactive: bool, probes: Callable | None, exclude_file: Path | None) -> int:
+    fields = (*_STORE_DETAILS, *((attr, label, flag) for _f, attr, label, flag in _STORE_CREDENTIALS))
+    values = {attr: _asked_or_given(getattr(a, attr), label, ask, interactive) for attr, label, _flag in fields}
+    missing = [flag for attr, _label, flag in fields if values[attr] in (None, "")]
+    if missing:
+        print(f"error: the shared store needs {', '.join(missing)}; pass the flags or run in a terminal",
+              file=sys.stderr)
+        return 2
+    creds = setup_store_io.credentials_from_env(
+        env, {field: values[attr] for field, attr, _label, _flag in _STORE_CREDENTIALS})
+    if creds["unset"]:
+        for var in creds["unset"]:
+            print(f"error: environment variable {var} is not set or is empty", file=sys.stderr)
+        return 2
+    try:
+        port = int(values["port"])
+    except ValueError:
+        print("error: the Postgres port must be a whole number", file=sys.stderr)
+        return 2
+    conn = setup_store.SharedConnection(
+        pg_host=values["host"], pg_port=port, pg_database=values["database"], pg_user=values["user"],
+        pg_password=creds["values"]["pg_password"], s3_endpoint=values["endpoint"], s3_bucket=values["bucket"],
+        s3_region=values["region"], s3_access_key_id=creds["values"]["s3_access_key_id"],
+        s3_secret_access_key=creds["values"]["s3_secret_access_key"],
+    )
+    problems = setup_store.validate_shared(conn)
+    if problems:
+        print("\n".join(f"error: {sentence}" for sentence in problems), file=sys.stderr)
+        return 2
+    if a.dry_run:
+        print(f"dry run: {setup_store.redacted_summary(conn)}; nothing was written")
+        return 0
+    try:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        print(setup_store_io.apply_shared_choice(
+            conn, settings_path, exclude_file or _git_exclude_file(settings_path.parent)))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"error: could not write the shared store files ({type(exc).__name__})", file=sys.stderr)
+        return 1
+    overlay = {setup_store.ACCESS_KEY_ENV: conn.s3_access_key_id, setup_store.SECRET_KEY_ENV: conn.s3_secret_access_key}
+    results = (probes or _probe_store)(setup_store.build_shared_profile(conn), overlay)
+    print(store_probe.summarize(results))
+    if all(r.ok for r in results):
+        return 0
+    print("warning: the shared store did not answer from this machine; the profile was kept", file=sys.stderr)
+    return 0 if a.allow_unreachable else 1
+
+
+def _setup_store(a: argparse.Namespace, *, env: Mapping[str, str] | None = None, ask: Callable[[str], str] = input,
+                 interactive: bool | None = None, probes: Callable | None = None,
+                 exclude_file: Path | None = None) -> int:
+    """Edge. Choose the store once (flag, else prompt in a terminal, else files) and hand off to the pure cores.
+    Starts no service: the user's Postgres and object store are only probed."""
+    tty = (sys.stdin.isatty() and sys.stdout.isatty()) if interactive is None else interactive
+    choice = _store_choice(a, ask, tty)
+    if choice is None:
+        print("error: the store must be files or shared", file=sys.stderr)
+        return 2
+    settings_path = _profile_path(a)
+    if choice == "files":
+        return _store_files(a, settings_path)
+    return _store_shared(a, settings_path, os.environ if env is None else env, ask, tty, probes, exclude_file)
+
+
 def _setup_fields(a: argparse.Namespace) -> tuple[str, str, str]:
     """(root, team, workspace) to prefill the TUI with, from the profile
     when it resolves, else empty strings — never a hard refusal here."""
@@ -7585,6 +7739,25 @@ SETUP_COMMANDS = [
             commands.Arg(("--weekly-ceiling-usd",), {"type": float, "default": None, "dest": "weekly_ceiling_usd", "help": "write spend: weekly_ceiling_usd into the profile"}),
         ),
         "agent_tools.cli:_setup_install", False, (),
+    ),
+    commands.Command(
+        "store", "setup", "choose files or a shared store for run records",
+        (
+            commands.Arg(("--store",), {"help": "files or shared; asked in a terminal when omitted, else files"}),
+            commands.Arg(("--host",), {"help": "shared: Postgres host"}),
+            commands.Arg(("--port",), {"type": int, "help": "shared: Postgres port"}),
+            commands.Arg(("--database",), {"help": "shared: Postgres database"}),
+            commands.Arg(("--user",), {"help": "shared: Postgres user"}),
+            commands.Arg(("--bucket",), {"help": "shared: S3 bucket for traces"}),
+            commands.Arg(("--endpoint",), {"help": "shared: S3 endpoint URL"}),
+            commands.Arg(("--region",), {"help": "shared: S3 region"}),
+            commands.Arg(("--password-env",), {"help": "shared: NAME of the variable holding the Postgres password"}),
+            commands.Arg(("--access-key-env",), {"help": "shared: NAME of the variable holding the S3 access key id"}),
+            commands.Arg(("--secret-key-env",), {"help": "shared: NAME of the variable holding the S3 secret key"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "validate and print; write and probe nothing"}),
+            commands.Arg(("--allow-unreachable",), {"action": "store_true", "help": "exit 0 even when a probe fails"}),
+        ),
+        "agent_tools.cli:_setup_store", False, (),
     ),
 ]
 

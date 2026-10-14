@@ -1,14 +1,15 @@
-usage: cox setup [-h] [--profile PROFILE] {doctor,install} ...
+usage: cox setup [-h] [--profile PROFILE] {doctor,install,store} ...
 
 Does this machine's profile actually work.
 
 positional arguments:
-  {doctor,install}
-    doctor           check this machine's profile against what it needs
-    install          clone components and write a profile for this machine
+  {doctor,install,store}
+    doctor              check this machine's profile against what it needs
+    install             clone components and write a profile for this machine
+    store               choose files or a shared store for run records
 
 options:
-  -h, --help         show this help message and exit
+  -h, --help            show this help message and exit
   --profile PROFILE
 
 examples:
