@@ -17,9 +17,20 @@ _SSH_BOUND_OPTIONS = [
 _RSYNC_BOUND_OPTIONS = ["-a", f"--timeout={LANE_HOST_TIMEOUT_S}", "-e", f"ssh -o {_CONNECT_OPTION}"]
 
 
+def login_shell_argv(remote_argv: list[str]) -> list[str]:
+    """Run the quoted command in `$SHELL -l -i -c` so startup files that export a token are read."""
+    script = 'exec "${SHELL:-/bin/sh}" -l -i -c "$1"'
+    return ["/bin/sh", "-c", script, "login-shell", shlex.join(remote_argv)]
+
+
+def _wants_login_shell(remote_argv: list[str]) -> bool:
+    return remote_argv[:1] == ["claude"] or remote_argv[:3] == ["cox", "route", "launch"]
+
+
 def ssh_argv(ssh: str, remote_argv: list[str]) -> list[str]:
     """`ssh` is a destination such as user@host; the remote shell sees one quoted command."""
-    return ["ssh", *_SSH_BOUND_OPTIONS, ssh, shlex.join(remote_argv)]
+    inner = login_shell_argv(remote_argv) if _wants_login_shell(remote_argv) else remote_argv
+    return ["ssh", *_SSH_BOUND_OPTIONS, ssh, shlex.join(inner)]
 
 
 def doctor_argv() -> list[str]:

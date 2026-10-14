@@ -7,7 +7,7 @@ _NOT_LOGGED_IN = "claude auth: not logged in on the host (run claude auth login 
 
 def _fake_run(auth_output, doctor_code=0):
     def run(argv):
-        if argv[-1] == "claude auth status":
+        if "claude auth status" in argv[-1]:
             return 0, auth_output
         return doctor_code, "ok rows"
 
