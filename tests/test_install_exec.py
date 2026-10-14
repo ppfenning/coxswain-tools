@@ -199,8 +199,8 @@ def test_cli_install_without_dry_run_executes_and_the_table_reflects_what_landed
 
 def test_cli_upgrade_to_overrides_every_pinned_tag_and_reaches_the_checkout_argv(monkeypatch, tmp_path, capsys):
     """`--to VERSION` must change what gets checked out, not just parse:
-    a component already at the old pin must now plan as `fetch_checkout`
-    to the requested version, and that version must reach the real argv."""
+    the umbrella and a component already at the old pin both move to the
+    requested version, and that version must reach the real argv."""
     from agent_tools import cli
 
     manifest_path = tmp_path / "manifest.toml"
@@ -209,13 +209,15 @@ def test_cli_upgrade_to_overrides_every_pinned_tag_and_reaches_the_checkout_argv
         "[providers.claude-code]\nstatus = \"supported\"\n"
     )
     root = tmp_path / "root"
+    (root / "coxswain").mkdir(parents=True)
+    (root / "coxswain" / "manifest.toml").write_text(manifest_path.read_text())
     monkeypatch.setattr(cli, "_checkout_facts",
                          lambda path: {"present": True, "tag": "v1.0.0", "dirty": False})
     calls = []
 
     def fake_run(argv, cwd):
         calls.append(argv)
-        return 0, ""
+        return (0, "abc\trefs/tags/v2.0.0\n") if "ls-remote" in argv else (0, "")
 
     monkeypatch.setattr(cli, "_real_run", fake_run)
 
@@ -224,8 +226,40 @@ def test_cli_upgrade_to_overrides_every_pinned_tag_and_reaches_the_checkout_argv
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert "fetch_checkout harness" in out
-    assert any(argv[:2] == ["git", "-C"] and "v2.0.0" in argv for argv in calls)
+    assert "moving harness: v1.0.0 to v2.0.0" in out
+    assert ["git", "-C", str(root / "coxswain"), "checkout", "v2.0.0"] in calls
+    assert ["git", "-C", str(root / "harness"), "checkout", "v2.0.0"] in calls
+
+
+def test_cli_upgrade_plans_components_from_the_moved_umbrella_manifest_not_the_manifest_flag(monkeypatch, tmp_path, capsys):
+    """The pins come from `<root>/coxswain/manifest.toml` after the umbrella moves, a new component is cloned,
+    and a prerelease tag is never the default target."""
+    from agent_tools import cli
+
+    old = "[components.harness]\nrepo = \"org/harness\"\ntag = \"v1.0.0\"\nrequired = true\n\n[providers.claude-code]\nstatus = \"supported\"\n"
+    new = (old.replace("v1.0.0", "v3.0.0")
+           + "\n[components.dash]\nrepo = \"org/dash\"\ntag = \"v3.0.0\"\nrequired = true\n")
+    flag_manifest = tmp_path / "manifest.toml"
+    flag_manifest.write_text(old)
+    root = tmp_path / "root"
+    (root / "coxswain").mkdir(parents=True)
+    (root / "coxswain" / "manifest.toml").write_text(new)
+    monkeypatch.setattr(cli, "_checkout_facts", lambda path: {"present": path.name != "dash", "tag": "v1.0.0", "dirty": False})
+    calls = []
+
+    def fake_run(argv, cwd):
+        calls.append(argv)
+        return (0, "a\trefs/tags/v3.1.0-rc1\nb\trefs/tags/v3.0.0\n") if "ls-remote" in argv else (0, "")
+
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+
+    rc = cli.main(["upgrade", "--root", str(root), "--manifest", str(flag_manifest), "--provider", "claude-code"])
+
+    assert rc == 0
+    assert ["git", "-C", str(root / "coxswain"), "checkout", "v3.0.0"] in calls
+    assert ["git", "-C", str(root / "harness"), "checkout", "v3.0.0"] in calls
+    assert ["git", "clone", "https://github.com/org/dash.git", str(root / "dash")] in calls
+    assert ["git", "-C", str(root / "harness"), "checkout", "v1.0.0"] not in calls
 
 
 def test_cli_install_a_refuse_step_prints_refused_not_failed_and_never_calls_run(monkeypatch, tmp_path, capsys):
