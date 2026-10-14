@@ -5200,27 +5200,36 @@ else:
     except Exception as exc:
         out["overlay_errors"] = [f"{type(exc).__name__}: {exc}"]
 provider_profile = os.environ.get("AGENT_TOOLS_PROVIDER_PROFILE")
-if provider_profile is not None:
+if not provider_profile:
+    out["freshness"] = ["model freshness not checked: AGENT_TOOLS_PROVIDER_PROFILE is unset"]
+else:
     try:
         from core.model_freshness import freshness_warnings
     except ImportError:
         out["freshness"] = None  # a core too old for the check: the doctor prints one skip row
     else:
+        from pathlib import Path
+        # load_profile reads the file with Path.read_text, so it takes a Path, never the raw env str.
+        profile_path = Path(provider_profile).expanduser()
         try:
             import core
-            from pathlib import Path
             from core.catalog import load_catalog
             from core.profile import load_profile
-            catalog_path = Path(core.__file__).resolve().parent.parent / "providers" / "catalog.yaml"
-            catalog = load_catalog(catalog_path)
-            profile = catalog if isinstance(catalog, list) else load_profile(provider_profile, catalog_path)
-            errors = catalog if isinstance(catalog, list) else profile if isinstance(profile, list) else None
-            if errors is None:
-                out["freshness"] = list(freshness_warnings(profile, catalog))
+            if not profile_path.is_file():
+                out["freshness"] = [f"model freshness not checked: provider profile not found at {profile_path}"]
+            elif not os.access(profile_path, os.R_OK):
+                out["freshness"] = [f"model freshness not checked: provider profile unreadable at {profile_path}"]
             else:
-                out["freshness"] = ["model freshness not checked: " + str(errors[0] if errors else "unknown error")]
-        except Exception as exc:
-            out["freshness"] = [f"model freshness not checked: {type(exc).__name__}: {exc}"]
+                catalog_path = Path(core.__file__).resolve().parent.parent / "providers" / "catalog.yaml"
+                catalog = load_catalog(catalog_path)
+                profile = catalog if isinstance(catalog, list) else load_profile(profile_path, catalog_path)
+                errors = catalog if isinstance(catalog, list) else profile if isinstance(profile, list) else None
+                if errors is None:
+                    out["freshness"] = list(freshness_warnings(profile, catalog))
+                else:
+                    out["freshness"] = ["model freshness not checked: " + str(errors[0] if errors else "unknown error")]
+        except Exception:
+            out["freshness"] = [f"model freshness not checked: could not evaluate the provider profile at {profile_path}"]
 print(json.dumps(out))
 '''
 
