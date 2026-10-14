@@ -34,8 +34,8 @@ _PARENT_QUERY = "query($id:ID!){node(id:$id){... on Issue{parent{id}}}}"
 
 
 def auth_ok(run) -> bool:
-    """Whether `gh` is authenticated, per `gh auth status`'s exit code."""
-    return run(["gh", "auth", "status"], capture_output=True, text=True).returncode == 0
+    """Whether the active `gh` login works; plain `status` exits 1 when any stored login is bad."""
+    return run(["gh", "auth", "status", "--active"], capture_output=True, text=True).returncode == 0
 
 
 def _origin_slug(checkout: str) -> str:

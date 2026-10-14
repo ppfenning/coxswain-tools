@@ -117,6 +117,17 @@ def test_auth_ok_reads_gh_auth_status_exit_code():
     assert route_sync_gh.auth_ok(lambda argv, **kw: _Result(returncode=1)) is False
 
 
+def test_auth_ok_checks_the_active_login_only():
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv)
+        return _Result(returncode=0 if argv[-1] == "--active" else 1)
+
+    assert route_sync_gh.auth_ok(run) is True
+    assert seen == [["gh", "auth", "status", "--active"]]
+
+
 def test_execute_resolves_real_node_ids_and_writes_back_the_new_issue(tmp_path):
     _write(tmp_path / "work" / "init1" / "build" / "task1.md",
            "---\ntitle: Do the thing\nstate: ready\n---\nbody\n")
@@ -363,7 +374,7 @@ def test_cli_item_sync_refuses_an_unknown_or_shared_id_without_listing_anything(
         rc = cli.main(["route", "sync", "--item", wanted, "--project", "acme/7", "--workspace", str(tmp_path)])
         assert rc == 2
         assert f"matches {count} work-store items, expected exactly one" in capsys.readouterr().out
-    assert calls == [["gh", "auth", "status"]] * 2
+    assert calls == [["gh", "auth", "status", "--active"]] * 2
 
 
 def test_cli_item_sync_issues_only_the_per_item_gh_calls(tmp_path, monkeypatch):
