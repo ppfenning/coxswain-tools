@@ -1,4 +1,5 @@
 import datetime
+import importlib.metadata
 import json
 import os
 import subprocess as sp
@@ -240,10 +241,35 @@ def test_pr_body_omits_the_cost_line_rather_than_raising_on_an_unparseable_cost(
     assert "Cost:" not in land.pr_body(_record(cost_usd="n/a"))
 
 
-def test_pr_body_keeps_closes_and_ends_with_the_footer_naming_its_run(monkeypatch):
-    monkeypatch.setattr(land.importlib.metadata, "version", lambda _name: "9.9.9")
+def test_pr_body_keeps_closes_and_ends_with_the_footer_naming_its_run():
     body = land.pr_body(_record(), issue="7")
-    assert body.endswith("\n\nCloses #7\n\n🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) 9.9.9 · run epic-x-5")
+    assert body.endswith("\n\nCloses #7\n\n🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) · run epic-x-5")
+
+
+def test_pr_footer_with_a_run_ends_in_the_run():
+    assert land.pr_footer("epic-x-5") == "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) · run epic-x-5"
+
+
+def test_pr_footer_without_a_run_ends_at_the_link():
+    footer = land.pr_footer(None)
+    assert footer == "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain)"
+    assert not footer.endswith(" · ")
+    assert "run" not in footer
+
+
+@pytest.mark.parametrize("installed", ["9.9.9", None])
+def test_pr_footer_carries_no_version_whatever_is_installed(monkeypatch, installed):
+    def version(name):
+        if installed is None:
+            raise importlib.metadata.PackageNotFoundError(name)
+        return installed
+    monkeypatch.setattr(importlib.metadata, "version", version)
+    for run in ("epic-x-5", None):
+        footer = land.pr_footer(run)
+        assert "9.9.9" not in footer
+        assert "unknown" not in footer
+    assert land.pr_footer("epic-x-5") == "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) · run epic-x-5"
+    assert land.pr_footer(None) == "🚣 Built with [coxswain](https://github.com/ppfenning/coxswain)"
 
 
 # --- route sync hooks: pure plan, then the edge ---
@@ -872,13 +898,10 @@ def test_task_mode_clean_step_names_only_this_tasks_branch():
 
 # --- land.phase_pr_body: pure, no I/O (§2, §7) ---
 
-def test_phase_pr_body_ends_with_the_footer_naming_its_run(monkeypatch):
-    def missing(name):
-        raise land.importlib.metadata.PackageNotFoundError(name)
-    monkeypatch.setattr(land.importlib.metadata, "version", missing)
+def test_phase_pr_body_ends_with_the_footer_naming_its_run():
     phase_record = {"phase": "seams", "run": "epic-x-5", "phase_verdict": {"reasoning": "Both tickets landed cleanly."}}
     body = land.phase_pr_body(phase_record, [])
-    assert body.endswith("\n\n🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) unknown · run epic-x-5")
+    assert body.endswith("\n\n🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) · run epic-x-5")
 
 
 def test_phase_pr_body_two_tickets_one_arbitrated_one_unanimous():
