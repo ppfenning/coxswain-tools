@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import PurePath
 from typing import TYPE_CHECKING, Any
 
+from agent_tools.card_commits import card_commit_steps
 from agent_tools.chair_plan_land import fetch_action
 
 if TYPE_CHECKING:
@@ -306,6 +307,31 @@ def mark_done(tasks: Sequence[str], merged: Collection[str]) -> list[str]:
     return [t for t in tasks if t in merged]
 
 
+def _card_phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
+                     repo_facts: dict[str, Any] | None, repo: str) -> list[dict[str, Any]]:
+    """apply_task per approved task of `repo` onto the record's `card_branch`, checks, push, mark_done; never a PR or merge."""
+    branch = phase_record["card_branch"]
+    if not repo:
+        return [{"kind": "refuse", "reason": f"card-mode land onto {branch} needs the repo name; none was given"}]
+    applied = [{**s, "branch": branch} for s in card_commit_steps(phase_record.get("initiative"), repo, task_records)]
+    done = {s["task"] for s in applied}
+    approved = [r.get("task") for r in task_records if r.get("status") == "approved"]
+    if approved and not done:
+        return [{"kind": "refuse", "reason": f"{', '.join(approved)}: approved, but none belongs to repo {repo}; nothing applied to {branch}"}]
+    if not done:
+        return [{"kind": "note", "reason": f"phase {phase_record.get('phase')}: no approved task to apply to {branch}"}]
+    skipped = [i.get("id") for i in items if i.get("status") == "approved" and i.get("id") not in done]
+    left = [{"kind": "note", "unmerged": skipped,
+             "reason": f"{', '.join(skipped)}: approved item not applied to {branch}; left in current state"}] if skipped else []
+    return [
+        *applied,
+        {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": branch},
+        {"kind": "push", "branch": branch},
+        *[{"kind": "mark_done", "task": s["task"]} for s in applied],
+        *left,
+    ]
+
+
 def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
                 repo_facts: dict[str, Any] | None, default_branch: str = "main",
                 pr_facts: dict[str, Any] | None = None, *, branches: Mapping[str, list[str]] | None = None,
@@ -330,6 +356,8 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     refusal = phase_landable(items, records)
     if refusal is not None:
         return [{"kind": "refuse", "reason": refusal}]
+    if phase_record.get("card_branch"):
+        return _card_phase_plan(phase_record, items, task_records, repo_facts, repo)
     run, phase, initiative = phase_record.get("run"), phase_record.get("phase"), phase_record.get("initiative")
     phase_branch = f"epic/{initiative}/{phase}"
     pr_branch = f"pr/{initiative}--{phase}"

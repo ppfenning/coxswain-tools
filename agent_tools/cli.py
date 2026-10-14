@@ -151,6 +151,7 @@ remote_doctor = _LazyModule("agent_tools.remote_doctor")
 remote_fetch = _LazyModule("agent_tools.remote_fetch")
 remote_lane = _LazyModule("agent_tools.remote_lane")
 remote_launch = _LazyModule("agent_tools.remote_launch")
+repo_path = _LazyModule("agent_tools.repo_path")
 review_pr = _LazyModule("agent_tools.review_pr")
 review_pr_close = _LazyModule("agent_tools.review_pr_close")
 route = _LazyModule("agent_tools.route")
@@ -196,6 +197,8 @@ store_dialect = _LazyModule("agent_tools.store_dialect")
 store_url = _LazyModule("agent_tools.store_url")
 towpath_launch = _LazyModule("agent_tools.towpath_launch")
 tracker = _LazyModule("agent_tools.tracker")
+upgrade_exec = _LazyModule("agent_tools.upgrade_exec")
+upgrade_plan = _LazyModule("agent_tools.upgrade_plan")
 usage_meter = _LazyModule("agent_tools.usage_meter")
 usage_window = _LazyModule("agent_tools.usage_window")
 work_state = _LazyModule("agent_tools.work_state")
@@ -1138,13 +1141,12 @@ def _runs_move_stop(a: argparse.Namespace, run_id: str) -> tuple[bool, str]:
     return result["ok"], result.get("reason", "")
 
 
-def _runs_move_repo_for(ws: Path) -> Callable[[dict], str]:
-    """The `chair_exec.Deps.repo_for` `cox runs move`'s clear_branches and relaunch steps run
-    through: the action's own repo, else `repo:` from the initiative's `initiative.md`; "" when
-    either is missing. Mirrors `_chair_run_deps`'s own `repo_for` closure."""
+def _repo_for(ws: Path, home: str) -> Callable[[dict], str]:
+    """The `chair_exec.Deps.repo_for`: the action's own repo, else `repo:` from the initiative's
+    `initiative.md`, either expanded under `home`; "" when either is missing."""
     def repo_for(action: dict) -> str:
         if action.get("repo"):
-            return action["repo"]
+            return repo_path.expand(action["repo"], home)
         initiative = action.get("initiative", "")
         if not initiative:
             return ""
@@ -1152,8 +1154,14 @@ def _runs_move_repo_for(ws: Path) -> Callable[[dict], str]:
             text = (ws / "work" / initiative / "initiative.md").read_text(encoding="utf-8")
         except OSError:
             return ""
-        return route.parse_frontmatter(text)[0].get("repo") or ""
+        recorded = route.parse_frontmatter(text)[0].get("repo")
+        return repo_path.expand(recorded, home) if recorded else ""
     return repo_for
+
+
+def _runs_move_repo_for(ws: Path, home: str) -> Callable[[dict], str]:
+    """`cox runs move`'s clear_branches and relaunch steps resolve a repo as the chair does."""
+    return _repo_for(ws, home)
 
 
 def _runs_move_exec_deps(ws: Path, runs_dir: Path, harness_python: str) -> chair_exec.Deps:
@@ -1161,7 +1169,7 @@ def _runs_move_exec_deps(ws: Path, runs_dir: Path, harness_python: str) -> chair
     Records nothing: a needs_chair a step raises is refused by `_runs_move_step` instead."""
     return chair_exec.edge_deps(
         runs_dir, ws, "cox-runs-move", os.getpid(),
-        run_id=lambda action: "", repo_for=_runs_move_repo_for(ws), record=lambda action: None,
+        run_id=lambda action: "", repo_for=_runs_move_repo_for(ws, os.path.expanduser("~")), record=lambda action: None,
         host=socket.gethostname(), harness_python=harness_python,
     )
 
@@ -4443,9 +4451,11 @@ def _route_launch(a: argparse.Namespace) -> int:
         if not repo:
             print(f"routing: no --repo given and no repo: in {initiative_md}")
             return 2
+        home = os.path.expanduser("~")
+        local_repo = repo_path.expand(repo, home)
         try:
             status = subprocess.run(
-                ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+                ["git", "status", "--porcelain"], cwd=local_repo, capture_output=True, text=True, check=True,
             )
         except (OSError, subprocess.CalledProcessError) as exc:
             print(f"routing: cannot read git status for {repo}: {exc}")
@@ -4466,12 +4476,12 @@ def _route_launch(a: argparse.Namespace) -> int:
                 print(taken)
                 return 2
             run_id = a.run_id
-        needs = {"initiative": str(initiative_dir), "repo": repo}
+        needs = {"initiative": str(initiative_dir), "repo": local_repo if host is None else repo}
         if a.graph == "rescue":
             needs["task"] = a.task
         elif a.fix_attempts is not None:
             needs["fix_attempts"] = a.fix_attempts
-        env_repo = repo
+        env_repo = needs["repo"]
     elif a.graph == "decompose":
         idea_path = Path(a.idea)
         if not idea_path.exists():
@@ -4548,7 +4558,7 @@ def _route_launch(a: argparse.Namespace) -> int:
 
     if host is not None:
         launch_harness = str(Path(harness_dir).expanduser()) if harness_dir else None
-        return _route_launch_on_host(a, host, runs_dir, run_id, env_repo or None, launch_harness)
+        return _route_launch_on_host(a, host, runs_dir, run_id, env_repo or None, launch_harness, home=os.path.expanduser("~"))
 
     if overlaid_path is not None:
         overlaid_path.write_text(yaml.safe_dump(overlaid_provider_profile, sort_keys=True), encoding="utf-8")
@@ -4680,7 +4690,7 @@ def _pid_probe_ssh(argv: list[str]) -> tuple[int, str] | None:
 
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
-    harness_dir: str | None = None,
+    harness_dir: str | None = None, *, home: str | None = None,
 ) -> int:
     """Copies the initiative to `host` and starts the lane there; writes only `<run>.remote.json`, and only on success."""
     run, locate = _remote_edge(runs_dir.parent)
@@ -4697,7 +4707,7 @@ def _route_launch_on_host(
         )
     result = remote_launch.launch_on_host(
         host, _initiative_path(runs_dir, a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
-        preflight=preflight,
+        preflight=preflight, home=home,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
@@ -4903,7 +4913,7 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
         return (remote_fetch.task_repos(run_dir) or recorded) if only is None else only
 
     result = remote_fetch.fetch_run(host, run_id, runs_dir, repo_paths, run_cmd, locate,
-                                    lease_released=lease_released, ended_at=ended_at)
+                                    lease_released=lease_released, ended_at=ended_at, home=os.path.expanduser("~"))
     if isinstance(result, remote_fetch.FetchError):
         detail = f"{run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message
         return ("live" if result.step == "refuse" else "failed"), [f"fetch: {result.step}: {detail}"], host.name
@@ -5100,10 +5110,15 @@ def _route_lint(a: argparse.Namespace) -> int:
             repo = init_fields.get("repo")
     if not repo:
         print(f"routing: no repo found for {a.initiative_dir}; reach check skipped")
-    problems = route.lint_items(items, repo, ("pytest", "git status", "git diff"), checkout=_lint_checkout(repo, items))
+    home = os.path.expanduser("~")
+    # `lint_items` compares the recorded form against `home`; the checkout listing needs a real directory.
+    checkout_repo = repo_path.expand(repo, home) if repo else repo
+    problems = route.lint_items(
+        items, repo, ("pytest", "git status", "git diff"), checkout=_lint_checkout(checkout_repo, items), home=home,
+    )
     for problem in problems:
         print(f"{problem.task} {problem.rule}: {problem.detail} -> {problem.fix}")
-    return 2 if any(p.rule in ("reach", "coupling", "phase_needs", *_SURFACE_RULES) for p in problems) else 0
+    return 2 if any(p.rule in ("reach", "coupling", "phase_needs", "home_path", *_SURFACE_RULES) for p in problems) else 0
 
 
 def _route_groups(a: argparse.Namespace) -> int:
@@ -5194,27 +5209,36 @@ else:
     except Exception as exc:
         out["overlay_errors"] = [f"{type(exc).__name__}: {exc}"]
 provider_profile = os.environ.get("AGENT_TOOLS_PROVIDER_PROFILE")
-if provider_profile is not None:
+if not provider_profile:
+    out["freshness"] = ["model freshness not checked: AGENT_TOOLS_PROVIDER_PROFILE is unset"]
+else:
     try:
         from core.model_freshness import freshness_warnings
     except ImportError:
         out["freshness"] = None  # a core too old for the check: the doctor prints one skip row
     else:
+        from pathlib import Path
+        # load_profile reads the file with Path.read_text, so it takes a Path, never the raw env str.
+        profile_path = Path(provider_profile).expanduser()
         try:
             import core
-            from pathlib import Path
             from core.catalog import load_catalog
             from core.profile import load_profile
-            catalog_path = Path(core.__file__).resolve().parent.parent / "providers" / "catalog.yaml"
-            catalog = load_catalog(catalog_path)
-            profile = catalog if isinstance(catalog, list) else load_profile(provider_profile, catalog_path)
-            errors = catalog if isinstance(catalog, list) else profile if isinstance(profile, list) else None
-            if errors is None:
-                out["freshness"] = list(freshness_warnings(profile, catalog))
+            if not profile_path.is_file():
+                out["freshness"] = [f"model freshness not checked: provider profile not found at {profile_path}"]
+            elif not os.access(profile_path, os.R_OK):
+                out["freshness"] = [f"model freshness not checked: provider profile unreadable at {profile_path}"]
             else:
-                out["freshness"] = ["model freshness not checked: " + str(errors[0] if errors else "unknown error")]
-        except Exception as exc:
-            out["freshness"] = [f"model freshness not checked: {type(exc).__name__}: {exc}"]
+                catalog_path = Path(core.__file__).resolve().parent.parent / "providers" / "catalog.yaml"
+                catalog = load_catalog(catalog_path)
+                profile = catalog if isinstance(catalog, list) else load_profile(profile_path, catalog_path)
+                errors = catalog if isinstance(catalog, list) else profile if isinstance(profile, list) else None
+                if errors is None:
+                    out["freshness"] = list(freshness_warnings(profile, catalog))
+                else:
+                    out["freshness"] = ["model freshness not checked: " + str(errors[0] if errors else "unknown error")]
+        except Exception:
+            out["freshness"] = [f"model freshness not checked: could not evaluate the provider profile at {profile_path}"]
 print(json.dumps(out))
 '''
 
@@ -5759,7 +5783,60 @@ def _install(a: argparse.Namespace) -> int:
     return _install_execute(steps, manifest, options, root)
 
 
+def _offered_tags(path: Path, url: str | None = None) -> tuple[str, ...]:
+    """Tags offered by `url`, else by the remote of the checkout at `path`; newest first, empty when unreachable."""
+    ask = ["ls-remote", "--tags", "--sort=-v:refname"]
+    argv = ["git", *ask, url] if url else ["git", "-C", str(path), *ask, "origin"]
+    code, output = _real_run(argv, None)
+    return upgrade_exec.offered_tags(output) if code == 0 else ()
+
+
+def _clone_url(spec: dict) -> str | None:
+    """The URL `install_exec` clones a component from, or None when the manifest names no repo."""
+    return f"https://github.com/{spec['repo']}.git" if spec.get("repo") else None
+
+
+def _upgrade_facts(manifest: dict, root: Path, provider: str) -> dict:
+    return {
+        "root": str(root),
+        "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
+        "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, provider)) is not None,
+    }
+
+
+def _upgrade_refused(manifest: dict, root: Path, options: dict) -> bool:
+    """Print and return True when an upgrade must not start: a dirty checkout, the umbrella's included,
+    or a plan refusal such as an unsupported provider or an unknown --with flag."""
+    facts = _upgrade_facts(manifest, root, options["provider"])
+    checkouts = {**facts["checkouts"], "coxswain": _checkout_facts(root / "coxswain")}
+    dirty = sorted(name for name, checkout in checkouts.items() if checkout.get("dirty"))
+    if dirty:
+        print(f"refusing: {root / dirty[0]} is dirty; refusing to upgrade it")
+        return True
+    refusals = [step for step in install.plan(manifest, facts, options) if step["kind"] == "refuse"]
+    for step in refusals:
+        print(f"refused: {step['component']}: {step['detail']}")
+    return bool(refusals)
+
+
+def _upgrade_plan_for(manifest: dict, root: Path, target: str, umbrella_tag: str | None) -> tuple:
+    """The planner's plan for `manifest`'s pins against what is installed and what each remote offers now,
+    and the clone URL of every component that has no checkout yet."""
+    components = manifest.get("components", {})
+    checkouts = _gather_checkout_facts(root, components)
+    urls = {name: _clone_url(spec) for name, spec in components.items() if not checkouts[name]["present"]}
+    plan = upgrade_plan.plan_upgrade(
+        target,
+        umbrella_tag or "untagged",
+        {name: spec.get("tag") for name, spec in components.items()},
+        {name: facts.get("tag") for name, facts in checkouts.items()},
+        {name: frozenset(_offered_tags(root / name, urls.get(name))) for name in components},
+    )
+    return plan, {name: url for name, url in urls.items() if url}
+
+
 def _upgrade(a: argparse.Namespace) -> int:
+    """Move the umbrella first, then plan components from the manifest the moved umbrella carries."""
     manifest_path = Path(a.manifest) if a.manifest else Path(a.root) / "coxswain" / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
@@ -5767,22 +5844,38 @@ def _upgrade(a: argparse.Namespace) -> int:
         return 2
     manifest = _manifest_at_version(manifest, a.to)
     root = Path(a.root)
-    facts = {
-        "root": str(root),
-        "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
-        "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, a.provider)) is not None,
-    }
-    dirty = sorted(name for name, checkout in facts["checkouts"].items() if checkout.get("dirty"))
-    if dirty:
-        print(f"refusing: {root / dirty[0]} is dirty; refusing to upgrade it")
-        return 2
     options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team, "workspace": a.workspace}
-    steps = install.plan(manifest, facts, options)
-    for step in steps:
-        print(f"{step['kind']} {step['component']}: {step['detail']}")
+    if _upgrade_refused(manifest, root, options):
+        return 2
+    umbrella = root / "coxswain"
+    umbrella_tag = _checkout_facts(umbrella)["tag"]
+    target = a.to or upgrade_exec.newest_release(_offered_tags(umbrella))
+    if target is None:
+        print(f"refusing: {umbrella} offers no release tag to upgrade to; pass --to")
+        return 2
     if a.dry_run:
-        return 2 if any(step["kind"] == "refuse" for step in steps) else 0
-    return _install_execute(steps, manifest, options, root)
+        print("dry run: component steps use the pins in the current manifest; a real run re-reads them after the umbrella moves")
+        plan, urls = _upgrade_plan_for(manifest, root, target, umbrella_tag)
+        return upgrade_exec.run_plan(plan, root=root, run=_real_run, dry_run=True, clone_urls=urls)
+    umbrella_only = upgrade_plan.plan_upgrade(target, umbrella_tag or "untagged", {}, {}, {})
+    code = upgrade_exec.run_plan(umbrella_only, root=root, run=_real_run, dry_run=False)
+    if code != 0:
+        return code
+    moved_path = umbrella / "manifest.toml"
+    moved = _load_manifest(moved_path)
+    if moved is None:
+        print(_NO_MANIFEST.format(moved_path))
+        return 2
+    moved = _manifest_at_version(moved, a.to)
+    if _upgrade_refused(moved, root, options):
+        return 2
+    plan, urls = _upgrade_plan_for(moved, root, target, target)
+    code = upgrade_exec.run_plan(dataclasses.replace(plan, steps=plan.steps[1:]), root=root, run=_real_run, dry_run=False, clone_urls=urls)
+    if code != 0:
+        return code
+    tail = [step for step in install.plan(moved, _upgrade_facts(moved, root, a.provider), options)
+            if step["kind"] in ("setup_install", "doctor", "desktop")]
+    return _install_execute(tail, moved, options, root)
 
 
 def _schema_versions(harness_dir: str = "", provider_profile: str = "", skills_roots: list[str] | None = None
@@ -5807,9 +5900,38 @@ def _versions(a: argparse.Namespace) -> int:
     facts = {"root": str(root), "checkouts": _gather_checkout_facts(root, manifest.get("components", {})),
               "provider_cli_on_path": False}
     schema_versions = _schema_versions(str(root / "harness"), str(root / "cartridges"))
-    display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s,
+    from agent_tools import versions_hint
+    from agent_tools.version_info import UNKNOWN, package_version
+
+    def git_out(*args: str) -> str | None:
+        try:
+            done = subprocess.run(["git", "-C", *args], capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    umbrella_tag = git_out(str(root / "coxswain"), "describe", "--tags") or None
+    release = package_version()
+    release_tag = None if release == UNKNOWN else release
+    hint = versions_hint.umbrella_hint(umbrella_tag, release_tag)
+
+    def offered(component: str) -> frozenset[str]:
+        return frozenset((git_out(str(root / component), "tag", "--list") or "").split())
+
+    def label(component: str, pinned: str | None, status: str) -> str:
+        # Only a drift row pinned at the umbrella's own release is explained by a stale umbrella; a component
+        # with its own numbering keeps "drift". `git tag --list` runs for those rows alone.
+        if hint is None or umbrella_tag is None or release_tag is None or status != "drift" or not pinned:
+            return status
+        if not versions_hint.same_release(pinned, umbrella_tag):
+            return status
+        return versions_hint.status_label(status, pinned, release_tag, offered(component))
+
+    display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": label(c, p, s),
                 "schema": schema.cell(schema_versions.get(c)) if c in schema_versions else "?"}
                for c, p, i, s in install.rows(manifest, facts)]
+    if hint:
+        print(hint)
     print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status", "schema"]))
     return 0
 
@@ -7542,10 +7664,10 @@ def _chair_stranded_inputs(
     return task_records + stored, items
 
 
-def _initiative_repos(initiative_files: Mapping[Path, str]) -> dict[str, str]:
-    """Pure. Initiative id to the `repo:` in its `initiative.md` text, as `chair_facts.read_initiative_repos` reads it from disk."""
+def _initiative_repos(initiative_files: Mapping[Path, str], home: str) -> dict[str, str]:
+    """Pure. Initiative id to the `repo:` in its `initiative.md` text expanded under `home`, as `chair_facts.read_initiative_repos` reads it from disk."""
     fields = {p.parent.name: route.parse_frontmatter(text)[0] for p, text in initiative_files.items()}
-    return {name: f["repo"] for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
+    return {name: repo_path.expand(f["repo"], home) for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
 
 
 def _chair_reported_repos_path(runs_dir: Path) -> Path:
@@ -7750,6 +7872,7 @@ def _chair_run_deps(
     """Every source has an edge reader; `_ChairUnwired` stays for a source that loses one. A dry run never beats the lease."""
     holder = chair.lease_holder(session, pid, host)
     ws = runs_dir.parent
+    home = os.path.expanduser("~")
     harness_dir = profile.get("harness_dir", "")
     harness_python = str(Path(harness_dir) / ".venv" / "bin" / "python") if harness_dir else "python"
 
@@ -7851,7 +7974,7 @@ def _chair_run_deps(
     last_missing_repos: list[str] = []  # edge state: the current tick's `missing_repos()` result, read back by `reported_repos()`
 
     def missing_repos() -> list[str]:
-        last_missing_repos[:] = chair_read_stranded.read_missing_repos(*stranded_inputs(), os.path.isdir)
+        last_missing_repos[:] = chair_read_stranded.read_missing_repos(*stranded_inputs())
         return last_missing_repos
 
     def reported_repos() -> set[str]:
@@ -7873,19 +7996,6 @@ def _chair_run_deps(
         """`read_has_patch` needs a run id: the newest attempt on this task names it. No attempt has no record."""
         run = chair_read_patch.newest_runs(attempts()).get((initiative, task))
         return run is not None and chair_read_patch.read_has_patch(runs_dir, str(run), task)
-
-    def repo_for(action: dict) -> str:
-        """The action's own repo, else `repo:` from the initiative's `initiative.md`; "" when either is missing."""
-        if action.get("repo"):
-            return action["repo"]
-        initiative = action.get("initiative", "")
-        if not initiative:
-            return ""
-        try:
-            text = (ws / "work" / initiative / "initiative.md").read_text(encoding="utf-8")
-        except OSError:
-            return ""
-        return route.parse_frontmatter(text)[0].get("repo") or ""
 
     profile_text = _read_text_or_none(profile_path) or ""  # the `profile` dict never carries lane_hosts
     parsed_hosts = _profile_lane_hosts(profile_text)
@@ -8031,7 +8141,7 @@ def _chair_run_deps(
         ),
         lost_runs=lambda: chair_read_lost.read_lost_runs(runs_dir, now_text()),
         tickets=lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()),
-        repos=lambda: _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files())),
+        repos=lambda: _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home),
         actions=actions,
         land_watches=lambda: chair_revert_watch.pending_watches(actions),
         read_main_ci=main_ci,
@@ -8058,7 +8168,7 @@ def _chair_run_deps(
     )
     exec_deps = chair_exec.edge_deps(
         runs_dir, ws, session, pid,
-        run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=repo_for,
+        run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=_repo_for(ws, home),
         record=record,
         host=host,
         harness_python=harness_python,

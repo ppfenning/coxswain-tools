@@ -6,7 +6,7 @@ import os
 import subprocess
 from collections.abc import Callable
 
-from agent_tools import runs_stranded
+from agent_tools import repo_path, runs_stranded
 
 KEYS = ("run", "task", "phase", "branch", "remedy")
 
@@ -16,18 +16,29 @@ def keep_stranded_keys(rows: list[dict]) -> list[dict]:
     return [{k: row.get(k) for k in KEYS} for row in rows]
 
 
+def _local_path(repo: str) -> str:
+    """Edge. A recorded repo as an absolute path under this machine's home."""
+    return repo_path.expand(repo, os.path.expanduser("~"))
+
+
+def _repo_exists(repo: str) -> bool:
+    """A real directory check on the recorded repo, expanded to this machine's home."""
+    return os.path.isdir(_local_path(repo))
+
+
 def _branch_exists(repo: str, branch: str) -> bool:
-    """A real, git-backed check: whether `branch` is present as a local branch of `repo`."""
-    r = subprocess.run(["git", "-C", repo, "branch", "--list", branch], capture_output=True, text=True)
+    """A real, git-backed check: whether `branch` is present as a local branch of `repo`, expanded to this machine's home."""
+    r = subprocess.run(["git", "-C", _local_path(repo), "branch", "--list", branch], capture_output=True, text=True)
     return bool(r.stdout.strip())
 
 
 def read_stranded(records: list[dict], items: list[dict],
-                   repo_exists: Callable[[str], bool] = os.path.isdir,
+                   repo_exists: Callable[[str], bool] = _repo_exists,
                    branch_exists: Callable[[str, str], bool] = _branch_exists) -> list[dict]:
     """Edge. `records` and `items` come from the caller: their loaders live in
     cli.py, which this module does not import. `repo_exists` defaults to a
-    real directory check so a dropped item or a vanished repository never
+    real directory check, on the recorded path expanded to this machine's
+    home, so a dropped item or a vanished repository never
     reaches the chair planner as needs_chair; `branch_exists` defaults to a
     real git check so a task on a still-carried phase branch stops reaching
     the chair as a stranded quarantine; tests inject fakes for both."""
@@ -35,7 +46,7 @@ def read_stranded(records: list[dict], items: list[dict],
 
 
 def read_missing_repos(records: list[dict], items: list[dict],
-                        repo_exists: Callable[[str], bool] = os.path.isdir) -> list[str]:
+                        repo_exists: Callable[[str], bool] = _repo_exists) -> list[str]:
     """Edge. The repo paths `read_stranded` is skipping because `repo_exists` rejects them."""
     return runs_stranded.missing_repos(records, items, repo_exists)
 

@@ -83,7 +83,7 @@ def test_a_work_tree_with_two_initiatives_sharing_a_path_gives_steer_check_a_non
     _write(tmp_path / "work/x/p1/a.md", "---\nid: a\nstate: ready\nsurfaces: [src/a.rs, src/b.rs]\n---\n\nbody\n")
     _write(tmp_path / "work/y/p1/b.md", "---\nid: b\nstate: approved\nsurfaces:\n  - src/b.rs\n---\n\nbody\n")
     _write(tmp_path / "work/y/p1/c.md", "---\nid: c\nstate: ready\nsurfaces: [src/c.rs]\n---\n\nbody\n")
-    assert read_initiative_repos(tmp_path) == {"x": "/r", "y": "/r"}
+    assert read_initiative_repos(tmp_path, str(tmp_path / "home")) == {"x": "/r", "y": "/r"}
     assert len(read_ticket_items(tmp_path, "files")) == 3
     deps = FactsDeps(
         lease=lambda: {"holder": lease_holder("s", 7, "h"), "host": "h", "epoch": 4, "released": False, "stale": False},
@@ -108,7 +108,7 @@ def test_a_work_tree_with_two_initiatives_sharing_a_path_gives_steer_check_a_non
             "empty_stubs": [], "lands_waiting": [], "blocked_ready": [], "open_signature": None, "open_diagnosis": None,
         },
         tickets=lambda: read_ticket_items(tmp_path, "files"),
-        repos=lambda: read_initiative_repos(tmp_path),
+        repos=lambda: read_initiative_repos(tmp_path, str(tmp_path / "home")),
         actions=lambda: [{"ts": "1", "kind": "steer_clear", "initiative": "x", "other": "y"}],
     )
     facts = gather_facts(deps, NOW)

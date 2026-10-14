@@ -1,0 +1,32 @@
+{
+  "schema": "work_item_card_v1",
+  "rows": [
+    {
+      "initiative": "demo-initiative",
+      "task_id": "demo-initiative-first",
+      "kind": "task",
+      "state": "running",
+      "issue_number": 1648,
+      "project_item_id": "PVTI_task1",
+      "parent_item": "PVTI_init1"
+    },
+    {
+      "initiative": "demo-initiative",
+      "task_id": "demo-initiative",
+      "kind": "initiative",
+      "state": "decomposed",
+      "issue_number": 1647,
+      "project_item_id": "PVTI_init1",
+      "parent_item": null
+    },
+    {
+      "initiative": "demo-intake",
+      "task_id": "demo-intake",
+      "kind": "intake",
+      "state": "queued",
+      "issue_number": null,
+      "project_item_id": null,
+      "parent_item": null
+    }
+  ]
+}
