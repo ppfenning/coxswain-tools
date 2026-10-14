@@ -152,6 +152,7 @@ remote_fetch = _LazyModule("agent_tools.remote_fetch")
 remote_lane = _LazyModule("agent_tools.remote_lane")
 remote_launch = _LazyModule("agent_tools.remote_launch")
 repo_path = _LazyModule("agent_tools.repo_path")
+repo_path_migrate = _LazyModule("agent_tools.repo_path_migrate")
 review_pr = _LazyModule("agent_tools.review_pr")
 review_pr_close = _LazyModule("agent_tools.review_pr_close")
 route = _LazyModule("agent_tools.route")
@@ -3425,6 +3426,69 @@ def _route_import(a: argparse.Namespace) -> int:
         written += 1
     print(route_import.format_summary(written, plan))
     return 0
+
+
+def _paths_lines(changes: Sequence[Mapping[str, str]]) -> list[str]:
+    """One `key: old -> new` line per change, then the count."""
+    return [f"{c['key']}: {c['old']} -> {c['new']}" for c in changes] + [f"{len(changes)} change(s)"]
+
+
+def _paths_apply_rows(runs_dir: Path, rows: Sequence[Mapping], home: str) -> int:
+    """Edge. Upsert only `extra` and `surfaces` of each changed row, then export once; exit 1 on a refusal or failed export.
+    The store owns state, needs and the claim columns, so a stale snapshot of them is never written back."""
+    refused = 0
+    taken = 0
+    for row in rows:
+        migrated = repo_path_migrate.migrate_row(row, home)
+        if migrated is None:
+            continue
+        partial = {k: migrated[k] for k in ("initiative", "task_id", "extra", "surfaces") if k in migrated}
+        if run_store.upsert_row(runs_dir, partial):
+            taken += 1
+        else:
+            refused += 1
+            print(f"route paths: store refused {row.get('initiative')}/{row.get('task_id')}")
+    if taken:
+        try:
+            _export_board(runs_dir, runs_dir.parent)
+        except RuntimeError as exc:
+            print(f"route paths: rows are migrated but the file export failed: {exc}")
+            return 1
+    return 1 if refused else 0
+
+
+def _paths_apply_files(ws: Path, files: Mapping[str, str], home: str) -> int:
+    """Edge. Write each changed work file in place."""
+    for rel, text in files.items():
+        migrated = repo_path_migrate.migrate_text(text, home)
+        if migrated is not None:
+            (ws / rel).write_text(migrated, encoding="utf-8")
+    return 0
+
+
+def _route_paths(a: argparse.Namespace) -> int:
+    """Dry run unless `--apply`: lists each recorded repo path that would move to the tilde form.
+    Store mode reads and upserts queue rows, then re-exports the files; file mode edits the files."""
+    ws = _route_import_workspace(a)
+    if isinstance(ws, str):
+        print(f"route paths: {ws}")
+        return 2
+    if not (ws / "work").is_dir() and not (ws / "intake").is_dir():
+        print(f"route paths: no work/ or intake/ under {ws}; pass --workspace or set workspace_dir in the profile")
+        return 2
+    store_mode = work_state.work_state_mode(_lake_provider(a)[0]) == "store"
+    runs_dir, home = ws / "runs", os.path.expanduser("~")
+    from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
+
+    rows = run_store.read_queue(runs_dir) if store_mode else []
+    if store_mode and not rows and store_fill._read_store(runs_dir) is None:
+        print(f"route paths: the store under {runs_dir} cannot be read; nothing was checked")
+        return 2
+    files = {} if store_mode else {"/".join(parts): text for parts, text in store_fill._workspace_files(ws)}
+    print("\n".join(_paths_lines(repo_path_migrate.plan(rows, files, home))))
+    if not a.apply:
+        return 0
+    return _paths_apply_rows(runs_dir, rows, home) if store_mode else _paths_apply_files(ws, files, home)
 
 
 def _initiative_token(runs_dir: Path, token: str) -> str:
@@ -7530,6 +7594,14 @@ ROUTE_COMMANDS = [
         "import", "route", "load the current work item files into the store's work_items table",
         (commands.Arg(("--profile",)), commands.Arg(("--workspace",))),
         "agent_tools.cli:_route_import", False, (),
+    ),
+    commands.Command(
+        "paths", "route", "rewrite recorded repo paths to the tilde form, dry run first",
+        (
+            commands.Arg(("--profile",)), commands.Arg(("--workspace",)),
+            commands.Arg(("--apply",), {"action": "store_true", "help": "write the changes; the default only lists them"}),
+        ),
+        "agent_tools.cli:_route_paths", False, (),
     ),
     commands.Command(
         "store-fill", "route", "fill the store's work_items from the workspace files",

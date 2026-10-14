@@ -1,0 +1,7 @@
+usage: cox route paths [-h] [--profile PROFILE] [--workspace WORKSPACE] [--apply]
+
+options:
+  -h, --help            show this help message and exit
+  --profile PROFILE
+  --workspace WORKSPACE
+  --apply               write the changes; the default only lists them
