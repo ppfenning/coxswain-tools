@@ -48,6 +48,25 @@ def _fake(statuses: list[ArgvResult], credentials: ArgvResult | None = None, ren
     return run, calls
 
 
+TOKEN_AUTH = '{"loggedIn": true, "authMethod": "oauth_token"}'
+NO_AUTH = '{"loggedIn": false, "authMethod": "none"}'
+
+
+def _login_aware_fake():
+    """Answers token auth to a login-shell auth status argv and no auth to a plain-shell one. Renew and
+    credentials argvs raise, so a token host that reaches them fails loudly."""
+    calls: list = []
+
+    def run(argv: list[str]) -> ArgvResult:
+        calls.append(argv)
+        text = argv[-1] if argv[0] == "ssh" else " ".join(argv)
+        if "auth status" not in text:
+            raise AssertionError(f"renew or keychain step ran: {argv}")
+        return _reply(0, TOKEN_AUTH) if "login-shell" in text else _reply(1, NO_AUTH)
+
+    return run, calls
+
+
 def _renewals(calls: list) -> int:
     return sum(1 for argv in calls if "-p ok" in (argv[-1] if argv[0] == "ssh" else " ".join(argv)))
 
@@ -73,6 +92,38 @@ def test_a_logged_in_host_merges_login_ok_true_and_now_and_keeps_existing_keys()
     assert versions["login_failures"] == 0
     assert versions["cox"] == "1.2.3"
     assert calls == [ssh_argv("user@shed", auth_status_argv())]
+
+
+def test_a_token_host_over_ssh_is_logged_in_and_never_renews_or_reads_the_keychain() -> None:
+    run, calls = _login_aware_fake()
+    captured: list = []
+
+    check_login_on_host("shed", "user@shed", {}, NOW, run, _recording_cli(captured))
+
+    assert captured[0]["login_ok"] is True
+    assert captured[0]["login_failures"] == 0
+    assert calls == [ssh_argv("user@shed", auth_status_argv())]
+    assert "login-shell" in calls[0][-1]
+    assert _renewals(calls) == 0
+    assert not any("Claude Code-credentials" in argv[-1] for argv in calls)
+
+
+def test_the_plain_shell_argv_reads_as_logged_out_in_the_fake() -> None:
+    run, _ = _login_aware_fake()
+
+    assert json.loads(run(["claude", "auth", "status"]).stdout) == json.loads(NO_AUTH)
+
+
+def test_a_truly_logged_out_host_fails_after_two_attempts() -> None:
+    run, calls = _fake([_reply(1, NO_AUTH)] * 4)
+    captured: list = []
+    cli_run = _recording_cli(captured)
+
+    check_login_on_host("shed", "user@shed", {}, NOW, run, cli_run)
+    check_login_on_host("shed", "user@shed", captured[0], NOW, run, cli_run)
+
+    assert [(v["login_ok"], v["login_failures"]) for v in captured] == [(None, 1), (False, 2)]
+    assert _renewals(calls) == 2
 
 
 def test_a_stderr_line_before_the_json_still_parses_as_logged_in() -> None:
