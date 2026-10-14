@@ -19,7 +19,9 @@ lane writes the path it saw. A path under the host `workspace_dir` maps to the
 same relative path under the chair workspace. The chair path then maps back by
 swapping the chair workspace prefix for the host `workspace_dir`. A path outside
 both workspaces is the same path on both machines. Matching is on a path
-component, so `/ws-other` is not under `/ws`.
+component, so `/ws-other` is not under `/ws`. Given a `home`, a tilde path or a
+path under another machine's home is expanded under that home on the chair, and
+the host location uses the home-relative form.
 
 Each repo is fetched with `git -C <chair repo> fetch <host repo> <refspec>`. Then
 `git -C <chair repo> ls-remote --exit-code . refs/heads/agents/<run>/*` must find
@@ -41,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_tools import run_store
+from agent_tools import repo_path, run_store
 from agent_tools.land import _approved as land_approved
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import git_fetch_argv, rsync_pull_argv
@@ -78,12 +80,16 @@ def _swap(from_prefix: str, to_prefix: str, path: str) -> str:
     return path
 
 
-def host_repo_path(chair_workspace: str, host_workspace: str, chair_repo: str) -> str:
-    return _swap(chair_workspace, host_workspace, chair_repo)
+def host_repo_path(chair_workspace: str, host_workspace: str, chair_repo: str, home: str | None = None) -> str:
+    """`home=None` skips home mapping."""
+    swapped = _swap(chair_workspace, host_workspace, chair_repo)
+    return swapped if home is None else repo_path.host_form(swapped, home)
 
 
-def chair_repo_path(chair_workspace: str, host_workspace: str, recorded: str) -> str:
-    return _swap(host_workspace, chair_workspace, recorded)
+def chair_repo_path(chair_workspace: str, host_workspace: str, recorded: str, home: str | None = None) -> str:
+    """`home=None` skips home mapping."""
+    swapped = _swap(host_workspace, chair_workspace, recorded)
+    return swapped if home is None else repo_path.expand(swapped, home)
 
 
 def pull_argvs(run_location: str, log_location: str, chair_runs_dir: str, run: str) -> list[list[str]]:
@@ -183,9 +189,11 @@ def store_task_records(runs_dir: Path, run: str) -> list[dict[str, Any]]:
     return [{**record, "task": task} for task, record in rows if isinstance(record, dict)]
 
 
-def _records_in(records: list[dict[str, Any]], repo: str, chair_ws: str, host_ws: str) -> list[dict[str, Any]]:
+def _records_in(
+    records: list[dict[str, Any]], repo: str, chair_ws: str, host_ws: str, home: str | None = None
+) -> list[dict[str, Any]]:
     """The records that name `repo`, or name no repo."""
-    return [r for r in records if not r.get("repo") or chair_repo_path(chair_ws, host_ws, str(r["repo"])) == repo]
+    return [r for r in records if not r.get("repo") or chair_repo_path(chair_ws, host_ws, str(r["repo"]), home) == repo]
 
 
 def fetch_run(
@@ -199,11 +207,14 @@ def fetch_run(
     lease_released: bool,
     ended_at: str | None,
     store_records: Callable[[Path, str], list[dict[str, Any]]] | None = None,
+    home: str | None = None,
 ) -> tuple[str, ...] | FetchError:
     """The chair repos whose `agents/<run>/*` branches now exist, or the step that failed. Nothing is raised."""
     refusal = refuse_unended(lease_released, ended_at)
     if refusal is not None:
         return FetchError("refuse", refusal)
+    if home is not None and not home.strip("/"):
+        return FetchError("home", f"home {home!r} names no directory, so no repo path can be mapped")
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
     host_ws = host.workspace_dir.rstrip("/")
     run_location = place(f"{host_ws}/runs/{run}")
@@ -223,7 +234,7 @@ def fetch_run(
         (chair_runs_dir / run / "tasks").mkdir(parents=True, exist_ok=True)
         return plan.outcome
     chair_ws = str(chair_runs_dir.parent)
-    repos = tuple(dict.fromkeys(chair_repo_path(chair_ws, host_ws, r) for r in repo_paths(chair_runs_dir / run)))
+    repos = tuple(dict.fromkeys(chair_repo_path(chair_ws, host_ws, r, home) for r in repo_paths(chair_runs_dir / run)))
     if not repos:
         return FetchError("repos", f"no task record under {chair_runs_dir / run}/tasks names a repo")
     records = _task_records(chair_runs_dir / run)
@@ -233,11 +244,11 @@ def fetch_run(
     for repo in repos:
         # git_fetch_argv has no repo selector, so `-C` goes in after its leading "git".
         # git runs its own ssh transport, so no 30s bound from this file applies to this call.
-        fetch = git_fetch_argv(place(host_repo_path(chair_ws, host_ws, repo)), run)
+        fetch = git_fetch_argv(place(host_repo_path(chair_ws, host_ws, repo, home)), run)
         code = run_cmd(["git", "-C", repo, *fetch[1:]])
         if code != 0:
             return FetchError("git", f"fetching {run} into {repo} exited {code}")
-        scoped = _records_in(records, repo, chair_ws, host_ws) if records is not None else []
+        scoped = _records_in(records, repo, chair_ws, host_ws, home) if records is not None else []
         if scoped:
             # Readable records decide: a run with no approved task has no branch by design.
             # run_cmd returns only an exit code, so each task's branch is probed on its own.
