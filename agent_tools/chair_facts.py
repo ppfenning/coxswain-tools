@@ -12,7 +12,7 @@ from functools import reduce
 from pathlib import Path
 from typing import Any
 
-from agent_tools import chair_read_docket, chair_smoke, forge, pacing, route
+from agent_tools import chair_read_docket, chair_smoke, forge, pacing, repo_path, route
 from agent_tools.chair import lease_holder
 from agent_tools.chair_decompose_streak import DecomposeRun, DecomposeStreak, at_limit, streak
 from agent_tools.chair_idle_stall import IDLE_STALL_MINUTES
@@ -661,11 +661,11 @@ def read_ticket_items(ws: Path, mode: str) -> list[dict]:
     return chair_read_docket._work_items(ws, mode)
 
 
-def read_initiative_repos(ws: Path) -> dict[str, str]:
-    """Edge. Initiative id to the `repo:` in `work/<initiative>/initiative.md`; an unreadable file or no `repo:` is left out."""
+def read_initiative_repos(ws: Path, home: str) -> dict[str, str]:
+    """Edge. Initiative id to the `repo:` in `work/<initiative>/initiative.md` expanded under `home`; an unreadable file or no `repo:` is left out."""
     texts = {p.parent.name: chair_read_docket._text(p) for p in sorted((ws / "work").glob("*/initiative.md"))}
     fields = {name: route.parse_frontmatter(text)[0] for name, text in texts.items() if text is not None}
-    return {name: f["repo"] for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
+    return {name: repo_path.expand(f["repo"], home) for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
 
 
 def initiative_facts(

@@ -151,6 +151,7 @@ remote_doctor = _LazyModule("agent_tools.remote_doctor")
 remote_fetch = _LazyModule("agent_tools.remote_fetch")
 remote_lane = _LazyModule("agent_tools.remote_lane")
 remote_launch = _LazyModule("agent_tools.remote_launch")
+repo_path = _LazyModule("agent_tools.repo_path")
 review_pr = _LazyModule("agent_tools.review_pr")
 review_pr_close = _LazyModule("agent_tools.review_pr_close")
 route = _LazyModule("agent_tools.route")
@@ -1138,13 +1139,12 @@ def _runs_move_stop(a: argparse.Namespace, run_id: str) -> tuple[bool, str]:
     return result["ok"], result.get("reason", "")
 
 
-def _runs_move_repo_for(ws: Path) -> Callable[[dict], str]:
-    """The `chair_exec.Deps.repo_for` `cox runs move`'s clear_branches and relaunch steps run
-    through: the action's own repo, else `repo:` from the initiative's `initiative.md`; "" when
-    either is missing. Mirrors `_chair_run_deps`'s own `repo_for` closure."""
+def _repo_for(ws: Path, home: str) -> Callable[[dict], str]:
+    """The `chair_exec.Deps.repo_for`: the action's own repo, else `repo:` from the initiative's
+    `initiative.md`, either expanded under `home`; "" when either is missing."""
     def repo_for(action: dict) -> str:
         if action.get("repo"):
-            return action["repo"]
+            return repo_path.expand(action["repo"], home)
         initiative = action.get("initiative", "")
         if not initiative:
             return ""
@@ -1152,8 +1152,14 @@ def _runs_move_repo_for(ws: Path) -> Callable[[dict], str]:
             text = (ws / "work" / initiative / "initiative.md").read_text(encoding="utf-8")
         except OSError:
             return ""
-        return route.parse_frontmatter(text)[0].get("repo") or ""
+        recorded = route.parse_frontmatter(text)[0].get("repo")
+        return repo_path.expand(recorded, home) if recorded else ""
     return repo_for
+
+
+def _runs_move_repo_for(ws: Path, home: str) -> Callable[[dict], str]:
+    """`cox runs move`'s clear_branches and relaunch steps resolve a repo as the chair does."""
+    return _repo_for(ws, home)
 
 
 def _runs_move_exec_deps(ws: Path, runs_dir: Path, harness_python: str) -> chair_exec.Deps:
@@ -1161,7 +1167,7 @@ def _runs_move_exec_deps(ws: Path, runs_dir: Path, harness_python: str) -> chair
     Records nothing: a needs_chair a step raises is refused by `_runs_move_step` instead."""
     return chair_exec.edge_deps(
         runs_dir, ws, "cox-runs-move", os.getpid(),
-        run_id=lambda action: "", repo_for=_runs_move_repo_for(ws), record=lambda action: None,
+        run_id=lambda action: "", repo_for=_runs_move_repo_for(ws, os.path.expanduser("~")), record=lambda action: None,
         host=socket.gethostname(), harness_python=harness_python,
     )
 
@@ -7542,10 +7548,10 @@ def _chair_stranded_inputs(
     return task_records + stored, items
 
 
-def _initiative_repos(initiative_files: Mapping[Path, str]) -> dict[str, str]:
-    """Pure. Initiative id to the `repo:` in its `initiative.md` text, as `chair_facts.read_initiative_repos` reads it from disk."""
+def _initiative_repos(initiative_files: Mapping[Path, str], home: str) -> dict[str, str]:
+    """Pure. Initiative id to the `repo:` in its `initiative.md` text expanded under `home`, as `chair_facts.read_initiative_repos` reads it from disk."""
     fields = {p.parent.name: route.parse_frontmatter(text)[0] for p, text in initiative_files.items()}
-    return {name: f["repo"] for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
+    return {name: repo_path.expand(f["repo"], home) for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
 
 
 def _chair_reported_repos_path(runs_dir: Path) -> Path:
@@ -7750,6 +7756,7 @@ def _chair_run_deps(
     """Every source has an edge reader; `_ChairUnwired` stays for a source that loses one. A dry run never beats the lease."""
     holder = chair.lease_holder(session, pid, host)
     ws = runs_dir.parent
+    home = os.path.expanduser("~")
     harness_dir = profile.get("harness_dir", "")
     harness_python = str(Path(harness_dir) / ".venv" / "bin" / "python") if harness_dir else "python"
 
@@ -7851,7 +7858,7 @@ def _chair_run_deps(
     last_missing_repos: list[str] = []  # edge state: the current tick's `missing_repos()` result, read back by `reported_repos()`
 
     def missing_repos() -> list[str]:
-        last_missing_repos[:] = chair_read_stranded.read_missing_repos(*stranded_inputs(), os.path.isdir)
+        last_missing_repos[:] = chair_read_stranded.read_missing_repos(*stranded_inputs())
         return last_missing_repos
 
     def reported_repos() -> set[str]:
@@ -7873,19 +7880,6 @@ def _chair_run_deps(
         """`read_has_patch` needs a run id: the newest attempt on this task names it. No attempt has no record."""
         run = chair_read_patch.newest_runs(attempts()).get((initiative, task))
         return run is not None and chair_read_patch.read_has_patch(runs_dir, str(run), task)
-
-    def repo_for(action: dict) -> str:
-        """The action's own repo, else `repo:` from the initiative's `initiative.md`; "" when either is missing."""
-        if action.get("repo"):
-            return action["repo"]
-        initiative = action.get("initiative", "")
-        if not initiative:
-            return ""
-        try:
-            text = (ws / "work" / initiative / "initiative.md").read_text(encoding="utf-8")
-        except OSError:
-            return ""
-        return route.parse_frontmatter(text)[0].get("repo") or ""
 
     profile_text = _read_text_or_none(profile_path) or ""  # the `profile` dict never carries lane_hosts
     parsed_hosts = _profile_lane_hosts(profile_text)
@@ -8031,7 +8025,7 @@ def _chair_run_deps(
         ),
         lost_runs=lambda: chair_read_lost.read_lost_runs(runs_dir, now_text()),
         tickets=lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()),
-        repos=lambda: _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files())),
+        repos=lambda: _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home),
         actions=actions,
         land_watches=lambda: chair_revert_watch.pending_watches(actions),
         read_main_ci=main_ci,
@@ -8058,7 +8052,7 @@ def _chair_run_deps(
     )
     exec_deps = chair_exec.edge_deps(
         runs_dir, ws, session, pid,
-        run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=repo_for,
+        run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=_repo_for(ws, home),
         record=record,
         host=host,
         harness_python=harness_python,
