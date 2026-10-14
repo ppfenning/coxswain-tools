@@ -2,7 +2,7 @@ import copy
 
 from agent_tools import repo_path_migrate as m
 
-HOME = "/".join(["", "home", "pat"])
+HOME = "/".join(["", "home", "dev"])
 OTHER_HOME = "/".join(["", "Users", "sam"])
 REPO = "/".join([HOME, "repos", "coxswain"])
 SURFACE = "/".join([REPO, "agent_tools", "cli.py"])
