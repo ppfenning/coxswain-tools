@@ -77,6 +77,7 @@ chair_capacity = _LazyModule("agent_tools.chair_capacity")
 chair_decompose_runs = _LazyModule("agent_tools.chair_decompose_runs")
 chair_exec = _LazyModule("agent_tools.chair_exec")
 chair_facts = _LazyModule("agent_tools.chair_facts")
+chair_holder = _LazyModule("agent_tools.chair_holder")
 chair_login_check = _LazyModule("agent_tools.chair_login_check")
 chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
 chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
@@ -9186,6 +9187,65 @@ def _session_launch(launcher_profile: str | None, no_plugin: bool, extra_args: l
     return argv, str(Path(workspace).expanduser()), warning
 
 
+def _aware_or_none(value: object) -> datetime.datetime | None:
+    """An aware datetime from a datetime or ISO text; naive reads as UTC, anything unparseable as None."""
+    try:
+        at = value if isinstance(value, datetime.datetime) else datetime.datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=datetime.UTC)
+
+
+def _holder_from_row(row: Mapping[str, object] | None) -> tuple[object, datetime.datetime | None] | None:
+    """The chair lease row as (HolderLease, last tick), or None when nobody holds it.
+
+    Only a chair loop writes a `tick_at` into the row's `status` cell, so a holder with one is the loop and a Claude
+    session holder is not. An expiry that does not parse reads as already expired."""
+    holder = str((row or {}).get("holder") or "")
+    label, _, rest = holder.partition("@")
+    host, _, pid_text = rest.rpartition(":")
+    if row is None or not label or not host or not pid_text.isdigit():
+        return None
+    doc = run_store._json_cell(row.get("status")) if row.get("status") else None
+    tick = _aware_or_none(doc.get("tick_at")) if isinstance(doc, dict) and doc.get("tick_at") else None
+    expires = _aware_or_none(row.get("expires_at")) or datetime.datetime.fromtimestamp(0, datetime.UTC)
+    return chair_holder.HolderLease(label, int(pid_text), host, expires, tick is not None), tick
+
+
+def _read_holder_inputs(runs_dir: Path):
+    """Edge. (HolderLease, last tick, pid_alive) for the chair lease row; None with no store, no row, or a store error.
+
+    `pid_alive` is None for a holder on another host: this host cannot probe that pid."""
+    try:
+        opened = run_store._open(runs_dir)
+        if opened is None:
+            return None
+        conn, token = opened
+        try:
+            row = conn.execute(run_store._sql("SELECT * FROM leases WHERE name = {p}", token), (chair.LEASE_NAME,)).fetchone()
+        finally:
+            conn.close()
+    except (*run_store._DB_ERRORS, RuntimeError, OSError, ValueError):
+        return None
+    held = _holder_from_row(None if row is None else dict(row))
+    if held is None:
+        return None
+    lease, tick = held
+    return lease, tick, chair.pid_alive(lease.pid) if lease.host == socket.gethostname() else None
+
+
+def _live_holder_line(runs_dir: Path) -> str | None:
+    """The one-line description of a live chair loop that holds the lease, or None when the lease may be taken."""
+    inputs = _read_holder_inputs(runs_dir)
+    if inputs is None:
+        return None
+    lease, tick, alive = inputs
+    verdict = chair_holder.chair_holder_verdict(
+        lease, socket.gethostname(), datetime.datetime.now(datetime.UTC), tick, alive, float(chair.DEFAULT_LEASE_TTL_SECONDS)
+    )
+    return None if verdict.kind == "none" else chair_holder.format_holder_verdict(verdict)
+
+
 def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     """Bare `cox` (spec §7) and `cox session`: a real Claude Code session with
     the coxswain plugin loaded and the profile's workspace as cwd, off the
@@ -9200,6 +9260,13 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     if a.print_argv:
         print(argv)
         print(cwd)
+        return 0
+    live_line = _live_holder_line(Path(workspace).expanduser() / "runs")
+    if live_line is not None:
+        # Observer: a live chair loop already holds the lease, so this session takes, steals and releases nothing and starts no loop.
+        print(live_line)
+        os.chdir(cwd)
+        os.execvp(argv[0], argv)
         return 0
     # steal=True: chair.take only lets `steal` override a stale/crashed record
     # (agent_tools/chair.py `take`), never a live one, so a prior bare-`cox`
