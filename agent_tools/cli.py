@@ -8885,6 +8885,78 @@ def _chair_decisions(a: argparse.Namespace) -> int:
     return 0
 
 
+def _chair_lease_row(runs_dir: Path) -> dict | None:
+    """Edge, read only (`run_store._open` is `mode=ro`). The whole chair lease row, `status` included; None with no store or no row.
+
+    A store error is raised, not read as no lease: `read_lease` and `read_chair_rows` fold it into None, and a false "no lease"
+    sends the operator to take a held lease. `_chair_attach` turns the raise into its one-line reason."""
+    opened = run_store._open(runs_dir)
+    if opened is None:
+        return None
+    conn, mark = opened
+    try:
+        row = conn.execute(f"SELECT * FROM leases WHERE name = {mark}", (chair.LEASE_NAME,)).fetchone()
+    finally:
+        conn.close()
+    return None if row is None else dict(row)
+
+
+def _attach_time(value: object) -> datetime.datetime | None:
+    """Pure. An aware datetime from a datetime or ISO text, naive read as UTC; None when absent or unparseable."""
+    try:
+        at = value if isinstance(value, datetime.datetime) else datetime.datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=datetime.UTC)
+
+
+def _attach_inputs(row: Mapping) -> tuple[object, datetime.datetime | None] | None:
+    """Pure. `(HolderLease, last_tick)` from a lease row; None when the holder is not `label@host:pid` or the expiry does not parse.
+
+    Only the chair loop writes a `tick_at` into the `status` cell (`chair_tick_status`), and a Claude session holder is
+    `label@host:pid` too, so a tick marks a loop. A row with no `status` column cannot say, so it counts as a loop and
+    the pid and tick checks decide; a store that old must not answer "not a loop" for a live one."""
+    label, _, rest = str(row.get("holder") or "").partition("@")
+    host, _, pid = rest.rpartition(":")
+    expires_at = _attach_time(row.get("expires_at"))
+    if not (label and host and pid.isdigit() and expires_at):
+        return None
+    doc = run_store._json_cell(row.get("status")) if row.get("status") else None
+    last_tick = _attach_time(doc.get("tick_at")) if isinstance(doc, dict) else None
+    return chair_holder.HolderLease(label, int(pid), host, expires_at, "status" not in row or last_tick is not None), last_tick
+
+
+def _chair_attach(
+    a: argparse.Namespace,
+    read_row: Callable[[Path], dict | None] | None = None,
+    pid_alive: Callable[[int], bool] | None = None,
+    clock: Callable[[], datetime.datetime] | None = None,
+) -> int:
+    """The explicit holder check. Reads the lease, this host, the clock and the pid; `chair_holder_verdict` decides.
+
+    Exit 0 and the holder line when a loop is live; exit 1 and the reason when none is. It never writes the lease."""
+    _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    try:
+        row = (read_row or _chair_lease_row)(runs_dir)
+    except (*run_store._DB_ERRORS, RuntimeError, OSError, ValueError) as exc:  # an unreachable Postgres, psycopg absent, a bad store
+        print(f"no live chair loop: store unreadable ({type(exc).__name__}: {' '.join(str(exc).split())})")
+        return 1
+    held = None if row is None or not row.get("holder") else _attach_inputs(row)
+    if held is None:
+        print("no live chair loop: " + ("no lease" if row is None or not row.get("holder") else "holder unreadable"))
+        return 1
+    lease, last_tick = held
+    this_host = socket.gethostname()
+    alive = (pid_alive or chair.pid_alive)(lease.pid) if lease.host == this_host else None
+    verdict = chair_holder.chair_holder_verdict(
+        lease, this_host, (clock or (lambda: datetime.datetime.now(datetime.UTC)))(), last_tick, alive, 3 * _CHAIR_RUN_INTERVAL
+    )
+    print(chair_holder.format_holder_verdict(verdict))
+    return 1 if verdict.kind == "none" else 0
+
+
 CHAIR_GROUP = commands.Group(
     name="chair", help="the chair loop that runs the landing and launch ticks itself",
     description="The chair loop that runs the landing and launch ticks itself.",
@@ -8937,6 +9009,12 @@ CHAIR_COMMANDS = [
             commands.Arg(("--profile",)),
         ),
         "agent_tools.cli:_chair_ask", False, (),
+    ),
+    commands.Command(
+        "attach", "chair", "say whether a live chair loop holds the lease; exit 0 if so, 1 if not",
+        (commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),),
+        "agent_tools.cli:_chair_attach", False, (),
+        description="Reads the chair lease and the loop's last tick.\nIt never takes, steals, releases or writes the lease.",
     ),
     commands.Command(
         "answer", "chair", "answer an open decision with one of its options",
