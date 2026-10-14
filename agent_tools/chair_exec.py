@@ -37,6 +37,7 @@ from agent_tools import (
     partial_land,
     remote_fetch,
     remote_lane,
+    repo_path,
     route,
     run_store,
     stale_draft,
@@ -157,6 +158,7 @@ class Deps:
     rebase_port: Callable[[Action], RebasePort] | None = None  # a rebase_phase's port; None refuses it
     set_lanes: Callable[[str, int], int] | None = None  # a tune_lanes's (host, count) -> exit code; None refuses it
     revert_ports: Callable[[Action], tuple[RevertGitPort, RevertForgePort]] | None = None  # a revert_land's ports; None refuses it
+    home: str = ""  # this machine's home directory, read once at the edge; "" leaves a repo path unmapped for a lane host
     quarantine_phase: Callable[[str, str, str, str], None] | None = None  # (initiative, phase, cause, reason): quarantines that phase's tasks
     resolve_land: Callable[[str, str, str], None] | None = None  # (initiative, phase, outcome): the store's resolve write for a land
     rerun_main: Callable[[str, str], tuple[str, str]] | None = None  # a rerun_main's (repo, commit) -> chair_revert_ports.rerun_infra's (state, line); None refuses it
@@ -425,34 +427,50 @@ def _over_ssh(deps: Deps, ssh: str) -> Deps:
     return replace(deps, run=run, delete_branches=partial(delete_branches_with, run))
 
 
-def _pruned(deps: Deps, repo: str, initiative: str, pattern: str, carry: set[str]) -> tuple[list[str], str]:
-    """The clear's worktree prune, then its branch sweep, through `deps.run`; (deleted branches, failure line or "")."""
-    code, listing = deps.run(["git", "-C", repo, "worktree", "list", "--porcelain"])
+def _host_repo(deps: Deps, repo: str) -> str:
+    """The home-relative form of `repo` for a command run on a lane host; `repo` itself when no home is known."""
+    return repo_path.host_form(repo, deps.home) if deps.home else repo
+
+
+def _pruned(
+    deps: Deps, repo: str, initiative: str, pattern: str, carry: set[str], git_repo: str = ""
+) -> tuple[list[str], str]:
+    """The clear's worktree prune, then its branch sweep, through `deps.run`; (deleted branches, failure line or "").
+
+    `git_repo` is the path git runs in when it differs from `repo`, the name the lines carry; "" means `repo`.
+    """
+    where = git_repo or repo
+    code, listing = deps.run(["git", "-C", where, "worktree", "list", "--porcelain"])
     if code != 0:
         return [], f"git worktree list in {repo}: {listing.strip()}"
     entries = chair_plan_prune.worktrees_to_prune(listing, initiative)
     for argv in chair_plan_prune.prune_argv(entries, carry):
-        code, output = deps.run(["git", "-C", repo, *argv[1:]])
+        code, output = deps.run(["git", "-C", where, *argv[1:]])
         if code != 0:
             return [], f"{' '.join(argv)} in {repo}: {output.strip()}"
     # The prune already deleted its entries' branches, so the sweep finding nothing after a prune is success, not a miss.
-    swept, error = _swept_branches(deps, repo, pattern, carry)
+    swept, error = _swept_branches(deps, where, pattern, carry)
     deleted = [e["branch"] for e in entries if e["branch"].rsplit("/", 1)[-1] not in carry] + swept
     return deleted, f"deleted {deleted} in {repo}; git: {error.strip()}" if error else ""
 
 
-def _branch_on_host(deps: Deps, at_home: Run, ssh: str, repo: str, branch: str) -> tuple[bool, str]:
+def _branch_on_host(
+    deps: Deps, at_home: Run, ssh: str, repo: str, branch: str, host_repo: str = ""
+) -> tuple[bool, str]:
     """(present on the host, failure line or ""). A branch only the chair holds is pushed to the host first, so
-    the relaunch there builds on it; a branch on neither machine is nothing to carry."""
-    verify = ["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"]
-    on_host, host_out = at_home(verify)
+    the relaunch there builds on it; a branch on neither machine is nothing to carry.
+
+    `host_repo` is `repo` as the host names it; "" means `repo`. Lines keep naming `repo`."""
+    ref = f"refs/heads/{branch}"
+    verify = ["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref]
+    on_host, host_out = at_home(["git", "-C", host_repo or repo, "rev-parse", "--verify", "--quiet", ref])
     if on_host == 124:
         return False, f"git rev-parse of {branch} on {ssh}: {host_out.strip()}"
     if on_host == 0:
         return True, ""
     if deps.run(verify)[0] != 0:
         return False, ""
-    code, out = deps.run(["git", "-C", repo, "push", f"{ssh}:{repo}", f"refs/heads/{branch}:refs/heads/{branch}"])
+    code, out = deps.run(["git", "-C", repo, "push", f"{ssh}:{host_repo or repo}", f"refs/heads/{branch}:refs/heads/{branch}"])
     return (True, "") if code == 0 else (False, f"git push of {branch} to {ssh}:{repo}: {out.strip()}")
 
 
@@ -471,16 +489,17 @@ def _carry_forward(
     """
     host = action.get("host", "")
     at_home = _over_ssh(deps, ssh).run if ssh else deps.run
+    home_repo = _host_repo(deps, repo) if ssh else repo  # how `at_home` names the repo; lines keep `repo`
     if ssh and phases:
         # The relaunch's own launch_on_host runs this same sync before starting the lane, so a host checkout that
         # is dirty or off main would fail that relaunch anyway; failing here says why one step earlier.
-        code, out = at_home(sync_argv(repo))
+        code, out = at_home(sync_argv(home_repo))
         if code != 0:
             return [], None, _result(action, "failed", f"updating {repo} on {host} before the carry: {out.strip()}")
     merged: list[str] = []
     for phase in phases:
         branch = f"epic/{initiative}/{phase}"
-        present, error = _branch_on_host(deps, at_home, ssh, repo, branch) if ssh else (True, "")
+        present, error = _branch_on_host(deps, at_home, ssh, repo, branch, home_repo) if ssh else (True, "")
         if error:
             return merged, None, _result(action, "failed", error)
         if not present:
@@ -492,7 +511,7 @@ def _carry_forward(
                 return merged, None, _result(action, "failed", f"mktemp -d on {host}: {out.strip()}")
         else:
             tmp = tempfile.mkdtemp(prefix="cox-carry-")
-        code, out = at_home(["git", "-C", repo, "worktree", "add", tmp, branch])
+        code, out = at_home(["git", "-C", home_repo, "worktree", "add", tmp, branch])
         if code != 0:
             return merged, None, _result(action, "failed", f"git worktree add {tmp} {branch} in {repo}: {out.strip()}")
         code, out = at_home(["git", "-C", tmp, "merge", "--no-edit", "main"])
@@ -500,10 +519,10 @@ def _carry_forward(
             _, diff_out = at_home(["git", "-C", tmp, "diff", "--name-only", "--diff-filter=U"])
             conflicted = [line for line in diff_out.splitlines() if line.strip()]
             if not conflicted:
-                at_home(["git", "-C", repo, "worktree", "remove", "--force", tmp])
+                at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])
                 return merged, None, _result(action, "failed", f"git merge --no-edit main in {tmp} ({branch}): {out.strip()}")
             at_home(["git", "-C", tmp, "merge", "--abort"])
-            rcode, rout = at_home(["git", "-C", repo, "worktree", "remove", "--force", tmp])
+            rcode, rout = at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])
             if rcode != 0:
                 return merged, None, _result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
             needs_chair: Action = {
@@ -511,7 +530,7 @@ def _carry_forward(
                 "reason": f"phase {phase} conflicts with main: {conflicted}",
             }
             return merged, needs_chair, None
-        rcode, rout = at_home(["git", "-C", repo, "worktree", "remove", "--force", tmp])
+        rcode, rout = at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])
         if rcode != 0:
             return merged, None, _result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
         merged.append(phase)
@@ -596,7 +615,8 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _result(action, "failed", error)
     # A host-homed initiative's earlier runs left their worktrees and branches in the host's checkout, and git
     # refuses to add a worktree on a branch another worktree holds, so the host gets the same prune first.
-    host_deleted, error = _pruned(_over_ssh(deps, ssh), repo, initiative, pattern, carry) if ssh else ([], "")
+    host_pruned = _pruned(_over_ssh(deps, ssh), repo, initiative, pattern, carry, _host_repo(deps, repo)) if ssh else None
+    host_deleted, error = host_pruned or ([], "")
     if error:
         return _result(action, "failed", f"on {host}: {error}")
     merged, needs_chair, failure = _carry_forward(action, deps, repo, initiative, sorted(carry), ssh)
@@ -1450,8 +1470,8 @@ class _GitEdge:
 
     Every base is `origin/<default branch>` after a `git fetch origin`; local `main` is never read, so it cannot be stale."""
 
-    def __init__(self, runs_dir: Path, workspace: Path, repo: str) -> None:
-        self.runs_dir, self.workspace, self.repo, self.tmp = runs_dir, workspace, repo, ""
+    def __init__(self, runs_dir: Path, workspace: Path, repo: str, home: str | None = None) -> None:
+        self.runs_dir, self.workspace, self.repo, self.tmp, self.home = runs_dir, workspace, repo, "", home
 
     def _git(self, *args: str) -> tuple[int, str]:
         return run_argv(["git", "-C", self.tmp or self.repo, *args])
@@ -1469,7 +1489,7 @@ class _GitEdge:
         lane = next(iter(host_cmd.host_rows_to_lane_hosts([{**_host_row(self.runs_dir, host), "state": "active"}])), None)
         if lane is None or not lane.workspace_dir:
             raise RuntimeError(f"host {host} has no ssh or workspace_dir recorded")
-        host_repo = remote_fetch.host_repo_path(str(self.workspace), lane.workspace_dir, self.repo)
+        host_repo = remote_fetch.host_repo_path(str(self.workspace), lane.workspace_dir, self.repo, self.home)
         _must(*self._git("fetch", f"{lane.ssh}:{host_repo}", f"+refs/heads/{branch}:refs/heads/{branch}"), f"git fetch {branch} from {host}")
 
     def create_branch_from_main(self, name: str) -> None:
@@ -1604,9 +1624,9 @@ class _RebaseEdge:
 
 
 def _carry_ports(
-    runs_dir: Path, workspace: Path, repo_for: Callable[[Action], str], now: Callable[[], str], action: Action,
+    runs_dir: Path, workspace: Path, repo_for: Callable[[Action], str], now: Callable[[], str], home: str, action: Action,
 ) -> tuple[GitPort, ForgePort, StorePort]:
-    git = _GitEdge(runs_dir, workspace, action.get("repo") or repo_for(action))
+    git = _GitEdge(runs_dir, workspace, action.get("repo") or repo_for(action), home)
     forge = _ForgeEdge(git)
     return git, forge, _StoreEdge(runs_dir, workspace, action, forge, now)
 
@@ -1635,6 +1655,7 @@ def edge_deps(
     `provider_profile` is the routing profile's `provider_profile` YAML, already resolved; unset, it names no
     runner override and `check_login` keeps today's `"claude-code"` default.
     """
+    home = str(Path.home())
     run = _local_only(workspace) if dry_run else _bounded_for_ssh(workspace)
     login_run = partial(run_argv_split, cwd=workspace, timeout=LANE_HOST_TIMEOUT_S)
     live_check = partial(_check_login_edge, runs_dir, login_run, provider_profile)
@@ -1653,6 +1674,7 @@ def edge_deps(
         log_retention_days=log_retention_days,
         harness_python=harness_python,
         ids_mode=ids_mode,
-        carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat()),
+        home=home,
+        carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat(), home),
         rebase_port=lambda action: _RebaseEdge(action.get("repo") or repo_for(action)),
     )
