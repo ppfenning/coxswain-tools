@@ -11,8 +11,8 @@ from agent_tools import chair_exec
 from agent_tools.chair_exec import Deps, perform
 from agent_tools.remote_argv import ssh_argv
 
-HOME = "/home/chair"
-REPO = "/home/chair/repos/app"
+HOME = "/home/user"
+REPO = "/home/user/repos/app"
 HOST_REPO = "repos/app"
 SSH = "pat@h1"
 BRANCH = "epic/alpha/build"
@@ -85,12 +85,12 @@ def test_a_carry_pushes_a_chair_only_branch_to_the_host_by_its_home_relative_pat
 
 
 def test_fetch_branch_fetches_from_the_home_relative_host_location(monkeypatch: pytest.MonkeyPatch) -> None:
-    row = {"name": "h1", "ssh": SSH, "versions_json": json.dumps({"workspace_dir": "/home/host/work"})}
+    row = {"name": "h1", "ssh": SSH, "versions_json": json.dumps({"workspace_dir": "/home/user/work"})}
     argvs: list[list[str]] = []
     monkeypatch.setattr(chair_exec, "_host_row", lambda runs_dir, host: row)
     monkeypatch.setattr(chair_exec, "run_argv", lambda argv, *a, **k: argvs.append(argv) or (0, ""))
-    edge = chair_exec._GitEdge(Path("runs"), Path("/home/chair/work"), "/home/chair/work/app", HOME)
+    edge = chair_exec._GitEdge(Path("runs"), Path("/home/user/work"), "/home/user/work/app", HOME)
     edge.fetch_branch("h1", "agents/r1/t1")
     assert argvs == [
-        ["git", "-C", "/home/chair/work/app", "fetch", f"{SSH}:work/app", "+refs/heads/agents/r1/t1:refs/heads/agents/r1/t1"]
+        ["git", "-C", "/home/user/work/app", "fetch", f"{SSH}:work/app", "+refs/heads/agents/r1/t1:refs/heads/agents/r1/t1"]
     ]
