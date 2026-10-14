@@ -60,6 +60,10 @@ PROFILE_FILE = "profile.yaml"
 DEFAULT_OPERATOR = "operator"
 OPERATOR_DESCRIPTION = "the name of the human the courier and decisions address"
 
+STORE_MODES = ("files", "shared")
+DEFAULT_STORE_MODE = "files"
+STORE_MODE_DESCRIPTION = "where run state lives: files on this machine, or the shared store"
+
 
 @dataclass(frozen=True)
 class Setting:
@@ -104,6 +108,7 @@ REGISTRY: tuple[Setting, ...] = (
          ("team", "cartridges_dir", "skills_roots", "provider_profile", "harness_dir",
           "workspace_dir", "assume", "router", "forge", "tracker", "umbrella_dir", "ids")),
     Setting("profile", "operator", "profile files", PROFILE_FILE, "operator", description=OPERATOR_DESCRIPTION),
+    Setting("profile", "store.mode", "profile files", PROFILE_FILE, "store.mode", description=STORE_MODE_DESCRIPTION),
 )
 
 

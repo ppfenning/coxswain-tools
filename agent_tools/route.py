@@ -116,6 +116,8 @@ _SPEND_TEXT_KEYS = {"weekly_reset"}  # `Sun 04:00 America/New_York`, parsed by u
 
 _CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch_stagger_s", "max_launches_per_hour"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
 
+_STORE_KEYS = {"mode"}  # the one key of the `store:` block, kept as text in `profile["store"]["mode"]`
+
 
 class ProfileError(Exception):
     """A profile file line is nested, malformed, or has a bad value. An unknown top-level key is not an error."""
@@ -149,7 +151,8 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:`/`launch_stagger_s:`/`max_launches_per_hour:` lines,
     all optional, parsed as floats into `result["chair"]` (every key `cli._chair_run_deps`
     reads off `profile["chair"]`; `log_retention_days` stays a flat top-level key, not one of
-    these). A `notify: {ntfy: <url>}` line is the one inline mapping, kept as `result["notify"]`.
+    these). A bare `store:` line followed by an indented `mode:` line is kept as text in
+    `result["store"]["mode"]`. A `notify: {ntfy: <url>}` line is the one inline mapping, kept as `result["notify"]`.
 
     A nested key outside a `spend:` or `chair:` block, or an unrecognized key inside one,
     raises ProfileError naming the offending line (number + text). A top-level key
@@ -160,6 +163,7 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     unknown: list[tuple[str, int]] = []
     in_spend = False
     in_chair = False
+    in_store = False
     in_hosts = False  # `lane_hosts:` is a list of mappings that cli reads from the YAML text; its lines are skipped here
     in_unknown = False  # an unknown top-level key's indented block is dropped with the key, not read as a stray nested line
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
@@ -171,6 +175,16 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
         if (in_hosts or in_unknown) and line != line.lstrip():
             continue
         if line != line.lstrip():
+            if in_store:
+                content = _stripped_content(line)
+                if ":" not in content:
+                    raise ProfileError(f"line {lineno}: {raw_line}")
+                key, _, value = content.partition(":")
+                key, value = key.strip(), value.strip().strip("\"'")
+                if key not in _STORE_KEYS or not value:
+                    raise ProfileError(f"line {lineno}: {raw_line}")
+                result.setdefault("store", {})[key] = value
+                continue
             if in_chair:
                 content = _stripped_content(line)
                 if ":" not in content:
@@ -206,6 +220,7 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
             continue
         in_spend = False
         in_chair = False
+        in_store = False
         in_hosts = False
         in_unknown = False
         content = _stripped_content(line)
@@ -223,6 +238,11 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
             if value:
                 raise ProfileError(f"line {lineno}: {raw_line}")
             in_chair = True
+            continue
+        if key == "store":
+            if value:
+                raise ProfileError(f"line {lineno}: {raw_line}")
+            in_store = True
             continue
         if key == "lane_hosts":
             if value:

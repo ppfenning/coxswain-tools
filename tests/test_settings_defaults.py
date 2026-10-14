@@ -28,6 +28,7 @@ def test_missing_keys_yield_exactly_those_built_in_rows():
         "chair.housekeeping_hours",
         "analytics.snapshot_max_age_s",
         "operator",
+        "store.mode",
     ]
     assert {r["source_file"] for r in rows} == {"built-in"}
     assert {r["tracked"] for r in rows} == {False}

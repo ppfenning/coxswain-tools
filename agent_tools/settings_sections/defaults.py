@@ -8,6 +8,7 @@ Where each default comes from, measured in this repository:
 - `chair.housekeeping_hours`: imported from `agent_tools.chair_facts.DEFAULT_HOUSEKEEPING_HOURS`.
 - `analytics.snapshot_max_age_s`: imported from `agent_tools.analytics_snapshot.DEFAULT_MAX_AGE_S`.
 - `operator`: imported from `agent_tools.settings_model.DEFAULT_OPERATOR`.
+- `store.mode`: imported from `agent_tools.settings_model.DEFAULT_STORE_MODE`.
 - `policy.build_budget_usd_max`, `epic_threshold`, `policy.review_tier`: no code default.
   The cartridge sets them. Per the chair pin of 2026-10-05 they stay in the table with
   default `None` and the note "set by the cartridge". No value is invented.
@@ -23,7 +24,7 @@ from dataclasses import dataclass
 
 from agent_tools.analytics_snapshot import DEFAULT_MAX_AGE_S
 from agent_tools.chair_facts import DEFAULT_HOUSEKEEPING_HOURS, DEFAULT_STALE_DAYS
-from agent_tools.settings_model import DEFAULT_OPERATOR, SettingRow
+from agent_tools.settings_model import DEFAULT_OPERATOR, DEFAULT_STORE_MODE, SettingRow
 
 BUILT_IN = "built-in"
 CARTRIDGE_NOTE = "set by the cartridge"
@@ -46,6 +47,7 @@ DEFAULT_KEYS: tuple[DefaultKey, ...] = (
     DefaultKey("profile", "chair.stale_days", "housekeeping", DEFAULT_STALE_DAYS),
     DefaultKey("profile", "analytics.snapshot_max_age_s", "housekeeping", DEFAULT_MAX_AGE_S),
     DefaultKey("profile", "operator", "profile files", DEFAULT_OPERATOR),
+    DefaultKey("profile", "store.mode", "profile files", DEFAULT_STORE_MODE),
 )
 
 
