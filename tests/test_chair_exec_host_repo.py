@@ -14,7 +14,7 @@ from agent_tools.remote_argv import ssh_argv
 HOME = "/home/user"
 REPO = "/home/user/repos/app"
 HOST_REPO = "repos/app"
-SSH = "pat@h1"
+SSH = "dev@h1"
 BRANCH = "epic/alpha/build"
 
 
