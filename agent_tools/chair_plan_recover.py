@@ -156,11 +156,25 @@ def _relaunch_candidates(facts: Facts, blocked: set[str]) -> list[InitiativeFact
     return [i for i in facts["initiatives"] if _can_relaunch(i, blocked) and i.get("repo") not in landing_repos]
 
 
+def _lane_capacity_zero(facts: Facts) -> bool:
+    """True when the local machine has no lanes and every host row is capped at 0; a row with no capacity is uncapped."""
+    dispatch = facts["dispatch"]
+    return dispatch["max_in_flight"] == 0 and all(h.get("capacity") == 0 for h in dispatch.get("hosts", []))
+
+
+NO_CAPACITY = Verdict(allowed=False, reason="no lane capacity: the local machine and every host are at 0", kind="capacity")
+
+
 def refused_relaunches(facts: Facts, now: datetime | None, blocked: set[str]) -> dict[str, Verdict]:
-    """Each initiative that would relaunch, to the verdict that refuses it; empty when now is None."""
+    """Each initiative that would relaunch, to the verdict that refuses it: lane capacity zero, the budget or the loop rule.
+
+    Empty when now is None."""
     if now is None:
         return {}
-    verdicts = {i["id"]: budget_verdict(facts, i["id"], "relaunch", now) for i in _relaunch_candidates(facts, blocked)}
+    candidates = _relaunch_candidates(facts, blocked)
+    if _lane_capacity_zero(facts):
+        return {i["id"]: NO_CAPACITY for i in candidates}
+    verdicts = {i["id"]: budget_verdict(facts, i["id"], "relaunch", now) for i in candidates}
     return {initiative: v for initiative, v in verdicts.items() if not v.allowed}
 
 

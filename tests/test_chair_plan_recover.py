@@ -1,6 +1,8 @@
 import copy
+from datetime import UTC, datetime
 
-from agent_tools.chair_plan_recover import plan_recover
+from agent_tools.chair_plan import plan_tick
+from agent_tools.chair_plan_recover import plan_recover, refused_launches, refused_relaunches
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_types import ApprovedTask, Facts, InitiativeFacts, LandingFact, QuarantineFacts
 
@@ -248,3 +250,50 @@ def test_facts_with_no_landing_key_relaunch_both_initiatives():
     facts = _facts([_in_repo("a", "r1"), _in_repo("b", "r2")], [])
     assert "landing" not in facts
     assert plan_recover(facts) == _PAIRS
+
+
+_NOW = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
+
+
+def _with_lanes(max_in_flight: int, hosts: list[dict]) -> Facts:
+    tick_keys = {
+        "remote_unfetched": {},
+        "run_exited": {"i": True},
+        "schema_deaths": {},
+        "lost_runs": {},
+        "last_housekeeping_at": None,
+        "housekeeping_hours": 24.0,
+        "stale_days": 7,
+        "stale_candidates": [],
+        "stall_candidates": [],
+        "home": {},
+        "dispatch": {"max_in_flight": max_in_flight, "live_runs": 0, "hosts": hosts},
+    }
+    return {**_facts([_initiative()], []), **tick_keys}  # type: ignore[typeddict-item,return-value]
+
+
+def _kinds_for(actions: list[dict], initiative: str) -> set[str]:
+    return {a["kind"] for a in actions if a.get("initiative") == initiative}
+
+
+def test_zero_lane_capacity_refuses_the_relaunch_and_plan_tick_does_not_launch_it_instead():
+    facts = _with_lanes(0, [{"name": "h1", "live_runs": 0, "capacity": 0}])
+    assert refused_launches(facts, _NOW) == frozenset({"i"})
+    assert not _kinds_for(plan_tick(facts, _NOW), "i") & {"relaunch", "launch_epic"}
+
+
+def test_a_host_with_capacity_still_relaunches():
+    facts = _with_lanes(0, [{"name": "h1", "live_runs": 0, "capacity": 0}, {"name": "h2", "live_runs": 0, "capacity": 2}])
+    assert refused_launches(facts, _NOW) == frozenset()
+    assert "relaunch" in _kinds_for(plan_tick(facts, _NOW), "i")
+
+
+def test_a_host_row_with_no_capacity_is_uncapped():
+    facts = _with_lanes(0, [{"name": "h1", "live_runs": 0}])
+    assert refused_launches(facts, _NOW) == frozenset()
+
+
+def test_without_now_lane_capacity_refuses_nothing():
+    facts = _with_lanes(0, [{"name": "h1", "live_runs": 0, "capacity": 0}])
+    assert refused_launches(facts, None) == frozenset()
+    assert refused_relaunches(facts, None, set()) == {}
