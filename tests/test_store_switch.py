@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,54 @@ def test_render_plan_never_prints_a_password():
 def test_parse_counts_reads_json_and_lines():
     assert sw.parse_counts('copying\n{"runs": 2, "events": 7}\n') == {"runs": 2, "events": 7}
     assert sw.parse_counts("runs: 2\nevents = 7\nnoise\n") == {"runs": 2, "events": 7}
+
+
+def test_parse_counts_reads_plain_table_lines():
+    out = "runs source=5 copied=3 refreshed=1 present=5\nevents source=9 copied=0 refreshed=2 present=9\n"
+    assert sw.parse_counts(out) == {"runs": 3, "events": 0}
+
+
+COPIER_JSON = (
+    '{"from": "sqlite:////runs/cox.db", "to": "postgresql://db.example/cox", '
+    '"tables": {"runs": {"source": 5, "copied": 3, "refreshed": 0, "present": 5}, '
+    '"events": {"source": 9, "copied": 7, "refreshed": 1, "present": 9}}, "short": {}, "ok": true}\n'
+)
+COPIER_JSON_RERUN = (
+    '{"from": "a", "to": "b", "tables": {"runs": {"source": 5, "copied": 0, "refreshed": 0, "present": 5}, '
+    '"events": {"source": 9, "copied": 0, "refreshed": 0, "present": 9}}, "short": {}, "ok": true}\n'
+)
+
+
+def test_parse_counts_reads_nested_copier_json():
+    assert sw.parse_counts(COPIER_JSON) == {"runs": 3, "events": 7}
+
+
+def test_parse_counts_rerun_json_is_non_empty_with_zeros():
+    counts = sw.parse_counts(COPIER_JSON_RERUN)
+    assert counts == {"runs": 0, "events": 0}
+    assert counts
+
+
+def test_default_copy_store_passes_json_flag(monkeypatch: pytest.MonkeyPatch):
+    seen: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout=COPIER_JSON, stderr="")
+
+    monkeypatch.setattr(sw.subprocess, "run", fake_run)
+    assert sw.default_copy_store(FILES_DB, SHARED_DB) == {"runs": 3, "events": 7}
+    assert seen[0][seen[0].index("harness.store_copy") + 1 :] == ["--json", FILES_DB, SHARED_DB]
+
+
+def test_default_copy_store_still_raises_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch):
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr=f"short table: {SHARED_DB}")
+
+    monkeypatch.setattr(sw.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="exited 1") as err:
+        sw.default_copy_store(FILES_DB, SHARED_DB)
+    assert "hunter2" not in str(err.value)
 
 
 def test_second_run_reports_zero_newly_copied():

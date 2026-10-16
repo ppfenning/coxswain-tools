@@ -27,6 +27,7 @@ DIRECTIONS = ("to_shared", "to_files")
 _LAYOUT = re.compile(r"\d{4}/\d{2}/\d{2}/[^/]+\.parquet")
 _QUERY_SECRET = re.compile(r"(?i)\b(password|passwd|sslpassword|secret|secret_key|access_key)=[^&\s]*")
 _COUNT_LINE = re.compile(r"^\s*([\w.]+)\s*[:=]\s*(\d+)\s*$")
+_TABLE_LINE = re.compile(r"^\s*([\w.]+)\s+source=\d+\s+copied=(\d+)\s+refreshed=\d+\s+present=\d+\s*$")
 
 
 @dataclass(frozen=True)
@@ -93,27 +94,37 @@ def render_plan(steps: Iterable[Step]) -> str:
 
 
 def parse_counts(stdout: str) -> dict[str, int]:
-    """Per-table counts from harness.store_copy output: a JSON object on the last line, else `table: N` lines.
-    Output in neither shape gives {}, which run_plan treats as an unverified copy, never as zero copied."""
-    # unknown: the exact harness.store_copy output format. Both shapes are accepted and the counts are read as
-    # rows newly copied by this run.
+    """Per-table rows newly copied, from harness.store_copy output. Accepted shapes, in order: the --json object
+    with a nested `tables` mapping (each table's `copied`), a flat JSON object of integers, then plain lines,
+    either `<table> source=N copied=N refreshed=N present=N` (its `copied`) or `table: N`.
+    Output in none of these shapes gives {}, which run_plan treats as an unverified copy, never as zero copied."""
     lines = [line for line in stdout.splitlines() if line.strip()]
     try:
         data = json.loads(lines[-1]) if lines else None
     except ValueError:
         data = None
+    if isinstance(data, dict) and isinstance(data.get("tables"), dict):
+        return {
+            str(table): row["copied"]
+            for table, row in data["tables"].items()
+            if isinstance(row, dict) and isinstance(row.get("copied"), int) and not isinstance(row["copied"], bool)
+        }
     if isinstance(data, dict):
         return {str(k): int(v) for k, v in data.items() if isinstance(v, int) and not isinstance(v, bool)}
-    return {m.group(1): int(m.group(2)) for line in lines if (m := _COUNT_LINE.match(line))}
+    table_rows = {m.group(1): int(m.group(2)) for line in lines if (m := _TABLE_LINE.match(line))}
+    return table_rows or {m.group(1): int(m.group(2)) for line in lines if (m := _COUNT_LINE.match(line))}
 
 
 def default_copy_store(source_url: str, target_url: str) -> dict[str, int]:
-    """Edge. Run `python -m harness.store_copy SOURCE TARGET` and return its per-table counts.
+    """Edge. Run `python -m harness.store_copy --json SOURCE TARGET` and return its per-table counts.
 
     That copy is idempotent and refuses to drop anything, so re-running a half-finished switch is safe.
     This function keeps that property: it only calls it, and never drops, deletes or truncates."""
     done = subprocess.run(
-        [sys.executable, "-m", "harness.store_copy", source_url, target_url], capture_output=True, text=True, check=False
+        [sys.executable, "-m", "harness.store_copy", "--json", source_url, target_url],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if done.returncode != 0:
         tail = (done.stderr or done.stdout).strip().splitlines()[-1:] or ["no output"]
