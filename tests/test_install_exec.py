@@ -74,8 +74,8 @@ def test_running_the_clone_step_twice_leaves_the_same_layout_as_once(tmp_path):
 
 def test_fetch_checkout_argv_shape_fetches_then_checks_out_the_pinned_tag():
     steps = [{"kind": "fetch_checkout", "component": "harness", "repo": "acme/harness", "tag": "v2.0"}]
-    fetch_argv = ["git", "-C", "/root/harness", "fetch", "--tags"]
-    checkout_argv = ["git", "-C", "/root/harness", "checkout", "v2.0"]
+    fetch_argv = ["git", "-C", "/root/coxswain-harness", "fetch", "--tags"]
+    checkout_argv = ["git", "-C", "/root/coxswain-harness", "checkout", "v2.0"]
     run, calls = _fake_run({})
     results = install_exec.execute(steps, root="/root", run=run)
     assert calls == [(fetch_argv, None), (checkout_argv, None)]
@@ -86,8 +86,8 @@ def test_fetch_checkout_argv_shape_fetches_then_checks_out_the_pinned_tag():
 def test_an_edge_fetch_checkout_fetches_the_branch_and_resets_the_local_branch_onto_it():
     steps = [{"kind": "fetch_checkout", "component": "harness", "repo": "acme/harness", "tag": None,
               "ref": "main", "channel": "edge"}]
-    fetch_argv = ["git", "-C", "/root/harness", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"]
-    checkout_argv = ["git", "-C", "/root/harness", "checkout", "-B", "main", "origin/main"]
+    fetch_argv = ["git", "-C", "/root/coxswain-harness", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"]
+    checkout_argv = ["git", "-C", "/root/coxswain-harness", "checkout", "-B", "main", "origin/main"]
     run, calls = _fake_run({})
     install_exec.execute(steps, root="/root", run=run)
     assert calls == [(fetch_argv, None), (checkout_argv, None)]

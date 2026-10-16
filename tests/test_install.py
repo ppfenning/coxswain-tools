@@ -436,14 +436,14 @@ def test_an_edge_checkout_behind_the_remote_fetches_and_then_lands_on_the_tip(tm
     _run(work, "git", "remote", "add", "origin", str(origin))
     _commit(work, "1")
     root.mkdir()
-    _run(tmp_path, "git", "clone", "-q", str(origin), str(root / "harness"))
+    _run(tmp_path, "git", "clone", "-q", str(origin), str(root / "coxswain-harness"))
     _commit(work, "2")
     manifest = {"components": {"harness": {"repo": "org/harness", "required": True}},
                 "providers": {"claude-code": {"status": "supported"}}}
     options = {**_options(), "channel": "edge"}
 
     def steps():
-        return install.plan(manifest, _facts({"harness": cli._checkout_facts(root / "harness", fetch=True)}), options)
+        return install.plan(manifest, _facts({"harness": cli._checkout_facts(root / "coxswain-harness", fetch=True)}), options)
 
     assert steps()[0]["kind"] == "fetch_checkout"
     def run(argv, cwd):
@@ -451,5 +451,5 @@ def test_an_edge_checkout_behind_the_remote_fetches_and_then_lands_on_the_tip(tm
         return proc.returncode, proc.stdout + proc.stderr
     results = install_exec.execute(install_exec.from_plan(steps()[:1], manifest=manifest, options=options),
                                    root=str(root), run=run)
-    assert results[0]["exit"] == 0 and (root / "harness" / "f").read_text() == "2"
+    assert results[0]["exit"] == 0 and (root / "coxswain-harness" / "f").read_text() == "2"
     assert steps()[0]["kind"] == "skip"

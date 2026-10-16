@@ -49,18 +49,20 @@ def _clone_argv(step: Mapping, root: str) -> list:
 
 
 def _fetch_argv(step: Mapping, root: str) -> list:
+    directory = clone_dir(root, step["component"])
     if _edge(step):
         ref = step["ref"]
-        return ["git", "-C", f"{root}/{step['component']}", "fetch", "origin",
+        return ["git", "-C", directory, "fetch", "origin",
                 f"+refs/heads/{ref}:refs/remotes/origin/{ref}"]
-    return ["git", "-C", f"{root}/{step['component']}", "fetch", "--tags"]
+    return ["git", "-C", directory, "fetch", "--tags"]
 
 
 def _checkout_argv(step: Mapping, root: str) -> list:
     """Edge moves the local branch onto the fetched tip; release checks out the tag."""
+    directory = clone_dir(root, step["component"])
     if _edge(step):
-        return ["git", "-C", f"{root}/{step['component']}", "checkout", "-B", step["ref"], f"origin/{step['ref']}"]
-    return ["git", "-C", f"{root}/{step['component']}", "checkout", step["tag"]]
+        return ["git", "-C", directory, "checkout", "-B", step["ref"], f"origin/{step['ref']}"]
+    return ["git", "-C", directory, "checkout", step["tag"]]
 
 
 def _setup_install_argv(step: Mapping, root: str) -> list:
