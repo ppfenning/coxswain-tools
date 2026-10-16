@@ -26,6 +26,7 @@ class Candidate:
     repo: str
     link: str
     kind: Kind = "issue"
+    project_item_id: str = ""
 
 
 @dataclass(frozen=True)
