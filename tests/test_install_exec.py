@@ -20,9 +20,53 @@ def test_clone_argv_shape_uses_the_component_name_as_the_target_directory():
     run, calls = _fake_run({})
     results = install_exec.execute(steps, root="/root", run=run)
     argv = ["git", "clone", "--branch", "v1.0", "--depth", "1",
-            "https://github.com/acme/cartridges-repo.git", "/root/cartridges"]
+            "https://github.com/acme/cartridges-repo.git", "/root/coxswain-cartridges"]
     assert calls == [(argv, None)]
     assert results == [{"step": steps[0], "commands": [argv], "exit": 0, "output": ""}]
+
+
+COMPONENTS = ("cartridges", "graphs", "tools")
+PREFIXED = ["coxswain-cartridges", "coxswain-graphs", "coxswain-tools"]
+
+
+def _clone_steps():
+    return [{"kind": "clone", "component": name, "repo": f"acme/{name}", "tag": "v1.0"} for name in COMPONENTS]
+
+
+def _mkdir_run(argv, cwd):
+    if argv[:2] == ["git", "clone"]:
+        Path(argv[-1]).mkdir(exist_ok=True)
+    return 0, ""
+
+
+def _layout(root):
+    return sorted(p.name for p in root.iterdir())
+
+
+def test_clone_step_writes_exactly_the_three_prefixed_directories(tmp_path):
+    install_exec.execute(_clone_steps(), root=str(tmp_path), run=_mkdir_run)
+    assert _layout(tmp_path) == ["coxswain-cartridges", "coxswain-graphs", "coxswain-tools"]
+
+
+def test_setup_install_lookup_finds_each_prefixed_directory(tmp_path):
+    from agent_tools import setup_install
+
+    steps = setup_install.install_plan(
+        root=str(tmp_path), team="acme", workspace=str(tmp_path / "ws"), provider_profile="p",
+        skills_root="/skills", uv_on_path=True, python_exists={}, claude_on_path=False,
+        profile_exists=True, force_profile=False, plugins=False, hook=False,
+        config_dir="/cfg", claude_settings_path="/cfg/settings.json")
+    venv_dirs = [s["cwd"] for s in steps if s.get("argv") == ["uv", "venv", "-q"]]
+    expected = [str(tmp_path / name) for name in PREFIXED]
+    assert venv_dirs == expected
+    assert [install_exec.clone_dir(str(tmp_path), name) for name in COMPONENTS] == expected
+
+
+def test_running_the_clone_step_twice_leaves_the_same_layout_as_once(tmp_path):
+    install_exec.execute(_clone_steps(), root=str(tmp_path), run=_mkdir_run)
+    once = _layout(tmp_path)
+    install_exec.execute(_clone_steps(), root=str(tmp_path), run=_mkdir_run)
+    assert _layout(tmp_path) == once == ["coxswain-cartridges", "coxswain-graphs", "coxswain-tools"]
 
 
 def test_fetch_checkout_argv_shape_fetches_then_checks_out_the_pinned_tag():
@@ -73,7 +117,7 @@ def test_a_failing_clone_stops_the_rest_and_marks_them_not_run():
         {"kind": "doctor"},
     ]
     argv = ["git", "clone", "--branch", "v1.0", "--depth", "1",
-            "https://github.com/acme/cartridges.git", "/root/cartridges"]
+            "https://github.com/acme/cartridges.git", "/root/coxswain-cartridges"]
     run, calls = _fake_run({tuple(argv): (128, "fatal: could not clone")})
     results = install_exec.execute(steps, root="/root", run=run)
     assert calls == [(argv, None)]
@@ -178,7 +222,10 @@ def test_cli_install_without_dry_run_executes_and_the_table_reflects_what_landed
     def fake_run(argv, cwd):
         calls.append(argv)
         if argv[:2] == ["git", "clone"]:
-            return _stub_clone_creating_a_real_git_repo_at_the_requested_tag(argv)
+            # `cli._gather_checkout_facts` still probes `<root>/<component>`, not the
+            # prefixed clone target; the stub lands the repo where that probe looks.
+            probed = [*argv[:-1], str(tmp_path / "harness")]
+            return _stub_clone_creating_a_real_git_repo_at_the_requested_tag(probed)
         return 0, ""
 
     monkeypatch.setattr(cli, "_real_run", fake_run)
@@ -188,6 +235,7 @@ def test_cli_install_without_dry_run_executes_and_the_table_reflects_what_landed
     out = capsys.readouterr().out
 
     assert rc == 0
+    assert any(argv[-1] == str(tmp_path / "coxswain-harness") for argv in calls)
     assert "ok: clone harness" in out
     assert "ok: setup_install setup_install" in out
     assert "ok: doctor doctor" in out

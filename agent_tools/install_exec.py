@@ -37,10 +37,15 @@ def _edge(step: Mapping) -> bool:
     return step.get("channel") == "edge"
 
 
+def clone_dir(root: str, component: str) -> str:
+    """The one place a clone target is named; `setup_install` looks for `<root>/coxswain-<component>`."""
+    return f"{root}/coxswain-{component}"
+
+
 def _clone_argv(step: Mapping, root: str) -> list:
     pin = step["ref"] if _edge(step) else step["tag"]
     return ["git", "clone", "--branch", pin, "--depth", "1",
-            f"https://github.com/{step['repo']}.git", f"{root}/{step['component']}"]
+            f"https://github.com/{step['repo']}.git", clone_dir(root, step["component"])]
 
 
 def _fetch_argv(step: Mapping, root: str) -> list:
