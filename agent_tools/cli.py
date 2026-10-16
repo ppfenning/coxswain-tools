@@ -3692,6 +3692,16 @@ def _leader_read_or_refuse(runs_dir: Path):
         return None, 2
 
 
+def _recorded_chair_model(runs_dir: Path) -> str:
+    """The `model` the chair record names, else "". Silent on an unreadable record: `_leader_guard_or_refuse` reports that once."""
+    try:
+        record = chair.read(runs_dir)
+    except (OSError, json.JSONDecodeError):
+        return ""
+    model = record.get("model") if isinstance(record, dict) else None
+    return model if isinstance(model, str) else ""
+
+
 def _holder_label(a: argparse.Namespace) -> str:
     return getattr(a, "label", None) or os.environ.get("COX_SESSION_LABEL") or _UNLABELED
 
@@ -4486,6 +4496,8 @@ def _route_launch(a: argparse.Namespace) -> int:
             return 2
         if held:
             print(f"override: launching {initiative_id} despite blocked {', '.join(held)} (--include-blocked)")
+    # Read before the guard: a claim replaces the record with one that has no `model` key.
+    chair_model = _recorded_chair_model(runs_dir)
     guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim)
     if guard_rc is not None:
         return guard_rc
@@ -4618,7 +4630,9 @@ def _route_launch(a: argparse.Namespace) -> int:
     log_path = runs_dir / f"{run_id}.log"
     pid_path = runs_dir / f"{run_id}.pid"
     trace_dir = runs_dir / f"{run_id}-trace"
-    env = route.child_env(dict(os.environ), harness_dir=harness_dir, repo=env_repo, trace_dir=str(trace_dir))
+    env = route.child_env(
+        dict(os.environ), harness_dir=harness_dir, repo=env_repo, trace_dir=str(trace_dir), chair_model=chair_model,
+    )
 
     if host is not None and a.dry_run:
         for remote_argv in remote_launch.launch_plan(host, launch_dir.name, run_id, _holder_label(a)):
@@ -4631,6 +4645,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         print(f"pid {pid_path}")
         print(f"log {log_path}")
         print(f"trace {trace_dir}")
+        print(f"model {chair_model or 'none'}")
         return 0
 
     if host is not None:

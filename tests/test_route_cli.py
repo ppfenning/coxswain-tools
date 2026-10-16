@@ -1254,6 +1254,47 @@ def test_launch_cos_dry_run_prints_argv_pid_log_and_trace(tmp_path, capsys):
     assert not (ws / "runs" / "cos-1.pid").exists()
 
 
+def _dry_run_output(tmp_path, capsys, chair_text):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    if chair_text is not None:
+        (ws / "runs" / "chair.json").write_text(chair_text)
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    rc = main(["route", "launch", "cos", "--dry-run", "--profile", str(profile)])
+    assert rc == 0
+    return capsys.readouterr().out
+
+
+def _dry_run_model_line(tmp_path, capsys, record):
+    out = _dry_run_output(tmp_path, capsys, None if record is None else json.dumps(record))
+    return [line for line in out.splitlines() if line.startswith("model ")]
+
+
+_STALE_RECORD = {
+    "session": "old", "pid": 1, "host": "elsewhere", "runs": [],
+    "taken_at": "2020-01-01T00:00:00+00:00", "heartbeat_at": "2020-01-01T00:00:00+00:00",
+}
+
+
+def test_launch_dry_run_shows_the_model_a_chair_record_holds(tmp_path, capsys):
+    assert _dry_run_model_line(tmp_path, capsys, {**_STALE_RECORD, "model": "opus"}) == ["model opus"]
+
+
+def test_launch_dry_run_shows_none_for_a_record_without_a_model(tmp_path, capsys):
+    assert _dry_run_model_line(tmp_path, capsys, _STALE_RECORD) == ["model none"]
+
+
+def test_launch_dry_run_shows_none_with_no_record(tmp_path, capsys):
+    assert _dry_run_model_line(tmp_path, capsys, None) == ["model none"]
+
+
+def test_launch_dry_run_reports_an_unreadable_record_once_and_shows_none(tmp_path, capsys):
+    out = _dry_run_output(tmp_path, capsys, "{not json")
+    assert out.count("lock file unreadable") == 1
+    assert "model none" in out.splitlines()
+
+
 def test_launch_sweep_dry_run_prints_the_built_argv_with_a_label(capsys):
     rc = main([
         "route", "launch", "sweep", "--dry-run",

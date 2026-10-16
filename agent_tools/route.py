@@ -2040,13 +2040,16 @@ def status_entries(runs: list, summaries: dict) -> list:
     ]
 
 
-def child_env(environ: dict, *, harness_dir: str = "", repo: str = "", trace_dir: str = "") -> dict:
+def child_env(
+    environ: dict, *, harness_dir: str = "", repo: str = "", trace_dir: str = "", chair_model: str = "",
+) -> dict:
     """The harness child's environment, spec §4: `environ` with
     `<repo>/.venv/bin` and `<harness_dir>/.venv/bin` prepended to `PATH`
     when given, in that order. Every other key is untouched; `environ`
     itself is never mutated. When `trace_dir` is given, `AGENT_GRAPHS_TRACE_DIR`
     is set to it, replacing any value already in `environ`; when omitted, the
-    key is left exactly as it was.
+    key is left exactly as it was. A non-empty `chair_model` sets
+    `COXSWAIN_CHAIR_MODEL`; an empty one leaves any pre-set value alone.
     """
     env = dict(environ)
     prefixes = [p for p in (f"{repo}/.venv/bin" if repo else "",
@@ -2056,6 +2059,8 @@ def child_env(environ: dict, *, harness_dir: str = "", repo: str = "", trace_dir
         env["PATH"] = os.pathsep.join(prefixes + ([rest] if rest else []))
     if trace_dir:
         env["AGENT_GRAPHS_TRACE_DIR"] = trace_dir
+    if chair_model:
+        env["COXSWAIN_CHAIR_MODEL"] = chair_model
     return env
 
 

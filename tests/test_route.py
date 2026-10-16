@@ -1,6 +1,7 @@
 import argparse
 import datetime
 import json
+from pathlib import Path
 from typing import NamedTuple
 
 import pytest
@@ -656,6 +657,28 @@ def test_child_env_replaces_a_callers_pre_set_trace_dir():
     environ = {"PATH": "/usr/bin", "AGENT_GRAPHS_TRACE_DIR": "/old"}
     env = route.child_env(environ, trace_dir="/runs/x-1-trace")
     assert env["AGENT_GRAPHS_TRACE_DIR"] == "/runs/x-1-trace"
+
+
+def test_child_env_exports_the_chair_model_and_still_prepends_path():
+    env = route.child_env({"PATH": "/usr/bin"}, harness_dir="/opt/coxswain-graphs", chair_model="sonnet")
+    assert env["COXSWAIN_CHAIR_MODEL"] == "sonnet"
+    assert env["PATH"] == "/opt/coxswain-graphs/.venv/bin:/usr/bin"
+
+
+def test_child_env_with_an_empty_chair_model_keeps_a_pre_set_value_and_adds_none():
+    assert route.child_env({"COXSWAIN_CHAIR_MODEL": "haiku"}, chair_model="")["COXSWAIN_CHAIR_MODEL"] == "haiku"
+    assert "COXSWAIN_CHAIR_MODEL" not in route.child_env({"PATH": "/usr/bin"}, chair_model="")
+
+
+def test_child_env_leaves_the_input_mapping_unchanged():
+    environ = {"PATH": "/usr/bin", "COXSWAIN_CHAIR_MODEL": "haiku"}
+    route.child_env(environ, harness_dir="/h", repo="/r", trace_dir="/t", chair_model="opus")
+    assert environ == {"PATH": "/usr/bin", "COXSWAIN_CHAIR_MODEL": "haiku"}
+
+
+def test_child_env_exports_the_variable_name_the_fixture_declares():
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "chair_model_env.json").read_text())
+    assert route.child_env({}, chair_model="sonnet") == {fixture["env_name"]: "sonnet"}
 
 
 FIXTURE_PROFILE = {
