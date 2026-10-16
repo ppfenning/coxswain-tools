@@ -248,10 +248,9 @@ def test_cli_install_without_dry_run_executes_and_the_table_reflects_what_landed
     assert any(argv[:2] == ["git", "clone"] for argv in calls)
 
 
-def test_cli_upgrade_to_overrides_every_pinned_tag_and_reaches_the_checkout_argv(monkeypatch, tmp_path, capsys):
-    """`--to VERSION` must change what gets checked out, not just parse:
-    the umbrella and a component already at the old pin both move to the
-    requested version, and that version must reach the real argv."""
+def test_cli_upgrade_to_picks_the_umbrella_and_the_lockstep_component_takes_its_moved_manifest_tag(monkeypatch, tmp_path, capsys):
+    """`--to VERSION` chooses the umbrella release only: it reaches the umbrella checkout argv, and the
+    lockstep component moves to the tag the moved umbrella's manifest carries."""
     from agent_tools import cli
 
     manifest_path = tmp_path / "manifest.toml"
@@ -261,7 +260,7 @@ def test_cli_upgrade_to_overrides_every_pinned_tag_and_reaches_the_checkout_argv
     )
     root = tmp_path / "root"
     (root / "coxswain").mkdir(parents=True)
-    (root / "coxswain" / "manifest.toml").write_text(manifest_path.read_text())
+    (root / "coxswain" / "manifest.toml").write_text(manifest_path.read_text().replace("v1.0.0", "v2.0.0"))
     monkeypatch.setattr(cli, "_checkout_facts",
                          lambda path: {"present": True, "tag": "v1.0.0", "dirty": False})
     calls = []
@@ -280,6 +279,89 @@ def test_cli_upgrade_to_overrides_every_pinned_tag_and_reaches_the_checkout_argv
     assert "moving harness: v1.0.0 to v2.0.0" in out
     assert ["git", "-C", str(root / "coxswain"), "checkout", "v2.0.0"] in calls
     assert ["git", "-C", str(root / "harness"), "checkout", "v2.0.0"] in calls
+
+
+def _upgrade_with_moved_manifest(monkeypatch, tmp_path, pins, installed, offered, extra_args):
+    """Runs `cox upgrade` whose moved umbrella manifest pins `pins` (component to tag). `installed` and
+    `offered` map a component (the umbrella is `coxswain`) to its checkout tag and to the tags its remote offers."""
+    from agent_tools import cli
+
+    flag_manifest = tmp_path / "manifest.toml"
+    flag_manifest.write_text(
+        "[components.harness]\nrepo = \"org/harness\"\ntag = \"v1.0.0\"\nrequired = true\n\n"
+        "[providers.claude-code]\nstatus = \"supported\"\n"
+    )
+    root = tmp_path / "root"
+    (root / "coxswain").mkdir(parents=True)
+    (root / "coxswain" / "manifest.toml").write_text(
+        "".join(f"[components.{name}]\nrepo = \"org/{name}\"\ntag = \"{tag}\"\nrequired = true\n\n"
+                for name, tag in pins.items())
+        + "[providers.claude-code]\nstatus = \"supported\"\n"
+    )
+    monkeypatch.setattr(cli, "_checkout_facts",
+                         lambda path: {"present": True, "tag": installed.get(path.name, "v1.0.0"), "dirty": False})
+    calls = []
+
+    def fake_run(argv, cwd):
+        calls.append(argv)
+        if "ls-remote" not in argv:
+            return 0, ""
+        name = next((n for n in offered if str(root / n) in argv), None)
+        return 0, "".join(f"abc\trefs/tags/{tag}\n" for tag in offered.get(name, ()))
+
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    rc = cli.main(["upgrade", "--root", str(root), "--manifest", str(flag_manifest),
+                   "--provider", "claude-code", *extra_args])
+    return rc, calls, root
+
+
+def test_cli_upgrade_to_leaves_a_component_pinned_below_the_release_at_its_pin(monkeypatch, tmp_path, capsys):
+    rc, calls, root = _upgrade_with_moved_manifest(
+        monkeypatch, tmp_path,
+        pins={"dash": "v1.4.0", "harness": "v2.0.0"},
+        installed={"dash": "v1.4.0"},
+        offered={"dash": ("v1.4.0",), "harness": ("v2.0.0", "v1.0.0")},
+        extra_args=["--to", "v2.0.0"],
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "left behind" not in out
+    assert ["git", "-C", str(root / "coxswain"), "checkout", "v2.0.0"] in calls
+    assert ["git", "-C", str(root / "harness"), "checkout", "v2.0.0"] in calls
+    assert ["git", "-C", str(root / "dash"), "checkout", "v2.0.0"] not in calls
+
+
+def test_cli_upgrade_to_still_reports_a_moved_manifest_pin_the_repository_lacks(monkeypatch, tmp_path, capsys):
+    rc, calls, root = _upgrade_with_moved_manifest(
+        monkeypatch, tmp_path,
+        pins={"harness": "v9.9.9"},
+        installed={},
+        offered={"harness": ("v2.0.0", "v1.0.0")},
+        extra_args=["--to", "v2.0.0"],
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 2
+    assert "left behind: harness: pin_not_in_repo" in out
+    assert ["git", "-C", str(root / "harness"), "checkout", "v9.9.9"] not in calls
+
+
+def test_cli_upgrade_without_to_takes_the_newest_release_and_keeps_a_lower_pin(monkeypatch, tmp_path, capsys):
+    rc, calls, root = _upgrade_with_moved_manifest(
+        monkeypatch, tmp_path,
+        pins={"dash": "v1.4.0", "harness": "v3.0.0"},
+        installed={"dash": "v1.4.0"},
+        offered={"coxswain": ("v3.1.0-rc1", "v3.0.0"), "dash": ("v1.4.0",), "harness": ("v3.0.0", "v1.0.0")},
+        extra_args=[],
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "left behind" not in out
+    assert ["git", "-C", str(root / "coxswain"), "checkout", "v3.0.0"] in calls
+    assert ["git", "-C", str(root / "harness"), "checkout", "v3.0.0"] in calls
+    assert not any(argv[:3] == ["git", "-C", str(root / "dash")] and "checkout" in argv for argv in calls)
 
 
 def test_cli_upgrade_plans_components_from_the_moved_umbrella_manifest_not_the_manifest_flag(monkeypatch, tmp_path, capsys):
@@ -355,7 +437,8 @@ def _upgrade_argv(tmp_path):
     )
     root = tmp_path / "root"
     (root / "coxswain").mkdir(parents=True)
-    (root / "coxswain" / "manifest.toml").write_text(manifest_path.read_text())
+    # the manifest the umbrella carries once it has moved to the target pins the target tag
+    (root / "coxswain" / "manifest.toml").write_text(manifest_path.read_text().replace("v1.0.0", "v2.0.0"))
     return ["upgrade", "--root", str(root), "--manifest", str(manifest_path),
             "--provider", "claude-code", "--to", "v2.0.0"]
 

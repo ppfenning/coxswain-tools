@@ -6171,17 +6171,6 @@ def _real_run(argv: list, cwd: str | None) -> tuple:
     return result.returncode, result.stdout + result.stderr
 
 
-def _manifest_at_version(manifest: dict, to: str | None) -> dict:
-    """The manifest as given, unless `to` names a version: then every
-    component's `tag` is overridden to `to`, so `--to VERSION` reaches
-    `install.plan` as the pin every component is judged and cloned
-    against, rather than being accepted and silently ignored."""
-    if to is None:
-        return manifest
-    components = {name: {**spec, "tag": to} for name, spec in manifest.get("components", {}).items()}
-    return {**manifest, "components": components}
-
-
 def _load_lazy_modules() -> None:
     """Import every lazy module now: setup replaces the tool's environment, and a later import would fail."""
     for module in _LAZY_MODULES:
@@ -6308,7 +6297,6 @@ def _upgrade(a: argparse.Namespace) -> int:
     if manifest is None:
         print(_NO_MANIFEST.format(manifest_path))
         return 2
-    manifest = _manifest_at_version(manifest, a.to)
     root = Path(a.root)
     options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team, "workspace": a.workspace}
     if _upgrade_refused(manifest, root, options):
@@ -6332,7 +6320,6 @@ def _upgrade(a: argparse.Namespace) -> int:
     if moved is None:
         print(_NO_MANIFEST.format(moved_path))
         return 2
-    moved = _manifest_at_version(moved, a.to)
     if _upgrade_refused(moved, root, options):
         return 2
     plan, urls = _upgrade_plan_for(moved, root, target, target)
