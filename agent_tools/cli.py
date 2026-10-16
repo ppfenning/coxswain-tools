@@ -6186,6 +6186,8 @@ def _install_execute(steps: list, manifest: dict, options: dict, root: Path) -> 
     A `refuse` step is reported as `refused`, not `FAILED` — it never
     called `run` and its non-zero exit is a decision, not a command that
     broke. Exits 0 only when every step that ran, ran clean."""
+    if any(step["kind"] == "setup_install" for step in steps):
+        _load_lazy_modules()
     exec_steps = install_exec.from_plan(steps, manifest=manifest, options=options)
     results = install_exec.execute(exec_steps, root=str(root), run=_real_run)
     for result in results:
@@ -6328,8 +6330,6 @@ def _upgrade(a: argparse.Namespace) -> int:
         return code
     tail = [step for step in install.plan(moved, _upgrade_facts(moved, root, a.provider), options)
             if step["kind"] in ("setup_install", "doctor", "desktop")]
-    if any(step["kind"] == "setup_install" for step in tail):
-        _load_lazy_modules()
     return _install_execute(tail, moved, options, root)
 
 
