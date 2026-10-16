@@ -4111,6 +4111,17 @@ def _route_file_from_intake(a: argparse.Namespace, ws: Path, profile: dict) -> i
     return 0
 
 
+def _open_issues(ws: Path) -> list[dict]:
+    """Rows with an issue number whose state is not finished: task rows end `done` or `dropped`, intake rows end `landed`."""
+    closed = route.TERMINAL | {"landed"}
+    keyed = ((card_keys.row_keys(row)[0], row) for row in run_store.read_queue(ws / "runs"))
+    return [
+        {"number": number, "title": row.get("title") or ""}
+        for number, row in keyed
+        if number is not None and row.get("state") not in closed
+    ]
+
+
 def _route_file(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
@@ -4137,6 +4148,10 @@ def _route_file(a: argparse.Namespace) -> int:
         body = ""
     try:
         if a.intake:
+            duplicate = card_keys.find_duplicate(a.title, _open_issues(ws))
+            if duplicate is not None and not a.force:
+                print(f"routing: refusing {a.title}: duplicate of issue {duplicate}; pass --force to file it anyway")
+                return 2
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
             mapping = route.intake_file(a.title, body, repo, date, ids=profile.get("ids", "slug"))
         else:
@@ -7707,6 +7722,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--profile",)), commands.Arg(("--repo",)), commands.Arg(("--title",)), commands.Arg(("--body",)),
             commands.Arg(("--phase",), {"default": "build"}), commands.Arg(("--intake",), {"action": "store_true"}),
             commands.Arg(("--from-intake",), {"help": "link and file an existing intake file's initiative, then retire it"}),
+            commands.Arg(("--force",), {"action": "store_true", "help": "file an intake even when its title duplicates an open issue"}),
         ),
         "agent_tools.cli:_route_file", False, (),
     ),
