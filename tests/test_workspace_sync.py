@@ -78,6 +78,65 @@ def test_pull_reports_diverged_history_and_leaves_head(repos):
     assert git(one, "rev-parse", "HEAD") == mine
 
 
+@pytest.mark.parametrize("rebase", ["true", "false"])
+def test_pull_carries_unstaged_and_untracked_changes_through(repos, rebase):
+    upstream, one, two = repos
+    git(one, "config", "pull.rebase", rebase)
+    (one / "first").write_text("dirty")
+    (one / "scratch").write_text("untracked")
+    new = commit(two, "second")
+    git(two, "push", "origin", "main")
+    assert pull_workspace(one) == ""
+    assert git(one, "rev-parse", "HEAD") == new
+    assert (one / "first").read_text() == "dirty"
+    assert (one / "scratch").read_text() == "untracked"
+    assert git(one, "stash", "list") == ""
+
+
+def test_pull_with_dirty_files_reports_diverged_history_and_leaves_them(repos):
+    upstream, one, two = repos
+    git(one, "config", "pull.rebase", "true")
+    commit(two, "theirs")
+    git(two, "push", "origin", "main")
+    mine = commit(one, "mine")
+    (one / "first").write_text("dirty")
+    (one / "scratch").write_text("untracked")
+    line = pull_workspace(one)
+    assert line.startswith("workspace pull failed:")
+    assert "\n" not in line
+    assert git(one, "rev-parse", "HEAD") == mine
+    assert (one / "first").read_text() == "dirty"
+    assert (one / "scratch").read_text() == "untracked"
+    assert git(one, "stash", "list") == ""
+
+
+def test_pull_undoes_a_stash_conflict(repos):
+    upstream, one, two = repos
+    git(one, "config", "pull.rebase", "true")
+    before = git(one, "rev-parse", "HEAD")
+    (two / "first").write_text("theirs")
+    git(two, "commit", "-am", "theirs")
+    git(two, "push", "origin", "main")
+    (one / "first").write_text("mine")
+    line = pull_workspace(one)
+    assert line.startswith("workspace pull failed:")
+    assert "conflicted" in line
+    assert "\n" not in line
+    assert git(one, "rev-parse", "HEAD") == before
+    assert (one / "first").read_text() == "mine"
+    assert git(one, "diff", "--name-only", "--diff-filter=U") == ""
+    assert git(one, "stash", "list") == ""
+
+
+def test_pull_fast_forwards_a_clean_tree_with_rebase_configured(repos):
+    upstream, one, two = repos
+    git(one, "config", "pull.rebase", "true")
+    new = commit(two, "second")
+    git(two, "push", "origin", "main")
+    assert pull_workspace(one) == ""
+    assert git(one, "rev-parse", "HEAD") == new
+
+
 def test_plain_directory_is_a_noop_that_runs_no_pull(tmp_path, monkeypatch):
     calls = record_git(monkeypatch)
     plain = tmp_path / "plain"
