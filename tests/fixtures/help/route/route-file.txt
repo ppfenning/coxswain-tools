@@ -1,5 +1,5 @@
 usage: cox route file [-h] [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY]
-                      [--phase PHASE] [--intake] [--from-intake FROM_INTAKE]
+                      [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force]
 
 options:
   -h, --help            show this help message and exit
@@ -11,3 +11,4 @@ options:
   --intake
   --from-intake FROM_INTAKE
                         link and file an existing intake file's initiative, then retire it
+  --force               file an intake even when its title duplicates an open issue
