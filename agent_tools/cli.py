@@ -4133,10 +4133,12 @@ def _route_file(a: argparse.Namespace) -> int:
         print("routing: --title and --repo are required unless --from-intake is given")
         return 2
     # Repos are siblings of the workspace: a bare name is resolved there, so the row never holds a name launch cannot read.
-    repo = route.resolve_repo(a.repo, ws.absolute().parent, route.is_git_checkout)
+    home = str(Path.home())
+    repo = route.resolve_repo(a.repo, ws.absolute().parent, route.is_git_checkout, home)
     if isinstance(repo, route.RepoRefused):
         print(repo.message)
         return 2
+    repo = route.repo_field(repo, home)
     if a.body == "-":
         body = sys.stdin.read()
     elif a.body:
