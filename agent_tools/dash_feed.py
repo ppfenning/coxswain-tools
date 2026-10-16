@@ -17,6 +17,8 @@ from pathlib import Path
 
 from agent_tools import (
     chair,
+    chair_activity,
+    chair_activity_read,
     chair_capacity,
     chair_login_check,
     console_screen,
@@ -68,16 +70,25 @@ _GRAPH_NAMES = ("epic", "decompose", "rescue", "cos", "sweep")
 # Every seat that is neither the chair nor a person: each node in the graph roster, and each graph.
 _SEATS = frozenset((*NODE_ORDER, *_GRAPH_NAMES))
 _ZERO_HISTORY_TODAY = {"lands": 0, "quarantines": 0, "cost_usd": 0.0, "runs": 0}
+# The default of `--projects-dir` on the stats chair command in cli.py.
+_PROJECTS_DIR = "~/.claude/projects"
+_ZERO_SPLIT_WINDOW = {
+    "chair_session_usd": 0.0, "chair_agents_usd": 0.0, "cox_seats_usd": 0.0, "total_usd": 0.0,
+    "chair_session_share": 0.0, "chair_agents_share": 0.0, "cox_seats_share": 0.0,
+    "meter_fraction": 0.0, "resets_at": "",
+}
 
 
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
-    history=(), history_today=None,
+    history=(), history_today=None, *, chair_agents=None, spend_split=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
     decision asks, newest first. `spend_series` is today's cumulative lane spend as `[at, cumulative_usd]` pairs.
-    `history` is the ended-run rows and `history_today` the counts since local midnight; zeroed when not given."""
+    `history` is the ended-run rows and `history_today` the counts since local midnight; zeroed when not given.
+    `chair_agents` is the chair's background agent rows, empty when not given; `spend_split` is the three-way
+    spend split per window, all zero when not given."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     return {
         "schema": 1,
@@ -95,6 +106,12 @@ def snapshot(
         "watch": watch,
         "history": list(history),
         "history_today": dict(_ZERO_HISTORY_TODAY) if history_today is None else history_today,
+        "chair_agents": list(chair_agents or []),
+        "spend_split": (
+            {"five_hour": dict(_ZERO_SPLIT_WINDOW), "weekly": dict(_ZERO_SPLIT_WINDOW)}
+            if spend_split is None
+            else spend_split
+        ),
     }
 
 
@@ -250,6 +267,37 @@ def _spend(runs_dir: Path, now: str, *, read_local=None, read_store=None, read_r
         "spend_age_s": None if newest is None else _age_s(newest.observed_at.isoformat(), at),
         **_weekly_pace_keys(weekly, policy, at),
     }
+
+
+def _activity(runs_dir: Path, profile: dict, session: str, spend: Mapping, at: datetime) -> dict:
+    """Edge: the chair's background agent rows and the three-way spend split. Each window starts five hours (weekly:
+    seven days) before its `resets_at`, or before `at` when the spend section has no reset time to read."""
+    projects_dir = Path(_PROJECTS_DIR).expanduser()
+    five_start = (_utc(spend.get("five_hour_resets_at")) or at) - timedelta(hours=5)
+    weekly_start = (_utc(spend.get("weekly_resets_at")) or at) - timedelta(days=7)
+    windows = {
+        "five_hour": {
+            "start": five_start.isoformat(),
+            "seat_usd": usage_window.gather(runs_dir, at, ceiling_usd=None).spent_usd,
+            "meter_fraction": float(spend.get("five_hour_fraction") or 0.0),
+            "resets_at": spend.get("five_hour_resets_at") or "",
+        },
+        "weekly": {
+            "start": weekly_start.isoformat(),
+            "seat_usd": usage_window.gather_weekly(
+                runs_dir, at, weekly_ceiling_usd=None, start=weekly_start,
+            ).spent_usd,
+            "meter_fraction": float(spend.get("weekly_fraction") or 0.0),
+            "resets_at": spend.get("weekly_resets_at") or "",
+        },
+    }
+    return chair_activity.gather_activity(
+        chair_activity_read.read_session_lines(projects_dir, session),
+        chair_activity_read.read_agents(projects_dir, session),
+        chair_activity_read.prices_for_profile(profile),
+        at,
+        windows,
+    )
 
 
 def _local_identity(runs_dir: Path, profile: dict) -> tuple[str, int]:
@@ -875,10 +923,13 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     projects = _projects(run_store.read_queue(runs_dir, kind="initiative"))
     store_rows = _store_rows(runs_dir, at)
     history, today = _history_edge(store_rows, at, short_ids, projects)
+    chair_block = _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at)
+    spend_block = _spend_v1(sections["spend"])
+    activity = _activity(runs_dir, profile or {}, chair_block["session"], spend_block, at)
     return snapshot(
         now,
-        _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at),
-        _spend_v1(sections["spend"]),
+        chair_block,
+        spend_block,
         [_machine_v1(row, at) for row in sections["hosts"]],
         _runs_v1(
             sections["lanes"], local_name, records, at, calls_by_run, short_ids, projects, _ends_edge(runs_dir, store_rows),
@@ -892,4 +943,6 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         _spend_series(_spend_points(calls_by_run), at),
         history=history,
         history_today=today,
+        chair_agents=activity["chair_agents"],
+        spend_split=activity["spend_split"],
     )
