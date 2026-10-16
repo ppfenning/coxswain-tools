@@ -2,6 +2,11 @@ usage: cox setup store [-h] [--store STORE] [--host HOST] [--port PORT] [--datab
                        [--user USER] [--bucket BUCKET] [--endpoint ENDPOINT] [--region REGION]
                        [--password-env PASSWORD_ENV] [--access-key-env ACCESS_KEY_ENV]
                        [--secret-key-env SECRET_KEY_ENV] [--dry-run] [--allow-unreachable]
+                       {switch} ...
+
+positional arguments:
+  {switch}
+    switch              copy the run store and traces to the other backend, then record store.mode
 
 options:
   -h, --help            show this help message and exit
