@@ -4192,8 +4192,9 @@ def _run_argv(argv: list[str]) -> tuple[int, str, str]:
 
 
 def _fetch_listing(adapter, config) -> list | None:
-    """The raw listing across `config.repos`; `None` after printing when a fetch fails. An adapter with no `list_argv` lists nothing; `pr_list_argv` adds its PRs."""
+    """The raw listing across `config.repos`; `None` after printing when a fetch fails. An adapter with no `list_argv` lists nothing; `pr_list_argv` adds its PRs; `project_list_argv` adds project items, each tagged `_listing: project`."""
     builders = [b for b in (getattr(adapter, "list_argv", None), getattr(adapter, "pr_list_argv", None)) if b]
+    project_build = getattr(adapter, "project_list_argv", None)
     # An adapter whose API wraps its listing (e.g. under `data`) supplies `unwrap(payload, repo)`.
     unwrap = getattr(adapter, "unwrap", None) or (lambda payload, _repo: payload)
     listing: list = []
@@ -4209,6 +4210,18 @@ def _fetch_listing(adapter, config) -> list | None:
             if rc != 0:
                 print(f"routing: listing {repo} failed: {err}")
                 return None
+        if project_build:
+            rc, out, err = _run_argv(project_build(config, repo))
+            try:
+                items = json.loads(out or "[]") if rc == 0 else ()
+                listing.extend({**item, "_listing": "project"} for item in items)
+            except json.JSONDecodeError as exc:
+                rc, err = 1, f"project listing is not JSON: {exc}"
+            except (TypeError, AttributeError) as exc:
+                rc, err = 1, f"project listing has an unexpected shape: {type(exc).__name__}: {exc}"
+            if rc != 0:
+                print(f"routing: project listing {repo} failed: {err}")
+                return None
     return listing
 
 
@@ -4218,15 +4231,34 @@ def _pull_candidates(adapter, config, listing: list) -> tuple[dict, list[str]]:
     problems: list[str] = []
     for raw in listing:
         try:
-            wanted = {ref.link for ref in adapter.candidates(config, [raw])}
-            candidate = adapter.read(raw) if wanted else None
+            if isinstance(raw, dict) and raw.get("_listing") == "project":
+                project = adapter.project_candidates([raw], config)
+                wanted = {c.link for c in project}
+                candidate = project[0] if project else None
+            else:
+                wanted = {ref.link for ref in adapter.candidates(config, [raw])}
+                candidate = adapter.read(raw) if wanted else None
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             name = next((str(raw[k]) for k in ("url", "link", "title") if k in raw), "an entry") if isinstance(raw, dict) else "an entry"
             problems.append(f"routing: skipping unreadable listing entry {name}: {type(exc).__name__}: {exc}")
             continue
-        if candidate is not None and candidate.link in wanted:
+        # A link seen with a project item id keeps it, whichever listing reads the issue second.
+        if (
+            candidate is not None
+            and candidate.link in wanted
+            and not (found.get(candidate.link) and found[candidate.link].project_item_id)
+        ):
             found[candidate.link] = candidate
     return found, problems
+
+
+def _taken_by_project_item(found: dict, rows: list) -> frozenset[str]:
+    """Links of candidates whose project item id a store row already holds."""
+    return frozenset(
+        link
+        for link, c in found.items()
+        if c.project_item_id and card_keys.find_row(rows, None, c.project_item_id) is not None
+    )
 
 
 def _mark_argv(adapter, config, ref, rel: str) -> list[str]:
@@ -4300,7 +4332,9 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
     known = sorted(intake_root.glob("*.md")) + sorted((intake_root / "done").glob("*.md"))
     links = sources.intake_links({str(p.relative_to(ws)): p.read_text(encoding="utf-8") for p in known})
     found, unreadable = _pull_candidates(adapter, config, listing)
-    taken = frozenset(link for link in found if adapter.taken(link, links))
+    taken = frozenset(link for link in found if adapter.taken(link, links)) | _taken_by_project_item(
+        found, run_store.read_queue(ws / "runs")
+    )
     date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     plan, reviews, refusals = route.pull_plan(
         tuple(found.values()),
