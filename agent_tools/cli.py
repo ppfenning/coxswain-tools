@@ -163,6 +163,7 @@ route_edit = _LazyModule("agent_tools.route_edit")
 route_guard = _LazyModule("agent_tools.route_guard")
 route_import = _LazyModule("agent_tools.route_import")
 route_remove = _LazyModule("agent_tools.route_remove")
+route_requeue = _LazyModule("agent_tools.route_requeue")
 route_sync = _LazyModule("agent_tools.route_sync")
 route_sync_gh = _LazyModule("agent_tools.route_sync_gh")
 router = _LazyModule("agent_tools.router")
@@ -3591,6 +3592,16 @@ def _route_remove(a: argparse.Namespace) -> int:
     if rc == route_guard.DONE and not a.dry_run and isinstance(target, route_guard.QueuedIntake):
         _record_intake_done(runs_dir, runs_dir.parent / "intake" / "done" / f"{target.task_id}.md")
     return rc
+
+
+def _route_requeue(a: argparse.Namespace) -> int:
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"route: {reason}")
+        return 2
+    code, message = route_requeue.requeue(runs_dir.parent, runs_dir, a.id, dry_run=a.dry_run)
+    print(message)
+    return code
 
 
 def _record_intake_done(runs_dir: Path, done_path: Path) -> None:
@@ -7874,6 +7885,15 @@ ROUTE_COMMANDS = [
             commands.Arg(("--profile",)),
         ),
         "agent_tools.cli:_route_remove", False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "requeue", "route", "requeue the intake of an initiative that has no live tasks",
+        (
+            commands.Arg(("id",), {"help": "an intake or an initiative"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_route_requeue", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
         "chair", "route", "the chair lock for the landing loop (runs/chair.json)", (), None, False, (),
