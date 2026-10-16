@@ -210,9 +210,13 @@ def test_snapshot_matches_committed_fixture():
     ]
     history_today = {"lands": 1, "quarantines": 1, "cost_usd": 2.57, "runs": 2}
 
+    with open("tests/fixtures/dash_activity_v1.json") as f:
+        activity = json.load(f)
+
     result = snapshot(
         at, chair, spend, machines, runs, queue, 2, inbox, 2, watch, decisions, spend_series,
         history=history, history_today=history_today,
+        chair_agents=activity["chair_agents"], spend_split=activity["spend_split"],
     )
 
     with open("tests/fixtures/dash_feed_v1.json") as f:
@@ -220,6 +224,20 @@ def test_snapshot_matches_committed_fixture():
 
     assert result == expected
     assert result["history"] == history and result["history_today"] == history_today
+
+
+def test_snapshot_without_activity_carries_an_empty_list_and_the_all_zero_split():
+    with open("tests/fixtures/dash_activity_v1.json") as f:
+        window_keys = set(json.load(f)["spend_split"]["five_hour"])
+
+    result = snapshot("2026-10-16T00:00:00Z", {}, {}, [], [], [], 0, [], 0, [])
+
+    assert result["chair_agents"] == []
+    assert set(result["spend_split"]) == {"five_hour", "weekly"}
+    for window in result["spend_split"].values():
+        assert set(window) == window_keys
+        assert {key: value for key, value in window.items() if key != "resets_at"} == dict.fromkeys(window_keys - {"resets_at"}, 0.0)
+        assert window["resets_at"] == ""
 
 
 def _meter(five_pct: float, seven_pct: float, observed_at: datetime) -> usage_meter.Meter:
@@ -343,6 +361,7 @@ def test_gather_feed_calls_each_reader_once(monkeypatch, tmp_path):
         return [{"id": "m1", "from": "chair", "to": "operator", "note": "n", "ref": "coxswain://task/x", "ack": False}]
 
     monkeypatch.setattr(dash_feed, "_spend", lambda runs_dir, now: {"five_hour_fraction": 0.1})
+    monkeypatch.setattr(dash_feed, "_activity", lambda *args: {"chair_agents": [], "spend_split": None})
     monkeypatch.setattr(dash_feed.console_screen, "gather", fake_console_gather)
     monkeypatch.setattr(dash_feed.run_store, "read_queue", fake_read_queue)
     monkeypatch.setattr(dash_feed.courier, "inbox", fake_inbox)
@@ -374,6 +393,10 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     }
     monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
     monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
+    # The activity readers would run ccusage and read ~/.claude; the fixture's two keys stand in for them.
+    monkeypatch.setattr(
+        dash_feed, "_activity", lambda *args: {key: fixture[key] for key in ("chair_agents", "spend_split")},
+    )
     monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("host-b", 3))
     monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([
         {"initiative": "x", "priority": None, "phases_landed": 0, "phases_total": 1, "current_phase": None},
