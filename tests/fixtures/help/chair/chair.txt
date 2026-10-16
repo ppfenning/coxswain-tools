@@ -1,12 +1,13 @@
-usage: cox chair [-h] {run,service,ask,answer,decisions} ...
+usage: cox chair [-h] {run,service,ask,attach,answer,decisions} ...
 
 The chair loop that runs the landing and launch ticks itself.
 
 positional arguments:
-  {run,service,ask,answer,decisions}
+  {run,service,ask,attach,answer,decisions}
     run                 beat, gather, plan, perform and report every tick until interrupted
     service             write or show the systemd user unit that keeps `cox chair run` alive
     ask                 put a question with its options to the operator on the courier bus
+    attach              say whether a live chair loop holds the lease; exit 0 if so, 1 if not
     answer              answer an open decision with one of its options
     decisions           list decisions asked of the operator and their answers
 

@@ -1,0 +1,9 @@
+usage: cox chair attach [-h] [--profile PROFILE]
+
+Reads the chair lease and the loop's last tick.
+It never takes, steals, releases or writes the lease.
+
+options:
+  -h, --help         show this help message and exit
+  --profile PROFILE  the routing profile (default: ~/.config/agent-tools/profile.yaml or
+                     $AGENT_TOOLS_PROFILE)
