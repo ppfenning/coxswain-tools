@@ -573,6 +573,10 @@ def intake_file(
     return {f"intake/{date}-{slug}.md": file_text}
 
 
+def _issue_number(link: str) -> str:
+    return link.rstrip("/").rsplit("/", 1)[-1]
+
+
 def pull_plan(
     candidates: Sequence,
     taken_links: frozenset[str],
@@ -581,10 +585,18 @@ def pull_plan(
     date: str,
     source: str,
     ids: str = "slug",
+    known_issues: frozenset[str] = frozenset(),
 ) -> tuple[list[dict], list[str], list[str]]:
-    """Intake files, PR links to review, and refusals; an unmapped repo is refused, never guessed, and a second candidate on one path is refused, never dropped."""
+    """Intake files, PR links to review, and refusals; an unmapped repo is refused, never guessed, and a second candidate on one path is refused, never dropped.
+
+    A candidate whose issue number is in `known_issues` (the store already holds it) is skipped like a taken link, without a refusal.
+    """
     reviews = [c.link for c in candidates if c.kind == "pr"]
-    fresh = [c for c in candidates if c.kind != "pr" and c.link not in taken_links]
+    fresh = [
+        c
+        for c in candidates
+        if c.kind != "pr" and c.link not in taken_links and _issue_number(c.link) not in known_issues
+    ]
     unmapped = [_pull_refusal(c, f"repo {c.repo} has no mapping in the profile") for c in fresh if c.repo not in profile_repos]
     mapped = [c for c in fresh if c.repo in profile_repos]
     unnamed = [_pull_refusal(c, "title has no alphanumeric characters to slugify") for c in mapped if not slugify(c.title)]

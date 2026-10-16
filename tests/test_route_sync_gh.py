@@ -293,7 +293,7 @@ def test_a_failed_set_after_create_still_records_the_issue_and_an_empty_value_cl
 
 _ITEM_RESPONSE = {"data": {"repository": {"issue": {"projectItems": {"nodes": [
     {"id": "PVTI_other", "project": {"number": 3, "owner": {"login": "acme"}},
-     "fieldValues": {"nodes": [{"name": "Done", "field": {"name": "State"}}]}},
+     "fieldValues": {"nodes": [{"name": "Landed", "field": {"name": "State"}}]}},
     {"id": "PVTI_5", "project": {"number": 7, "owner": {"login": "Acme"}},
      "fieldValues": {"nodes": [{}, {"name": "Ready", "field": {"name": "State"}},
                                {"text": "$1.00", "field": {"name": "Cost"}},
@@ -432,7 +432,7 @@ def test_cli_item_sync_closes_the_open_issue_of_a_done_item(tmp_path, monkeypatc
         if argv[:3] == ["gh", "project", "field-list"]:
             names = ("State", "Phase", "Run", "Cost", "Gate")
             return _Result(stdout=json.dumps({"fields": [
-                {"name": n, "id": f"F_{n}", "options": [{"id": "OPT_done", "name": "Done"}] if n == "State" else []}
+                {"name": n, "id": f"F_{n}", "options": [{"id": "OPT_done", "name": "Landed"}] if n == "State" else []}
                 for n in names]}))
         if argv[:3] in (["gh", "issue", "view"], ["gh", "api", "graphql"]):
             return inner(argv, **kw)
