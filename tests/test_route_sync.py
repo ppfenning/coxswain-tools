@@ -46,7 +46,8 @@ def test_a_changed_state_plans_exactly_one_project_set():
     project_items = {"acme/widgets#12": {"State": "Ready", "Phase": "core", "Run": "run-7",
                                           "Cost": "$1.50", "Gate": "tests"}}
     steps = plan([item], issues, project_items, "github-projects")
-    assert steps == [{"kind": "project_set", "issue": "acme/widgets#12", "field": "State", "value": "Done"}]
+    assert steps == [{"kind": "project_set", "issue": "acme/widgets#12", "field": "State", "value": "Landed",
+                      "was": "Ready"}]
 
 
 def test_a_changed_body_plans_one_issue_edit():
@@ -163,7 +164,7 @@ def test_a_done_initiative_sets_its_board_state_but_its_open_issue_is_not_closed
     issues = {"5": {"title": "Fix the thing", "body": "Some body.", "state": "OPEN"}}
     initiative = _item(id="initiative:i1", issue="5", state="done", initiative=True)
     steps = plan([initiative], issues=issues, project_items={}, tracker="github-projects")
-    assert [s["value"] for s in steps if s["kind"] == "project_set" and s["field"] == "State"] == ["Done"]
+    assert [s["value"] for s in steps if s["kind"] == "project_set" and s["field"] == "State"] == ["Landed"]
     assert not any(s["kind"] == "issue_close" for s in steps)
     task = _item(id="t1", issue="5", state="done")
     assert any(s["kind"] == "issue_close" for s in plan([task], issues=issues, project_items={}, tracker="github-projects"))

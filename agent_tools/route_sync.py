@@ -6,11 +6,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 _STATE_LABEL = {
-    "intake": "Intake",
+    "intake": "Queued",
+    "queued": "Queued",
+    "decomposed": "Decomposed",
     "ready": "Ready",
-    "in_flight": "In flight",
+    "in_flight": "Running",
+    "running": "Running",
     "quarantined": "Quarantined",
-    "done": "Done",
+    "done": "Landed",
+    "landed": "Landed",
 }
 
 _LABEL = "coxswain"
@@ -36,10 +40,11 @@ class Item:
     parent: str | None = None
     parent_issue: str | None = None
     initiative: bool = False
+    pr_url: str = ""
 
 
 def _fields(item: Item) -> dict | None:
-    """The board's five field values, or `None` for an unrecognized
+    """The board's six field values, or `None` for an unrecognized
     `item.state` — a step-less refusal, not a `KeyError` three calls up."""
     label = _STATE_LABEL.get(item.state)
     if label is None:
@@ -50,6 +55,7 @@ def _fields(item: Item) -> dict | None:
         "Run": item.run,
         "Cost": f"${item.cost_usd:.2f}",
         "Gate": item.gate,
+        "PR": item.pr_url,
     }
 
 
@@ -73,11 +79,13 @@ def _issue_steps(item: Item, issues: dict) -> tuple[list[dict], str | None]:
 def _project_steps(key: str | None, wanted: dict, project_items: dict) -> list[dict]:
     """`project_add` when no project item exists yet, then a `project_set`
     per differing field. A `None` key (fresh item) never matches, so both
-    always plan, carrying `issue: None` for the edge to resolve."""
+    always plan, carrying `issue: None` for the edge to resolve. A card value
+    that is non-empty and differs is carried as `was`, so the report shows it lost."""
     current = project_items.get(key)
     known = current or {}
     add_step = [{"kind": "project_add", "issue": key}] if current is None else []
-    set_steps = [{"kind": "project_set", "issue": key, "field": field, "value": value}
+    set_steps = [{"kind": "project_set", "issue": key, "field": field, "value": value,
+                  **({"was": known[field]} if known.get(field) else {})}
                  for field, value in wanted.items() if (known.get(field) or "") != value]
     return add_step + set_steps
 
@@ -132,7 +140,8 @@ def _line(step: dict) -> str:
     if kind == "project_add":
         return f"project_add {step['issue'] or '(new issue)'}"
     if kind == "project_set":
-        return f"project_set {step['issue'] or '(new issue)'} {step['field']}={step['value']}"
+        line = f"project_set {step['issue'] or '(new issue)'} {step['field']}={step['value']}"
+        return f"{line} overwrote {step['was']!r}" if "was" in step else line
     if kind == "issue_close":
         return f"issue_close {step['issue']}"
     if kind == "sub_issue_link":

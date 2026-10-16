@@ -72,6 +72,7 @@ class _LazyHandler:
         return getattr(importlib.import_module(module_path), func)(*args, **kwargs)
 
 
+card_keys = _LazyModule("agent_tools.card_keys")
 chair = _LazyModule("agent_tools.chair")
 chair_capacity = _LazyModule("agent_tools.chair_capacity")
 chair_decompose_runs = _LazyModule("agent_tools.chair_decompose_runs")
@@ -4253,6 +4254,12 @@ def _route_pull(a: argparse.Namespace) -> int:
     return max([_pull_source(a, profile, name, named=len(names) > 1) for name in names])
 
 
+def _known_issue_numbers(ws: Path) -> frozenset[str]:
+    """Issue numbers the store rows already hold; empty when the store is unreadable (`read_queue` returns no rows then)."""
+    keys = (card_keys.row_keys(row)[0] for row in run_store.read_queue(ws / "runs"))
+    return frozenset(str(issue) for issue in keys if issue is not None)
+
+
 def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bool) -> int:
     """One source's pull; `named` puts the source in the nothing-written line when several pull in one run."""
     config = sources.source_config(profile, source)
@@ -4277,6 +4284,7 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
         date=date,
         source=source,
         ids=profile.get("ids", "slug"),
+        known_issues=_known_issue_numbers(ws),
     )
     problems = [*unreadable, *refusals]
     for line in problems:
