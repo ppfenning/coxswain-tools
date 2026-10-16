@@ -66,12 +66,33 @@ def _upstream(workspace: Path, verb: str) -> tuple[str, tuple[str, str] | None]:
     return (failure_line(verb, code, err), None) if code != 0 else ("", parse_upstream(out))
 
 
+def _unmerged(workspace: Path) -> bool:
+    """True when the index holds unmerged paths; read from git's state, not its messages."""
+    code, out, _ = _git(workspace, "diff", "--name-only", "--diff-filter=U")
+    return code == 0 and bool(out.strip())
+
+
+def _undo_conflict(workspace: Path, head: str) -> str:
+    """Put the tree back at `head` and re-apply the stash the failed autostash left behind."""
+    for args in (("reset", "--hard", "--quiet", head), ("stash", "pop", "--quiet")):
+        code, _, err = _git(workspace, *args)
+        if code != 0:
+            return failure_line("pull", code, err)
+    return "workspace pull failed: stashed changes conflicted with the upstream update; checkout restored"
+
+
 def pull_workspace(workspace: Path) -> str:
-    """Fast-forward the checkout from its upstream; a non-checkout or a branch with no upstream is a no-op."""
+    """Fast-forward the checkout from its upstream, carrying unstaged changes; a non-checkout or a branch with no upstream is a no-op."""
     line, target = _upstream(workspace, "pull")
     if target is None:
         return line
-    code, _, err = _git(workspace, "pull", "--ff-only", "--quiet")
+    code, head, err = _git(workspace, "rev-parse", "HEAD")
+    if code != 0:
+        return failure_line("pull", code, err)
+    code, _, err = _git(workspace, "pull", "--ff-only", "--autostash", "--quiet")
+    # git leaves conflict markers and a stash entry behind when re-applying the autostash conflicts.
+    if _unmerged(workspace):
+        return _undo_conflict(workspace, head.strip())
     return failure_line("pull", code, err)
 
 
