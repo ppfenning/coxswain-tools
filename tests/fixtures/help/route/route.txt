@@ -1,10 +1,10 @@
 usage: cox route [-h]
-                 {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,chair,sync,launch} ...
+                 {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,requeue,chair,sync,launch} ...
 
 File work for the harness, and see what is queued or running.
 
 positional arguments:
-  {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,chair,sync,launch}
+  {context,status,file,priority,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,remove,requeue,chair,sync,launch}
     context             the routing profile's resolved context
     status              what is queued or running for this profile
     file                file a new ticket for the harness
@@ -20,6 +20,7 @@ positional arguments:
     decline             decline a draft initiative: its todo tickets become dropped
     edit                change a queued intake, an initiative or a task ticket
     remove              remove a queued intake or an initiative that has no live run
+    requeue             requeue the intake of an initiative that has no live tasks
     chair               the chair lock for the landing loop (runs/chair.json)
     sync                mirror the work store onto the profile's tracker
     launch              run one of the harness's graphs directly

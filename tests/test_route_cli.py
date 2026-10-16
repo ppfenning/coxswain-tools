@@ -2049,6 +2049,25 @@ def test_route_remove_of_an_intake_moves_it_and_marks_its_row_done(tmp_path, mon
     assert [(r["initiative"], r["task_id"], r["state"]) for r in upserts] == [("intake", "idea", "done")]
 
 
+def test_route_requeue_of_an_empty_initiative_exits_0(tmp_path, monkeypatch, capsys):
+    rows = [
+        {"kind": "intake", "initiative": "intake", "task_id": "idea", "state": "decomposed", "extra": {"initiative": "demo"}},
+        {"kind": "initiative", "initiative": "demo", "task_id": "demo", "state": "ready", "extra": {}},
+    ]
+    _edit_remove_workspace(tmp_path, monkeypatch, rows)
+    written = []
+    monkeypatch.setattr(run_store, "upsert_row_detail", lambda runs_dir, row: written.append(row) and None)
+    assert main(["route", "requeue", "demo"]) == 0
+    assert [(r["task_id"], r["state"]) for r in written] == [("idea", "queued"), ("demo", "dropped")]
+    assert capsys.readouterr().out == "requeue: intake idea queued, initiative demo dropped\n"
+
+
+def test_route_requeue_of_an_unknown_id_exits_2(tmp_path, monkeypatch, capsys):
+    _edit_remove_workspace(tmp_path, monkeypatch, [])
+    assert main(["route", "requeue", "nope"]) == 2
+    assert capsys.readouterr().out.startswith("requeue: refused: no intake or initiative named nope")
+
+
 def _lint_world(
     tmp_path, surfaces, *, home="coxswain-tools", home_files=("agent_tools/a.py",), others=None, body="Add the flag."
 ):

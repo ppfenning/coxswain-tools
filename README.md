@@ -125,6 +125,7 @@ cox route approve INITIATIVE [--task TASK] [--by BY] [--profile PROFILE]   appro
 cox route decline INITIATIVE --reason REASON [--by BY] [--profile PROFILE]   decline a draft initiative: its todo tickets become dropped
 cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--repo REPO] [--surfaces SURFACES] [--state STATE] [--dry-run] [--profile PROFILE]   change a queued intake, an initiative or a task ticket
 cox route remove ID --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   remove a queued intake or an initiative that has no live run
+cox route requeue ID [--dry-run] [--profile PROFILE]   requeue the intake of an initiative that has no live tasks
 cox route chair take [--profile PROFILE] [--label LABEL] [--pid PID] [--steal] [--hours HOURS] [--model sonnet|opus|haiku]   take the chair lock if no live chair holds it
 cox route chair extend [--profile PROFILE] [--label LABEL] [--pid PID] [--hours HOURS]   move the end of the chair takeover this session holds
 cox route chair beat [--profile PROFILE] [--label LABEL] [--pid PID] [--run RUN]   refresh the chair lock's heartbeat
