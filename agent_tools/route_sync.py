@@ -42,6 +42,26 @@ class Item:
     initiative: bool = False
     pr_url: str = ""
 
+    def __post_init__(self) -> None:
+        # Frozen dataclass: the one write is the normalised issue, so every reader sees the bare number.
+        parsed = parse_issue(self.issue)
+        if isinstance(parsed, int):
+            object.__setattr__(self, "issue", str(parsed))
+
+
+@dataclass(frozen=True)
+class IssueError:
+    raw: str
+
+
+def parse_issue(raw: str | int | None) -> int | IssueError:
+    """The issue number in a front-matter value. One pair of matching quotes around digits is stripped,
+    because `route.parse_frontmatter` unquotes only double quotes. Anything else is an `IssueError`,
+    and `Item` leaves that value for `gh` to refuse with its own message."""
+    text = str(raw).strip() if raw is not None and not isinstance(raw, bool) else ""
+    unquoted = text[1:-1] if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"" else text
+    return int(unquoted) if unquoted.isascii() and unquoted.isdigit() else IssueError(str(raw))
+
 
 def _fields(item: Item) -> dict | None:
     """The board's six field values, or `None` for an unrecognized

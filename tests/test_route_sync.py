@@ -1,4 +1,4 @@
-from agent_tools.route_sync import Item, plan, render
+from agent_tools.route_sync import IssueError, Item, parse_issue, plan, render
 
 
 def _item(**over):
@@ -169,3 +169,23 @@ def test_a_done_initiative_sets_its_board_state_but_its_open_issue_is_not_closed
     task = _item(id="t1", issue="5", state="done")
     assert any(s["kind"] == "issue_close" for s in plan([task], issues=issues, project_items={}, tracker="github-projects"))
 
+
+def test_parse_issue_resolves_bare_single_and_double_quoted_numbers_to_the_same_int():
+    assert [parse_issue(raw) for raw in ("1688", "'1688'", '"1688"', 1688)] == [1688, 1688, 1688, 1688]
+
+
+def test_parse_issue_refuses_a_word_trailing_letters_and_unmatched_quotes():
+    for raw in ("abc", "1688abc", "'1688\"", "'1688", "''", "", None, "acme/widgets#12"):
+        assert isinstance(parse_issue(raw), IssueError)
+
+
+def test_items_with_a_bare_single_quoted_or_double_quoted_issue_sync_the_same_issue():
+    issues = {"1688": {"title": "Fix the thing", "body": "Some body.", "state": "OPEN"}}
+    planned = [plan([_item(issue=raw, state="done")], issues, {}, "github-projects")
+               for raw in ("1688", "'1688'", '"1688"')]
+    assert planned[0] == planned[1] == planned[2]
+    assert [s["issue"] for s in planned[1] if s["kind"] == "issue_close"] == ["1688"]
+
+
+def test_a_non_numeric_issue_is_left_unchanged_for_the_existing_refusal():
+    assert _item(issue="1688abc").issue == "1688abc"
