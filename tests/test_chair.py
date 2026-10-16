@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import pathlib
 import socket
 import subprocess
 import types
@@ -339,6 +340,36 @@ def test_take_with_hours_stamps_until_three_hours_after_now():
 def test_take_without_hours_stamps_no_until():
     record, _ = chair.take(None, "bob", 7, "h1", _T0, 10, True)
     assert "until" not in record
+
+
+def test_take_with_sonnet_records_model_sonnet():
+    record, _ = chair.take(None, "bob", 7, "h1", _T0, 10, True, model="sonnet")
+    assert record["model"] == "sonnet"
+
+
+def test_take_without_a_model_leaves_the_key_absent():
+    record, _ = chair.take(None, "bob", 7, "h1", _T0, 10, True)
+    assert "model" not in record
+
+
+def test_beat_keeps_a_held_model_and_never_adds_one():
+    held = {**_HELD, "model": "opus"}
+    assert chair.beat(held, "alice", 4242, "h1", _T0)[0]["model"] == "opus"
+    assert "model" not in chair.beat(_HELD, "alice", 4242, "h1", _T0)[0]
+
+
+def test_cli_take_model_accepts_every_fixture_alias_and_rejects_others(tmp_path, capsys):
+    fixture = json.loads((pathlib.Path(__file__).parent / "fixtures" / "chair_model_env.json").read_text())
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n")
+    argv = ["route", "chair", "take", "--profile", str(profile), "--label", "dora", "--pid", str(os.getpid())]
+    for alias in fixture["aliases"]:
+        (tmp_path / "runs" / "chair.json").unlink(missing_ok=True)
+        assert main([*argv, "--model", alias]) == 0
+        assert chair.read(tmp_path / "runs")["model"] == alias
+    with pytest.raises(SystemExit) as refused:
+        main([*argv, "--model", "gpt"])
+    assert refused.value.code == 2
 
 
 def test_expired_is_true_a_minute_after_until_and_false_a_minute_before():
