@@ -199,6 +199,7 @@ steward_draft = _LazyModule("agent_tools.steward_draft")
 store_cli = _LazyModule("agent_tools.store_cli")
 store_dialect = _LazyModule("agent_tools.store_dialect")
 store_probe = _LazyModule("agent_tools.store_probe")
+store_switch = _LazyModule("agent_tools.store_switch")
 store_url = _LazyModule("agent_tools.store_url")
 towpath_launch = _LazyModule("agent_tools.towpath_launch")
 tracker = _LazyModule("agent_tools.tracker")
@@ -5614,6 +5615,18 @@ def _setup_doctor_host(a: argparse.Namespace, run) -> int:
     return code
 
 
+def _doctor_store_rows(profile: dict | None) -> list[dict]:
+    """Edge. The chosen store's rows; the probes run only when store.mode is shared and the provider profile names a store."""
+    profile = profile or {}
+    mode = (profile.get("store") or {}).get("mode", "files")
+    provider = profile.get("provider_profile")
+    data = store_url.read_provider_profile(provider) if provider else {}
+    runs_dir = Path(profile.get("workspace_dir") or "").expanduser() / "runs"
+    traces = store_url.profile_traces_root(data, runs_dir).url
+    probed = mode == "shared" and all(k in data for k in ("storage_url", "traces_url", "object_store"))
+    return doctor.store_rows(mode, store_url.profile_store_url(data, runs_dir), traces, _probe_store(data, {}) if probed else [])
+
+
 def _setup_doctor(a: argparse.Namespace) -> int:
     if getattr(a, "host", None):
         return _setup_doctor_host(a, _run_ssh)
@@ -5624,9 +5637,11 @@ def _setup_doctor(a: argparse.Namespace) -> int:
         lines = facts["freshness_lines"]
         fn = (lambda *_: lines) if isinstance(lines, list) else None
         rows = [*rows, *doctor.freshness_rows(None, None, None, fn)]
+    profile = _doctor_profile(facts["profile_text"])
+    rows = [*rows, *_doctor_store_rows(profile)]
     rc = doctor.exit_code(rows)
     # Informational: outside rows, so outside rc. Reuses the text the facts already read.
-    parquet = _parquet_traces_line(_doctor_profile(facts["profile_text"]))
+    parquet = _parquet_traces_line(profile)
     if a.json:
         print(json.dumps({"rows": rows, "ok": rc == 0, "parquet_traces": parquet}, indent=2))
     else:
@@ -5818,26 +5833,27 @@ def _store_files(a: argparse.Namespace, settings_path: Path) -> int:
     return 0
 
 
-def _store_shared(a: argparse.Namespace, settings_path: Path, env: Mapping[str, str], ask: Callable[[str], str],
-                  interactive: bool, probes: Callable | None, exclude_file: Path | None) -> int:
+def _shared_connection(a: argparse.Namespace, env: Mapping[str, str], ask: Callable[[str], str],
+                       interactive: bool) -> tuple[setup_store.SharedConnection | None, int]:
+    """Edge. The validated SharedConnection and 0, or None and the exit code after printing why."""
     fields = (*_STORE_DETAILS, *((attr, label, flag) for _f, attr, label, flag in _STORE_CREDENTIALS))
     values = {attr: _asked_or_given(getattr(a, attr), label, ask, interactive) for attr, label, _flag in fields}
     missing = [flag for attr, _label, flag in fields if values[attr] in (None, "")]
     if missing:
         print(f"error: the shared store needs {', '.join(missing)}; pass the flags or run in a terminal",
               file=sys.stderr)
-        return 2
+        return None, 2
     creds = setup_store_io.credentials_from_env(
         env, {field: values[attr] for field, attr, _label, _flag in _STORE_CREDENTIALS})
     if creds["unset"]:
         for var in creds["unset"]:
             print(f"error: environment variable {var} is not set or is empty", file=sys.stderr)
-        return 2
+        return None, 2
     try:
         port = int(values["port"])
     except ValueError:
         print("error: the Postgres port must be a whole number", file=sys.stderr)
-        return 2
+        return None, 2
     conn = setup_store.SharedConnection(
         pg_host=values["host"], pg_port=port, pg_database=values["database"], pg_user=values["user"],
         pg_password=creds["values"]["pg_password"], s3_endpoint=values["endpoint"], s3_bucket=values["bucket"],
@@ -5847,7 +5863,15 @@ def _store_shared(a: argparse.Namespace, settings_path: Path, env: Mapping[str, 
     problems = setup_store.validate_shared(conn)
     if problems:
         print("\n".join(f"error: {sentence}" for sentence in problems), file=sys.stderr)
-        return 2
+        return None, 2
+    return conn, 0
+
+
+def _store_shared(a: argparse.Namespace, settings_path: Path, env: Mapping[str, str], ask: Callable[[str], str],
+                  interactive: bool, probes: Callable | None, exclude_file: Path | None) -> int:
+    conn, code = _shared_connection(a, env, ask, interactive)
+    if conn is None:
+        return code
     if a.dry_run:
         print(f"dry run: {setup_store.redacted_summary(conn)}; nothing was written")
         return 0
@@ -5884,6 +5908,87 @@ def _setup_store(a: argparse.Namespace, *, env: Mapping[str, str] | None = None,
     if choice == "files":
         return _store_files(a, settings_path)
     return _store_shared(a, settings_path, os.environ if env is None else env, ask, tty, probes, exclude_file)
+
+
+def _store_mode_and_runs(settings_path: Path) -> tuple[str, Path | None]:
+    """Edge. The store.mode setting (files when unset) and the runs directory under the profile's workspace_dir."""
+    profile = _doctor_profile(_read_text_or_none(settings_path)) or {}
+    workspace = profile.get("workspace_dir")
+    return (profile.get("store") or {}).get("mode", "files"), (Path(workspace).expanduser() / "runs" if workspace else None)
+
+
+def _switch_env(a: argparse.Namespace, env: Mapping[str, str]) -> dict[str, str]:
+    """`env` with the S3 keys also under the names the profile's object_store block reads, when the flags name them."""
+    named = {setup_store.ACCESS_KEY_ENV: getattr(a, "access_key_env", None),
+             setup_store.SECRET_KEY_ENV: getattr(a, "secret_key_env", None)}
+    return {**env, **{key: env[var] for key, var in named.items() if var and env.get(var)}}
+
+
+def _setup_store_switch(a: argparse.Namespace, *, env: Mapping[str, str] | None = None, copy_store: Callable | None = None,
+                        copy_traces: Callable | None = None, probes: Callable | None = None,
+                        settings_path: Path | None = None) -> int:
+    """Edge. Copy the run store and traces to the other backend, then record store.mode. Deletes nothing from the source."""
+    env = os.environ if env is None else env
+    settings_path = settings_path or _profile_path(a)
+    mode, runs_dir = _store_mode_and_runs(settings_path)
+    if mode == a.target:
+        print(f"store is already {mode}; nothing to do")
+        return 0
+    if runs_dir is None:
+        print("error: the profile names no workspace_dir, so there is no runs directory to switch", file=sys.stderr)
+        return 2
+    profile_file = setup_store_io.default_profile_path(settings_path)
+    to_shared = a.target == "shared"
+    conn = None
+    source_file = profile_file
+    if to_shared:
+        conn, code = _shared_connection(a, env, input, sys.stdin.isatty() and sys.stdout.isatty())
+        if conn is None:
+            return code
+        shared = setup_store.build_shared_profile(conn)
+    else:
+        provider = (_doctor_profile(_read_text_or_none(settings_path)) or {}).get("provider_profile")
+        source_file = Path(provider).expanduser() if provider else profile_file
+        shared = dict(store_url.read_provider_profile(source_file))
+    local = (store_url.default_url(runs_dir), store_url.default_traces_root(runs_dir))
+    remote = (shared.get("storage_url", ""), shared.get("traces_url", ""))
+    source, target = (local, remote) if to_shared else (remote, local)
+    try:
+        steps = store_switch.plan_switch("to_shared" if to_shared else "to_files", source[0], target[0], source[1], target[1])
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not steps:
+        print(f"error: {source_file} does not name a postgresql store, so nothing was switched", file=sys.stderr)
+        return 2
+    print(store_switch.render_plan(steps))
+    if a.dry_run:
+        print("dry run: nothing was written or copied")
+        return 0
+    try:
+        if to_shared:
+            setup_store_io.write_shared_profile(profile_file, shared, _git_exclude_file(profile_file.parent))
+        results = store_switch.run_plan(
+            steps, copy_store or store_switch.default_copy_store,
+            copy_traces or store_switch.traces_copier(shared.get("object_store"), _switch_env(a, env)))
+        failed = next((r for r in results if not r["ok"]), None)
+        if failed is not None:
+            print(f"error: {failed['kind']} failed: {failed['error']}", file=sys.stderr)
+            return 1
+        setup_store_io.record_store_mode(a.target, settings_path)
+        if not to_shared:
+            profile_file.unlink(missing_ok=True)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"error: could not write the store files ({type(exc).__name__})", file=sys.stderr)
+        return 1
+    print(f"store: {a.target}; store.mode recorded")
+    if conn is not None:
+        overlay = {setup_store.ACCESS_KEY_ENV: conn.s3_access_key_id, setup_store.SECRET_KEY_ENV: conn.s3_secret_access_key}
+        print(store_probe.summarize((probes or _probe_store)(shared, overlay)))
+    return 0
 
 
 def _setup_fields(a: argparse.Namespace) -> tuple[str, str, str]:
@@ -7819,6 +7924,27 @@ SETUP_GROUP = commands.Group(
     epilog="examples:\n  cox setup doctor --profile PATH\n  cox setup install --root PATH --team NAME --workspace PATH",
     args=(commands.Arg(("--profile",)),),
 )
+# The connection flags and --dry-run, shared by `store` and `store switch`.
+_STORE_FLAGS = (
+    commands.Arg(("--host",), {"help": "shared: Postgres host"}),
+    commands.Arg(("--port",), {"type": int, "help": "shared: Postgres port"}),
+    commands.Arg(("--database",), {"help": "shared: Postgres database"}),
+    commands.Arg(("--user",), {"help": "shared: Postgres user"}),
+    commands.Arg(("--bucket",), {"help": "shared: S3 bucket for traces"}),
+    commands.Arg(("--endpoint",), {"help": "shared: S3 endpoint URL"}),
+    commands.Arg(("--region",), {"help": "shared: S3 region"}),
+    commands.Arg(("--password-env",), {"help": "shared: NAME of the variable holding the Postgres password"}),
+    commands.Arg(("--access-key-env",), {"help": "shared: NAME of the variable holding the S3 access key id"}),
+    commands.Arg(("--secret-key-env",), {"help": "shared: NAME of the variable holding the S3 secret key"}),
+    commands.Arg(("--dry-run",), {"action": "store_true", "help": "validate and print; write and probe nothing"}),
+)
+
+
+def _suppressed(args: tuple) -> tuple:
+    """Copies of `args` that leave the namespace alone when absent, so a flag given before the verb is kept."""
+    return tuple(commands.Arg(arg.flags, {**arg.kwargs, "default": argparse.SUPPRESS}) for arg in args)
+
+
 SETUP_COMMANDS = [
     commands.Command(
         "doctor", "setup", "check this machine's profile against what it needs",
@@ -7846,20 +7972,18 @@ SETUP_COMMANDS = [
         "store", "setup", "choose files or a shared store for run records",
         (
             commands.Arg(("--store",), {"help": "files or shared; asked in a terminal when omitted, else files"}),
-            commands.Arg(("--host",), {"help": "shared: Postgres host"}),
-            commands.Arg(("--port",), {"type": int, "help": "shared: Postgres port"}),
-            commands.Arg(("--database",), {"help": "shared: Postgres database"}),
-            commands.Arg(("--user",), {"help": "shared: Postgres user"}),
-            commands.Arg(("--bucket",), {"help": "shared: S3 bucket for traces"}),
-            commands.Arg(("--endpoint",), {"help": "shared: S3 endpoint URL"}),
-            commands.Arg(("--region",), {"help": "shared: S3 region"}),
-            commands.Arg(("--password-env",), {"help": "shared: NAME of the variable holding the Postgres password"}),
-            commands.Arg(("--access-key-env",), {"help": "shared: NAME of the variable holding the S3 access key id"}),
-            commands.Arg(("--secret-key-env",), {"help": "shared: NAME of the variable holding the S3 secret key"}),
-            commands.Arg(("--dry-run",), {"action": "store_true", "help": "validate and print; write and probe nothing"}),
+            *_STORE_FLAGS,
             commands.Arg(("--allow-unreachable",), {"action": "store_true", "help": "exit 0 even when a probe fails"}),
         ),
         "agent_tools.cli:_setup_store", False, (),
+        subcommands=(
+            commands.Command(
+                "switch", "setup", "copy the run store and traces to the other backend, then record store.mode",
+                (commands.Arg(("target",), {"choices": ("files", "shared")}), *_suppressed(_STORE_FLAGS)),
+                "agent_tools.cli:_setup_store_switch", False, (),
+            ),
+        ),
+        sub_dest="store_cmd", sub_required=False,
     ),
 ]
 
