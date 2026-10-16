@@ -1,8 +1,9 @@
 import json
+import posixpath
 
 import pytest
 
-from agent_tools import route
+from agent_tools import home, route
 from agent_tools.setup_install import (
     _agent_steps,
     hook_settings,
@@ -11,14 +12,20 @@ from agent_tools.setup_install import (
     render_plan,
 )
 
+LOC = home.resolve({}, "/home/user", "linux")
+INSTALLS = "/home/user/.local/share/coxswain/installs"
+CARTRIDGES = f"{INSTALLS}/coxswain-cartridges"
+WORKSPACE = "/home/user/.local/share/coxswain/workspaces/main"
+
 
 def _plan(**overrides):
     kwargs = {
         "root": "/root",
         "team": "acme",
-        "workspace": "/root/workspace",
+        "workspace": WORKSPACE,
         "provider_profile": "claude",
-        "skills_root": "/root/skills",
+        "skills_root": f"{CARTRIDGES}/skills-plugins",
+        "locations": LOC,
         "uv_on_path": True,
         "python_exists": {"coxswain-cartridges": False, "coxswain-graphs": False, "coxswain-tools": False},
         "claude_on_path": True,
@@ -37,20 +44,20 @@ def test_install_plan_orders_venv_steps_with_graphs_carrying_the_cartridges_dep(
     steps = _plan()
     runs = [s for s in steps if s["op"] == "run"]
     argvs = [r["argv"] for r in runs]
-    assert argvs[0] == ["uv", "venv", "-q"] and runs[0]["cwd"] == "/root/coxswain-cartridges"
+    assert argvs[0] == ["uv", "venv", "-q"] and runs[0]["cwd"] == CARTRIDGES
     assert argvs[1] == ["uv", "pip", "install", "-q", "-e", ".[dev]"]
-    assert runs[1]["cwd"] == "/root/coxswain-cartridges"
-    assert argvs[2] == ["uv", "venv", "-q"] and runs[2]["cwd"] == "/root/coxswain-graphs"
+    assert runs[1]["cwd"] == CARTRIDGES
+    assert argvs[2] == ["uv", "venv", "-q"] and runs[2]["cwd"] == f"{INSTALLS}/coxswain-graphs"
     assert argvs[3] == [
-        "uv", "pip", "install", "-q", "-e", ".[dev]", "-e", "/root/coxswain-cartridges",
+        "uv", "pip", "install", "-q", "-e", ".[dev]", "-e", CARTRIDGES,
     ]
-    assert runs[3]["cwd"] == "/root/coxswain-graphs"
-    assert argvs[4] == ["uv", "venv", "-q"] and runs[4]["cwd"] == "/root/coxswain-tools"
+    assert runs[3]["cwd"] == f"{INSTALLS}/coxswain-graphs"
+    assert argvs[4] == ["uv", "venv", "-q"] and runs[4]["cwd"] == f"{INSTALLS}/coxswain-tools"
     assert argvs[5] == ["uv", "pip", "install", "-q", "-e", ".[dev]"]
-    assert runs[5]["cwd"] == "/root/coxswain-tools"
-    assert argvs[6] == ["uv", "tool", "install", "-q", "-e", "/root/coxswain-tools"]
-    assert argvs[7] == ["uv", "tool", "install", "-q", "-e", "/root/coxswain-cartridges"]
-    cartridge_tool_installs = [a for a in argvs if a[-1] == "/root/coxswain-cartridges"
+    assert runs[5]["cwd"] == f"{INSTALLS}/coxswain-tools"
+    assert argvs[6] == ["uv", "tool", "install", "-q", "-e", f"{INSTALLS}/coxswain-tools"]
+    assert argvs[7] == ["uv", "tool", "install", "-q", "-e", CARTRIDGES]
+    cartridge_tool_installs = [a for a in argvs if a[-1] == CARTRIDGES
                                 and a[:3] == ["uv", "tool", "install"]]
     assert len(cartridge_tool_installs) == 1
 
@@ -79,7 +86,7 @@ def test_profile_written_when_absent():
     steps = _plan(profile_exists=False, force_profile=False)
     writes = [s for s in steps if s["op"] == "write"]
     assert len(writes) == 1
-    assert writes[0]["path"] == "/config/agent-tools/profile.yaml"
+    assert writes[0]["path"] == "/home/user/.config/agent-tools/profile.yaml"
 
 
 def test_profile_skipped_when_present():
@@ -205,31 +212,75 @@ def test_render_plan_mentions_every_path():
 
 
 def test_steps_are_json_serialisable():
+    for registered in (None, CARTRIDGES, "/elsewhere"):
+        steps = _plan(registered_marketplace=registered)
+        assert json.loads(json.dumps(steps)) == steps
+
+
+def test_profile_write_step_carries_derived_paths_under_the_resolved_root():
     steps = _plan()
-    json.dumps(steps)
-
-
-def test_profile_write_step_carries_derived_paths_not_the_bare_root():
-    steps = _plan(root="/r", workspace="/w", skills_root="/r/coxswain-cartridges/skills-plugins")
     writes = [s for s in steps if s["op"] == "write"]
     text = writes[0]["text"]
-    assert "cartridges_dir: /w/cartridges" in text
-    assert "harness_dir: /r/coxswain-graphs" in text
-    assert "skills_roots: [/r/coxswain-cartridges/skills-plugins]" in text
-    assert "harness_dir: /r\n" not in text
-    assert not any(line == "harness_dir: /r" for line in text.splitlines())
+    assert writes[0]["path"] == LOC.profile
+    assert f"cartridges_dir: {WORKSPACE}/cartridges" in text
+    assert f"harness_dir: {INSTALLS}/coxswain-graphs" in text
+    assert f"skills_roots: [{CARTRIDGES}/skills-plugins]" in text
+    assert not any(line == f"harness_dir: {LOC.home}" for line in text.splitlines())
+    assert "/root" not in text
 
 
 def test_profile_cartridges_dir_is_workspace_based_not_the_repo_checkout():
-    # The repo checkout at root/coxswain-cartridges is what pip installs edit
-    # and the plugin marketplace registers; the profile field the routing
-    # layer reads is a workspace path, and the two must not be conflated.
-    steps = _plan(root="/root", workspace="/root/workspace")
+    # The repo checkout under installs is what pip installs edit and the
+    # plugin marketplace registers; the profile field the routing layer
+    # reads is a workspace path, and the two must not be conflated.
+    steps = _plan()
     writes = [s for s in steps if s["op"] == "write"]
-    assert "cartridges_dir: /root/workspace/cartridges" in writes[0]["text"]
+    assert f"cartridges_dir: {WORKSPACE}/cartridges" in writes[0]["text"]
     runs = [s for s in steps if s["op"] == "run"]
-    graphs_install = [r for r in runs if r.get("cwd") == "/root/coxswain-graphs" and "pip" in r["argv"]]
-    assert graphs_install[0]["argv"][-1] == "/root/coxswain-cartridges"
+    graphs_install = [r for r in runs if r.get("cwd") == f"{INSTALLS}/coxswain-graphs" and "pip" in r["argv"]]
+    assert graphs_install[0]["argv"][-1] == CARTRIDGES
+
+
+def test_marketplace_add_location_equals_the_resolved_location_from_the_design():
+    steps = _plan()
+    adds = [s["argv"] for s in steps if s["op"] == "run" and s["argv"][:4] == ["claude", "plugin", "marketplace", "add"]]
+    assert adds == [["claude", "plugin", "marketplace", "add", posixpath.join(LOC.installs, "coxswain-cartridges")]]
+
+
+def test_marketplace_listed_elsewhere_is_removed_then_added():
+    steps = _plan(registered_marketplace="/home/user/projects/coxswain-cartridges")
+    market = [s["argv"][3:] for s in steps if s["op"] == "run" and s["argv"][:3] == ["claude", "plugin", "marketplace"]]
+    assert market == [["remove", "coxswain-cartridges"], ["add", CARTRIDGES]]
+
+
+def test_a_second_run_over_its_own_result_changes_nothing():
+    steps = _plan(
+        python_exists=dict.fromkeys(("coxswain-cartridges", "coxswain-graphs", "coxswain-tools"), True),
+        profile_exists=True,
+        registered_marketplace=CARTRIDGES,
+    )
+    assert not [s for s in steps if s["op"] == "write"]
+    assert not [s for s in steps if s["op"] == "run" and s["argv"][:3] == ["claude", "plugin", "marketplace"]]
+    assert [s for s in steps if s.get("what") == "marketplace"]
+    first, _ = hook_settings({})
+    assert hook_settings(first) == (first, False)
+
+
+def test_the_only_settings_step_is_the_session_start_hook():
+    steps = _plan()
+    assert [s["path"] for s in steps if s["op"] == "hook"] == ["/home/user/.claude/settings.json"]
+
+
+@pytest.mark.parametrize("plugins", [True, False])
+@pytest.mark.parametrize("registered", [None, CARTRIDGES, "/elsewhere/coxswain-cartridges"])
+def test_no_user_project_folder_appears_for_an_ordinary_home(plugins, registered):
+    # A legacy root and config_dir under projects must be ignored entirely.
+    steps = _plan(root="/home/user/projects", config_dir="/home/user/projects/cfg",
+                  plugins=plugins, registered_marketplace=registered)
+    settings, _ = hook_settings({})
+    blob = json.dumps(steps) + json.dumps(settings) + render_plan(steps)
+    assert "projects" not in blob
+    assert "/root" not in blob
 
 
 def test_tool_install_step_is_warn_only():
