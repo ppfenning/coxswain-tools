@@ -8,8 +8,46 @@ from agent_tools.chair_plan_land import plan_lands
 T0 = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
 
 
-def _refusal(attempts: int = 1, run: str = "i-1") -> LandRefusal:
-    return {"initiative": "i", "phase": "p", "run": run, "attempts": attempts, "last_refused_at": T0.isoformat()}
+def _refusal(attempts: int = 1, run: str = "i-1", head: str | None = None) -> LandRefusal:
+    row: LandRefusal = {
+        "initiative": "i",
+        "phase": "p",
+        "run": run,
+        "attempts": attempts,
+        "last_refused_at": T0.isoformat(),
+    }
+    return row if head is None else {**row, "head": head}
+
+
+INSIDE = T0 + timedelta(minutes=5)
+OUTSIDE = T0 + timedelta(minutes=15)
+
+
+def test_same_head_inside_the_window_is_suppressed():
+    assert suppressed(_refusal(head="aaa"), INSIDE, "aaa")
+    assert suppressing([_refusal(head="aaa")], "i", "p", "i-1", INSIDE, "aaa") == _refusal(head="aaa")
+
+
+def test_different_head_inside_the_window_is_not_suppressed():
+    assert not suppressed(_refusal(head="aaa"), INSIDE, "bbb")
+    assert suppressing([_refusal(head="aaa")], "i", "p", "i-1", INSIDE, "bbb") is None
+
+
+def test_no_recorded_head_inside_the_window_is_suppressed_for_any_current_head():
+    assert suppressed(_refusal(), INSIDE, "bbb")
+    assert suppressing([_refusal()], "i", "p", "i-1", INSIDE, "bbb") == _refusal()
+
+
+def test_recorded_head_without_a_current_head_is_suppressed_inside_the_window():
+    assert suppressed(_refusal(head="aaa"), INSIDE)
+
+
+@pytest.mark.parametrize(
+    ("recorded", "current"), [("aaa", "aaa"), ("aaa", "bbb"), (None, "bbb"), ("aaa", None), (None, None)]
+)
+def test_nothing_is_suppressed_outside_the_window(recorded: str | None, current: str | None):
+    assert not suppressed(_refusal(head=recorded), OUTSIDE, current)
+    assert suppressing([_refusal(head=recorded)], "i", "p", "i-1", OUTSIDE, current) is None
 
 
 def test_backoff_doubles_from_fifteen_minutes_and_caps_at_two_hours():
