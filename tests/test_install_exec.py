@@ -1,5 +1,8 @@
+import importlib
 import re
 import subprocess
+import sys
+import types
 from pathlib import Path
 
 from agent_tools import install_exec
@@ -342,3 +345,80 @@ def test_a_failed_step_report_includes_the_captured_output(monkeypatch, capsys, 
     code = cli._install_execute(steps, manifest, {}, tmp_path)
     out = capsys.readouterr().out
     assert code == 2 and "FAILED: clone harness" in out and "could not read from remote" in out
+
+
+def _upgrade_argv(tmp_path):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(
+        "[components.harness]\nrepo = \"org/harness\"\ntag = \"v1.0.0\"\nrequired = true\n\n"
+        "[providers.claude-code]\nstatus = \"supported\"\n"
+    )
+    root = tmp_path / "root"
+    (root / "coxswain").mkdir(parents=True)
+    (root / "coxswain" / "manifest.toml").write_text(manifest_path.read_text())
+    return ["upgrade", "--root", str(root), "--manifest", str(manifest_path),
+            "--provider", "claude-code", "--to", "v2.0.0"]
+
+
+def test_cli_upgrade_imports_every_lazy_module_before_setup_replaces_the_environment(monkeypatch, tmp_path, capsys):
+    """After the setup step runs, a module not yet imported is gone, as it is once the tool is reinstalled."""
+    from agent_tools import cli
+
+    argv = _upgrade_argv(tmp_path)
+    monkeypatch.setattr(cli, "_checkout_facts", lambda path: {"present": True, "tag": "v1.0.0", "dirty": False})
+    monkeypatch.delitem(sys.modules, "agent_tools.records", raising=False)
+    real_import = importlib.import_module
+    replaced = {"yes": False}
+
+    def fake_import(name, package=None):
+        if replaced["yes"] and name not in sys.modules:
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+        return real_import(name, package)
+
+    def fake_run(run_argv, cwd):
+        replaced["yes"] = replaced["yes"] or run_argv[:3] == ["cox", "setup", "install"]
+        return (0, "abc\trefs/tags/v2.0.0\n") if "ls-remote" in run_argv else (0, "")
+
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+
+    rc = cli.main(argv)
+    captured = capsys.readouterr()
+
+    assert replaced["yes"]
+    assert rc == 0
+    assert "Traceback" not in captured.out + captured.err
+    assert "ModuleNotFoundError" not in captured.out + captured.err
+
+
+def test_load_lazy_modules_loads_every_registered_module_once(monkeypatch):
+    from agent_tools import cli
+
+    monkeypatch.setattr(cli, "_LAZY_MODULES", [])
+    loaded = []
+    monkeypatch.setattr(importlib, "import_module",
+                        lambda name, package=None: loaded.append(name) or types.ModuleType(name))
+    cli._LazyModule("fake_pkg.first")
+    cli._LazyModule("fake_pkg.second")
+
+    cli._load_lazy_modules()
+
+    assert loaded == ["fake_pkg.first", "fake_pkg.second"]
+
+
+def test_cli_upgrade_without_a_setup_step_loads_no_lazy_modules(monkeypatch, tmp_path):
+    from agent_tools import cli
+
+    argv = _upgrade_argv(tmp_path)
+    monkeypatch.setattr(cli, "_checkout_facts", lambda path: {"present": True, "tag": "v1.0.0", "dirty": False})
+    monkeypatch.setattr(cli.install, "plan", lambda manifest, facts, options: [
+        {"kind": "doctor", "component": "doctor", "detail": "run cox setup doctor"}])
+    monkeypatch.setattr(cli, "_real_run",
+                        lambda run_argv, cwd: (0, "abc\trefs/tags/v2.0.0\n") if "ls-remote" in run_argv else (0, ""))
+    calls = []
+    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: calls.append(1))
+
+    rc = cli.main(argv)
+
+    assert rc == 0
+    assert calls == []
