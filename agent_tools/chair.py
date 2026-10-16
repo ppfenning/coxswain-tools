@@ -120,8 +120,9 @@ def take(
     steal: bool = False,
     claude_session: str | None = None,
     hours: float | None = None,
+    model: str | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
-    """Pure. A live record past its `until` is taken like a stale one. `hours` stamps the new record's `until`."""
+    """Pure. A live record past its `until` is taken like a stale one. `hours` stamps the new record's `until`; a None `model` leaves the key absent."""
     state = liveness(record, pid_alive_, now, host, heartbeat_minutes)
     lapsed = state == "live" and expired(record, now)
     if state == "live" and not lapsed:
@@ -130,7 +131,8 @@ def take(
         why = f"takeover expired at {record['until']}" if lapsed else state
         return None, f"chair: {_held_by_line(record)} ({why}; pass --steal to take over)"
     taken_at = now.isoformat()
-    new_record = {"session": session, "pid": pid, "host": host, "taken_at": taken_at, "heartbeat_at": taken_at, "runs": [], "claude_session": claude_session}
+    base = {"session": session, "pid": pid, "host": host, "taken_at": taken_at, "heartbeat_at": taken_at, "runs": [], "claude_session": claude_session}
+    new_record = base if model is None else {**base, "model": model}
     return (new_record if hours is None else extend(new_record, now, hours)), ""
 
 

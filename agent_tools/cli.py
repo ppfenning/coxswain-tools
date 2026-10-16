@@ -3783,7 +3783,7 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         alive = _leader_pid_alive(record)
         prior_state = chair.liveness(record, alive, now, host, heartbeat_minutes)
         _print_if_stale(record, prior_state)
-        new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal, claude_session=chair.claude_session_from_env(os.environ), hours=hours)
+        new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal, claude_session=chair.claude_session_from_env(os.environ), hours=hours, model=getattr(a, "model", None))
         if new_record is None and a.steal and prior_state == "live" and chair.same_holder(record, session, pid, host):
             refusal = chair.acquire_lease(runs_dir, session, pid, host, steal=True)
             if refusal:
@@ -7791,6 +7791,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--profile",)), commands.Arg(("--label",)), _CHAIR_PID_ARG,
                     commands.Arg(("--steal",), {"action": "store_true"}),
                     commands.Arg(("--hours",), {"type": float, "default": _leader_takeover_hours(), "help": "how long the takeover lasts before the loop may steal it (default: policy.leader.takeover_hours)"}),
+                    commands.Arg(("--model",), {"choices": ["sonnet", "opus", "haiku"], "default": None, "help": "the model alias this chair runs on, recorded in the chair record (default: not recorded)"}),
                 ),
                 "agent_tools.cli:_route_chair_take", False, (),
             ),
