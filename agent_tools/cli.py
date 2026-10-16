@@ -44,6 +44,7 @@ class _LazyModule:
 
     def __init__(self, path: str) -> None:
         object.__setattr__(self, "_lazy_path", path)
+        _LAZY_MODULES.append(self)
 
     def _lazy_load(self) -> types.ModuleType:
         return importlib.import_module(self._lazy_path)
@@ -59,6 +60,9 @@ class _LazyModule:
 
     def __repr__(self) -> str:
         return f"<lazy module {self._lazy_path}>"
+
+
+_LAZY_MODULES: list[_LazyModule] = []
 
 
 @dataclasses.dataclass(frozen=True)
@@ -6178,6 +6182,12 @@ def _manifest_at_version(manifest: dict, to: str | None) -> dict:
     return {**manifest, "components": components}
 
 
+def _load_lazy_modules() -> None:
+    """Import every lazy module now: setup replaces the tool's environment, and a later import would fail."""
+    for module in _LAZY_MODULES:
+        module._lazy_load()
+
+
 def _install_execute(steps: list, manifest: dict, options: dict, root: Path) -> int:
     """Runs a planned install/upgrade for real: enrich the planner's steps
     with the repo/tag/team/workspace `install_exec` needs, execute them,
@@ -6331,6 +6341,8 @@ def _upgrade(a: argparse.Namespace) -> int:
         return code
     tail = [step for step in install.plan(moved, _upgrade_facts(moved, root, a.provider), options)
             if step["kind"] in ("setup_install", "doctor", "desktop")]
+    if any(step["kind"] == "setup_install" for step in tail):
+        _load_lazy_modules()
     return _install_execute(tail, moved, options, root)
 
 
