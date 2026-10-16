@@ -14,9 +14,14 @@ written, so `profile_text` refuses those with `ValueError`.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent_tools.home import Locations
 
 REPOS = ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools")
 _HOOK_COMMAND = "agent-tools route context 2>/dev/null || true"
+_MARKETPLACE = "coxswain-cartridges"
 
 
 def profile_path(config_dir: str) -> str:
@@ -108,6 +113,22 @@ def _agent_steps(cast: dict) -> list:
     return steps
 
 
+def _marketplace_steps(cartridges_dir: str, registered: str | None) -> list:
+    """Registry-only, per docs/design/coxswain-home.md section 3. `registered`
+    is the source text `claude plugin marketplace list` shows for the
+    cartridges marketplace, or None when none is listed."""
+    add = {"op": "run", "argv": ["claude", "plugin", "marketplace", "add", cartridges_dir],
+           "why": "register coxswain-cartridges as a plugin marketplace"}
+    if registered is None:
+        return [add]
+    if registered == cartridges_dir:
+        return [{"op": "skip", "what": "marketplace",
+                 "why": "already registered at the resolved location"}]
+    remove = {"op": "run", "argv": ["claude", "plugin", "marketplace", "remove", _MARKETPLACE],
+              "why": f"marketplace points at {registered}, not {cartridges_dir}"}
+    return [remove, add]
+
+
 def install_plan(
     *,
     root: str,
@@ -128,17 +149,23 @@ def install_plan(
     cast: dict | None = None,
     window_ceiling_usd: float | None = None,
     weekly_ceiling_usd: float | None = None,
+    locations: Locations | None = None,
+    registered_marketplace: str | None = None,
 ) -> list:
-    """Ordered setup steps for a checkout at `root` holding
-    coxswain-cartridges, coxswain-graphs and coxswain-tools side by side.
-    `config_dir` and `claude_settings_path` are pre-resolved by the
-    caller; this core never expands `~` or touches the filesystem.
+    """Ordered setup steps. With `locations`, every checkout, venv and the
+    profile path come from the resolved record (`installs`, `profile`) and
+    `root` and `config_dir` are ignored. Without it the old `root` and
+    `config_dir` apply; the subcommand wiring task removes that fallback.
+    `claude_settings_path` is pre-resolved by the caller; this core never
+    expands `~` or touches the filesystem.
     `cartridges_dir` here is the checkout `-e` installs and the plugin
     marketplace registers; the profile's own `cartridges_dir` field is a
     workspace path (`profile_cartridges_dir`), a different thing that
     happens to share a name in the field the routing layer reads."""
-    cartridges_dir = f"{root}/coxswain-cartridges"
-    harness_dir = f"{root}/coxswain-graphs"
+    installs = locations.installs if locations else root
+    profile_file = locations.profile if locations else profile_path(config_dir)
+    cartridges_dir = f"{installs}/coxswain-cartridges"
+    harness_dir = f"{installs}/coxswain-graphs"
     profile_cartridges_dir = f"{workspace}/cartridges"
     steps: list = []
 
@@ -147,9 +174,9 @@ def install_plan(
                       "why": "uv is not on PATH; install it from https://astral.sh/uv"})
     else:
         for repo in REPOS:
-            steps.extend(_repo_steps(repo, root, python_exists, cartridges_dir))
+            steps.extend(_repo_steps(repo, installs, python_exists, cartridges_dir))
         steps.append({"op": "run",
-                      "argv": ["uv", "tool", "install", "-q", "-e", f"{root}/coxswain-tools"],
+                      "argv": ["uv", "tool", "install", "-q", "-e", f"{installs}/coxswain-tools"],
                       "why": "put cox on PATH", "warn_only": True})
         steps.append({"op": "run",
                       "argv": ["uv", "tool", "install", "-q", "-e", cartridges_dir],
@@ -161,7 +188,7 @@ def install_plan(
                              skills_root=skills_root, provider_profile=provider_profile,
                              harness_dir=harness_dir, workspace=workspace, assume=assume,
                              window_ceiling_usd=window_ceiling_usd, weekly_ceiling_usd=weekly_ceiling_usd)
-        steps.append({"op": "write", "path": profile_path(config_dir), "text": text,
+        steps.append({"op": "write", "path": profile_file, "text": text,
                       "why": "write the routing layer's profile"})
     else:
         steps.append({"op": "skip", "what": "profile",
@@ -171,9 +198,7 @@ def install_plan(
 
     if plugins:
         if claude_on_path:
-            steps.append({"op": "run",
-                          "argv": ["claude", "plugin", "marketplace", "add", cartridges_dir],
-                          "why": "register coxswain-cartridges as a plugin marketplace"})
+            steps.extend(_marketplace_steps(cartridges_dir, registered_marketplace))
             steps.append({"op": "run",
                           "argv": ["claude", "plugin", "install", "local-skills@coxswain-cartridges"],
                           "why": "install the local-skills plugin"})
