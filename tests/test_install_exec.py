@@ -505,3 +505,59 @@ def test_cli_upgrade_without_a_setup_step_loads_no_lazy_modules(monkeypatch, tmp
 
     assert rc == 0
     assert calls == []
+
+
+def _install_argv(tmp_path):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(
+        "[components.harness]\nrepo = \"org/harness\"\ntag = \"v1.0.0\"\nrequired = true\n\n"
+        "[providers.claude-code]\nstatus = \"supported\"\n"
+    )
+    return ["install", "--root", str(tmp_path / "root"), "--manifest", str(manifest_path),
+            "--provider", "claude-code", "--team", "example-team", "--workspace", str(tmp_path / "ws")]
+
+
+def test_cli_install_imports_every_lazy_module_before_setup_replaces_the_environment(monkeypatch, tmp_path, capsys):
+    """After the setup step runs, a module not yet imported is gone, as it is once the tool is reinstalled."""
+    from agent_tools import cli
+
+    argv = _install_argv(tmp_path)
+    monkeypatch.delitem(sys.modules, "agent_tools.records", raising=False)
+    real_import = importlib.import_module
+    replaced = {"yes": False}
+
+    def fake_import(name, package=None):
+        if replaced["yes"] and name not in sys.modules:
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+        return real_import(name, package)
+
+    def fake_run(run_argv, cwd):
+        replaced["yes"] = replaced["yes"] or run_argv[:3] == ["cox", "setup", "install"]
+        return 0, ""
+
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+
+    rc = cli.main(argv)
+    captured = capsys.readouterr()
+
+    assert replaced["yes"]
+    assert rc == 0
+    assert "Traceback" not in captured.out + captured.err
+    assert "ModuleNotFoundError" not in captured.out + captured.err
+
+
+def test_cli_install_without_a_setup_step_loads_no_lazy_modules(monkeypatch, tmp_path):
+    from agent_tools import cli
+
+    argv = _install_argv(tmp_path)
+    monkeypatch.setattr(cli.install, "plan", lambda manifest, facts, options: [
+        {"kind": "doctor", "component": "doctor", "detail": "run cox setup doctor"}])
+    monkeypatch.setattr(cli, "_real_run", lambda run_argv, cwd: (0, ""))
+    calls = []
+    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: calls.append(1))
+
+    rc = cli.main(argv)
+
+    assert rc == 0
+    assert calls == []
