@@ -525,19 +525,33 @@ class RepoRefused(NamedTuple):
         return f"routing: --repo {self.value!r} is not a git checkout (tried {self.tried})"
 
 
-def resolve_repo(value: str, repos_root: Path, is_checkout: Callable[[Path], bool]) -> str | RepoRefused:
+def resolve_repo(
+    value: str, repos_root: Path, is_checkout: Callable[[Path], bool], home: str | None = None
+) -> str | RepoRefused:
     """Pure. The `repo:` a `route file --repo <value>` writes.
 
-    An absolute path is kept as is. A bare name (one path component) is `<repos_root>/<name>`, written as that absolute
-    path when `is_checkout` says it is a git checkout; repos sit beside the workspace, so `repos_root` is the
-    workspace's parent. Anything else, or a bare name with no checkout there, is refused naming the path it tried."""
-    path = Path(value)
+    An absolute path is kept as is. A tilde value (`~` or `~/...`) is expanded against `home` first and then treated as
+    the absolute path it names; without `home` it is refused. A bare name (one path component) is
+    `<repos_root>/<name>`, written as that absolute path when `is_checkout` says it is a git checkout; repos sit beside
+    the workspace, so `repos_root` is the workspace's parent. Anything else, or a bare name with no checkout there, is
+    refused naming the path it tried."""
+    expanded = repo_path.expand(value, home) if home is not None and value.startswith("~") else value
+    path = Path(expanded)
     if path.is_absolute():
-        return value
+        return expanded
     if value in ("", ".", "..") or len(path.parts) != 1 or value.startswith("~"):
         return RepoRefused(value, value)
     candidate = repos_root / value
     return str(candidate) if is_checkout(candidate) else RepoRefused(value, str(candidate))
+
+
+def repo_field(path: str, home: str) -> str:
+    """Pure. The `repo:` text to write for a resolved absolute `path`: the tilde form when it is `home` or under it.
+
+    The prefix is checked against `home` here, so a path under another user's home stays absolute."""
+    h = home.rstrip("/")
+    inside = path.rstrip("/") == h or path.startswith(h + "/")
+    return repo_path.contract(path, home) if inside else path
 
 
 def is_git_checkout(path: Path) -> bool:
