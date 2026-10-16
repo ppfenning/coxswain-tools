@@ -1019,6 +1019,14 @@ def _runs_stranded(a: argparse.Namespace) -> int:
     return 0
 
 
+def _pick_work_item(paths: list[str], task: str, initiative: str | None) -> tuple[str | None, int]:
+    """The one `<initiative>/<phase>/<task>.md` among work-relative `paths`, with the match count.
+    `initiative` None considers every initiative. The path is None unless exactly one matches."""
+    hits = [p for p in paths
+            if p.count("/") == 2 and p.rsplit("/", 1)[1] == f"{task}.md" and (initiative is None or p.split("/")[0] == initiative)]
+    return (hits[0] if len(hits) == 1 else None), len(hits)
+
+
 def _runs_cause(a: argparse.Namespace) -> int:
     runs_dir, reason = _runs_dir_for_land(a)
     if runs_dir is None:
@@ -1028,7 +1036,17 @@ def _runs_cause(a: argparse.Namespace) -> int:
     if record is None:
         print(f"cause: expected one task record for {a.task_id} under {where}, found {found}")
         return 2
-    items = sorted((runs_dir.parent / "work").glob(f"*/{record['phase']}/{a.task_id}.md"))
+    work_root = runs_dir.parent / "work"
+    own = chair_facts.run_initiative(a.run_id)
+    initiative = record.get("initiative") or (own if (work_root / own).is_dir() else None)
+    items = sorted(work_root.glob(f"{initiative or '*'}/{record['phase']}/{a.task_id}.md"))
+    if not items:
+        listing = [str(p.relative_to(work_root)) for p in sorted(work_root.glob("*/*/*.md"))]
+        picked, count = _pick_work_item(listing, a.task_id, initiative)
+        if picked is None:
+            print(f"cause: expected one work item {a.task_id} in initiative {initiative or '(any)'}, found {count}")
+            return 2
+        items = [work_root / picked]
     if len(items) != 1:
         print(f"cause: expected one work item {a.task_id} in phase {record['phase']}, found {len(items)}")
         return 2
