@@ -13,6 +13,20 @@ from agent_tools.cli import _run_core_probe, main
 def _home(tmp_path, monkeypatch):
     """A chair unit installed on the test machine must not reach the doctor's `chair unit PATH` row."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("COXSWAIN_HOME", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+
+def _ready_home(monkeypatch, home):
+    """Makes `home` the coxswain home: it exists and COXSWAIN_HOME names it. No home record, so the machine reads as unmigrated."""
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("COXSWAIN_HOME", str(home))
+
+
+def _write_home_record(tmp_path, home):
+    record = tmp_path / "home" / ".config" / "agent-tools" / "home"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(f"{home}\n")
 
 _STUB = """#!{python}
 import json
@@ -69,6 +83,7 @@ def _good_setup(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(bin_dir))
 
     _make_store(workspace_dir)
+    _ready_home(monkeypatch, tmp_path)
 
     profile = tmp_path / "profile.yaml"
     profile.write_text(
@@ -427,6 +442,7 @@ def test_schema_row_reads_cartridges_from_the_checkout_above_provider_profile(tm
     _write_executable(bin_dir / "fakeprovider", _PROVIDER.format(python=sys.executable))
     _write_executable(bin_dir / "git", _GIT)
     monkeypatch.setenv("PATH", str(bin_dir))
+    _ready_home(monkeypatch, tmp_path)
 
     profile = tmp_path / "profile.yaml"
     profile.write_text(
@@ -517,3 +533,62 @@ def test_a_profile_loader_error_list_becomes_a_not_checked_line(tmp_path, monkey
     (row,) = _freshness_rows(_rows(capsys))
     assert row["detail"] == "model freshness not checked: no such tier"
     assert rc == 0
+
+
+# ── the coxswain home rows ───────────────────────────────────────────────────
+
+_HOME_CHECKS = {
+    "home root", "marketplace registered", "marketplace location", "old layout", "home paths", "home recorded",
+    "cartridge links",
+}
+
+
+def _checks(capsys):
+    return [r["check"] for r in json.loads(capsys.readouterr().out)["rows"]]
+
+
+def test_with_no_profile_every_home_row_is_skipped(tmp_path, monkeypatch, capsys):
+    _good_setup(tmp_path, monkeypatch)
+    main(["setup", "doctor", "--profile", str(tmp_path / "absent.yaml"), "--json"])
+    home = [r for r in json.loads(capsys.readouterr().out)["rows"] if r["check"] in _HOME_CHECKS]
+    assert {r["check"] for r in home} == _HOME_CHECKS
+    assert {r["detail"] for r in home} == {"skipped: no profile"}
+
+
+def test_a_profile_with_paths_under_the_home_installs_passes_the_home_paths_row(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    home = tmp_path / "coxswain"
+    installs = home / "installs"
+    _ready_home(monkeypatch, home)
+    _write_home_record(tmp_path, home)
+    profile.write_text(
+        "team: acme\n"
+        f"skills_roots: [{installs}/coxswain-cartridges/skills-plugins]\n"
+        f"provider_profile: {installs}/coxswain-cartridges/providers/claude-code.yaml\n"
+        f"harness_dir: {installs}/coxswain-graphs\n"
+        f"workspace_dir: {home}/workspaces/default\n"
+    )
+    main(["setup", "doctor", "--profile", str(profile), "--json"])
+    rows = _rows(capsys)
+    assert rows["home paths"]["ok"] is True and "warn" not in rows["home paths"]
+    assert rows["home recorded"]["ok"] is True
+    assert rows["home root"]["ok"] is True
+
+
+def test_home_rows_sit_after_the_doctor_checks_and_before_the_store_rows(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    main(["setup", "doctor", "--profile", str(profile), "--json"])
+    checks = _checks(capsys)
+    home = [i for i, c in enumerate(checks) if c in _HOME_CHECKS]
+    assert home == list(range(home[0], home[0] + len(home)))
+    assert checks.index("chair unit PATH") < home[0]
+    assert home[-1] < checks.index("shared store")
+
+
+def test_a_failing_home_row_exits_nonzero_and_a_warn_row_does_not(tmp_path, monkeypatch, capsys):
+    profile, *_ = _good_setup(tmp_path, monkeypatch)
+    assert main(["setup", "doctor", "--profile", str(profile)]) == 0
+    capsys.readouterr()
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path / "elsewhere"))
+    assert main(["setup", "doctor", "--profile", str(profile), "--json"]) == 1
+    assert _rows(capsys)["home root"]["ok"] is False
