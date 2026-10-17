@@ -745,13 +745,28 @@ _LOCATIONS = home.resolve({}, "/u", "linux", flag="/h")
 _CHECKOUT = "/h/installs/coxswain-cartridges"
 
 
+_PATHS = {"skills_roots": ("/h/skills", "/h/more"), "provider_profile": "/h/profile.yaml", "harness_dir": "/h/harness"}
+_MIGRATED = {"home_record": "/h", "user_home": "/u", **_PATHS}
+
+
 def _home(listing=None, exists=True, writable=True, legacy=None, in_project=False):
-    return doctor.home_rows(_LOCATIONS, listing, exists, writable, legacy, in_project)
+    return doctor.home_rows(_LOCATIONS, listing, exists, writable, legacy, in_project, **_MIGRATED)
+
+
+def _migrated(**overrides):
+    return doctor.home_rows(_LOCATIONS, None, True, True, None, False, **{**_MIGRATED, **overrides})
 
 
 def test_home_rows_come_in_a_fixed_order():
     rows = _home({"coxswain-cartridges": _CHECKOUT})
-    assert [r["check"] for r in rows] == ["home root", "marketplace registered", "marketplace location", "old layout"]
+    assert [r["check"] for r in rows] == [
+        "home root",
+        "marketplace registered",
+        "marketplace location",
+        "old layout",
+        "home paths",
+        "home recorded",
+    ]
 
 
 def test_home_root_ok_when_it_exists_and_is_writable():
@@ -781,9 +796,60 @@ def test_marketplace_missing_from_the_listing_fails_registered_and_location():
     ]
 
 
-def test_claude_absent_leaves_both_marketplace_rows_not_checked():
+def test_claude_absent_warns_on_both_marketplace_rows_without_failing():
     rows = _home(None)
-    assert [r["detail"] for r in rows[1:3]] == ["not checked", "not checked"]
+    assert [(r["ok"], r["warn"], r["detail"]) for r in rows[1:3]] == [
+        (True, True, "not checked: claude is not on PATH"),
+        (True, True, "not checked: claude is not on PATH"),
+    ]
+    assert doctor.exit_code(rows[1:3]) == 0
+
+
+def test_home_paths_pass_when_every_path_is_under_the_home():
+    row = _home()[4]
+    assert (row["check"], row["ok"]) == ("home paths", True)
+
+
+def test_home_paths_pass_after_tilde_expansion():
+    row = _migrated(user_home="/h", skills_roots=("~/skills",), provider_profile="~/p.yaml", harness_dir="~")[4]
+    assert row["ok"] is False and row["detail"] == "~ is not under /h"
+    row = _migrated(user_home="/h", skills_roots=("~/skills",), provider_profile="~/p.yaml", harness_dir="~/harness")[4]
+    assert (row["check"], row["ok"]) == ("home paths", True)
+
+
+def test_home_paths_fail_naming_the_first_offender():
+    row = _migrated(skills_roots=("/h/skills", "/elsewhere/a", "/elsewhere/b"), harness_dir="/also/bad")[4]
+    assert (row["ok"], row["detail"]) == (False, "/elsewhere/a is not under /h")
+
+
+def test_home_recorded_passes_when_the_record_equals_the_home():
+    row = _home()[5]
+    assert (row["check"], row["ok"]) == ("home recorded", True)
+
+
+def test_home_recorded_absent_reads_absent_and_fails():
+    row = doctor._home_recorded_row(_LOCATIONS, None)
+    assert (row["ok"], row["detail"]) == (False, "home record is absent; expected /h")
+
+
+def test_home_recorded_different_fails_naming_both():
+    row = _migrated(home_record="/old")[5]
+    assert (row["ok"], row["detail"]) == (False, "home record is /old; expected /h")
+
+
+def test_unmigrated_machine_warns_on_four_rows_and_produces_no_failure():
+    rows = doctor.home_rows(_LOCATIONS, {"coxswain-cartridges": _CHECKOUT}, True, True, "/u/old", False)
+    assert [r["check"] for r in rows] == [
+        "home root",
+        "marketplace registered",
+        "marketplace location",
+        "old layout",
+        "home paths",
+        "home recorded",
+        "cartridge links",
+    ]
+    assert [(r["ok"], r["warn"], r["detail"]) for r in rows[3:]] == [(True, True, "not migrated: run cox setup migrate")] * 4
+    assert doctor.exit_code(rows) == 0
 
 
 def test_marketplace_location_ok_when_source_equals_the_checkout_under_the_home():
@@ -825,16 +891,21 @@ _ROOT_LINK = "../../../h/installs/coxswain-cartridges"
 
 
 def _links_row(links):
-    return doctor.home_rows(_LOCATIONS, None, True, True, None, False, links)[-1]
+    return doctor.home_rows(_LOCATIONS, None, True, True, None, False, links, **_MIGRATED)[-1]
 
 
 def test_cartridge_links_row_is_absent_until_links_are_gathered():
-    assert [r["check"] for r in _home()] == [
-        "home root",
-        "marketplace registered",
-        "marketplace location",
-        "old layout",
-    ]
+    assert "cartridge links" not in [r["check"] for r in _home()]
+
+
+def test_cartridge_links_pass_an_absolute_target_equal_to_the_entry_under_the_home():
+    row = _links_row({_LINK_BASE: f"{_CHECKOUT}/cartridges/base", _LINK_LOCAL: f"{_CHECKOUT}/cartridges/local"})
+    assert (row["check"], row["ok"]) == ("cartridge links", True)
+
+
+def test_cartridge_links_fail_an_absolute_target_for_another_entry():
+    row = _links_row({_LINK_BASE: f"{_CHECKOUT}/cartridges/local"})
+    assert row["ok"] is False
 
 
 def test_cartridge_links_fail_when_they_point_at_the_checkout_root():

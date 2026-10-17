@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import posixpath
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 
 from agent_tools import records, route, schema, store_dialect
 from agent_tools.home import Locations
@@ -381,10 +381,19 @@ def _home_root_row(locations: Locations, root_exists: bool, root_writable: bool)
     return {"check": "home root", "ok": True, "detail": f"{root} exists and is writable"}
 
 
+_NO_CLAUDE = "not checked: claude is not on PATH"
+_NOT_MIGRATED = "not migrated: run cox setup migrate"
+
+
+def _home_warn_row(check: str, detail: str) -> dict:
+    """Not checked is not failed: `ok` stays True so `exit_code` ignores the row."""
+    return {"check": check, "ok": True, "warn": True, "detail": detail}
+
+
 def _marketplace_registered_row(listing: Mapping[str, str] | None) -> dict:
     """`listing` maps marketplace name to source text from `claude plugin marketplace list`; None when claude is absent."""
     if listing is None:
-        return _not_checked("marketplace registered")
+        return _home_warn_row("marketplace registered", _NO_CLAUDE)
     if _MARKETPLACE in listing:
         return {"check": "marketplace registered", "ok": True, "detail": f"{_MARKETPLACE} is listed"}
     return {"check": "marketplace registered", "ok": False,
@@ -394,7 +403,7 @@ def _marketplace_registered_row(listing: Mapping[str, str] | None) -> dict:
 def _marketplace_location_row(locations: Locations, listing: Mapping[str, str] | None, in_project: bool) -> dict:
     """Text compare against the checkout under the resolved installs folder; no link is followed."""
     if listing is None:
-        return _not_checked("marketplace location")
+        return _home_warn_row("marketplace location", _NO_CLAUDE)
     source = listing.get(_MARKETPLACE)
     if source is None:
         return {"check": "marketplace location", "ok": False, "detail": f"no {_MARKETPLACE} entry to compare with the home"}
@@ -413,6 +422,35 @@ def _legacy_layout_row(legacy_path: str | None) -> dict:
             "detail": f"old layout still present at {legacy_path}; run `cox setup migrate` to move it"}
 
 
+def _expand_tilde(path: str, user_home: str) -> str:
+    return user_home + path[1:] if path == "~" or path.startswith("~/") else path
+
+
+def _home_paths_row(
+    locations: Locations, skills_roots: Sequence[str], provider_profile: str, harness_dir: str, user_home: str
+) -> dict:
+    """Every path, tilde expanded against `user_home`, must sit under `<home>/`; text compare only."""
+    prefix = f"{locations.home}/"
+    offender = next(
+        (p for p in (*skills_roots, provider_profile, harness_dir) if not _expand_tilde(p, user_home).startswith(prefix)),
+        None,
+    )
+    if offender is None:
+        return {
+            "check": "home paths",
+            "ok": True,
+            "detail": f"skills roots, provider profile and harness dir sit under {locations.home}",
+        }
+    return {"check": "home paths", "ok": False, "detail": f"{offender} is not under {locations.home}"}
+
+
+def _home_recorded_row(locations: Locations, home_record: str | None) -> dict:
+    if home_record == locations.home:
+        return {"check": "home recorded", "ok": True, "detail": f"home record equals {locations.home}"}
+    seen = "absent" if home_record is None else home_record
+    return {"check": "home recorded", "ok": False, "detail": f"home record is {seen}; expected {locations.home}"}
+
+
 def _cartridge_links_row(locations: Locations, links: Mapping[str, str]) -> dict:
     """Text compare of each base and local link target with `cartridge_link_target`; no link is followed."""
     if not links:
@@ -424,7 +462,11 @@ def _cartridge_links_row(locations: Locations, links: Mapping[str, str]) -> dict
     stale = [
         f"{path} -> {target}; expected {expected}"
         for path, target in sorted(links.items())
-        if target != (expected := cartridge_link_target(path, locations))
+        if target
+        not in (
+            (expected := cartridge_link_target(path, locations)),
+            posixpath.join(locations.installs, "coxswain-cartridges", "cartridges", posixpath.basename(path)),
+        )
     ]
     if stale:
         return {"check": "cartridge links", "ok": False, "detail": "; ".join(stale)}
@@ -467,18 +509,35 @@ def home_rows(
     in_project: bool,
     cartridge_links: Mapping[str, str] | None = None,
     install_bins: Mapping[str, str | None] | None = None,
+    *,
+    home_record: str | None = None,
+    skills_roots: Sequence[str] = (),
+    provider_profile: str = "",
+    harness_dir: str = "",
+    user_home: str = "",
 ) -> list[dict]:
     """Rows for the coxswain home: home root, marketplace registered, marketplace location, old layout,
-    cartridge links when `cartridge_links` (link path to lexical target) was gathered, and
-    install bins when `install_bins` (source name to recorded path) was gathered.
-    The edge gathers the listing, the root's state, the legacy path and whether the listed source sits in a project folder."""
-    return [
+    home paths, home recorded, cartridge links, and install bins when `install_bins` was gathered.
+    `cartridge_links` maps link path to lexical target; its row is omitted when None unless the machine is unmigrated.
+    `home_record` is the record text, None when absent: an unmigrated machine warns on old layout,
+    home paths, home recorded and cartridge links. `user_home` expands a leading `~` in the path inputs.
+    The edge gathers every input; nothing here reads the filesystem, environment or clock."""
+    root = [
         _home_root_row(locations, root_exists, root_writable),
         _marketplace_registered_row(listing),
         _marketplace_location_row(locations, listing, in_project),
+    ]
+    bins = [] if install_bins is None else [install_bins_row(locations, install_bins)]
+    if home_record is None:
+        unmigrated = ("old layout", "home paths", "home recorded", "cartridge links")
+        return [*root, *(_home_warn_row(check, _NOT_MIGRATED) for check in unmigrated), *bins]
+    return [
+        *root,
         _legacy_layout_row(legacy_path),
+        _home_paths_row(locations, skills_roots, provider_profile, harness_dir, user_home),
+        _home_recorded_row(locations, home_record),
         *([] if cartridge_links is None else [_cartridge_links_row(locations, cartridge_links)]),
-        *([] if install_bins is None else [install_bins_row(locations, install_bins)]),
+        *bins,
     ]
 
 
