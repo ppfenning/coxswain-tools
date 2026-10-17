@@ -3808,6 +3808,15 @@ def _print_if_stale(record: dict | None, state: str) -> None:
         print(f"chair {state}: {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}")
 
 
+def _retaken_chair(record: dict, now_iso: str, model: str | None, session: str, pid: int, host: str) -> tuple[dict, str]:
+    """Pure. The record to write and the line to print when `--steal` retakes a lease its own holder holds.
+    A given `model` replaces the recorded one; none keeps it, and a record with none stays without the key."""
+    new_record = {**record, "heartbeat_at": now_iso, **({"model": model} if model else {})}
+    recorded = new_record.get("model")
+    suffix = f" (model {recorded})" if isinstance(recorded, str) and recorded else ""
+    return new_record, f"chair lease retaken: {session} (pid {pid}) on {host}{suffix}"
+
+
 def _route_chair_take(a: argparse.Namespace) -> int:
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
@@ -3836,8 +3845,9 @@ def _route_chair_take(a: argparse.Namespace) -> int:
             if refusal:
                 print(refusal)
                 return 2
-            chair.write(runs_dir, {**record, "heartbeat_at": now.isoformat()})
-            print(f"chair lease retaken: {session} (pid {pid}) on {host}")
+            retaken, line = _retaken_chair(record, now.isoformat(), getattr(a, "model", None), session, pid, host)
+            chair.write(runs_dir, retaken)
+            print(line)
             return 0
         if new_record is None:
             print(reason)

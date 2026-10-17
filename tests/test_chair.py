@@ -14,7 +14,7 @@ import types
 import pytest
 
 from agent_tools import chair, store_cli
-from agent_tools.cli import main
+from agent_tools.cli import _retaken_chair, main
 
 
 class _FakeClock:
@@ -292,13 +292,13 @@ def test_release_with_a_refused_lease_warns_and_still_removes_the_sidecar(tmp_pa
     assert not (tmp_path / chair.LEASE_FILENAME).exists()
 
 
-def _take_over_live_record(tmp_path, monkeypatch, record_session: str, *flags: str):
+def _take_over_live_record(tmp_path, monkeypatch, record_session: str, *flags: str, extra: dict | None = None):
     """Run `chair take --label bob` against a fresh live record; return (rc, acquire_lease kwargs, runs_dir)."""
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path}\n")
     runs_dir = tmp_path / "runs"
     fresh = datetime.datetime.now(datetime.UTC).isoformat()
-    chair.write(runs_dir, {"session": record_session, "pid": os.getpid(), "host": socket.gethostname(), "taken_at": fresh, "heartbeat_at": fresh, "runs": ["run-1"], "claude_session": None})
+    chair.write(runs_dir, {"session": record_session, "pid": os.getpid(), "host": socket.gethostname(), "taken_at": fresh, "heartbeat_at": fresh, "runs": ["run-1"], "claude_session": None, **(extra or {})})
     seen: list[dict] = []
     monkeypatch.setattr(chair, "acquire_lease", lambda *args, **kwargs: seen.append(kwargs) or "")
     rc = main(["route", "chair", "take", "--profile", str(profile), "--label", "bob", "--pid", str(os.getpid()), *flags])
@@ -311,6 +311,56 @@ def test_take_steal_on_own_live_record_retakes_the_lease(tmp_path, monkeypatch, 
     assert capsys.readouterr().out.startswith("chair lease retaken: bob (pid ")
     assert seen == [{"steal": True}]
     assert chair.read(runs_dir)["runs"] == ["run-1"]
+
+
+def test_retaken_chair_sets_the_given_model_and_names_it_without_mutating_the_record():
+    record = {"session": "chair-loop", "heartbeat_at": "t0"}
+    new_record, line = _retaken_chair(record, "t1", "sonnet", "chair-loop", 1, "host")
+    assert new_record == {"session": "chair-loop", "heartbeat_at": "t1", "model": "sonnet"}
+    assert line == "chair lease retaken: chair-loop (pid 1) on host (model sonnet)"
+    assert record == {"session": "chair-loop", "heartbeat_at": "t0"}
+
+
+def test_retaken_chair_without_a_model_keeps_the_recorded_one():
+    new_record, line = _retaken_chair({"session": "c", "model": "opus"}, "t1", None, "c", 1, "host")
+    assert new_record["model"] == "opus"
+    assert line == "chair lease retaken: c (pid 1) on host (model opus)"
+
+
+def test_retaken_chair_with_no_model_anywhere_writes_no_model_key():
+    new_record, line = _retaken_chair({"session": "c"}, "t1", None, "c", 1, "host")
+    assert "model" not in new_record
+    assert line == "chair lease retaken: c (pid 1) on host"
+
+
+def test_take_steal_with_model_records_it_on_the_retaken_record(tmp_path, monkeypatch, capsys):
+    rc, _seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob", "--steal", "--model", "sonnet")
+    assert rc == 0
+    assert chair.read(runs_dir)["model"] == "sonnet"
+    assert capsys.readouterr().out.strip().endswith("(model sonnet)")
+
+
+def test_take_steal_without_model_leaves_the_recorded_model_untouched(tmp_path, monkeypatch, capsys):
+    _rc, _seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob", "--steal", extra={"model": "opus"})
+    assert chair.read(runs_dir)["model"] == "opus"
+    assert capsys.readouterr().out.strip().endswith("(model opus)")
+
+
+def test_take_steal_without_model_on_a_record_with_none_writes_no_model_key(tmp_path, monkeypatch, capsys):
+    _rc, _seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob", "--steal")
+    assert "model" not in chair.read(runs_dir)
+    assert "(model" not in capsys.readouterr().out
+
+
+def test_take_of_a_free_chair_writes_the_record_as_before(tmp_path, monkeypatch, capsys):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n")
+    monkeypatch.setattr(chair, "acquire_lease", lambda *args, **kwargs: "")
+    rc = main(["route", "chair", "take", "--profile", str(profile), "--label", "bob", "--pid", str(os.getpid()), "--model", "haiku"])
+    record = chair.read(tmp_path / "runs")
+    assert rc == 0
+    assert capsys.readouterr().out.startswith("chair taken: bob (pid ")
+    assert (record["session"], record["pid"], record["model"]) == ("bob", os.getpid(), "haiku")
 
 
 def test_take_without_steal_on_own_live_record_is_refused_and_leaves_the_lease(tmp_path, monkeypatch, capsys):
