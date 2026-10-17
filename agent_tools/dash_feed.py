@@ -47,9 +47,9 @@ from agent_tools.dash_chair_store import chair_from_store, read_chair_rows
 from agent_tools.dash_chair_today import _ts, chair_today, local_midnight
 from agent_tools.dash_cost_series import run_cost_series
 from agent_tools.dash_finished_runs import LIMIT, finished_runs
-from agent_tools.dash_history import build_history
+from agent_tools.dash_history import _is_landed, _record, build_history
 from agent_tools.dash_history import history_today as _history_today
-from agent_tools.dash_history_store import read_history_rows
+from agent_tools.dash_history_store import RECENT_ENDED, read_history_rows
 from agent_tools.dash_run_end import End, run_end
 from agent_tools.dash_spend_series import spend_series as _spend_series
 from agent_tools.draft_list import read_drafts
@@ -75,7 +75,7 @@ _PROJECTS_DIR = "~/.claude/projects"
 _ZERO_SPLIT_WINDOW = {
     "chair_session_usd": 0.0, "chair_agents_usd": 0.0, "cox_seats_usd": 0.0, "total_usd": 0.0,
     "chair_session_share": 0.0, "chair_agents_share": 0.0, "cox_seats_share": 0.0,
-    "meter_fraction": 0.0, "resets_at": "",
+    "meter_fraction": 0.0, "resets_at": "", "cost_per_landed_task": 0.0,
 }
 
 
@@ -108,7 +108,7 @@ def snapshot(
         "history_today": dict(_ZERO_HISTORY_TODAY) if history_today is None else history_today,
         "chair_agents": list(chair_agents or []),
         "spend_split": (
-            {"five_hour": dict(_ZERO_SPLIT_WINDOW), "weekly": dict(_ZERO_SPLIT_WINDOW)}
+            {name: {**_ZERO_SPLIT_WINDOW, "by_node": []} for name in ("five_hour", "weekly")}
             if spend_split is None
             else spend_split
         ),
@@ -269,12 +269,40 @@ def _spend(runs_dir: Path, now: str, *, read_local=None, read_store=None, read_r
     }
 
 
-def _activity(runs_dir: Path, profile: dict, session: str, spend: Mapping, at: datetime) -> dict:
+def _window_starts(spend: Mapping, at: datetime) -> tuple[datetime, datetime]:
+    """The five-hour and weekly window starts: 5 hours and 7 days before each `resets_at`, or before `at` with none."""
+    five = (_utc(spend.get("five_hour_resets_at")) or at) - timedelta(hours=5)
+    weekly = (_utc(spend.get("weekly_resets_at")) or at) - timedelta(days=7)
+    return five, weekly
+
+
+def _landed_at(task: Mapping, ended: Mapping[str, datetime | None]) -> datetime | None:
+    """When a landed task record landed: its `landed.at`, else the end of its run."""
+    landed = _record(task.get("record_json")).get("landed")
+    stamp = landed.get("at") if isinstance(landed, Mapping) else None
+    return _utc(stamp) or ended.get(str(task.get("run_id")))
+
+
+def _window_node_inputs(rows: Mapping, windows: Mapping[str, Mapping]) -> tuple[dict[str, list], dict[str, int]]:
+    """Each window's `node_calls` rows at or after its `start`, and its landed task records likewise.
+    `rows` holds ended runs only, so a run still in flight is not counted."""
+    ended = {str(run.get("run_id")): _utc(run.get("ended_at")) for run in rows.get("runs", ())}
+    calls = [(_utc(call.get("ts")), call) for call in rows.get("node_calls", ())]
+    lands = [_landed_at(task, ended) for task in rows.get("task_records", ()) if _is_landed(task)]
+    starts = {name: _utc(window["start"]) for name, window in windows.items()}
+    node_rows = {name: [call for ts, call in calls if ts and start and ts >= start] for name, start in starts.items()}
+    done = {name: sum(1 for ts in lands if ts and start and ts >= start) for name, start in starts.items()}
+    return node_rows, done
+
+
+def _activity(
+    runs_dir: Path, profile: dict, session: str, spend: Mapping, at: datetime, store_rows: Mapping | None = None,
+) -> dict:
     """Edge: the chair's background agent rows and the three-way spend split. Each window starts five hours (weekly:
-    seven days) before its `resets_at`, or before `at` when the spend section has no reset time to read."""
+    seven days) before its `resets_at`, or before `at` when the spend section has no reset time to read. The per-node
+    rows and done counts are cut from `store_rows`, the one store read, which reaches back to the weekly start."""
     projects_dir = Path(_PROJECTS_DIR).expanduser()
-    five_start = (_utc(spend.get("five_hour_resets_at")) or at) - timedelta(hours=5)
-    weekly_start = (_utc(spend.get("weekly_resets_at")) or at) - timedelta(days=7)
+    five_start, weekly_start = _window_starts(spend, at)
     windows = {
         "five_hour": {
             "start": five_start.isoformat(),
@@ -291,12 +319,15 @@ def _activity(runs_dir: Path, profile: dict, session: str, spend: Mapping, at: d
             "resets_at": spend.get("weekly_resets_at") or "",
         },
     }
+    node_rows, done_counts = _window_node_inputs(store_rows or {}, windows)
     return chair_activity.gather_activity(
         chair_activity_read.read_session_lines(projects_dir, session),
         chair_activity_read.read_agents(projects_dir, session),
         chair_activity_read.prices_for_profile(profile),
         at,
         windows,
+        node_rows=node_rows,
+        done_counts=done_counts,
     )
 
 
@@ -847,11 +878,29 @@ def _history_v1(
     return history, _history_today(*args, at, timezone(offset))
 
 
-def _store_rows(runs_dir: Path, at: datetime) -> Mapping:
-    """Edge: the ended runs since local midnight, or the newest ones, with their task records. Read once.
+def _history_rows(rows: Mapping, at: datetime) -> Mapping:
+    """`rows` cut back to what the history reads: runs ended since local midnight or among the newest `RECENT_ENDED`
+    (the reader returns runs newest first), with those runs' records and calls."""
+    if not rows:
+        return rows
+    offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
+    midnight = local_midnight(at, offset)
+    runs = [
+        run
+        for index, run in enumerate(rows.get("runs", ()))
+        if index < RECENT_ENDED or (_utc(run.get("ended_at")) or midnight) >= midnight
+    ]
+    ids = {run.get("run_id") for run in runs}
+    return {**rows, "runs": runs, **{t: [r for r in rows.get(t, ()) if r.get("run_id") in ids] for t in ("task_records", "node_calls")}}
+
+
+def _store_rows(runs_dir: Path, at: datetime, spend: Mapping) -> Mapping:
+    """Edge: the ended runs since the earliest of local midnight and the spend windows' starts, or the newest ones,
+    with their task records and calls. Read once, wide enough for the weekly spend split; `_history_rows` narrows it.
     An unreadable store gives no rows."""
     offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
-    since = local_midnight(at, offset).astimezone(UTC).isoformat()
+    starts = [local_midnight(at, offset), *_window_starts(spend, at)]
+    since = min(start.astimezone(UTC) for start in starts).isoformat()
     try:
         return read_history_rows(runs_dir, since)
     except Exception:  # the history and ends are garnish: a store failure must not take the feed down
@@ -921,11 +970,12 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     }
     short_ids = run_store.initiative_short_ids(runs_dir)
     projects = _projects(run_store.read_queue(runs_dir, kind="initiative"))
-    store_rows = _store_rows(runs_dir, at)
+    spend_block = _spend_v1(sections["spend"])
+    wide_rows = _store_rows(runs_dir, at, spend_block)
+    store_rows = _history_rows(wide_rows, at)
     history, today = _history_edge(store_rows, at, short_ids, projects)
     chair_block = _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at)
-    spend_block = _spend_v1(sections["spend"])
-    activity = _activity(runs_dir, profile or {}, chair_block["session"], spend_block, at)
+    activity = _activity(runs_dir, profile or {}, chair_block["session"], spend_block, at, wide_rows)
     return snapshot(
         now,
         chair_block,

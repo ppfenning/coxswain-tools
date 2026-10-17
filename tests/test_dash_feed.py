@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from test_dash_detail_initiative import _INITIATIVE, _RAW_INITIATIVE
@@ -40,7 +41,8 @@ def _assert_matches_fixture_keys_and_nulls(output, fixture, path="root"):
         assert fixture is None, path
 
 
-def test_snapshot_matches_committed_fixture():
+def _fixture_inputs() -> tuple[tuple, dict]:
+    """The sections, positionally, and the history keywords that `snapshot` takes to build tests/fixtures/dash_feed_v1.json."""
     at = "2026-09-29T00:00:00Z"
     chair = {
         "holder": "chair",
@@ -210,26 +212,28 @@ def test_snapshot_matches_committed_fixture():
     ]
     history_today = {"lands": 1, "quarantines": 1, "cost_usd": 2.57, "runs": 2}
 
+    args = (at, chair, spend, machines, runs, queue, 2, inbox, 2, watch, decisions, spend_series)
+    return args, {"history": history, "history_today": history_today}
+
+
+def test_snapshot_matches_committed_fixture():
+    args, kwargs = _fixture_inputs()
     with open("tests/fixtures/dash_activity_v1.json") as f:
         activity = json.load(f)
 
-    result = snapshot(
-        at, chair, spend, machines, runs, queue, 2, inbox, 2, watch, decisions, spend_series,
-        history=history, history_today=history_today,
-        chair_agents=activity["chair_agents"], spend_split=activity["spend_split"],
-    )
+    result = snapshot(*args, **kwargs, chair_agents=activity["chair_agents"], spend_split=activity["spend_split"])
 
     with open("tests/fixtures/dash_feed_v1.json") as f:
         expected = json.load(f)
 
     assert result == expected
-    assert result["history"] == history and result["history_today"] == history_today
+    assert result["history"] == kwargs["history"] and result["history_today"] == kwargs["history_today"]
 
 
 def test_snapshot_without_activity_carries_an_empty_list_and_the_all_zero_split():
     with open("tests/fixtures/dash_activity_v1.json") as f:
-        # Temporary: the producer task that emits these keys removes this exclusion.
-        window_keys = set(json.load(f)["spend_split"]["five_hour"]) - {"by_node", "cost_per_landed_task"}
+        window_keys = set(json.load(f)["spend_split"]["five_hour"])
+    assert {"by_node", "cost_per_landed_task"} <= window_keys
 
     result = snapshot("2026-10-16T00:00:00Z", {}, {}, [], [], [], 0, [], 0, [])
 
@@ -237,8 +241,152 @@ def test_snapshot_without_activity_carries_an_empty_list_and_the_all_zero_split(
     assert set(result["spend_split"]) == {"five_hour", "weekly"}
     for window in result["spend_split"].values():
         assert set(window) == window_keys
-        assert {key: value for key, value in window.items() if key != "resets_at"} == dict.fromkeys(window_keys - {"resets_at"}, 0.0)
+        assert window["by_node"] == []
         assert window["resets_at"] == ""
+        zeros = window_keys - {"resets_at", "by_node"}
+        assert {key: window[key] for key in zeros} == dict.fromkeys(zeros, 0.0)
+    assert result["spend_split"]["five_hour"]["by_node"] is not result["spend_split"]["weekly"]["by_node"]
+
+
+def _node_rows_of(group: dict) -> list[dict]:
+    """`group.calls` node_calls rows that `group_spend_nodes` sums back to `group`: the first carries every total."""
+    first = {
+        "role": group["role"], "tier": group["tier"], "model_alias": group["model"], "turns": group["turns"],
+        "input_total": group["tokens"], "output_tokens": 0, "cost_usd": group["cost_usd"],
+    }
+    rest = {**first, "turns": 0, "input_total": 0, "cost_usd": 0.0}
+    return [first, *[rest] * (group["calls"] - 1)]
+
+
+_SPEND = {
+    "five_hour_fraction": 0.12, "five_hour_resets_at": "2026-10-16T22:00:00Z",
+    "weekly_fraction": 0.57, "weekly_resets_at": "2026-10-18T08:00:00Z",
+}
+_ACTIVITY_AT = datetime(2026, 10, 16, 18, tzinfo=UTC)  # the windows then start 2026-10-16T17:00Z and 2026-10-11T08:00Z
+
+
+def _stub_activity_readers(monkeypatch, chair_usd, five_seat_usd, weekly_seat_usd):
+    """Stand in for the transcript and seat-cost readers; `chair_cost` reads the (line, day) pair `lines_since` returns."""
+    reader = dash_feed.chair_activity_read
+    monkeypatch.setattr(reader, "read_session_lines", lambda projects_dir, session: ["session"])
+    monkeypatch.setattr(reader, "read_agents", lambda projects_dir, session: [{"lines": ["agent"]}])
+    monkeypatch.setattr(reader, "prices_for_profile", lambda profile: {})
+    monkeypatch.setattr(dash_feed.usage_window, "gather", lambda *a, **k: SimpleNamespace(spent_usd=five_seat_usd))
+    monkeypatch.setattr(dash_feed.usage_window, "gather_weekly", lambda *a, **k: SimpleNamespace(spent_usd=weekly_seat_usd))
+    monkeypatch.setattr(dash_feed.chair_activity, "lines_since", lambda lines, day: (lines[0], day))
+    monkeypatch.setattr(dash_feed.chair_activity, "chair_cost", lambda pair, prices: chair_usd.get(pair, 0.0))
+    monkeypatch.setattr(dash_feed.chair_activity, "agent_rows", lambda agents, prices, now: [])
+
+
+def test_the_feed_built_from_the_fixtures_inputs_equals_the_fixture(monkeypatch, tmp_path):
+    # The fixture's five-hour groups are not a subset of its weekly groups, so no one store read cuts into it; the
+    # per-window rows and done counts are handed in at `_window_node_inputs`, and the cut itself is tested below.
+    with open("tests/fixtures/dash_feed_v1.json") as f:
+        fixture = json.load(f)
+    with open("tests/fixtures/dash_activity_v1.json") as f:
+        activity = json.load(f)
+    split = fixture["spend_split"]
+    node_rows = {name: [row for group in split[name]["by_node"] for row in _node_rows_of(group)] for name in split}
+    chair_usd = {("session", "2026-10-16"): 3.1, ("agent", "2026-10-16"): 1.2, ("session", "2026-10-11"): 41.2, ("agent", "2026-10-11"): 18.4}
+    _stub_activity_readers(monkeypatch, chair_usd, 2.0, 96.9)
+    monkeypatch.setattr(dash_feed, "_window_node_inputs", lambda rows, windows: (node_rows, {"five_hour": 2, "weekly": 6}))
+    args, kwargs = _fixture_inputs()
+
+    built = dash_feed._activity(tmp_path, {}, "sess", _SPEND, _ACTIVITY_AT, {})
+    result = snapshot(*args, **kwargs, chair_agents=activity["chair_agents"], spend_split=built["spend_split"])
+
+    assert result == fixture
+
+
+def test_activity_cuts_the_store_rows_into_each_windows_by_node_and_cost_per_landed_task(monkeypatch, tmp_path):
+    _stub_activity_readers(monkeypatch, {}, 2.0, 5.0)
+    build = {"role": "build", "tier": "standard", "model_alias": "claude-sonnet-5-5", "output_tokens": 10}
+    review = {"role": "review", "tier": "premium", "model_alias": "claude-opus-5", "output_tokens": 20}
+    store_rows = {
+        "runs": [
+            {"run_id": "r-a", "ended_at": "2026-10-16T17:30:00Z"},
+            {"run_id": "r-b", "ended_at": "2026-10-12T12:00:00Z"},
+            {"run_id": "r-c", "ended_at": "2026-10-05T12:00:00Z"},
+        ],
+        "node_calls": [
+            {**build, "run_id": "r-a", "ts": "2026-10-16T17:10:00Z", "cost_usd": 1.0, "turns": 4, "input_total": 100},
+            {**build, "run_id": "r-a", "ts": "2026-10-16T17:20:00Z", "cost_usd": 0.5, "turns": 2, "input_total": 10},
+            {**review, "run_id": "r-b", "ts": "2026-10-12T11:00:00Z", "cost_usd": 3.0, "turns": 1, "input_total": 200},
+            {**build, "run_id": "r-c", "ts": "2026-10-05T11:00:00Z", "cost_usd": 9.0, "turns": 9, "input_total": 9},
+        ],
+        "task_records": [
+            {"run_id": "r-a", "task_id": "a", "record_json": '{"landed": {"at": "2026-10-16T17:25:00Z", "pr": 1}}'},
+            {"run_id": "r-b", "task_id": "b", "record_json": '{"landed": {"at": "2026-10-12T11:30:00Z", "pr": 2}}'},
+            {"run_id": "r-c", "task_id": "c", "record_json": '{"landed": {"at": "2026-10-05T11:30:00Z", "pr": 3}}'},
+        ],
+    }
+
+    split = dash_feed._activity(tmp_path, {}, "sess", _SPEND, _ACTIVITY_AT, store_rows)["spend_split"]
+
+    built_group = {"role": "build", "tier": "standard", "model": "claude-sonnet-5-5", "calls": 2, "turns": 6, "tokens": 130, "cost_usd": 1.5}
+    review_group = {"role": "review", "tier": "premium", "model": "claude-opus-5", "calls": 1, "turns": 1, "tokens": 220, "cost_usd": 3.0}
+    assert split["five_hour"]["by_node"] == [built_group]
+    assert split["five_hour"]["cost_per_landed_task"] == 2.0
+    assert split["weekly"]["by_node"] == [review_group, built_group]
+    assert split["weekly"]["cost_per_landed_task"] == 2.5
+
+
+def test_history_rows_keep_the_runs_the_history_reads_and_drop_the_rest_of_the_week():
+    # 2026-09-29T21:00Z is 17:00 EDT; local midnight is 04:00Z. The reader returns runs newest first.
+    at = datetime(2026, 9, 29, 21, tzinfo=UTC)
+    runs = [{"run_id": "today", "ended_at": "2026-09-29T15:00:00Z"}] + [
+        {"run_id": f"old-{i}", "ended_at": f"2026-09-28T{23 - i // 2:02d}:00:00Z"} for i in range(31)
+    ]
+    rows = {
+        "runs": runs,
+        "task_records": [{"run_id": r["run_id"]} for r in runs],
+        "node_calls": [{"run_id": r["run_id"]} for r in runs],
+    }
+
+    cut = dash_feed._history_rows(rows, at)
+
+    assert [r["run_id"] for r in cut["runs"]] == ["today", *[f"old-{i}" for i in range(29)]]
+    assert [r["run_id"] for r in cut["task_records"]] == [r["run_id"] for r in cut["runs"]]
+    assert [r["run_id"] for r in cut["node_calls"]] == [r["run_id"] for r in cut["runs"]]
+    assert dash_feed._history_rows({}, at) == {}
+
+
+def test_window_node_inputs_cut_calls_and_landed_tasks_at_each_window_start():
+    windows = {"five_hour": {"start": "2026-10-16T17:00:00+00:00"}, "weekly": {"start": "2026-10-11T08:00:00+00:00"}}
+    rows = {
+        "runs": [{"run_id": "r-2", "ended_at": "2026-10-16T17:30:00Z"}],
+        "node_calls": [
+            {"run_id": "r-1", "ts": "2026-10-16T16:59:00Z", "role": "build"},
+            {"run_id": "r-1", "ts": "2026-10-16T17:00:00Z", "role": "review"},
+            {"run_id": "r-1", "ts": "2026-10-10T00:00:00Z", "role": "plan"},
+            {"run_id": "r-1", "ts": None, "role": "plan"},
+        ],
+        "task_records": [
+            {"run_id": "r-1", "task_id": "a", "record_json": '{"landed": {"at": "2026-10-12T00:00:00Z", "pr": 3}}'},
+            {"run_id": "r-2", "task_id": "b", "record_json": '{"landed": true}'},
+            {"run_id": "r-2", "task_id": "c", "record_json": '{"attempts": []}'},
+            {"run_id": "r-3", "task_id": "d", "record_json": '{"landed": true}'},
+        ],
+    }
+
+    node_rows, done = dash_feed._window_node_inputs(rows, windows)
+
+    assert [row["role"] for row in node_rows["five_hour"]] == ["review"]
+    assert [row["role"] for row in node_rows["weekly"]] == ["build", "review"]
+    assert done == {"five_hour": 1, "weekly": 2}
+
+
+def test_a_store_reader_returning_no_rows_leaves_by_node_empty_and_cost_per_landed_task_zero(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        dash_feed, "read_history_rows", lambda store, since: {"runs": [], "task_records": [], "node_calls": []},
+    )
+
+    feed = _built_feed(monkeypatch, tmp_path)
+
+    assert set(feed["spend_split"]) == {"five_hour", "weekly"}
+    for window in feed["spend_split"].values():
+        assert window["by_node"] == []
+        assert window["cost_per_landed_task"] == 0.0
 
 
 def _meter(five_pct: float, seven_pct: float, observed_at: datetime) -> usage_meter.Meter:
@@ -704,7 +852,8 @@ def test_the_feed_reads_history_since_eastern_midnight_and_builds_it_from_the_ro
 
     feed = _built_feed(monkeypatch, tmp_path)
 
-    assert seen == ["2026-09-29T04:00:00+00:00"]
+    # One read, from the weekly window's start (seven days before `at`, as the spend section here has no reset time).
+    assert seen == ["2026-09-22T21:00:00+00:00"]
     assert [(r["run"], r["outcome"], r.get("cause")) for r in feed["history"]] == [
         ("r-1", "landed", None), ("r-2", "quarantined", "budget"),
     ]
