@@ -211,6 +211,13 @@ class EmptyDecomposeFacts(TypedDict):
     refusal: NotRequired[str]  # the refusal line from that run's decompose log; absent means none was found
 
 
+class TodoInitiative(TypedDict):
+    """A todo initiative and the state of each of its task rows; an initiative with no task rows has an empty list."""
+
+    id: str
+    task_states: list[str]
+
+
 class PidProbeFact(TypedDict):
     """One remote run's pid probe against a host with a fresh beat."""
 
@@ -456,6 +463,8 @@ class Facts(TypedDict):
     phase_tasks: NotRequired[list[PhaseTasks]]  # per phase with an approved or a quarantined task, every task's state; absent means none
     # `<run>:<phase>` of each approved task's run and phase that has a phase record. Absent means unknown: plan land_phase.
     phase_records: NotRequired[list[str]]
+    # Each initiative row in state todo with its task rows' states, in row order; absent means none. Read-only: nothing acts on it yet.
+    todo_initiatives: NotRequired[list[TodoInitiative]]
 
 
 ActionKind = Literal[

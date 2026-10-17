@@ -58,6 +58,7 @@ from agent_tools.chair_types import (
     RunningInitiative,
     RunRecord,
     StrandedPhase,
+    TodoInitiative,
 )
 from agent_tools.checkout_env import CHECKOUT_ENV_KEY
 
@@ -107,6 +108,8 @@ class FactsDeps:
         means every initiative counts as non-empty, so none is reported as empty-decompose.
     initiative_states: initiative id to its store state. Optional, and absent means no state is known, so
         none is left out of empty-decompose as done or dropped.
+    work_rows: every row of the store's work table with its `kind`, as `run_store.read_queue` returns them. Shaped
+        by `todo_initiative_facts` into the `todo_initiatives` fact. Optional, and absent means no initiative counts.
     newest_run_host: initiative id to its newest run's host, "" meaning the local machine
         (`run_store.newest_run_hosts`). Optional, and absent means no initiative counts.
     run_hosts: run id to the host name that ran it, "" meaning the local machine. Defaults to a callable
@@ -206,6 +209,7 @@ class FactsDeps:
     decomposed_intake: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest decompose run id, for a decomposed intake; absent means {}
     item_counts: Callable[[], Mapping[str, int]] | None = None  # initiative to its stored task-item count; absent means every initiative counts as non-empty
     initiative_states: Callable[[], Mapping[str, str]] | None = None  # initiative to its store state; absent means {}, so none is skipped as done or dropped
+    work_rows: Callable[[], Sequence[Row]] | None = None  # every store work row with its `kind` (run_store.read_queue); absent means no todo initiatives
     newest_run_host: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest run's host, "" meaning local; absent means {}
     run_hosts: Callable[[], Mapping[str, str]] = lambda: {}  # run id to the host that ran it, "" meaning local; absent means {}
     schema_deaths: Callable[[], Mapping[str, list[str]]] = lambda: {}  # initiative to its newest two run ids when both died on the schema refusal; absent means {}
@@ -791,6 +795,16 @@ def approved_facts(rows: Sequence[Row]) -> list[ApprovedTask]:
     ]
 
 
+def todo_initiative_facts(rows: Sequence[Row]) -> list[TodoInitiative]:
+    """One entry per todo initiative row, in row order. A task row is any row of that initiative whose kind is neither initiative nor intake."""
+    tasks = [r for r in rows if r.get("kind") not in ("initiative", "intake")]
+    return [
+        {"id": r["initiative"], "task_states": [str(t["state"]) for t in tasks if t["initiative"] == r["initiative"]]}
+        for r in rows
+        if r.get("kind") == "initiative" and r.get("state") == "todo"
+    ]
+
+
 def phase_branch_facts(rows: Sequence[Row]) -> list[PhaseBranch]:
     """One PhaseBranch per row, in row order; ahead and behind are counts against main."""
     return [
@@ -1015,6 +1029,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
             dict(deps.item_counts()) if deps.item_counts is not None else {},
             dict(deps.initiative_states()) if deps.initiative_states is not None else {},
         ),
+        "todo_initiatives": todo_initiative_facts(list(deps.work_rows())) if deps.work_rows is not None else [],
         "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs) if deps.decompose_runs is not None else {},
         "decompose_stalled_reported": decompose_stalled_keys(action_rows),
         "env_stale_reported": stale_checkout_keys(action_rows),

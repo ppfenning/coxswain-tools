@@ -8791,6 +8791,10 @@ def _chair_run_deps(
     def stranded_inputs() -> tuple[list[dict], list[dict]]:
         return once("stranded", lambda: _chair_stranded_inputs(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
 
+    def work_rows() -> list[dict]:
+        # `store_rows` (run_store.work_items) carries no `kind` column; the queue read does. Store mode only, once per tick.
+        return once("work_rows", lambda: run_store.read_queue(runs_dir) if mode == "store" else [])  # type: ignore[return-value]
+
     def ticket_items() -> list[dict]:
         return once("tickets", lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
 
@@ -9040,6 +9044,7 @@ def _chair_run_deps(
         decomposed_intake=decomposed_intake,
         item_counts=item_counts,
         initiative_states=initiative_states,
+        work_rows=work_rows,
         repos=lambda: _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home),
         actions=actions,
         land_watches=lambda: chair_revert_watch.pending_watches(actions),

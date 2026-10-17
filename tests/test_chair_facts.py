@@ -24,6 +24,7 @@ from agent_tools.chair_facts import (
     repo_dir_name,
     resolve_idle_stall_minutes,
     stale_checkout_keys,
+    todo_initiative_facts,
     waiting_reported_from_actions,
     windowed_actions,
 )
@@ -95,6 +96,49 @@ def _deps(
         host="h",
         idle_stall=lambda n: IDLE_STALL,
     )
+
+
+def _work_row(kind: str, initiative: str, task_id: str, state: str) -> dict:
+    return {"kind": kind, "initiative": initiative, "task_id": task_id, "phase": "p1", "state": state}
+
+
+def test_a_todo_initiative_lists_its_task_states_in_row_order():
+    rows = [
+        _work_row("initiative", "i", "i", "todo"),
+        _work_row("task", "i", "a", "done"),
+        _work_row("task", "i", "b", "approved"),
+        _work_row("task", "i", "c", "todo"),
+    ]
+    assert todo_initiative_facts(rows) == [{"id": "i", "task_states": ["done", "approved", "todo"]}]
+
+
+def test_intake_rows_and_other_initiatives_tasks_are_left_out_of_task_states():
+    rows = [
+        _work_row("intake", "i", "n", "queued"),
+        _work_row("initiative", "i", "i", "todo"),
+        _work_row("task", "i", "a", "done"),
+        _work_row("task", "j", "x", "ready"),
+    ]
+    assert todo_initiative_facts(rows) == [{"id": "i", "task_states": ["done"]}]
+
+
+def test_a_todo_initiative_with_no_task_rows_has_an_empty_task_states_list():
+    assert todo_initiative_facts([_work_row("initiative", "i", "i", "todo")]) == [{"id": "i", "task_states": []}]
+
+
+def test_an_initiative_that_is_not_todo_is_absent():
+    rows = [_work_row("initiative", "i", "i", "done"), _work_row("task", "i", "a", "done")]
+    assert todo_initiative_facts(rows) == []
+
+
+def test_a_work_rows_callables_rows_appear_under_todo_initiatives():
+    rows = [_work_row("initiative", "i", "i", "todo"), _work_row("task", "i", "a", "ready"), _work_row("task", "i", "b", "todo")]
+    deps = replace(_deps(), work_rows=lambda: rows)
+    assert gather_facts(deps, NOW)["todo_initiatives"] == [{"id": "i", "task_states": ["ready", "todo"]}]
+
+
+def test_an_absent_work_rows_callable_gives_an_empty_todo_initiatives_list():
+    assert gather_facts(_deps(), NOW)["todo_initiatives"] == []
 
 
 def test_a_remote_unfetched_callables_mapping_appears_under_remote_unfetched():
