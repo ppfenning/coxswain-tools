@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from agent_tools.chair_read_approved import (
@@ -102,3 +103,54 @@ def test_a_newer_remote_run_is_unsettled_until_it_is_fetched(tmp_path: Path) -> 
 def test_no_marked_record_reads_no_runs(tmp_path: Path) -> None:
     (tmp_path / "init-2.remote.json").write_text("{}", encoding="utf-8")
     assert read_unsettled_runs(tmp_path, [{"run": "init-1", "task": "a", "cause": "harness"}]) == frozenset()
+
+
+def _work_store(tmp_path: Path) -> None:
+    init = tmp_path / "work" / "init"
+    (init / "build").mkdir(parents=True)
+    (init / "initiative.md").write_text("---\nid: init\nrepo: /r/x\n---\nbody\n", encoding="utf-8")
+    (init / "build" / "a.md").write_text("---\nid: a\nstate: approved\n---\nbody\n", encoding="utf-8")
+
+
+def _store_row(state: str) -> dict:
+    return {"initiative": "init", "task_id": "a", "state": state}
+
+
+def test_a_task_the_store_holds_done_is_not_returned(tmp_path: Path) -> None:
+    _work_store(tmp_path)
+    assert read_approved(tmp_path, mode="store", store_rows=[_store_row("done")]) == []
+
+
+def test_a_task_the_store_holds_dropped_is_not_returned(tmp_path: Path) -> None:
+    _work_store(tmp_path)
+    assert read_approved(tmp_path, mode="store", store_rows=[_store_row("dropped")]) == []
+
+
+def test_a_store_done_row_wins_in_files_mode(tmp_path: Path) -> None:
+    _work_store(tmp_path)
+    assert read_approved(tmp_path, mode="files", store_rows=[_store_row("done")]) == []
+
+
+def _landed_record(tmp_path: Path, landed: bool) -> None:
+    record = tmp_path / "runs" / "init-1" / "tasks" / "build"
+    record.mkdir(parents=True)
+    (record / "a.json").write_text(json.dumps({"landed": landed}), encoding="utf-8")
+
+
+def test_a_task_landed_after_the_store_snapshot_is_not_returned(tmp_path: Path) -> None:
+    _work_store(tmp_path)
+    _landed_record(tmp_path, True)
+    assert read_approved(tmp_path, mode="store", store_rows=[_store_row("approved")]) == []
+
+
+def test_a_task_whose_record_is_not_landed_is_still_returned(tmp_path: Path) -> None:
+    _work_store(tmp_path)
+    _landed_record(tmp_path, False)
+    assert [r["id"] for r in read_approved(tmp_path, mode="store", store_rows=[_store_row("approved")])] == ["a"]
+
+
+def test_a_task_approved_in_file_and_store_is_still_returned(tmp_path: Path) -> None:
+    _work_store(tmp_path)
+    assert read_approved(tmp_path, mode="store", store_rows=[_store_row("approved")]) == [
+        {"id": "a", "initiative": "init", "repo": "/r/x", "phase": "build", "phase_done": True, "needs": [], "run": "", "needs_fetch": False}
+    ]

@@ -14,12 +14,12 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal, NotRequired, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from agent_tools import (
     chair,
@@ -60,6 +60,7 @@ __all__ = [
     "LandSink",
     "Refusal",
     "Result",
+    "already_landed",
     "argv_for",
     "branch_pattern",
     "decompose_id",
@@ -71,6 +72,7 @@ __all__ = [
     "landed",
     "lane_writer",
     "perform",
+    "phase_task_states",
     "smoke_targets",
     "tail",
 ]
@@ -95,6 +97,7 @@ class Result(TypedDict):
     # or a clear_branches carry's conflicted-merge needs_chair, recorded alongside its own done result
     commit: NotRequired[str]  # a landed land's origin/main commit, from land_commit; set only when landed() was True
     landed_commits: NotRequired[list[partial_land.LandedCommit]]  # a partial_land's every landed task commit, any status
+    already_landed: NotRequired[bool]  # a land_phase whose phase branch is gone with every task done; never escalated
 
 
 class LandSink(Protocol):
@@ -164,6 +167,7 @@ class Deps:
     resolve_land: Callable[[str, str, str], None] | None = None  # (initiative, phase, outcome): the store's resolve write for a land
     rerun_main: Callable[[str, str], tuple[str, str]] | None = None  # a rerun_main's (repo, commit) -> chair_revert_ports.rerun_infra's (state, line); None refuses it
     rev_parse: Callable[[str, str], str | None] = rev_parse  # (repo, ref) -> the ref's tip, None when it does not resolve; the only door to a land_phase's head
+    phase_states: Callable[[str, str], list[str]] = lambda initiative, phase: []  # (initiative, phase) -> the store state of each of its tasks; [] when unknown
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -564,10 +568,29 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Resu
         return _result(action, "busy", output)
     if lacks_phase_record(code, output) and action.get("task_runs"):
         return _land_by_task(action, output, deps, blocked)
+    gone = _already_landed_result(action, deps, output)
+    if gone is not None:
+        return gone
     refusal = land_refusal(action, code, output)
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
     return _land_result(action, repo, code, output)
+
+
+def _already_landed_result(action: Action, deps: Deps, output: str) -> Result | None:
+    """Edge. A recorded result when the land stopped at squash_phase on a missing phase branch and the store has every
+    task of the phase done; else None. The store is read only for a squash_phase stop.
+
+    The stop's detail is git's stderr and may run past its first line ("Preparing worktree" before the fatal), so
+    the check reads from the stop line to the end of the output."""
+    stop = land_stop(output)
+    if stop is None or stop[0] != "squash_phase":
+        return None
+    phase = action.get("phase", "")
+    whole_detail = output[output.rindex(f"land: stopped at {stop[0]}:") :]
+    if not already_landed(stop[0], whole_detail, deps.phase_states(action.get("initiative", ""), phase)):
+        return None
+    return {**_result(action, "recorded", f"land phase {phase} already landed: {stop[1]}"), "already_landed": True}
 
 
 def _land_by_task(action: Action, refused: str, deps: Deps, blocked: dict[str, Blocker]) -> Result:
@@ -1171,7 +1194,7 @@ def perform(
             _note_uncounted(land, finished, blocked, blocked_initiatives)
         deps.record(_recorded(finished))
         results.append(finished)
-        if finished["status"] not in ("landed", "fenced", "busy"):
+        if finished["status"] not in ("landed", "fenced", "busy") and not finished.get("already_landed"):
             escalated = _escalate(land, finished)
             deps.record(_recorded(escalated))
             results.append(escalated)
@@ -1235,6 +1258,21 @@ def land_stop(output: str) -> tuple[str, str] | None:
     """The `(step, detail)` of the last `land: stopped at <step>: <detail>` line in a land's output, else None."""
     stops = _LAND_STOP_RE.findall(output)
     return (stops[-1][0], stops[-1][1].strip()) if stops else None
+
+
+_MISSING_BRANCH = "invalid reference"  # git's fatal for a ref that does not exist, here the deleted epic/<initiative>/<phase>
+
+
+def already_landed(step: str, detail: str, task_states: Sequence[str]) -> bool:
+    """True when a land stopped at squash_phase on a missing phase branch and every task of the phase is done.
+
+    An empty `task_states` is unknown, not done, so it is never already landed."""
+    return step == "squash_phase" and _MISSING_BRANCH in detail and bool(task_states) and all(t == "done" for t in task_states)
+
+
+def phase_task_states(rows: Sequence[Mapping[str, Any]], phase: str) -> list[str]:
+    """The `state` of each work_items row in `phase`; rows are one initiative's, as `run_store.work_items` returns them."""
+    return [str(row.get("state")) for row in rows if row.get("phase") == phase]
 
 
 def _stopped_land(land: Action, result: Result) -> Result | None:
@@ -1687,4 +1725,5 @@ def edge_deps(
         home=home,
         carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat(), home),
         rebase_port=lambda action: _RebaseEdge(action.get("repo") or repo_for(action)),
+        phase_states=lambda initiative, phase: phase_task_states(run_store.work_items(runs_dir, initiative), phase),
     )
