@@ -3,8 +3,6 @@ from datetime import UTC, datetime
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_report import (
     Deps,
-    _five_hour,
-    _weekly,
     echo_line,
     format_status,
     housekeeping_fragment,
@@ -110,33 +108,31 @@ def test_hard_stop_line_says_hard_stop():
     assert "hard stop" not in format_status(_facts(), [], [], NOW)
 
 
-def test_a_window_start_day_appears_since_it_in_the_weekly_fragment():
-    line = format_status(_facts(window_start_day="Sun 04:00"), [], [], NOW)
-    assert "weekly 61%/90% (meter) since Sun 04:00" in line
+def test_limit_fragments_name_their_source_and_the_since_day():
+    meter = format_status(_facts(), [], [], NOW)
+    est = format_status(_facts(five_hour_source="est", weekly_source="est"), [], [], NOW)
+    store = format_status(_facts(five_hour_source="meter, store", weekly_source="meter, store"), [], [], NOW)
+    since = format_status(_facts(window_start_day="Sun 04:00"), [], [], NOW)
+    assert "5h 42% (meter)" in meter and "weekly 61%/90% (meter)" in meter
+    assert "5h 42% (est)" in est and "weekly 61%/90% (est)" in est
+    assert "5h 42% (meter, store)" in store and "weekly 61%/90% (meter, store)" in store
+    assert "weekly 61%/90% (meter) since Sun 04:00" in since
+    assert "since" not in meter
 
 
-def test_five_hour_names_a_meter_source():
-    assert _five_hour({"five_hour_fraction": 0.42, "window_source": "meter"}) == "5h 42% (meter)"
+def test_pace_target_shows_only_when_judged():
+    def with_pace(facts, **pace):
+        return {**facts, "limits": {**facts["limits"], **pace}}
 
-
-def test_five_hour_names_an_est_source():
-    assert _five_hour({"five_hour_fraction": 0.42, "window_source": "est"}) == "5h 42% (est)"
-
-
-def test_weekly_names_a_meter_source():
-    limits = {"weekly_fraction": 0.61, "hard_stop_fraction": 0.9, "weekly_source": "meter", "window_start_day": None}
-    assert _weekly(limits) == "weekly 61%/90% (meter)"
-
-
-def test_weekly_names_an_est_source():
-    limits = {"weekly_fraction": 0.61, "hard_stop_fraction": 0.9, "weekly_source": "est", "window_start_day": None}
-    assert _weekly(limits) == "weekly 61%/90% (est)"
-
-
-def test_store_fed_sources_render_meter_store_in_both_limit_fragments():
-    line = format_status(_facts(five=0.12, weekly=0.13, five_hour_source="meter, store", weekly_source="meter, store"),
-                         [], [], NOW)
-    assert "5h 12% (meter, store) weekly 13%/90% (meter, store)" in line
+    base = _facts(window_start_day="Sun 04:00")
+    judged = format_status(with_pace(base, weekly_target_fraction=0.45, weekly_pace="reduced"), [], [], NOW)
+    plain = format_status(base, [], [], NOW)
+    assert "target 45% reduced" in judged
+    assert "target" not in plain
+    not_judged = format_status(with_pace(base, weekly_target_fraction=0.45, weekly_pace="not_judged"), [], [], NOW)
+    no_target = format_status(with_pace(base, weekly_target_fraction=None, weekly_pace="not_judged"), [], [], NOW)
+    assert not_judged == plain
+    assert no_target == plain
 
 
 def test_dry_run_line_says_dry_run():
