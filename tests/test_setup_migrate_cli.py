@@ -49,24 +49,37 @@ def types_ns(**fields):
     return argparse.Namespace(**fields)
 
 
-def run(dry_run=False):
-    return cli._setup_migrate(argparse.Namespace(home=None, dry_run=dry_run, apply=False))
+def run(dry_run=False, apply=False):
+    return cli._setup_migrate(argparse.Namespace(home=None, dry_run=dry_run, apply=apply))
 
 
 def tree(root: Path):
     return sorted((str(p), os.readlink(p) if p.is_symlink() else p.is_dir()) for p in root.rglob("*"))
 
 
-def test_dry_run_changes_nothing_and_prints_the_plan(layout, capsys):
+CLOSING = "no changes made; run with --apply to migrate"
+
+
+def test_bare_command_changes_nothing_and_prints_the_closing_line(layout, capsys):
     before = tree(layout.user)
-    assert run(dry_run=True) == 0
+    assert run() == 0
     out = capsys.readouterr().out
     assert "1. move" in out and "rewrite_profile_key" in out
+    assert out.rstrip().endswith(CLOSING)
     assert tree(layout.user) == before and not layout.installs.exists()
 
 
-def test_real_run_moves_the_layout_and_leaves_nothing_dangling(layout, capsys):
+def test_dry_run_behaves_like_the_bare_command(layout, capsys):
+    before = tree(layout.user)
     assert run() == 0
+    bare = capsys.readouterr().out
+    assert run(dry_run=True) == 0
+    assert capsys.readouterr().out == bare
+    assert tree(layout.user) == before and not layout.installs.exists()
+
+
+def test_apply_moves_the_layout_and_leaves_nothing_dangling(layout, capsys):
+    assert run(apply=True) == 0
     out = capsys.readouterr().out
     assert out.rstrip().endswith("verify with: cox setup doctor")
     for name in NAMES:
@@ -81,18 +94,18 @@ def test_real_run_moves_the_layout_and_leaves_nothing_dangling(layout, capsys):
     assert (layout.user / ".config" / "agent-tools" / "home").read_text().strip() == str(layout.installs.parent)
 
 
-def test_second_run_has_nothing_to_do(layout, capsys):
-    assert run() == 0
+def test_second_apply_has_nothing_to_do(layout, capsys):
+    assert run(apply=True) == 0
     capsys.readouterr()
     after = tree(layout.user)
-    assert run() == 0
+    assert run(apply=True) == 0
     assert "nothing to do" in capsys.readouterr().out
     assert tree(layout.user) == after
 
 
 def test_conflicting_destination_stops_nonzero_and_keeps_the_source(layout, capsys):
     (layout.installs / "coxswain-graphs").mkdir(parents=True)
-    assert run() == 1
+    assert run(apply=True) == 1
     out = capsys.readouterr().out
     assert "FAILED step 1 refuse" in out and "coxswain-graphs" in out
     assert (layout.repos / "coxswain-graphs" / ".git").is_dir()
@@ -118,7 +131,7 @@ def test_each_host_is_reported_and_one_failure_does_not_hide_the_others(layout, 
         return (False, "connection refused") if step.host == "b" else (True, "migrated")
 
     monkeypatch.setattr(cli, "_migrate_run_host_step", fake)
-    assert run() == 1
+    assert run(apply=True) == 1
     out = capsys.readouterr().out
     assert "host a: remote_migrate: migrated" in out and "host c: remote_migrate: migrated" in out
     assert "host b: FAILED step 1 remote_migrate: connection refused" in out
@@ -131,13 +144,13 @@ def test_a_failed_local_step_runs_no_host_step(layout, monkeypatch):
     hosts = [ObservedHost("a", "ssh-a", "/w", {"coxswain-tools": "/old/coxswain-tools"}, "/w", "beat")]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
     monkeypatch.setattr(cli, "_migrate_run_host_step", lambda step, locs: pytest.fail("host step ran"))
-    assert run() == 1
+    assert run(apply=True) == 1
 
 
 def test_a_host_the_planner_cannot_judge_is_not_reported_as_migrated(layout, monkeypatch, capsys):
     hosts = [ObservedHost("d", "ssh-d", "", {}, "/w", "fallback")]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
-    assert run() == 0
+    assert run(apply=True) == 0
     out = capsys.readouterr().out
     assert "host d: print: d has no beat row, so its paths cannot be judged until it beats." in out
     assert "host d: ok" not in out
@@ -157,7 +170,7 @@ def test_remote_migrate_runs_the_planned_argv_and_reports_each_host(layout, monk
     hosts = [ObservedHost(n, f"ssh-{n}", "/w", {"coxswain-tools": "/old/coxswain-tools"}, "/w", "beat") for n in ("x", "y")]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
     monkeypatch.setattr(cli.subprocess, "run", fake)
-    assert run() == 1
+    assert run(apply=True) == 1
     out = capsys.readouterr().out
     assert seen[0] == ["ssh", "ssh-x", "cox", "setup", "migrate", "--apply"] and len(seen) == 2
     assert "host x: remote_migrate: ran ssh ssh-x cox setup migrate --apply" in out
@@ -172,7 +185,7 @@ def test_lane_host_workspace_is_repointed_through_the_real_runner(layout, monkey
     moved = {"coxswain-tools": "/new/installs/coxswain-tools"}
     hosts = [ObservedHost("h", "ssh-h", "/new/ws", moved, "/old/ws", "beat")]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
-    assert run() == 0
+    assert run(apply=True) == 0
     parsed = cli._profile_lane_hosts(layout.profile.read_text())
     assert [(h.name, h.workspace_dir) for h in parsed] == [("h", "/new/ws"), ("k", "/k/ws")]
 
@@ -206,23 +219,23 @@ def test_rerun_after_a_stop_resumes_from_the_remaining_steps(layout, capsys):
     good = layout.profile.read_text()
     old_roots = f"skills_roots: [{layout.repos}/coxswain-cartridges/skills]\n"
     layout.profile.write_text(good.replace(old_roots, f"skills_roots:\n  - {layout.repos}/coxswain-cartridges/skills\n"))
-    assert run() == 1
+    assert run(apply=True) == 1
     assert "FAILED step" in capsys.readouterr().out
     assert all((layout.installs / n).is_dir() for n in NAMES)
     layout.profile.write_text(good)
-    assert run() == 0
+    assert run(apply=True) == 0
     out = capsys.readouterr().out
     assert f"move {layout.repos}" not in out and "profile skills_roots" in out
     assert str(layout.repos) not in layout.profile.read_text()
 
 
 def test_rerun_rewrites_a_setting_left_pointing_at_the_old_path(layout, capsys):
-    assert run() == 0
+    assert run(apply=True) == 0
     text = layout.profile.read_text()
     new_provider = f"provider_profile: {layout.installs}/coxswain-cartridges/provider.yaml\n"
     layout.profile.write_text(text.replace(new_provider, f"provider_profile: {layout.repos}/coxswain-cartridges/provider.yaml\n"))
     capsys.readouterr()
-    assert run() == 0
+    assert run(apply=True) == 0
     assert "profile provider_profile" in capsys.readouterr().out
     assert layout.profile.read_text() == text
 

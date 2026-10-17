@@ -6,7 +6,7 @@ positional arguments:
   {doctor,install,migrate,store}
     doctor              check this machine's profile against what it needs
     install             clone components and write a profile for this machine
-    migrate             move an existing layout under the coxswain home
+    migrate             plan moving a layout under the home; --apply migrates
     store               choose files or a shared store for run records
 
 options:
