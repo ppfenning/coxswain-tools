@@ -55,6 +55,12 @@ def approved_rows(items: Sequence[Item]) -> list[ApprovedTask]:
     ]
 
 
+def with_store_closed(items: Sequence[Item], rows: list[dict]) -> list[Item]:
+    """Each item whose store row (the one `run_store.task_state` picks) says `done` or `dropped` reads that state, in any mode."""
+    closed = [(i, run_store.task_state(rows, i["initiative"], i["id"])) for i in items]
+    return [{**i, "state": s} if s in ("done", "dropped") else i for i, s in closed]
+
+
 def phase_task_rows(items: Sequence[Item]) -> list[PhaseTasks]:
     """One row per (initiative, phase) holding an approved or a quarantined item, listing every item of the phase as (id, state)."""
     keys = dict.fromkeys((i["initiative"], i["phase"]) for i in items if i["state"] in ("approved", "quarantined"))
@@ -217,10 +223,13 @@ def read_approved(
 ) -> list[ApprovedTask]:
     """Edge. Approved rows for the work store under `ws`; under mode "store" each state comes from the run store.
 
-    `files` and `store_rows` stand in for the work-file and store reads when a tick already holds them."""
+    `files` and `store_rows` stand in for the work-file and store reads when a tick already holds them. The tick
+    caches `store_rows` once per beat, so a task landed after that read still says approved there; a task whose
+    record says landed reads `done`, as in `read_phase_tasks`."""
     items = _load_items(ws, files)
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
-    return approved_rows(route.with_store_states(items, rows, mode))
+    merged = with_store_closed(route.with_store_states(items, list(rows), mode), list(rows))
+    return approved_rows(mark_landed(merged, read_landed_task_ids(ws / "runs")))
 
 
 def _is_landed(path: Path) -> bool:

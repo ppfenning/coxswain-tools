@@ -14,6 +14,7 @@ from agent_tools.chair_exec import (
     Deps,
     Refusal,
     Run,
+    already_landed,
     argv_for,
     decompose_id,
     delete_branches_with,
@@ -22,6 +23,7 @@ from agent_tools.chair_exec import (
     land_refusal,
     launch_verdict,
     perform,
+    phase_task_states,
     run_argv,
     run_lane_host,
     smoke_targets,
@@ -711,6 +713,102 @@ def test_a_squash_phase_stop_escalates_as_land_conflict_with_its_detail_once() -
         "land phase p1 stopped at squash_phase: CONFLICT (content) in src/a.py. Rebase the phase branch onto main, or re-run the phase."
     )
     assert raised[0]["reason"].count("src/a.py") == 1
+
+
+_GONE = "land: stopped at squash_phase: fatal: invalid reference: epic/alpha/p1\n"
+
+
+def _gone_land(output: str, states: list[str]) -> list:
+    action = {**_land_phase("p1", "r"), "initiative": "alpha"}
+    deps = replace(_deps([], output, code=1), phase_states=lambda initiative, phase: states)
+    return perform([action], deps, lambda: 1, False)
+
+
+def test_already_landed_needs_a_squash_phase_missing_branch_and_every_task_done() -> None:
+    gone = "fatal: invalid reference: epic/alpha/p1"
+    assert already_landed("squash_phase", gone, ["done", "done"])
+    assert not already_landed("squash_phase", gone, ["done", "approved"])
+    assert not already_landed("squash_phase", gone, [])
+    assert not already_landed("squash_phase", "CONFLICT (content) in src/a.py", ["done"])
+    assert not already_landed("wait_checks", gone, ["done"])
+
+
+def test_a_missing_phase_branch_with_every_task_done_is_recorded_as_already_landed() -> None:
+    results = _gone_land(_GONE, ["done", "done"])
+    assert [r["status"] for r in results] == ["recorded"]
+    assert results[0]["reason"] == "land phase p1 already landed: fatal: invalid reference: epic/alpha/p1"
+    assert "needs_chair" not in results[0]
+    assert not [r for r in results if r["action"]["kind"] == "needs_chair" or r["action"].get("cause") == "land_conflict"]
+
+
+def test_a_missing_phase_branch_with_a_task_not_done_still_escalates_as_land_conflict() -> None:
+    results = _gone_land(_GONE, ["done", "approved"])
+    raised = [r for r in results if r["action"]["kind"] == "needs_chair"]
+    assert [r["action"]["cause"] for r in raised] == ["land_conflict"]
+
+
+def test_another_squash_phase_failure_with_every_task_done_still_escalates_as_land_conflict() -> None:
+    results = _gone_land("land: stopped at squash_phase: CONFLICT (content) in src/a.py\n", ["done", "done"])
+    raised = [r for r in results if r["action"]["kind"] == "needs_chair"]
+    assert [r["action"]["cause"] for r in raised] == ["land_conflict"]
+
+
+def test_a_missing_branch_fatal_on_a_later_line_of_git_s_stderr_is_still_already_landed() -> None:
+    output = "land: stopped at squash_phase: Preparing worktree (new branch 'pr')\nfatal: invalid reference: epic/alpha/p1\n"
+    assert [r["status"] for r in _gone_land(output, ["done"])] == ["recorded"]
+
+
+def test_phase_task_states_keeps_only_the_rows_of_the_phase() -> None:
+    rows = [{"phase": "p1", "state": "done"}, {"phase": "p2", "state": "approved"}, {"phase": "p1", "state": "approved"}]
+    assert phase_task_states(rows, "p1") == ["done", "approved"]
+    assert phase_task_states(rows, "p3") == []
+
+
+class _Sink:
+    """A LandSink that runs the land at submit and hands its result back at the next collect, as the chair's sink does."""
+
+    def __init__(self, finished: list | None = None) -> None:
+        self.finished: list = finished or []
+
+    def pending(self, repo: str) -> bool:
+        return False
+
+    def landing(self) -> list:
+        return []
+
+    def submit(self, action: dict, work) -> dict:
+        self.finished.append(work())
+        return {"action": action, "status": "in_progress", "reason": ""}
+
+    def collect(self) -> list:
+        done, self.finished = self.finished, []
+        return done
+
+
+def _through_sink(output: str, states: list[str]) -> list:
+    action = {**_land_phase("p1", "r"), "initiative": "alpha"}
+    sink = _Sink()
+    deps = replace(_deps([], output, code=1), phase_states=lambda initiative, phase: states, lands=sink)
+    perform([action], deps, lambda: 1, False)
+    return perform([], deps, lambda: 1, False)
+
+
+def test_an_already_landed_phase_collected_from_the_land_sink_raises_nothing() -> None:
+    results = _through_sink(_GONE, ["done", "done"])
+    assert [r["status"] for r in results] == ["recorded"]
+    assert not [r for r in results if r["action"]["kind"] == "needs_chair"]
+
+
+def test_a_missing_branch_with_a_task_not_done_collected_from_the_land_sink_still_escalates() -> None:
+    results = _through_sink(_GONE, ["done", "approved"])
+    assert [r["action"].get("cause") for r in results if r["action"]["kind"] == "needs_chair"] == ["land_conflict"]
+
+
+def test_another_recorded_land_collected_from_the_land_sink_still_escalates() -> None:
+    action = {**_land_phase("p1", "r"), "initiative": "alpha"}
+    sink = _Sink([{"action": action, "status": "recorded", "reason": "no approved task of the phase has a known run yet"}])
+    results = perform([], replace(_deps([], LANDED), lands=sink), lambda: 1, False)
+    assert [r["status"] for r in results] == ["recorded", "escalated"]
 
 
 def test_a_wait_checks_stop_escalates_as_stranded_with_its_step_and_detail() -> None:
