@@ -5776,6 +5776,47 @@ def _doctor_store_rows(profile: dict | None) -> list[dict]:
     return doctor.store_rows(mode, store_url.profile_store_url(data, runs_dir), traces, _probe_store(data, {}) if probed else [])
 
 
+_DOCTOR_HOME_CHECKS = (
+    "home root", "marketplace registered", "marketplace location", "old layout", "home paths", "home recorded",
+    "cartridge links",
+)
+
+
+def _doctor_legacy_path(profile: Mapping, locs) -> str | None:
+    """Edge. The old checkout folder when it is not the installs folder and holds a real coxswain-graphs directory."""
+    old = _migrate_old_root(profile, locs)
+    graphs = Path(old) / setup_migrate.GRAPHS if old else None
+    return old if old and old != locs.installs and graphs.is_dir() and not graphs.is_symlink() else None
+
+
+def _doctor_home_rows(profile: dict | None) -> list[dict]:
+    """Edge. The coxswain home rows; every one is skipped without a profile. All reads happen here, `doctor.home_rows` judges."""
+    if profile is None:
+        return [doctor._skip(check) for check in _DOCTOR_HOME_CHECKS]
+    locs = home_paths.resolve_here()
+    if isinstance(locs, home_paths.Refused):
+        return [{"check": "home root", "ok": False, "detail": locs.reason}]
+    listing = _marketplace_listing()
+    source = (listing or {}).get("coxswain-cartridges")
+    workspace = profile.get("workspace_dir")
+    in_project = bool(source and workspace and Path(source).parent == Path(workspace).expanduser().parent)
+    record = _read_text_or_none(Path(locs.record))
+    return doctor.home_rows(
+        locs,
+        listing,
+        Path(locs.home).is_dir(),
+        os.access(locs.home, os.W_OK),
+        _doctor_legacy_path(profile, locs),
+        in_project,
+        _migrate_cartridge_links(profile),
+        home_record=(record or "").strip() or None,
+        skills_roots=profile.get("skills_roots") or (),
+        provider_profile=profile.get("provider_profile") or "",
+        harness_dir=profile.get("harness_dir") or "",
+        user_home=str(Path.home()),
+    )
+
+
 def _setup_doctor(a: argparse.Namespace) -> int:
     if getattr(a, "host", None):
         return _setup_doctor_host(a, _run_ssh)
@@ -5787,7 +5828,7 @@ def _setup_doctor(a: argparse.Namespace) -> int:
         fn = (lambda *_: lines) if isinstance(lines, list) else None
         rows = [*rows, *doctor.freshness_rows(None, None, None, fn)]
     profile = _doctor_profile(facts["profile_text"])
-    rows = [*rows, *_doctor_store_rows(profile)]
+    rows = [*rows, *_doctor_home_rows(profile), *_doctor_store_rows(profile)]
     rc = doctor.exit_code(rows)
     # Informational: outside rows, so outside rc. Reuses the text the facts already read.
     parquet = _parquet_traces_line(profile)
