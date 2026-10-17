@@ -1,11 +1,12 @@
-usage: cox setup [-h] [--profile PROFILE] {doctor,install,store} ...
+usage: cox setup [-h] [--profile PROFILE] {doctor,install,migrate,store} ...
 
 Does this machine's profile actually work.
 
 positional arguments:
-  {doctor,install,store}
+  {doctor,install,migrate,store}
     doctor              check this machine's profile against what it needs
     install             clone components and write a profile for this machine
+    migrate             move an existing layout under the coxswain home
     store               choose files or a shared store for run records
 
 options:

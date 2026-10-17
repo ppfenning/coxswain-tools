@@ -1,0 +1,7 @@
+usage: cox setup migrate [-h] [--home HOME] [--dry-run] [--apply]
+
+options:
+  -h, --help   show this help message and exit
+  --home HOME  absolute path of the coxswain home to migrate to
+  --dry-run    print the plans; change nothing
+  --apply      accepted and ignored; migrating is the default
