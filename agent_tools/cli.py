@@ -186,6 +186,7 @@ runs_stop = _LazyModule("agent_tools.runs_stop")
 runs_stranded = _LazyModule("agent_tools.runs_stranded")
 runs_top = _LazyModule("agent_tools.runs_top")
 runs_top_screen = _LazyModule("agent_tools.runs_top_screen")
+runs_triage = _LazyModule("agent_tools.runs_triage")
 schema = _LazyModule("agent_tools.schema")
 settings_model = _LazyModule("agent_tools.settings_model")
 setup_install = _LazyModule("agent_tools.setup_install")
@@ -1111,6 +1112,12 @@ def _runs_stop(a: argparse.Namespace) -> int:
     else:
         print(f"refused {run_id}: {result['reason']}")
     return 0 if result["ok"] else 1
+
+
+def _runs_triage(a: argparse.Namespace) -> int:
+    code, out = runs_triage.run(a.task_id, a.json)
+    print(out)
+    return code
 
 
 def _runs_pause_resume_outcome(verbed: str, run_id: str, result, as_json: bool) -> int:
@@ -7250,6 +7257,11 @@ RUNS_COMMANDS = [
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
         "agent_tools.cli:_runs_move", False, (),
+    ),
+    commands.Command(
+        "triage", "runs", "print a quarantined task's facts; reads the store and git only, makes no model call",
+        (commands.Arg(("task_id",)), commands.Arg(("--json",), {"action": "store_true"})),
+        "agent_tools.cli:_runs_triage", False, (),
     ),
 ]
 
