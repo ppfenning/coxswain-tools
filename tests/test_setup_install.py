@@ -10,6 +10,7 @@ from agent_tools.setup_install import (
     install_plan,
     profile_text,
     render_plan,
+    venv_steps,
 )
 
 LOC = home.resolve({}, "/home/user", "linux")
@@ -65,6 +66,41 @@ def test_install_plan_orders_venv_steps_with_graphs_carrying_the_cartridges_dep(
     cartridge_tool_installs = [a for a in argvs if a[-1] == CARTRIDGES
                                 and a[:3] == ["uv", "tool", "install"]]
     assert len(cartridge_tool_installs) == 1
+
+
+def test_venv_steps_tools_without_clear():
+    assert venv_steps("coxswain-tools", INSTALLS, CARTRIDGES, False) == [
+        {"op": "run", "argv": ["uv", "venv", "-q"], "cwd": f"{INSTALLS}/coxswain-tools",
+         "why": "coxswain-tools has no virtualenv yet"},
+        {"op": "run", "argv": ["uv", "pip", "install", "-q", "-e", ".[dev]"],
+         "cwd": f"{INSTALLS}/coxswain-tools",
+         "why": "install coxswain-tools and its dev extras"},
+    ]
+
+
+def test_venv_steps_tools_with_clear():
+    assert venv_steps("coxswain-tools", INSTALLS, CARTRIDGES, True) == [
+        {"op": "run", "argv": ["uv", "venv", "--clear", "-q"], "cwd": f"{INSTALLS}/coxswain-tools",
+         "why": "recreate the coxswain-tools virtualenv"},
+        {"op": "run", "argv": ["uv", "pip", "install", "-q", "-e", ".[dev]"],
+         "cwd": f"{INSTALLS}/coxswain-tools",
+         "why": "install coxswain-tools and its dev extras"},
+    ]
+
+
+def test_venv_steps_graphs_installs_the_cartridges_checkout_editable():
+    assert venv_steps("coxswain-graphs", INSTALLS, CARTRIDGES, True) == [
+        {"op": "run", "argv": ["uv", "venv", "--clear", "-q"], "cwd": f"{INSTALLS}/coxswain-graphs",
+         "why": "recreate the coxswain-graphs virtualenv"},
+        {"op": "run", "argv": ["uv", "pip", "install", "-q", "-e", ".[dev]", "-e", CARTRIDGES],
+         "cwd": f"{INSTALLS}/coxswain-graphs",
+         "why": "install coxswain-graphs and its dev extras"},
+    ]
+
+
+def test_install_plan_venv_steps_are_the_venv_steps_output():
+    runs = [s for s in _plan() if s["op"] == "run"]
+    assert runs[2:4] == venv_steps("coxswain-graphs", INSTALLS, CARTRIDGES, False)
 
 
 def test_existing_venvs_skip_uv_venv_but_still_run_pip_install():

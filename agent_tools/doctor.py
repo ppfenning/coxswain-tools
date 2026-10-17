@@ -435,6 +435,29 @@ def _cartridge_links_row(locations: Locations, links: Mapping[str, str]) -> dict
     }
 
 
+_INSTALL_BIN_REPOS = {
+    "graphs venv": "coxswain-graphs",
+    "tools venv": "coxswain-tools",
+    "tools receipt": "coxswain-tools",
+    "cartridges receipt": _MARKETPLACE,
+}
+
+
+def install_bins_row(locations: Locations, sources: Mapping[str, str | None]) -> dict:
+    """Each source must equal its own repo's checkout under `locations.installs`; None or an absent key is missing."""
+    expected = {name: posixpath.join(locations.installs, repo) for name, repo in _INSTALL_BIN_REPOS.items()}
+    missing = [name for name in expected if sources.get(name) is None]
+    stale = [
+        f"{name} -> {sources[name]}; expected {path}"
+        for name, path in expected.items()
+        if sources.get(name) not in (None, path)
+    ]
+    problems = [*([f"missing {', '.join(missing)}"] if missing else []), *stale]
+    if problems:
+        return {"check": "install bins", "ok": False, "detail": "; ".join(problems)}
+    return {"check": "install bins", "ok": True, "detail": "all 4 sources reach their checkout under the home"}
+
+
 def home_rows(
     locations: Locations,
     listing: Mapping[str, str] | None,
@@ -443,9 +466,11 @@ def home_rows(
     legacy_path: str | None,
     in_project: bool,
     cartridge_links: Mapping[str, str] | None = None,
+    install_bins: Mapping[str, str | None] | None = None,
 ) -> list[dict]:
-    """Rows for the coxswain home: home root, marketplace registered, marketplace location, old layout, and
-    cartridge links when `cartridge_links` (link path to lexical target) was gathered.
+    """Rows for the coxswain home: home root, marketplace registered, marketplace location, old layout,
+    cartridge links when `cartridge_links` (link path to lexical target) was gathered, and
+    install bins when `install_bins` (source name to recorded path) was gathered.
     The edge gathers the listing, the root's state, the legacy path and whether the listed source sits in a project folder."""
     return [
         _home_root_row(locations, root_exists, root_writable),
@@ -453,6 +478,7 @@ def home_rows(
         _marketplace_location_row(locations, listing, in_project),
         _legacy_layout_row(legacy_path),
         *([] if cartridge_links is None else [_cartridge_links_row(locations, cartridge_links)]),
+        *([] if install_bins is None else [install_bins_row(locations, install_bins)]),
     ]
 
 
