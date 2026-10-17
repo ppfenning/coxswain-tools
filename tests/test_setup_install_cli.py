@@ -5,7 +5,7 @@ import stat
 import pytest
 
 from agent_tools import route
-from agent_tools.cli import build_parser
+from agent_tools.cli import _marketplace_listing, _marketplace_paths, build_parser
 
 
 def _write_executable(path, body):
@@ -193,3 +193,44 @@ def test_a_settings_file_with_invalid_json_fails_gracefully(install_env, capsys)
     out = capsys.readouterr().out
     assert "not valid JSON" in out
     assert settings_path.read_text(encoding="utf-8") == "{not valid json"
+
+
+def test_marketplace_paths_maps_name_to_path_with_blank_default():
+    parsed = [{"name": "a", "path": "/p/a"}, {"name": "b"}, {"name": "c", "path": None}, "junk", {"path": "/x"}]
+    assert _marketplace_paths(parsed) == {"a": "/p/a", "b": "", "c": ""}
+    assert _marketplace_paths([]) == {}
+    assert _marketplace_paths({"name": "a"}) is None
+
+
+def _only_claude_on_path(tmp_path, monkeypatch, body):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    if body is not None:
+        _write_executable(bin_dir / "claude", body)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+
+def test_marketplace_listing_maps_valid_json(tmp_path, monkeypatch):
+    payload = '[{"name": "alpha", "path": "/m/alpha"}, {"name": "beta"}]'
+    _only_claude_on_path(tmp_path, monkeypatch, f"#!/bin/sh\necho '{payload}'\n")
+    assert _marketplace_listing() == {"alpha": "/m/alpha", "beta": ""}
+
+
+def test_marketplace_listing_none_on_garbage(tmp_path, monkeypatch):
+    _only_claude_on_path(tmp_path, monkeypatch, "#!/bin/sh\necho not json\n")
+    assert _marketplace_listing() is None
+
+
+def test_marketplace_listing_none_on_empty_output(tmp_path, monkeypatch):
+    _only_claude_on_path(tmp_path, monkeypatch, "#!/bin/sh\nexit 0\n")
+    assert _marketplace_listing() is None
+
+
+def test_marketplace_listing_none_on_nonzero_exit(tmp_path, monkeypatch):
+    _only_claude_on_path(tmp_path, monkeypatch, '#!/bin/sh\necho \'[{"name": "a"}]\'\nexit 1\n')
+    assert _marketplace_listing() is None
+
+
+def test_marketplace_listing_none_when_claude_absent(tmp_path, monkeypatch):
+    _only_claude_on_path(tmp_path, monkeypatch, None)
+    assert _marketplace_listing() is None

@@ -40,6 +40,11 @@ def _plan(**overrides):
     return install_plan(**kwargs)
 
 
+def _writes(steps):
+    """Write steps other than the home record, which every `locations` plan carries."""
+    return [s for s in steps if s["op"] == "write" and s["path"] != LOC.record]
+
+
 def test_install_plan_orders_venv_steps_with_graphs_carrying_the_cartridges_dep():
     steps = _plan()
     runs = [s for s in steps if s["op"] == "run"]
@@ -84,14 +89,14 @@ def test_no_uv_gives_one_skip_and_no_runs():
 
 def test_profile_written_when_absent():
     steps = _plan(profile_exists=False, force_profile=False)
-    writes = [s for s in steps if s["op"] == "write"]
+    writes = _writes(steps)
     assert len(writes) == 1
     assert writes[0]["path"] == "/home/user/.config/agent-tools/profile.yaml"
 
 
 def test_profile_skipped_when_present():
     steps = _plan(profile_exists=True, force_profile=False)
-    assert not [s for s in steps if s["op"] == "write"]
+    assert not _writes(steps)
     skips = [s for s in steps if s["op"] == "skip" and s.get("what") == "profile"]
     assert len(skips) == 1
     assert "--force-profile" in skips[0]["why"]
@@ -99,7 +104,7 @@ def test_profile_skipped_when_present():
 
 def test_profile_written_with_force_even_when_present():
     steps = _plan(profile_exists=True, force_profile=True)
-    writes = [s for s in steps if s["op"] == "write"]
+    writes = _writes(steps)
     assert len(writes) == 1
 
 
@@ -259,7 +264,7 @@ def test_a_second_run_over_its_own_result_changes_nothing():
         profile_exists=True,
         registered_marketplace=CARTRIDGES,
     )
-    assert not [s for s in steps if s["op"] == "write"]
+    assert not _writes(steps)
     assert not [s for s in steps if s["op"] == "run" and s["argv"][:3] == ["claude", "plugin", "marketplace"]]
     assert [s for s in steps if s.get("what") == "marketplace"]
     first, _ = hook_settings({})
@@ -322,3 +327,31 @@ def test_install_plan_splices_agent_steps_after_the_profile_block():
 
 def test_render_plan_prints_a_remove_line():
     assert render_plan([{"op": "remove", "path": "/p", "why": "x"}]) == "remove /p"
+
+
+def test_render_plan_prints_a_mkdir_line():
+    assert render_plan([{"op": "mkdir", "path": "/w", "why": "x"}]) == "mkdir /w"
+
+
+def test_locations_without_a_workspace_makes_the_folders_and_records_the_home():
+    steps = _plan(workspace="")
+    main = f"{LOC.workspaces}/main"
+    mkdirs = [s["path"] for s in steps if s["op"] == "mkdir"]
+    assert mkdirs == [main, *(f"{main}/{n}" for n in ("work", "runs", "intake", "cartridges"))]
+    writes = [s for s in steps if s["op"] == "write"]
+    assert writes[-1]["path"] == LOC.record
+    assert writes[-1]["text"] == f"{LOC.home}\n"
+    assert sum(s["path"] == LOC.record for s in writes) == 1
+
+
+def test_an_existing_workspace_folder_gets_no_mkdir_but_still_the_record():
+    steps = _plan(workspace="", workspace_exists=True)
+    assert not [s for s in steps if s["op"] == "mkdir"]
+    assert [s for s in steps if s["op"] == "write"][-1]["path"] == LOC.record
+
+
+def test_root_plan_has_neither_the_mkdir_steps_nor_the_record_write():
+    steps = _plan(locations=None, workspace="")
+    assert not [s for s in steps if s["op"] == "mkdir"]
+    assert all(s["path"] != LOC.record for s in steps if s["op"] == "write")
+    assert "mkdir" not in render_plan(steps)
