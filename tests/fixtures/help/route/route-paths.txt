@@ -1,8 +1,0 @@
-usage: cox route paths [-h] [--profile PROFILE] [--workspace WORKSPACE] [--apply] [--move OLD NEW]
-
-options:
-  -h, --help            show this help message and exit
-  --profile PROFILE
-  --workspace WORKSPACE
-  --apply               write the changes; the default only lists them
-  --move OLD NEW        swap repo prefix OLD for NEW

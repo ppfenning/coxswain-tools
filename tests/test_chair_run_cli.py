@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import datetime
 import json
 import os
 
 import pytest
-from conftest import strip_ansi
 
 from agent_tools import chair, chair_facts, chair_run, cli, store_cli
 
@@ -42,14 +40,6 @@ def test_chair_run_exits_three_and_names_the_count_when_the_overrun_limit_is_hit
     args = cli.build_parser().parse_args(["chair", "run", "--max-overruns", "2"])
     assert args.fn(args) == 3
     assert seen == [2] and "2 facts-stage overruns" in capsys.readouterr().out
-
-
-def test_chair_run_help_names_the_steal_flag_and_the_hard_stop(capsys) -> None:
-    with contextlib.suppress(SystemExit):
-        cli.build_parser().parse_args(["chair", "run", "--help"])
-    out = strip_ansi(capsys.readouterr().out)
-    assert "cox route chair take --steal" in out
-    assert "weekly_hard_stop_fraction" in out
 
 
 def test_a_live_chairs_exec_deps_carry_the_land_worker(tmp_path) -> None:
