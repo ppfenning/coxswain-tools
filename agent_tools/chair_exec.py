@@ -795,6 +795,28 @@ def _widen_ticket(action: Action, deps: Deps) -> Result:
     return _result(action, "done", reason if warning is None else f"{reason}; {warning}")
 
 
+_CLOSE_STATES = ("done", "dropped")
+
+
+def _close_state_problem(state: object) -> str:
+    """"" when `state` is a state an initiative may be closed into, else the reason it is refused."""
+    if state in _CLOSE_STATES:
+        return ""
+    return f"close_initiative state must be done or dropped, not {state!r}"
+
+
+def _close_initiative(action: Action, deps: Deps) -> Result:
+    """An initiative row's task_id is its own id, so the id fills both the initiative and the task slot of `set_state`."""
+    state, initiative = action.get("state"), action.get("initiative", "")
+    problem = _close_state_problem(state)
+    if problem:
+        return _result(action, "failed", problem)
+    written = store_cli.set_state(deps.runs_dir, initiative, initiative, str(state), "chair-loop")
+    if isinstance(written, store_cli.StateSet):
+        return _result(action, "done", f"closed {initiative} as {state}")
+    return _result(action, "failed", f"set-state {state} for {initiative}: {written}")
+
+
 def _prune_available(run: Run, harness_python: str) -> bool:
     """Edge. True only when `<harness_python> -m harness.store_backfill_traces prune --help` exits 0."""
     code, _ = run([harness_python, "-m", "harness.store_backfill_traces", "prune", "--help"])
@@ -1077,6 +1099,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _fetch_exit(action, deps)
     if kind == "widen_ticket":
         return _widen_ticket(action, deps)
+    if kind == "close_initiative":
+        return _close_initiative(action, deps)
     if kind in LAUNCH_KINDS or kind in ("pull", "fetch"):
         return _launch(action, deps)
     if kind == "housekeeping":

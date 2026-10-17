@@ -478,6 +478,15 @@ def plan_held_files(facts: Facts) -> list[Action]:
     ]
 
 
+def plan_close_initiatives(facts: Facts) -> list[Action]:
+    """One close_initiative per todo initiative with task rows that are all done or dropped; state is done when any task is done."""
+    return [
+        {"kind": "close_initiative", "initiative": entry["id"], "state": "done" if "done" in entry["task_states"] else "dropped"}
+        for entry in facts.get("todo_initiatives", [])
+        if entry["task_states"] and set(entry["task_states"]) <= {"done", "dropped"}
+    ]
+
+
 def _empty_decompose_needs_chair_actions(facts: Facts) -> list[Action]:
     """One needs_chair per empty_decompose entry not yet reported for its `<initiative>|<run>`. It only reports; the remedy is the requeue argv."""
     # `<initiative>|<run>` of each empty_decompose needs_chair already in the action log; absent means none. Not yet declared
@@ -743,6 +752,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     waiting = waiting_initiatives(facts)
     waiting_ids = frozenset(w.initiative for w in waiting)
     waiting_actions = _waiting_actions(waiting, facts.get("waiting_reported", {}))
+    closes = plan_close_initiatives(facts)
     # A blocked initiative's relaunch and its paired clear_branches go; the waiting action records why.
     recovered = [a for a in recoverable if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)]
     if facts["limits"]["hard_stop"]:
@@ -764,6 +774,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *review,
             *unstarted_waiting_chair,
             *waiting_actions,
+            *closes,
         ]
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
@@ -817,6 +828,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *review,
         *unstarted_waiting_chair,
         *waiting_actions,
+        *closes,
     ]
 
 

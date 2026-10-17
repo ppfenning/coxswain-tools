@@ -463,7 +463,7 @@ class Facts(TypedDict):
     phase_tasks: NotRequired[list[PhaseTasks]]  # per phase with an approved or a quarantined task, every task's state; absent means none
     # `<run>:<phase>` of each approved task's run and phase that has a phase record. Absent means unknown: plan land_phase.
     phase_records: NotRequired[list[str]]
-    # Each initiative row in state todo with its task rows' states, in row order; absent means none. Read-only: nothing acts on it yet.
+    # Each initiative row in state todo with its task rows' states, in row order; absent means none. `plan_close_initiatives` plans a close_initiative for each finished one.
     todo_initiatives: NotRequired[list[TodoInitiative]]
 
 
@@ -500,6 +500,7 @@ ActionKind = Literal[
     "partial_land",
     "pull_workspace",
     "waiting",
+    "close_initiative",
 ]
 
 
@@ -522,7 +523,7 @@ class Action(TypedDict, total=False):
     task_ids and quarantined: the approved tasks of a phase whose other tasks are all quarantined, done or dropped;
     the plan adds repo, task_runs and run (the newest of task_runs) for the loop's task lands. A relaunch_loop needs_chair carries
     initiative, cause and a reason naming both quarantined run ids. waiting carries initiative, phase, quarantined and
-    awaiting_land and runs no command."""
+    awaiting_land and runs no command. close_initiative carries initiative and state (done or dropped)."""
 
     kind: ActionKind
     epoch: int
@@ -563,6 +564,7 @@ class Action(TypedDict, total=False):
     pr: int  # a revert_land names the pull request whose land turned main red
     commit: str  # a revert_land names the new main commit of that land
     additions: list[str]  # a widen_ticket names the addition for each path, same order and length as paths
+    state: str  # a close_initiative names the state to move the initiative to: done or dropped
 
 
 class PlanLands(Protocol):
