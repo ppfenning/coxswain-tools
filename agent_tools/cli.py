@@ -6188,7 +6188,8 @@ def _install_execute(steps: list, manifest: dict, options: dict, root: Path) -> 
     gathered before a single step ran are not evidence of what landed.
     A `refuse` step is reported as `refused`, not `FAILED` — it never
     called `run` and its non-zero exit is a decision, not a command that
-    broke. Exits 0 only when every step that ran, ran clean."""
+    broke. Exits 0 only when no step failed fatally; a failing doctor alone
+    exits 0 and adds one closing line."""
     if any(step["kind"] == "setup_install" for step in steps):
         _load_lazy_modules()
     exec_steps = install_exec.from_plan(steps, manifest=manifest, options=options)
@@ -6210,8 +6211,13 @@ def _install_execute(steps: list, manifest: dict, options: dict, root: Path) -> 
     display = [{"component": c, "pinned_tag": p or "", "installed_tag": i or "", "status": s}
                for c, p, i, s in install.rows(manifest, post_facts, options.get("channel", "release"))]
     print(records.format_table(display, ["component", "pinned_tag", "installed_tag", "status"]))
-    return 0 if all(result["exit"] in (0, None) for result in results) else 2
+    if any(result["step"]["kind"] == "doctor" and result["exit"] not in (0, None) for result in results):
+        print(_DOCTOR_FAILING_LINE)
+    return 2 if any(install_exec.is_fatal(result) for result in results) else 0
 
+
+_DOCTOR_FAILING_LINE = ("doctor reports failing rows: create your workspace folders and team cartridge "
+                        "if you have not, then run cox setup doctor")
 
 _NO_MANIFEST = "refusing: no manifest at {}; run `cox install` to fetch the components, or pass --manifest"
 
