@@ -6150,12 +6150,15 @@ def _gather_checkout_facts(root: Path, components: dict, fetch: bool = False) ->
     present under `root` — the `extra` rows `install.rows` can then report.
     `fetch` refreshes each declared checkout's remote branch first (edge)."""
     options = {"fetch": True} if fetch else {}
-    declared = {name: _checkout_facts(root / name, **options) for name in components}
+    declared_dirs = {name: Path(install_exec.clone_dir(str(root), name)) for name in components}
+    declared = {name: _checkout_facts(path, **options) for name, path in declared_dirs.items()}
     if not root.exists():
         return declared
-    undeclared = {p.name for p in root.iterdir()
-                  if p.is_dir() and p.name not in components and (p / ".git").exists()}
-    return {**declared, **{name: _checkout_facts(root / name) for name in undeclared}}
+    prefixed = {path.name for path in declared_dirs.values()}
+    undeclared = [p for p in root.iterdir() if p.is_dir() and p.name not in prefixed and (p / ".git").exists()]
+    # A bare `cartridges` directory would overwrite the declared key and `install.rows` skips declared names,
+    # so a name that collides is keyed `./cartridges` to stay visible as an extra.
+    return {**declared, **{(f"./{p.name}" if p.name in components else p.name): _checkout_facts(p) for p in undeclared}}
 
 
 def _manifest_provider_command(manifest: dict, provider: str) -> str:
@@ -6287,7 +6290,7 @@ def _upgrade_plan_for(manifest: dict, root: Path, target: str, umbrella_tag: str
         umbrella_tag or "untagged",
         {name: spec.get("tag") for name, spec in components.items()},
         {name: facts.get("tag") for name, facts in checkouts.items()},
-        {name: frozenset(_offered_tags(root / name, urls.get(name))) for name in components},
+        {name: frozenset(_offered_tags(Path(install_exec.clone_dir(str(root), name)), urls.get(name))) for name in components},
     )
     return plan, {name: url for name, url in urls.items() if url}
 

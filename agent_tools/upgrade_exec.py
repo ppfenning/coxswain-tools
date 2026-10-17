@@ -4,6 +4,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+from agent_tools.install_exec import clone_dir
 from agent_tools.upgrade_plan import Plan, Step
 
 Run = Callable[[list, str | None], tuple]
@@ -25,8 +26,8 @@ def newest_release(tags: Sequence[str]) -> str | None:
 
 
 def _step_dir(root: Path, step: Step) -> Path:
-    """The umbrella checkout is `<root>/coxswain`, not a manifest component."""
-    return root / "coxswain" if step.kind == "umbrella" else root / step.name
+    """The umbrella checkout is `<root>/coxswain`, not a manifest component; a component is `<root>/coxswain-<name>`."""
+    return root / "coxswain" if step.kind == "umbrella" else Path(clone_dir(str(root), step.name))
 
 
 def _move(step: Step, root: Path, run: Run, clone_url: str | None) -> tuple:
@@ -51,7 +52,7 @@ def run_plan(
     `clone_urls` names the components with no checkout yet."""
     root = Path(root)
     urls = clone_urls or {}
-    install_script = root / "crew" / "install.sh"
+    install_script = Path(clone_dir(str(root), "crew")) / "install.sh"
     for step in plan.steps:
         print(f"would move {_describe(step)}" if dry_run else f"moving {_describe(step)}")
         moves_crew = step.kind == "component" and step.name == "crew"

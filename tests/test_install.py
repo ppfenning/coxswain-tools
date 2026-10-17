@@ -221,7 +221,7 @@ def test_cli_install_does_not_borrow_the_enclosing_repos_tag_or_dirty_state(tmp_
 
 
 def test_cli_install_exits_two_when_a_refuse_is_mixed_among_other_steps(tmp_path, capsys):
-    _git_repo(tmp_path / "harness", tag="v1.0.0", dirty=True)
+    _git_repo(tmp_path / "coxswain-harness", tag="v1.0.0", dirty=True)
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
     rc = cli.main(["install", "--dry-run", "--root", str(tmp_path), "--manifest", str(manifest_path),
@@ -251,7 +251,7 @@ def test_cli_versions_reports_ok_missing_and_extra_from_real_checkouts(tmp_path,
     manifest_dir.mkdir()
     manifest_path = manifest_dir / "manifest.toml"
     manifest_path.write_text(_MANIFEST_TOML)
-    _git_repo(tmp_path / "harness", tag="v1.0.0")
+    _git_repo(tmp_path / "coxswain-harness", tag="v1.0.0")
     _git_repo(tmp_path / "extra-thing", tag="v9.9.9")
     rc = cli.main(["versions", "--manifest", str(manifest_path)])
     out = capsys.readouterr().out
@@ -339,7 +339,7 @@ def test_cli_versions_root_flag_overrides_the_manifests_own_directory(tmp_path, 
     manifest_path.parent.mkdir()
     manifest_path.write_text(_MANIFEST_TOML)
     real_root = tmp_path / "real-root"
-    _git_repo(real_root / "harness", tag="v1.0.0")
+    _git_repo(real_root / "coxswain-harness", tag="v1.0.0")
     rc = cli.main(["versions", "--manifest", str(manifest_path), "--root", str(real_root)])
     out = capsys.readouterr().out
     assert rc == 0

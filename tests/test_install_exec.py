@@ -225,10 +225,7 @@ def test_cli_install_without_dry_run_executes_and_the_table_reflects_what_landed
     def fake_run(argv, cwd):
         calls.append(argv)
         if argv[:2] == ["git", "clone"]:
-            # `cli._gather_checkout_facts` still probes `<root>/<component>`, not the
-            # prefixed clone target; the stub lands the repo where that probe looks.
-            probed = [*argv[:-1], str(tmp_path / "harness")]
-            return _stub_clone_creating_a_real_git_repo_at_the_requested_tag(probed)
+            return _stub_clone_creating_a_real_git_repo_at_the_requested_tag(argv)
         return 0, ""
 
     monkeypatch.setattr(cli, "_real_run", fake_run)
@@ -278,7 +275,7 @@ def test_cli_upgrade_to_picks_the_umbrella_and_the_lockstep_component_takes_its_
     assert rc == 0
     assert "moving harness: v1.0.0 to v2.0.0" in out
     assert ["git", "-C", str(root / "coxswain"), "checkout", "v2.0.0"] in calls
-    assert ["git", "-C", str(root / "harness"), "checkout", "v2.0.0"] in calls
+    assert ["git", "-C", str(root / "coxswain-harness"), "checkout", "v2.0.0"] in calls
 
 
 def _upgrade_with_moved_manifest(monkeypatch, tmp_path, pins, installed, offered, extra_args):
@@ -299,14 +296,15 @@ def _upgrade_with_moved_manifest(monkeypatch, tmp_path, pins, installed, offered
         + "[providers.claude-code]\nstatus = \"supported\"\n"
     )
     monkeypatch.setattr(cli, "_checkout_facts",
-                         lambda path: {"present": True, "tag": installed.get(path.name, "v1.0.0"), "dirty": False})
+                         lambda path: {"present": True, "tag": installed.get(path.name.removeprefix("coxswain-"), "v1.0.0"),
+                                       "dirty": False})
     calls = []
 
     def fake_run(argv, cwd):
         calls.append(argv)
         if "ls-remote" not in argv:
             return 0, ""
-        name = next((n for n in offered if str(root / n) in argv), None)
+        name = next((n for n in offered if str(root / (n if n == "coxswain" else f"coxswain-{n}")) in argv), None)
         return 0, "".join(f"abc\trefs/tags/{tag}\n" for tag in offered.get(name, ()))
 
     monkeypatch.setattr(cli, "_real_run", fake_run)
@@ -328,8 +326,8 @@ def test_cli_upgrade_to_leaves_a_component_pinned_below_the_release_at_its_pin(m
     assert rc == 0
     assert "left behind" not in out
     assert ["git", "-C", str(root / "coxswain"), "checkout", "v2.0.0"] in calls
-    assert ["git", "-C", str(root / "harness"), "checkout", "v2.0.0"] in calls
-    assert ["git", "-C", str(root / "dash"), "checkout", "v2.0.0"] not in calls
+    assert ["git", "-C", str(root / "coxswain-harness"), "checkout", "v2.0.0"] in calls
+    assert ["git", "-C", str(root / "coxswain-dash"), "checkout", "v2.0.0"] not in calls
 
 
 def test_cli_upgrade_to_still_reports_a_moved_manifest_pin_the_repository_lacks(monkeypatch, tmp_path, capsys):
@@ -344,7 +342,7 @@ def test_cli_upgrade_to_still_reports_a_moved_manifest_pin_the_repository_lacks(
 
     assert rc == 2
     assert "left behind: harness: pin_not_in_repo" in out
-    assert ["git", "-C", str(root / "harness"), "checkout", "v9.9.9"] not in calls
+    assert ["git", "-C", str(root / "coxswain-harness"), "checkout", "v9.9.9"] not in calls
 
 
 def test_cli_upgrade_without_to_takes_the_newest_release_and_keeps_a_lower_pin(monkeypatch, tmp_path, capsys):
@@ -360,8 +358,8 @@ def test_cli_upgrade_without_to_takes_the_newest_release_and_keeps_a_lower_pin(m
     assert rc == 0
     assert "left behind" not in out
     assert ["git", "-C", str(root / "coxswain"), "checkout", "v3.0.0"] in calls
-    assert ["git", "-C", str(root / "harness"), "checkout", "v3.0.0"] in calls
-    assert not any(argv[:3] == ["git", "-C", str(root / "dash")] and "checkout" in argv for argv in calls)
+    assert ["git", "-C", str(root / "coxswain-harness"), "checkout", "v3.0.0"] in calls
+    assert not any(argv[:3] == ["git", "-C", str(root / "coxswain-dash")] and "checkout" in argv for argv in calls)
 
 
 def test_cli_upgrade_plans_components_from_the_moved_umbrella_manifest_not_the_manifest_flag(monkeypatch, tmp_path, capsys):
@@ -377,7 +375,7 @@ def test_cli_upgrade_plans_components_from_the_moved_umbrella_manifest_not_the_m
     root = tmp_path / "root"
     (root / "coxswain").mkdir(parents=True)
     (root / "coxswain" / "manifest.toml").write_text(new)
-    monkeypatch.setattr(cli, "_checkout_facts", lambda path: {"present": path.name != "dash", "tag": "v1.0.0", "dirty": False})
+    monkeypatch.setattr(cli, "_checkout_facts", lambda path: {"present": path.name != "coxswain-dash", "tag": "v1.0.0", "dirty": False})
     calls = []
 
     def fake_run(argv, cwd):
@@ -390,9 +388,9 @@ def test_cli_upgrade_plans_components_from_the_moved_umbrella_manifest_not_the_m
 
     assert rc == 0
     assert ["git", "-C", str(root / "coxswain"), "checkout", "v3.0.0"] in calls
-    assert ["git", "-C", str(root / "harness"), "checkout", "v3.0.0"] in calls
-    assert ["git", "clone", "https://github.com/org/dash.git", str(root / "dash")] in calls
-    assert ["git", "-C", str(root / "harness"), "checkout", "v1.0.0"] not in calls
+    assert ["git", "-C", str(root / "coxswain-harness"), "checkout", "v3.0.0"] in calls
+    assert ["git", "clone", "https://github.com/org/dash.git", str(root / "coxswain-dash")] in calls
+    assert ["git", "-C", str(root / "coxswain-harness"), "checkout", "v1.0.0"] not in calls
 
 
 def test_cli_install_a_refuse_step_prints_refused_not_failed_and_never_calls_run(monkeypatch, tmp_path, capsys):
@@ -561,3 +559,52 @@ def test_cli_install_without_a_setup_step_loads_no_lazy_modules(monkeypatch, tmp
 
     assert rc == 0
     assert calls == []
+
+
+def _git_checkout_at(path, tag):
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    (path / "f").write_text("x")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t",
+                    "commit", "-q", "-m", "x"], cwd=path, check=True)
+    subprocess.run(["git", "tag", tag], cwd=path, check=True)
+
+
+def _versions_rows(tmp_path, capsys):
+    from agent_tools import cli
+
+    (tmp_path / "coxswain").mkdir()
+    manifest_path = tmp_path / "coxswain" / "manifest.toml"
+    manifest_path.write_text(
+        "[components.cartridges]\nrepo = \"org/cartridges\"\ntag = \"v1.0.0\"\nrequired = true\n\n"
+        "[providers.claude-code]\nstatus = \"supported\"\n"
+    )
+    assert cli.main(["versions", "--manifest", str(manifest_path)]) == 0
+    return [re.split(r"\s{2,}", line.strip()) for line in capsys.readouterr().out.splitlines()]
+
+
+def test_versions_reads_a_component_from_its_prefixed_clone_directory(tmp_path, capsys):
+    _git_checkout_at(tmp_path / "coxswain-cartridges", "v1.0.0")
+    rows = _versions_rows(tmp_path, capsys)
+    assert next(row for row in rows if row[0] == "cartridges")[3] == "ok"
+    assert not any(row[3:4] == ["missing"] for row in rows)
+
+
+def test_versions_reports_a_bare_named_git_directory_as_extra(tmp_path, capsys):
+    _git_checkout_at(tmp_path / "coxswain-cartridges", "v1.0.0")
+    _git_checkout_at(tmp_path / "cartridges", "v0.1.0")
+    rows = _versions_rows(tmp_path, capsys)
+    assert next(row for row in rows if row[0] == "cartridges")[3] == "ok"
+    assert "extra" in next(row for row in rows if row[0] == "./cartridges")
+
+
+def test_the_crew_install_script_runs_from_the_prefixed_crew_directory(tmp_path):
+    from agent_tools.upgrade_exec import run_plan
+    from agent_tools.upgrade_plan import Plan, Step
+
+    calls = []
+    run_plan(Plan((Step("component", "crew", "v1", "v2"),), ()), root=tmp_path,
+             run=lambda argv, cwd: calls.append((argv, cwd)) or (0, ""), dry_run=False)
+    script = str(tmp_path / "coxswain-crew" / "install.sh")
+    assert calls[-1] == ([script], str(tmp_path / "coxswain-crew"))
