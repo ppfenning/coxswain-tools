@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from agent_tools import repo_path
@@ -45,6 +45,20 @@ def _relaunch_branches(initiative: str, relaunch: Relaunch) -> list[tuple[str, s
     ]
 
 
+def _checkout(path: str, host_checkouts: Sequence[str]) -> str | None:
+    """The first host checkout whose basename equals the basename of `path`; a checkout of the same repo may sit under another directory there."""
+    name = path.rstrip("/").rsplit("/", 1)[-1]
+    return next((c for c in host_checkouts if c.rstrip("/").rsplit("/", 1)[-1] == name), None)
+
+
+def _sync_path(path: str, host_checkouts: Sequence[str], home: str | None) -> str:
+    """The path to sync on the lane host: its matching checkout, else the home-relative form when `home` is given, else `path`."""
+    found = _checkout(path, host_checkouts)
+    if found is not None:
+        return found
+    return path if home is None else repo_path.host_form(path, home)
+
+
 def launch_plan(
     host: LaneHost,
     initiative: str,
@@ -56,6 +70,7 @@ def launch_plan(
     relaunch: Relaunch | None = None,
     *,
     home: str | None = None,
+    host_checkouts: Sequence[str] = (),
 ) -> list[list[str]]:
     """The argv that `launch_on_host` runs in order: the rsync push, then, when `harness_dir` is
     given, the sync of the harness on the lane host, then, when `repo` is given, the sync of `repo`
@@ -66,7 +81,8 @@ def launch_plan(
     `route launch` reads --initiative as a path from its cwd, and an ssh command starts in the home directory.
     `repo` may be tilde-prefixed or recorded under another machine's home, so with `home` given it is mapped
     per use: home-relative for the ssh sync, tilde form for the push destination, expanded for the local side.
-    Without `home` it is passed through unchanged. `harness_dir` is always passed through unchanged."""
+    Without `home` it is passed through unchanged. `harness_dir` and `repo` each sync at the entry of
+    `host_checkouts` with the same basename when there is one, and the repo is pushed to that entry too."""
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
     src = f"work/{initiative}"
     remote_dir = f"{host.workspace_dir.rstrip('/')}/{src}"
@@ -74,11 +90,13 @@ def launch_plan(
     # where a second copy of one id fails the run's DAG check.
     rsync_step = rsync_push_argv(src, place(remote_dir), mirror=True)
     launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label))
-    harness_steps = [] if harness_dir is None else [ssh_argv(host.ssh, sync_argv(harness_dir))]
-    sync_repo = None if repo is None or home is None else repo_path.host_form(repo, home)
-    push_dest = None if repo is None or home is None else repo_path.contract(repo, home)
+    harness_steps = (
+        [] if harness_dir is None else [ssh_argv(host.ssh, sync_argv(_sync_path(harness_dir, host_checkouts, home)))]
+    )
+    checkout = None if repo is None else _checkout(repo, host_checkouts)
+    push_dest = checkout or (None if repo is None or home is None else repo_path.contract(repo, home))
     local_default = None if repo is None or home is None else repo_path.expand(repo, home)
-    repo_steps = [] if repo is None else [ssh_argv(host.ssh, sync_argv(repo if sync_repo is None else sync_repo))]
+    repo_steps = [] if repo is None else [ssh_argv(host.ssh, sync_argv(_sync_path(repo, host_checkouts, home)))]
     push_steps = (
         []
         if relaunch is None or repo is None
@@ -120,6 +138,7 @@ def launch_on_host(
     *,
     preflight: str | None = None,
     home: str | None = None,
+    host_checkouts: Sequence[str] = (),
 ) -> dict | LaunchError:
     """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on."""
     if preflight is not None:
@@ -128,7 +147,9 @@ def launch_on_host(
         return LaunchError(
             "push", f"a relocated relaunch to {host.name} has no repo to push epic/{initiative}/* into: nothing was run"
         )
-    plan = launch_plan(host, initiative, run_id, label, locate, repo, harness_dir, relaunch, home=home)
+    plan = launch_plan(
+        host, initiative, run_id, label, locate, repo, harness_dir, relaunch, home=home, host_checkouts=host_checkouts
+    )
     rsync_argv, ssh_cmd = plan[0], plan[-1]
     pushed = run(rsync_argv)
     if pushed != 0:
@@ -140,7 +161,7 @@ def launch_on_host(
         if updated != 0:
             return LaunchError(
                 "harness",
-                f"updating the harness at {harness_dir} on {host.name} exited {updated}: "
+                f"updating the harness at {_sync_path(harness_dir, host_checkouts, home)} on {host.name} exited {updated}: "
                 "the lane would run an older harness than the store",
             )
     if repo is not None:
