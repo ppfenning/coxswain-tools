@@ -309,6 +309,30 @@ def test_follow_on_prints_name_each_installer_item_and_prefix():
     assert not of(migrate_plan(final_layout(), LOCS), "print")
 
 
+def unit_text(root):
+    return f"[Service]\nEnvironment=PATH={root}/coxswain-tools/.venv/bin:/usr/bin\nExecStart=/usr/bin/cox chair run\n"
+
+
+def test_unit_naming_the_old_root_yields_one_last_chair_unit_step():
+    baseline = migrate_plan(old_layout(), LOCS)
+    steps = migrate_plan({**old_layout(), "chair_unit": unit_text("/u/repos")}, LOCS)
+    assert len(of(steps, "chair_unit")) == 1
+    assert steps[-1]["op"] == "chair_unit"
+    assert steps[:-1] == baseline
+
+
+def test_unit_regenerated_to_the_new_root_yields_no_chair_unit_step():
+    steps = migrate_plan({**old_layout(), "chair_unit": unit_text(NEW)}, LOCS)
+    assert not of(steps, "chair_unit")
+    assert steps == migrate_plan(old_layout(), LOCS)
+
+
+def test_absent_chair_unit_yields_no_chair_unit_step():
+    steps = migrate_plan({**old_layout(), "chair_unit": None}, LOCS)
+    assert not of(steps, "chair_unit")
+    assert steps == migrate_plan(old_layout(), LOCS)
+
+
 def test_checkout_linked_but_not_repaired_resumes_with_repair_and_verify_not_a_skip():
     stale = {**final_layout(), "worktree_status": {CART: "clean", GRAPHS: "stale", TOOLS: "clean"}}
     steps = migrate_plan(stale, LOCS)

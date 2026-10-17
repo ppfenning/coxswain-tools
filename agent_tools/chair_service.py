@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import posixpath
 import re
+from itertools import pairwise
 from pathlib import Path
 
 UNIT_NAME = "coxswain-chair.service"
 
 # systemd splits ExecStart on whitespace and expands `%`, `$` and `\`; a value outside this set reaches the chair changed.
 _UNIT_SAFE = re.compile(r"[A-Za-z0-9._@+:,/=-]+")
+_EXEC_START = re.compile(r"^ExecStart=(.*)$", re.MULTILINE)
+_ENV_FILE = re.compile(r"^EnvironmentFile=-(\S+)\s*$", re.MULTILINE)
 
 
 def unit_path(home: Path) -> Path:
@@ -64,3 +67,22 @@ def unit_text(
         "WantedBy=default.target",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _flag_value(tokens: list[str], flag: str) -> str | None:
+    return next((value for name, value in pairwise(tokens) if name == flag), None)
+
+
+def unit_args(text: str) -> dict[str, str | None] | None:
+    """Reads label, interval, profile and env_file back out of a unit; an absent flag or line is None, interval stays a string."""
+    commands = [match.group(1).split() for match in _EXEC_START.finditer(text)]
+    tokens = next((t for t in commands if ("chair", "run") in pairwise(t)), None)
+    if tokens is None:
+        return None
+    env = _ENV_FILE.search(text)
+    return {
+        "label": _flag_value(tokens, "--label"),
+        "interval": _flag_value(tokens, "--interval"),
+        "profile": _flag_value(tokens, "--profile"),
+        "env_file": env.group(1) if env is not None else None,
+    }
