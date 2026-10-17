@@ -6032,7 +6032,9 @@ def _migrate_observe(locs) -> dict:
             seen[name] = listed
     record = _read_text_or_none(Path(locs.record))
     links = _migrate_cartridge_links(profile)
+    unit = _read_text_or_none(chair_service.unit_path(Path.home())) if sys.platform.startswith("linux") else None
     return {
+        "chair_unit": unit,
         "entries": entries,
         "settings": {key: profile[key] for key in setup_migrate.SETTING_KEYS if key in profile},
         "home_record": record.strip() if record and record.strip() else None,
@@ -6163,6 +6165,8 @@ def _migrate_exec(step: dict, locs) -> str | None:
         return None
     if op in ("worktree_repair", "verify"):
         return _migrate_git(step)
+    if op == "chair_unit":
+        return _migrate_chair_unit(locs)
     if op == "skip":
         print(f"nothing to do: {step['why']}")
         return None
@@ -6170,6 +6174,49 @@ def _migrate_exec(step: dict, locs) -> str | None:
         print(f"note: {step['why']}")
         return None
     return step["why"] if op == "refuse" else f"unknown step op: {op!r}"
+
+
+def _migrate_systemctl(*argv: str) -> subprocess.CompletedProcess | str:
+    """Edge. One `systemctl --user` call, or the reason it could not run."""
+    try:
+        return subprocess.run(["systemctl", "--user", *argv], capture_output=True, text=True, check=False)
+    except OSError as exc:
+        return f"systemctl --user {' '.join(argv)}: {exc}"
+
+
+def _migrate_chair_unit(locs) -> str | None:
+    """Edge. Rebuilds the chair unit from the arguments the installed one carries, writes it, reloads systemd and
+    restarts the chair only when it was running. None on success or skip, else the reason a systemctl call failed."""
+    path = chair_service.unit_path(Path.home())
+    args = chair_service.unit_args(_read_text_or_none(path) or "")
+    if args is None:
+        print(f"chair unit: no `chair run` line in {path}; left as is")
+        return None
+    missing = [name for name in ("label", "interval") if not args[name]]
+    if missing or not str(args["interval"]).isdigit():
+        print(f"chair unit: {path} has no usable {', '.join(missing) or 'interval'}; left as is")
+        return None
+    profile = Path(args["profile"]) if args["profile"] else Path(locs.profile)
+    text = _chair_unit_text(args["label"], args["interval"], args["env_file"], profile)
+    if isinstance(text, _ChairUnitRefusal):
+        print(f"chair unit: {text.message}; {path} left as is")
+        return None
+    path.write_text(text, encoding="utf-8")
+    print(f"chair unit -> {path}")
+    reloaded = _migrate_systemctl("daemon-reload")
+    if isinstance(reloaded, str):
+        return reloaded
+    if reloaded.returncode != 0:
+        return f"systemctl --user daemon-reload exited {reloaded.returncode}: {reloaded.stderr.strip()}"
+    active = _migrate_systemctl("is-active", chair_service.UNIT_NAME)
+    if isinstance(active, str) or active.stdout.strip() != "active":
+        return active if isinstance(active, str) else None
+    restarted = _migrate_systemctl("restart", chair_service.UNIT_NAME)
+    if isinstance(restarted, str):
+        return restarted
+    if restarted.returncode != 0:
+        return f"systemctl --user restart {chair_service.UNIT_NAME} exited {restarted.returncode}: {restarted.stderr.strip()}"
+    return None
 
 
 def _migrate_edit_lane_host(text: str, name: str, workspace_dir: str) -> tuple[str | None, str]:
@@ -9319,16 +9366,28 @@ def _chair_service_environment_file(a: argparse.Namespace) -> str | None:
     return str(garage) if garage.is_file() else None
 
 
-def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
-    """Refuses before any write when systemd would read a value differently from the shell that ran the install."""
+@dataclasses.dataclass(frozen=True)
+class _ChairUnitRefusal:
+    """Why no chair unit text could be built; `message` is printed as is."""
+
+    message: str
+
+
+def _chair_unit_text(label: str, interval: int | str, env_file: str | None, profile_path: Path) -> str | _ChairUnitRefusal:
+    """Edge-light. The unit text for these arguments, or the refusal; install and `setup migrate` both build it here.
+    It reads PATH, the profile, the env file and where `cox` is, and writes and prints nothing."""
     cox = shutil.which("cox")
     if cox is None:
-        print("chair service: cox is not on PATH")
-        return 2
-    profile, _runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
-    if refuse_rc is not None:
-        return refuse_rc
-    env_file = _chair_service_environment_file(a)
+        return _ChairUnitRefusal("chair service: cox is not on PATH")
+    text = _read_text_or_none(profile_path)
+    if text is None:
+        return _ChairUnitRefusal(f"routing: no profile at {profile_path}")
+    try:
+        profile = route.parse_profile(text)
+    except route.ProfileError as exc:
+        return _ChairUnitRefusal(f"routing: profile unreadable: {exc}")
+    if not profile.get("workspace_dir", ""):
+        return _ChairUnitRefusal(f"routing: workspace_dir not set in profile {profile_path}")
     harness_dir = profile.get("harness_dir")
     unit_path_value = chair_service.path_value(
         os.path.abspath(cox),
@@ -9341,24 +9400,34 @@ def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
     values = {
         "cox": os.path.abspath(cox),
         "workspace_dir": os.path.abspath(Path(profile["workspace_dir"]).expanduser()),
-        "--label": _holder_label(a),
-        "--profile": os.path.abspath(_profile_path(a)),
+        "--label": label,
+        "--profile": os.path.abspath(profile_path),
         **({"--environment-file": env_file} if env_file is not None else {}),
         "PATH": unit_path_value,
     }
     unsafe = chair_service.unsafe_values(values)
     if unsafe:
-        print(f"chair service: systemd would split or expand {', '.join(unsafe)}; use only letters, digits and . _ @ + : , / = -")
-        return 2
+        return _ChairUnitRefusal(
+            f"chair service: systemd would split or expand {', '.join(unsafe)}; use only letters, digits and . _ @ + : , / = -"
+        )
     exports = chair_service.export_lines(_read_text_or_none(Path(env_file)) or "") if env_file is not None else []
     if exports:
         numbers = ", ".join(str(n) for n in exports)
-        print(f"chair service: {env_file} has export lines ({numbers}) that EnvironmentFile= may skip; pass --environment-file with NAME=value lines")
-        return 2
-    text = chair_service.unit_text(
-        values["cox"], values["workspace_dir"], values["--label"], a.interval, env_file, values["--profile"],
+        return _ChairUnitRefusal(
+            f"chair service: {env_file} has export lines ({numbers}) that EnvironmentFile= may skip; pass --environment-file with NAME=value lines"
+        )
+    return chair_service.unit_text(
+        values["cox"], values["workspace_dir"], values["--label"], interval, env_file, values["--profile"],
         unit_path_value,
     )
+
+
+def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
+    """Refuses before any write when systemd would read a value differently from the shell that ran the install."""
+    text = _chair_unit_text(_holder_label(a), a.interval, _chair_service_environment_file(a), _profile_path(a))
+    if isinstance(text, _ChairUnitRefusal):
+        print(text.message)
+        return 2
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     print(path)
