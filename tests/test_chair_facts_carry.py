@@ -118,8 +118,3 @@ def test_gather_facts_fills_stranded_and_phase_branches_from_the_seams():
     assert facts["phase_branches"] == [
         {"initiative": "i", "phase": "p", "branch": "epic/i/p", "ahead": 0, "behind": 4, "tip": "t1"}
     ]
-
-
-def test_absent_carry_seams_give_empty_facts():
-    facts = gather_facts(_deps(), NOW)
-    assert (facts["stranded"], facts["phase_branches"]) == ([], [])

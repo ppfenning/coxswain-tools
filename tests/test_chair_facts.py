@@ -102,6 +102,26 @@ def _work_row(kind: str, initiative: str, task_id: str, state: str) -> dict:
     return {"kind": kind, "initiative": initiative, "task_id": task_id, "phase": "p1", "state": state}
 
 
+def test_an_absent_reader_yields_an_empty_value_and_never_raises():
+    """An absent reader yields an empty value and never raises."""
+    facts = gather_facts(_deps(), NOW)
+    keys = (
+        "todo_initiatives", "remote_unfetched", "schema_deaths", "landing", "handoff_stops", "review_prs",
+        "newest_run_host", "home", "run_hosts", "last_housekeeping_at", "housekeeping_hours", "stale_days",
+        "drafts", "missing_repos", "run_exited", "lost_runs", "pid_probe", "login_hosts", "host_env",
+        "env_stale_reported", "stranded", "phase_branches",
+    )
+    got = {key: facts[key] for key in keys}
+    got["limits_sources"] = (facts["limits"]["window_source"], facts["limits"]["weekly_source"])
+    assert got == {
+        "todo_initiatives": [], "remote_unfetched": {}, "schema_deaths": {}, "landing": [], "handoff_stops": [],
+        "review_prs": [], "newest_run_host": {}, "home": {}, "run_hosts": {}, "last_housekeeping_at": None,
+        "housekeeping_hours": 24, "stale_days": 7, "drafts": 0, "missing_repos": [], "run_exited": {},
+        "lost_runs": {}, "pid_probe": {}, "login_hosts": [], "host_env": {}, "env_stale_reported": [],
+        "stranded": [], "phase_branches": [], "limits_sources": ("est", "est"),
+    }
+
+
 def test_a_todo_initiative_lists_its_task_states_in_row_order():
     rows = [
         _work_row("initiative", "i", "i", "todo"),
@@ -137,10 +157,6 @@ def test_a_work_rows_callables_rows_appear_under_todo_initiatives():
     assert gather_facts(deps, NOW)["todo_initiatives"] == [{"id": "i", "task_states": ["ready", "todo"]}]
 
 
-def test_an_absent_work_rows_callable_gives_an_empty_todo_initiatives_list():
-    assert gather_facts(_deps(), NOW)["todo_initiatives"] == []
-
-
 def test_a_remote_unfetched_callables_mapping_appears_under_remote_unfetched():
     deps = replace(_deps(), remote_unfetched=lambda: {"i": "i-1"})
     assert gather_facts(deps, NOW)["remote_unfetched"] == {"i": "i-1"}
@@ -157,17 +173,9 @@ def test_gather_facts_carries_a_tuning_entry_with_the_meter_and_the_last_tuned_t
     }
 
 
-def test_an_absent_remote_unfetched_callable_gives_an_empty_mapping():
-    assert gather_facts(_deps(), NOW)["remote_unfetched"] == {}
-
-
 def test_a_schema_deaths_callables_mapping_appears_under_schema_deaths():
     deps = replace(_deps(), schema_deaths=lambda: {"x": ["x-2", "x-1"]})
     assert gather_facts(deps, NOW)["schema_deaths"] == {"x": ["x-2", "x-1"]}
-
-
-def test_an_absent_schema_deaths_callable_gives_an_empty_mapping():
-    assert gather_facts(_deps(), NOW)["schema_deaths"] == {}
 
 
 def test_a_landing_callables_list_appears_under_landing():
@@ -175,17 +183,9 @@ def test_a_landing_callables_list_appears_under_landing():
     assert gather_facts(replace(_deps(), landing=lambda: landing), NOW)["landing"] == landing
 
 
-def test_an_absent_landing_callable_gives_an_empty_list():
-    assert gather_facts(_deps(), NOW)["landing"] == []
-
-
 def test_a_handoff_stops_callables_rows_appear_under_handoff_stops():
     rows = [{"initiative": "i", "task_id": "a", "state": "ready", "reason": "r", "surfaces": ["a.py"], "widenings": 0}]
     assert gather_facts(replace(_deps(), handoff_stops=lambda: rows), NOW)["handoff_stops"] == rows
-
-
-def test_an_absent_handoff_stops_callable_gives_an_empty_list():
-    assert gather_facts(_deps(), NOW)["handoff_stops"] == []
 
 
 REVIEW_PR = {
@@ -204,10 +204,6 @@ def _review_runs_dir(tmp_path):
 def test_a_review_prs_callables_list_appears_under_review_prs():
     deps = replace(_deps(), review_prs=lambda: [REVIEW_PR])
     assert gather_facts(deps, NOW)["review_prs"] == [REVIEW_PR]
-
-
-def test_an_absent_review_prs_callable_gives_an_empty_list():
-    assert gather_facts(_deps(), NOW)["review_prs"] == []
 
 
 def test_a_fake_forge_reporting_merged_gives_that_entry_with_state_merged(tmp_path):
@@ -229,17 +225,9 @@ def test_a_newest_run_host_callables_mapping_appears_under_newest_run_host():
     assert gather_facts(deps, NOW)["newest_run_host"] == {"i": "host-a"}
 
 
-def test_an_absent_newest_run_host_callable_gives_an_empty_mapping():
-    assert gather_facts(_deps(), NOW)["newest_run_host"] == {}
-
-
 def test_home_maps_an_initiative_with_an_unlanded_approved_task_to_its_newest_run_host():
     deps = replace(_deps(), newest_run_host=lambda: {"i": "host-a"})
     assert gather_facts(deps, NOW)["home"] == {"i": "host-a"}
-
-
-def test_home_has_no_entry_when_newest_run_host_is_unknown():
-    assert gather_facts(_deps(), NOW)["home"] == {}
 
 
 def test_run_hosts_holds_a_remote_run_and_drops_a_local_one():
@@ -252,19 +240,9 @@ def test_home_holds_an_initiative_homed_on_omarchy():
     assert gather_facts(deps, NOW)["home"] == {"i": "host-b"}
 
 
-def test_with_no_host_callables_run_hosts_and_home_are_empty():
-    facts = gather_facts(_deps(), NOW)
-    assert (facts["run_hosts"], facts["home"]) == ({}, {})
-
-
 def test_a_history_callable_returning_a_timestamp_is_held_as_last_housekeeping_at():
     deps = replace(_deps(), history=lambda: "2026-09-25T00:00:00Z")
     assert gather_facts(deps, NOW)["last_housekeeping_at"] == "2026-09-25T00:00:00Z"
-
-
-def test_absent_history_and_housekeeping_hours_callables_give_none_and_24():
-    facts = gather_facts(_deps(), NOW)
-    assert (facts["last_housekeeping_at"], facts["housekeeping_hours"]) == (None, 24)
 
 
 def test_a_housekeeping_hours_callable_returning_6_gives_6_point_0():
@@ -287,10 +265,6 @@ def test_a_fake_stall_candidates_callable_returning_two_rows_gives_facts_holding
 def test_a_stale_days_callable_returning_10_gives_stale_days_10():
     deps = replace(_deps(), stale_days=lambda: 10)
     assert gather_facts(deps, NOW)["stale_days"] == 10
-
-
-def test_an_absent_stale_days_callable_gives_7():
-    assert gather_facts(_deps(), NOW)["stale_days"] == 7
 
 
 def test_weekly_spend_of_85_percent_is_a_hard_stop_with_no_launches():
@@ -320,11 +294,6 @@ def test_a_meter_backed_window_source_callable_reports_meter_in_limits():
 def test_a_meter_backed_weekly_source_callable_reports_meter_in_limits():
     deps = replace(_deps(), weekly_source=lambda: "meter")
     assert gather_facts(deps, NOW)["limits"]["weekly_source"] == "meter"
-
-
-def test_absent_source_callables_default_to_est_in_limits():
-    limits = gather_facts(_deps(), NOW)["limits"]
-    assert (limits["window_source"], limits["weekly_source"]) == ("est", "est")
 
 
 def test_five_hour_fraction_is_the_assessments_spent_fraction():
@@ -414,14 +383,10 @@ def test_a_stranded_row_takes_its_initiative_from_its_run_and_a_live_run_drops_i
     assert stranded(("i",)) == []
 
 
-def test_a_fake_has_patch_that_returns_true_gives_has_patch_true():
-    (q,) = gather_facts(_deps(has_patch=True, stranded=()), NOW)["quarantines"]
-    assert q["has_patch"] is True
-
-
-def test_a_fake_has_patch_that_returns_false_gives_has_patch_false():
-    (q,) = gather_facts(_deps(has_patch=False, stranded=()), NOW)["quarantines"]
-    assert q["has_patch"] is False
+def test_a_fake_has_patch_gives_that_value_as_has_patch():
+    (kept,) = gather_facts(_deps(has_patch=True, stranded=()), NOW)["quarantines"]
+    (dropped,) = gather_facts(_deps(has_patch=False, stranded=()), NOW)["quarantines"]
+    assert (kept["has_patch"], dropped["has_patch"]) == (True, False)
 
 
 def test_a_rescue_failed_attempt_gives_rescue_failed_true_and_leaves_harness_failures_alone():
@@ -593,10 +558,6 @@ def test_a_fake_drafts_callable_returning_3_gives_drafts_3():
     assert gather_facts(replace(_deps(), drafts=lambda: 3), NOW)["drafts"] == 3
 
 
-def test_no_drafts_callable_gives_drafts_0():
-    assert gather_facts(_deps(), NOW)["drafts"] == 0
-
-
 def test_new_missing_repos_drops_paths_already_reported():
     assert new_missing_repos(["/b", "/a", "/a"], {"/b"}) == ["/a"]
 
@@ -605,29 +566,19 @@ def test_a_fake_missing_repos_callable_returning_one_path_gives_facts_holding_it
     assert gather_facts(replace(_deps(), missing_repos=lambda: ["/x"]), NOW)["missing_repos"] == ["/x"]
 
 
-def test_absent_missing_and_reported_callables_give_an_empty_list():
-    assert gather_facts(_deps(), NOW)["missing_repos"] == []
-
-
 def test_a_reported_path_leaves_the_facts_empty_and_raises_no_quarantine():
     deps = replace(_deps(), missing_repos=lambda: ["/x"], reported_repos=lambda: {"/x"})
     facts = gather_facts(deps, NOW)
     assert facts["missing_repos"] == []
     assert facts["quarantines"] == gather_facts(_deps(), NOW)["quarantines"]
+
+
 def test_a_fake_run_exited_callable_appears_under_run_exited():
     assert gather_facts(replace(_deps(), run_exited=lambda: {"i": True}), NOW)["run_exited"] == {"i": True}
 
 
-def test_no_run_exited_callable_gives_an_empty_mapping():
-    assert gather_facts(_deps(), NOW)["run_exited"] == {}
-
-
 def test_a_fake_lost_runs_callable_appears_under_lost_runs():
     assert gather_facts(replace(_deps(), lost_runs=lambda: {"i": "i-2"}), NOW)["lost_runs"] == {"i": "i-2"}
-
-
-def test_no_lost_runs_callable_gives_an_empty_mapping():
-    assert gather_facts(_deps(), NOW)["lost_runs"] == {}
 
 
 def test_a_fake_pid_probe_callable_appears_under_pid_probe():
@@ -638,17 +589,9 @@ def test_a_fake_pid_probe_callable_appears_under_pid_probe():
     assert gather_facts(replace(_deps(), pid_probe=lambda: probe), NOW)["pid_probe"] == probe
 
 
-def test_an_absent_pid_probe_callable_gives_an_empty_mapping():
-    assert gather_facts(_deps(), NOW)["pid_probe"] == {}
-
-
 def test_a_fake_hosts_callables_return_value_appears_verbatim_under_login_hosts():
     rows = [{"name": "h1", "state": "needs_login", "versions_json": "{}"}]
     assert gather_facts(replace(_deps(), hosts=lambda: rows), NOW)["login_hosts"] == rows
-
-
-def test_an_absent_hosts_callable_gives_an_empty_login_hosts():
-    assert gather_facts(_deps(), NOW)["login_hosts"] == []
 
 
 ENV = {"coxswain-tools": {"lock_hash": "a", "synced_hash": "b"}}
@@ -682,11 +625,6 @@ def test_a_stale_checkout_needs_chair_row_gives_its_host_and_repo_key():
     lapsed = {"kind": "needs_chair", "cause": "login_lapsed", "host": "host-a"}
     rows = [{"action_json": json.dumps(stale)}, {"action_json": json.dumps(lapsed)}]
     assert stale_checkout_keys(rows) == ["host-a|coxswain-tools"]
-
-
-def test_absent_callables_give_an_empty_host_env_and_env_stale_reported():
-    facts = gather_facts(_deps(), NOW)
-    assert (facts["host_env"], facts["env_stale_reported"]) == ({}, [])
 
 
 def _row(initiative: str, task_id: str, state: str, **extra: object) -> dict:
