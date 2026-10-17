@@ -6781,15 +6781,30 @@ _DOCTOR_FAILING_LINE = ("doctor reports failing rows: create your workspace fold
                         "if you have not, then run cox setup doctor")
 
 _NO_MANIFEST = "refusing: no manifest at {}; run `cox install` to fetch the components, or pass --manifest"
+_NO_HOME_MANIFEST = _NO_MANIFEST + "; clone the umbrella there first"
+
+
+def _install_root(a: argparse.Namespace) -> tuple[Path, str | None] | None:
+    """The root and, when it came from the home default, that home. None after printing a refusal."""
+    if a.root:
+        return Path(a.root), None
+    locs = home_paths.resolve_here(a.home)
+    if isinstance(locs, home_paths.Refused):
+        print(f"refusing: {locs.reason}")
+        return None
+    return Path(locs.installs), locs.home
 
 
 def _install(a: argparse.Namespace) -> int:
-    manifest_path = Path(a.manifest) if a.manifest else Path(a.root) / "coxswain" / "manifest.toml"
+    resolved = _install_root(a)
+    if resolved is None:
+        return 2
+    root, home = resolved
+    manifest_path = Path(a.manifest) if a.manifest else root / "coxswain" / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
-        print(_NO_MANIFEST.format(manifest_path))
+        print((_NO_HOME_MANIFEST if home and not a.manifest else _NO_MANIFEST).format(manifest_path))
         return 2
-    root = Path(a.root)
     channel = "edge" if a.edge else "release"
     facts = {
         "root": str(root),
@@ -6797,7 +6812,7 @@ def _install(a: argparse.Namespace) -> int:
         "provider_cli_on_path": shutil.which(_manifest_provider_command(manifest, a.provider)) is not None,
     }
     options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team,
-               "workspace": a.workspace, "channel": channel}
+               "workspace": a.workspace, "channel": channel, **({"home": home} if home else {})}
     schema_state, schema_detail = schema.status(_schema_versions(str(root / "harness"), str(root / "cartridges")))
     if schema_state != "ok":
         print(f"schema  WARN  {schema_detail}")
@@ -6807,6 +6822,8 @@ def _install(a: argparse.Namespace) -> int:
         print(f"{step['kind']} {step['component']}: {step['detail']}")
     if a.dry_run:
         return 2 if any(step["kind"] == "refuse" for step in steps) else 0
+    if home:
+        root.mkdir(parents=True, exist_ok=True)
     return _install_execute(steps, manifest, options, root)
 
 
@@ -6864,13 +6881,17 @@ def _upgrade_plan_for(manifest: dict, root: Path, target: str, umbrella_tag: str
 
 def _upgrade(a: argparse.Namespace) -> int:
     """Move the umbrella first, then plan components from the manifest the moved umbrella carries."""
-    manifest_path = Path(a.manifest) if a.manifest else Path(a.root) / "coxswain" / "manifest.toml"
+    resolved = _install_root(a)
+    if resolved is None:
+        return 2
+    root, home = resolved
+    manifest_path = Path(a.manifest) if a.manifest else root / "coxswain" / "manifest.toml"
     manifest = _load_manifest(manifest_path)
     if manifest is None:
-        print(_NO_MANIFEST.format(manifest_path))
+        print((_NO_HOME_MANIFEST if home and not a.manifest else _NO_MANIFEST).format(manifest_path))
         return 2
-    root = Path(a.root)
-    options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team, "workspace": a.workspace}
+    options = {"provider": a.provider, "with": a.with_ or [], "root": str(root), "team": a.team, "workspace": a.workspace,
+               **({"home": home} if home else {})}
     if _upgrade_refused(manifest, root, options):
         return 2
     umbrella = root / "coxswain"
@@ -7521,7 +7542,8 @@ SETTINGS_COMMANDS = [
 INSTALL_GROUP = commands.Group(
     name="install", help="clone/update coxswain components against the manifest", description="", epilog="",
     args=(
-        commands.Arg(("--root",), {"required": True}),
+        commands.Arg(("--root",), {"help": "the installs folder; defaults to the home's installs folder"}),
+        commands.Arg(("--home",), {"help": "absolute path of the coxswain home; used when --root is omitted"}),
         commands.Arg(("--manifest",)),
         commands.Arg(("--provider",), {"default": "claude-code"}),
         commands.Arg(("--with",), {"action": "append", "default": None, "dest": "with_", "metavar": "FLAG"}),
@@ -7536,7 +7558,8 @@ INSTALL_GROUP = commands.Group(
 UPGRADE_GROUP = commands.Group(
     name="upgrade", help="fetch and check out newer pinned versions; refuses dirty checkouts", description="", epilog="",
     args=(
-        commands.Arg(("--root",), {"required": True}),
+        commands.Arg(("--root",), {"help": "the installs folder; defaults to the home's installs folder"}),
+        commands.Arg(("--home",), {"help": "absolute path of the coxswain home; used when --root is omitted"}),
         commands.Arg(("--manifest",)),
         commands.Arg(("--provider",), {"default": "claude-code"}),
         commands.Arg(("--with",), {"action": "append", "default": None, "dest": "with_", "metavar": "FLAG"}),

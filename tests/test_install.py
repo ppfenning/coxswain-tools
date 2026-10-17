@@ -453,3 +453,114 @@ def test_an_edge_checkout_behind_the_remote_fetches_and_then_lands_on_the_tip(tm
                                    root=str(root), run=run)
     assert results[0]["exit"] == 0 and (root / "coxswain-harness" / "f").read_text() == "2"
     assert steps()[0]["kind"] == "skip"
+
+
+_HOME_ARGS = ["--provider", "claude-code", "--team", "example-team"]
+
+
+def _home_manifest(tmp_path):
+    manifest_path = tmp_path / "installs" / "coxswain" / "manifest.toml"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(_MANIFEST_TOML)
+    return manifest_path
+
+
+def test_cli_install_defaults_its_root_to_the_homes_installs_folder(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path))
+    _home_manifest(tmp_path)
+    rc = cli.main(["install", "--dry-run", *_HOME_ARGS, "--workspace", str(tmp_path / "ws")])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "clone harness" in out and "clone cartridges" in out
+
+
+def test_cli_install_home_flag_overrides_the_environment(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path / "other"))
+    _home_manifest(tmp_path)
+    rc = cli.main(["install", "--dry-run", "--home", str(tmp_path), *_HOME_ARGS, "--workspace", str(tmp_path / "ws")])
+    assert rc == 0 and "clone harness" in capsys.readouterr().out
+
+
+def test_cli_install_home_default_without_a_manifest_names_the_path_and_exits_two(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path))
+    rc = cli.main(["install", "--dry-run", *_HOME_ARGS])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "no manifest at " + str(tmp_path / "installs" / "coxswain" / "manifest.toml") + ";" in out
+    assert out.rstrip().endswith("; clone the umbrella there first")
+
+
+def test_cli_install_relative_home_refuses_and_exits_two(capsys):
+    rc = cli.main(["install", "--dry-run", "--home", "relative/home", *_HOME_ARGS])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert out.startswith("refusing: --home must be an absolute path")
+
+
+def test_cli_install_root_flag_output_is_the_same_as_before(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path / "ignored"))
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    rc = cli.main(["install", "--dry-run", "--root", str(tmp_path / "R"), "--manifest", str(manifest_path),
+                   *_HOME_ARGS, "--workspace", str(tmp_path / "ws")])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out == (
+        "channel: release\n"
+        "clone harness: clone org/harness at v1.0.0\n"
+        "clone cartridges: clone org/cartridges at v1.0.0\n"
+        f"setup_install setup_install: channel=release team=example-team workspace={tmp_path / 'ws'}\n"
+        "doctor doctor: run cox setup doctor; provider CLI on PATH: False\n"
+    )
+    assert not (tmp_path / "ignored").exists() and "--home" not in out
+
+
+def test_cli_install_creates_the_installs_folder_before_cloning_but_not_on_dry_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path / "home"))
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    seen = []
+    monkeypatch.setattr(cli, "_install_execute",
+                        lambda steps, manifest, options, root: seen.append((root.is_dir(), options.get("home"))) or 0)
+    argv = ["install", "--manifest", str(manifest_path), *_HOME_ARGS, "--workspace", str(tmp_path / "ws")]
+    assert cli.main([*argv, "--dry-run"]) == 0
+    assert not (tmp_path / "home" / "installs").exists() and seen == []
+    assert cli.main(argv) == 0
+    assert seen == [(True, str(tmp_path / "home"))]
+
+
+def test_cli_install_with_root_passes_no_home_to_the_steps(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_MANIFEST_TOML)
+    seen = []
+    monkeypatch.setattr(cli, "_install_execute",
+                        lambda steps, manifest, options, root: seen.append(options) or 0)
+    assert cli.main(["install", "--root", str(tmp_path / "R"), "--manifest", str(manifest_path), *_HOME_ARGS]) == 0
+    assert "home" not in seen[0] and not (tmp_path / "R").exists()
+
+
+def test_cli_upgrade_without_root_resolves_its_checkouts_under_the_homes_installs_folder(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path))
+    installs = tmp_path / "installs"
+    _home_manifest(tmp_path)
+    monkeypatch.setattr(cli, "_checkout_facts", lambda path: {"present": True, "tag": "v0.9.0", "dirty": False})
+    calls = []
+
+    def fake_run(argv, cwd):
+        calls.append(argv)
+        return (0, "abc\trefs/tags/v1.0.0\n") if "ls-remote" in argv else (0, "")
+
+    monkeypatch.setattr(cli, "_real_run", fake_run)
+    rc = cli.main(["upgrade", "--dry-run", "--provider", "claude-code", "--to", "v1.0.0"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "would move umbrella: v0.9.0 to v1.0.0" in out
+    for component in ("coxswain-harness", "coxswain-cartridges"):
+        assert any(call[:3] == ["git", "-C", str(installs / component)] for call in calls)
+
+
+def test_cli_upgrade_home_default_without_a_manifest_names_the_path_and_exits_two(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path))
+    rc = cli.main(["upgrade", "--dry-run", "--provider", "claude-code"])
+    out = capsys.readouterr().out
+    assert rc == 2 and str(tmp_path / "installs" / "coxswain" / "manifest.toml") in out
