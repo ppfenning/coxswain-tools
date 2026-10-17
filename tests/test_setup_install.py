@@ -346,6 +346,20 @@ def test_tool_install_step_is_warn_only():
     assert all(step["warn_only"] is True for step in tool_install)
 
 
+def test_tool_install_target_carries_extras_and_empty_is_unchanged():
+    def tool_argvs(steps):
+        return [s["argv"] for s in steps if s["op"] == "run" and s["argv"][:2] == ["uv", "tool"]]
+
+    tools_checkout = f"{INSTALLS}/coxswain-tools"
+    extras = ("traces", "parquet", "lake", "postgres")
+    with_extras = tool_argvs(_plan(tool_extras=extras))
+    without = tool_argvs(_plan())
+    assert with_extras[0] == ["uv", "tool", "install", "-q", "-e", f"{tools_checkout}[traces,parquet,lake,postgres]"]
+    assert with_extras[1] == without[1]
+    assert without[0] == ["uv", "tool", "install", "-q", "-e", tools_checkout]
+    assert tool_argvs(_plan(tool_extras=())) == without
+
+
 def test_assume_flows_into_the_written_profile():
     steps = _plan(assume="r")
     writes = [s for s in steps if s["op"] == "write"]

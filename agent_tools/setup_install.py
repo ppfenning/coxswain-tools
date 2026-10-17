@@ -140,6 +140,11 @@ def marketplace_steps(cartridges_dir: str, registered: str | None) -> list:
     return [remove, add]
 
 
+def _tool_target(checkout: str, extras: tuple[str, ...]) -> str:
+    """The `-e` install target: the checkout, with `[a,b]` appended when extras are given."""
+    return f"{checkout}[{','.join(extras)}]" if extras else checkout
+
+
 def _workspace_steps(workspace: str) -> list:
     folders = (workspace, *(f"{workspace}/{name}" for name in ("work", "runs", "intake", "cartridges")))
     return [{"op": "mkdir", "path": path, "why": "create the workspace folder"} for path in folders]
@@ -168,6 +173,7 @@ def install_plan(
     locations: Locations | None = None,
     registered_marketplace: str | None = None,
     workspace_exists: bool = False,
+    tool_extras: tuple[str, ...] = (),
 ) -> list:
     """Ordered setup steps. With `locations`, every checkout, venv and the
     profile path come from the resolved record (`installs`, `profile`) and
@@ -181,7 +187,9 @@ def install_plan(
     happens to share a name in the field the routing layer reads.
     With `locations` and an empty `workspace`, the workspace is
     `<workspaces>/main` and its folders are made unless `workspace_exists`.
-    With `locations`, the last write records `<home>` at `locations.record`."""
+    With `locations`, the last write records `<home>` at `locations.record`.
+    `tool_extras` are the extras of the coxswain-tools checkout, already read
+    from the receipt by the caller; they ride on its `uv tool install` target."""
     default_workspace = locations is not None and not workspace
     if locations is not None and default_workspace:
         workspace = posixpath.join(locations.workspaces, "main")
@@ -202,7 +210,8 @@ def install_plan(
         for repo in REPOS:
             steps.extend(_repo_steps(repo, installs, python_exists, cartridges_dir))
         steps.append({"op": "run",
-                      "argv": ["uv", "tool", "install", "-q", "-e", f"{installs}/coxswain-tools"],
+                      "argv": ["uv", "tool", "install", "-q", "-e",
+                               _tool_target(f"{installs}/coxswain-tools", tool_extras)],
                       "why": "put cox on PATH", "warn_only": True})
         steps.append({"op": "run",
                       "argv": ["uv", "tool", "install", "-q", "-e", cartridges_dir],
