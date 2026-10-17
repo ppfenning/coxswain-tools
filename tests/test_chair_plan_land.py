@@ -1,3 +1,8 @@
+from datetime import UTC, datetime, timedelta
+
+from agent_tools.chair_facts import land_freeze_fact
+from agent_tools.chair_land_freeze import LandFreeze, active_freeze
+from agent_tools.chair_plan import plan_tick
 from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_types import Facts
 
@@ -237,3 +242,54 @@ def test_every_approved_task_of_a_phase_without_a_record_lands_by_task_in_one_ac
 def test_a_run_still_to_fetch_keeps_its_land_phase_since_the_record_may_come_with_the_fetch():
     facts: Facts = {**_facts([_task("a", run="i-1", phase="p1", fetch=True)]), "phase_records": []}
     assert _kinds(facts) == ["fetch", "land_phase"]
+
+
+_NOW = datetime(2026, 10, 17, 12, 0, tzinfo=UTC)
+
+
+def _frozen(facts: Facts) -> Facts:
+    return {**facts, "land_freeze": LandFreeze(reason="cut", expires_at=_NOW + timedelta(minutes=30))}
+
+
+def _kinds_of_tick(facts: Facts) -> list[str]:
+    return [a["kind"] for a in plan_tick({**facts, "dispatch": {"max_in_flight": 3, "live_runs": 0, "hosts": []}})]
+
+
+def test_a_live_freeze_plans_no_land_for_an_approved_phase_while_an_intake_still_decomposes():
+    facts: Facts = {**_facts([_task("a", phase="p1")]), "intake": ["i1"]}
+    assert _kinds_of_tick(facts) == ["land_phase", "launch_decompose"]
+    assert _kinds_of_tick(_frozen(facts)) == ["launch_decompose"]
+
+
+def test_an_expired_freeze_plans_the_land_for_the_same_approved_phase():
+    row = {"holder": "cut", "expires_at": (_NOW - timedelta(minutes=1)).isoformat()}
+    facts: Facts = {**_facts([_task("a", phase="p1")]), "intake": ["i1"], "land_freeze": active_freeze(row, _NOW)}
+    assert _kinds_of_tick(facts) == ["land_phase", "launch_decompose"]
+
+
+def test_a_live_freeze_also_suppresses_a_by_task_land():
+    facts: Facts = {**_facts([_task("a", run="i-1", phase="p1")]), "phase_records": []}
+    assert plan_lands(facts) == [_by_task({"a": "i-1"})]
+    assert plan_lands(_frozen(facts)) == []
+
+
+def test_a_live_freeze_still_plans_the_fetch_for_an_unfetched_run():
+    assert _kinds(_frozen(_facts([_task("a", run="i-1", phase="p1", fetch=True)]))) == ["fetch"]
+
+
+def test_a_live_freeze_still_plans_launches():
+    facts = _facts([])
+    facts["initiatives"] = [{"id": "n", "started": False, "ready_tasks": [{"id": "t1", "needs": []}], "landed": set()}]
+    assert _kinds_of_tick(_frozen(facts)) == ["launch_epic"]
+
+
+def test_a_live_freeze_still_plans_recoveries(monkeypatch):
+    monkeypatch.setattr("agent_tools.chair_plan.plan_recover", lambda facts, now=None: [{"kind": "relaunch", "initiative": "i"}])
+    facts: Facts = {**_facts([_task("a", phase="p1")]), "run_exited": {"i": True}}
+    assert _kinds_of_tick(facts) == ["land_phase", "relaunch"]
+    assert _kinds_of_tick(_frozen(facts)) == ["relaunch"]
+
+
+def test_an_expired_row_is_no_freeze_and_an_unset_runs_dir_reads_no_store():
+    assert active_freeze({"holder": "cut", "expires_at": _NOW.isoformat()}, _NOW) is None
+    assert land_freeze_fact("", _NOW) is None

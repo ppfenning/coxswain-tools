@@ -83,6 +83,7 @@ chair_decompose_runs = _LazyModule("agent_tools.chair_decompose_runs")
 chair_exec = _LazyModule("agent_tools.chair_exec")
 chair_facts = _LazyModule("agent_tools.chair_facts")
 chair_holder = _LazyModule("agent_tools.chair_holder")
+chair_land_freeze = _LazyModule("agent_tools.chair_land_freeze")
 chair_login_check = _LazyModule("agent_tools.chair_login_check")
 chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
 chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
@@ -9454,6 +9455,16 @@ def _chair_watchdog(a: argparse.Namespace) -> int:
     )
 
 
+def _chair_freeze_lands(a: argparse.Namespace) -> int:
+    """Edge. Prints the entry's text; exit 1 when that text is the usage line."""
+    _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    text = chair_land_freeze.run_freeze(runs_dir, datetime.datetime.now(datetime.UTC), a.minutes, a.reason, a.off)
+    print(text)
+    return 1 if text.endswith(chair_land_freeze.USAGE) else 0
+
+
 CHAIR_GROUP = commands.Group(
     name="chair", help="the chair loop that runs the landing and launch ticks itself",
     description="The chair loop that runs the landing and launch ticks itself.",
@@ -9542,6 +9553,23 @@ CHAIR_COMMANDS = [
             "A one-shot check meant for a five-minute timer.\n"
             "It reads only the store and exits 0 whether or not it pushed.\n"
             "It exits 1 only when the store cannot be read."
+        ),
+    ),
+    commands.Command(
+        "freeze-lands", "chair", "hold every land for a release cut, show the freeze, or lift it",
+        (
+            commands.Arg(("--for",), {"type": int, "dest": "minutes", "metavar": "MINUTES", "help": "minutes the freeze lasts; needs --reason"}),
+            commands.Arg(("--reason",), {"metavar": "TEXT", "help": "why lands are frozen; needs --for"}),
+            commands.Arg(("--off",), {"action": "store_true", "help": "lift the freeze now; not with --for or --reason"}),
+            commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+        ),
+        "agent_tools.cli:_chair_freeze_lands", False, (),
+        defaults={"profile": None},
+        description=(
+            "With --for and --reason, freeze lands until the minutes pass.\n"
+            "With --off, lift the freeze.\n"
+            "With neither, show whether lands are frozen.\n"
+            "A freeze that outlives its minutes lifts itself."
         ),
     ),
 ]
