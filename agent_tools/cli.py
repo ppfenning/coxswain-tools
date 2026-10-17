@@ -115,6 +115,7 @@ chair_run = _LazyModule("agent_tools.chair_run")
 chair_service = _LazyModule("agent_tools.chair_service")
 chair_service_host = _LazyModule("agent_tools.chair_service_host")
 chair_smoke = _LazyModule("agent_tools.chair_smoke")
+chair_watchdog = _LazyModule("agent_tools.chair_watchdog")
 checkout = _LazyModule("agent_tools.checkout")
 cleanup = _LazyModule("agent_tools.cleanup")
 console_screen = _LazyModule("agent_tools.console_screen")
@@ -9399,6 +9400,17 @@ def _chair_attach(
     return 1 if verdict.kind == "none" else 0
 
 
+def _chair_watchdog(a: argparse.Namespace) -> int:
+    """Edge. One check of the chair lease and status rows; the notify state file is the one `chair run` uses."""
+    profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    return chair_watchdog.run_watchdog(
+        runs_dir, notify_config=notify_core.config_from_profile(profile), state_path=runs_dir.parent / "notify-sent.json",
+        idle_minutes=a.idle_minutes, stale_minutes=a.stale_minutes, dry_run=a.dry_run,
+    )
+
+
 CHAIR_GROUP = commands.Group(
     name="chair", help="the chair loop that runs the landing and launch ticks itself",
     description="The chair loop that runs the landing and launch ticks itself.",
@@ -9473,6 +9485,21 @@ CHAIR_COMMANDS = [
         ),
         "agent_tools.cli:_chair_decisions", False, (),
         exclusive=("--open", "--answered"),
+    ),
+    commands.Command(
+        "watchdog", "chair", "one-shot loop check for a five-minute timer; reads only the store",
+        (
+            commands.Arg(("--idle-minutes",), {"type": int, "default": 30, "help": "minutes of idle status lines before an alert (default: 30)"}),
+            commands.Arg(("--stale-minutes",), {"type": int, "default": 10, "help": "minutes without a lease beat before the loop is down (default: 10)"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print each alert and push nothing"}),
+            commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+        ),
+        "agent_tools.cli:_chair_watchdog", False, (),
+        description=(
+            "A one-shot check meant for a five-minute timer.\n"
+            "It reads only the store and exits 0 whether or not it pushed.\n"
+            "It exits 1 only when the store cannot be read."
+        ),
     ),
 ]
 

@@ -145,6 +145,7 @@ cox chair ask QUESTION [--option OPTION] [--context CONTEXT] [--label LABEL] [--
 cox chair attach [--profile PROFILE]   say whether a live chair loop holds the lease; exit 0 if so, 1 if not
 cox chair answer ID OPTION [--profile PROFILE]   answer an open decision with one of its options
 cox chair decisions [--open] [--answered] [--json] [--profile PROFILE]   list decisions asked of the operator and their answers
+cox chair watchdog [--idle-minutes IDLE_MINUTES] [--stale-minutes STALE_MINUTES] [--dry-run] [--profile PROFILE]   one-shot loop check for a five-minute timer; reads only the store
 cox host add NAME --ssh SSH --capacity CAPACITY [--weight WEIGHT] [--capabilities CAPABILITIES]   add or update a host in the table
 cox host list   one line per host: state, capacity, beat age, login
 cox host drain NAME   stop launching on a host; its live lanes finish
