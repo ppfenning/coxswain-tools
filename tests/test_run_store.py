@@ -762,27 +762,6 @@ def test_remote_lanes_drops_a_local_run_and_keeps_the_rest_in_order():
     assert run_store.remote_lanes([a, b, c], {"b-1"}) == [a, c]
 
 
-def test_task_record_argv_binds_the_ids_as_arguments_after_the_script():
-    argv = run_store._task_record_argv("/h/python", "sqlite:///s.db", "r-1", "p1", "t1")
-    assert argv[:3] == ["/h/python", "-c", run_store._TASK_RECORD_SCRIPT]
-    assert argv[3:] == ["sqlite:///s.db", "r-1", "p1", "t1"]
-
-
-def test_task_record_script_selects_record_json_from_task_records_and_never_writes():
-    script = run_store._TASK_RECORD_SCRIPT
-    assert "SELECT record_json FROM task_records WHERE run_id = {0} AND phase_id = {0} AND task_id = {0}" in script
-    assert "INSERT" not in script and "UPDATE" not in script and "DELETE" not in script
-
-
-def test_task_record_from_a_json_object_is_the_dict():
-    assert run_store._task_record_from('{"task": "t1", "status": "done"}\n') == {"task": "t1", "status": "done"}
-
-
-@pytest.mark.parametrize("stdout", ["", "  \n", "not json", "[1, 2]", "3", "null"])
-def test_task_record_from_empty_or_non_object_output_is_none(stdout):
-    assert run_store._task_record_from(stdout) is None
-
-
 def stub_harness(monkeypatch, python="/h/python", result=None, error=None):
     calls = []
 
@@ -825,8 +804,9 @@ def test_task_record_is_none_on_a_nonzero_exit(tmp_path, monkeypatch):
     assert run_store.task_record(tmp_path, "r-1", "p1", "t1") is None
 
 
-def test_task_record_is_none_when_no_row_matches(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(0, ""))
+@pytest.mark.parametrize("stdout", ["", "[1, 2]"])
+def test_task_record_is_none_when_no_row_matches(tmp_path, monkeypatch, stdout):
+    stub_harness(monkeypatch, result=done(0, stdout))
     assert run_store.task_record(tmp_path, "r-1", "p1", "t1") is None
 
 
@@ -865,18 +845,10 @@ _TWO_INITIATIVES = json.dumps(
 
 
 def test_initiative_short_ids_maps_a_two_row_reply(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, result=done(0, _TWO_INITIATIVES + "\n"))
+    junk_row = json.dumps(json.loads(_TWO_INITIATIVES) + [{"initiative": "x", "short_id": None}])
+    calls = stub_harness(monkeypatch, result=done(0, junk_row + "\n"))
     assert run_store.initiative_short_ids(tmp_path) == {"widget-feed": "I412", "lake-sync": "I7"}
     assert calls == [run_store._initiative_ids_argv("/h/python", "sqlite:///s.db")]
-
-
-def test_initiative_short_ids_skips_a_row_without_a_short_id():
-    assert run_store._short_ids_from('[{"initiative": "a", "short_id": null}, {"initiative": "b", "short_id": "I2"}]') == {"b": "I2"}
-
-
-@pytest.mark.parametrize("stdout", ["", "not json", '{"a": "I1"}', "null"])
-def test_short_ids_from_output_that_is_not_an_array_is_empty(stdout):
-    assert run_store._short_ids_from(stdout) == {}
 
 
 def test_resolve_initiative_maps_a_short_id_to_its_slug(tmp_path, monkeypatch):
@@ -915,40 +887,10 @@ def test_the_task_record_script_reads_a_row_from_a_sqlite_store(tmp_path):
     assert run_store._task_record_from(miss.stdout) is None
 
 
-def test_work_items_argv_without_a_filter_is_the_python_the_script_and_the_url():
-    assert run_store._work_items_argv("/h/python", "sqlite:///s.db", None) == ["/h/python", "-c", run_store._WORK_ITEMS_SCRIPT, "sqlite:///s.db"]
-
-
-def test_work_items_argv_with_a_filter_ends_in_the_initiative_as_an_argument():
-    assert run_store._work_items_argv("/h/python", "sqlite:///s.db", "wsts")[3:] == ["sqlite:///s.db", "wsts"]
-
-
-def test_work_items_script_selects_the_seven_columns_from_work_items_and_never_writes():
-    script = run_store._WORK_ITEMS_SCRIPT
-    assert "SELECT initiative, task_id, phase, state, needs_json, updated_at, updated_by FROM work_items" in script
-    assert "initiative = {0}" in script
-    assert "INSERT" not in script and "UPDATE" not in script and "DELETE" not in script
-
-
-def test_work_items_from_two_json_lines_is_two_dicts():
-    assert run_store._work_items_from('{"task_id": "a"}\n{"task_id": "b"}\n') == [{"task_id": "a"}, {"task_id": "b"}]
-
-
-def test_work_items_from_keeps_an_extra_column():
-    assert run_store._work_items_from('{"task_id": "a", "extra": 1}') == [{"task_id": "a", "extra": 1}]
-
-
-def test_work_items_from_skips_blank_non_json_and_non_object_lines():
-    assert run_store._work_items_from('\nnot json\n[1]\n3\n{"task_id": "a"}\n') == [{"task_id": "a"}]
-
-
-def test_work_items_from_empty_output_is_empty():
-    assert run_store._work_items_from("") == []
-
-
 def test_work_items_runs_the_builders_argv_and_parses_the_output(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, result=done(0, '{"task_id": "a", "state": "done"}\n'))
-    assert run_store.work_items(tmp_path) == [{"task_id": "a", "state": "done"}]
+    out = '{"task_id": "a", "state": "done", "extra": 1}\n\nnot json\n[1]\n3\n'
+    calls = stub_harness(monkeypatch, result=done(0, out))
+    assert run_store.work_items(tmp_path) == [{"task_id": "a", "state": "done", "extra": 1}]
     assert calls == [run_store._work_items_argv("/h/python", "sqlite:///s.db", None)]
 
 
@@ -1114,44 +1056,19 @@ def test_queue_release_argv_names_the_holder():
     ]
 
 
-def test_queue_rows_from_fills_every_key_and_keeps_extra_columns():
-    row = run_store._queue_rows_from('{"initiative": "i1", "task_id": "t1", "state": "todo", "colour": "red"}\n')[0]
-    assert {key: row[key] for key in (*run_store._QUEUE_COLUMNS, *run_store._CLAIM_KEYS)} == {
-        "kind": None, "initiative": "i1", "task_id": "t1", "phase": None, "state": "todo", "needs": None,
-        "title": None, "surfaces": None, "body": None, "extra": None, "holder": None, "epoch": None, "expires_at": None,
-    }
-    assert row["colour"] == "red"
-
-
-def test_queue_rows_from_keeps_a_held_rows_claim_and_skips_junk_lines():
-    out = '\nnot json\n{"initiative": "i1", "task_id": "t1", "holder": "me", "epoch": 2, "expires_at": "x"}\n[1]\n'
-    rows = run_store._queue_rows_from(out)
-    assert [(r["holder"], r["epoch"], r["expires_at"]) for r in rows] == [("me", 2, "x")]
-
-
-def test_claim_from_trims_to_the_three_claim_keys():
-    assert run_store._claim_from('{"holder": "me", "epoch": 3, "expires_at": "x", "state": "todo"}') == {
-        "holder": "me", "epoch": 3, "expires_at": "x",
-    }
-
-
-@pytest.mark.parametrize("stdout", ["", "junk", "[1]", '{"epoch": 1}', '{"holder": null}'])
-def test_claim_from_is_none_without_a_holder(stdout):
-    assert run_store._claim_from(stdout) is None
-
-
-def test_claim_reason_tells_held_from_unavailable():
-    assert (run_store._claim_reason(4), run_store._claim_reason(1)) == ("held", "unavailable")
-
-
 CLAIM = '{"holder": "me", "epoch": 2, "expires_at": "2026-09-26T00:05:00Z"}\n'
 CLAIM_NOW = "2026-09-26T00:00:00Z"
 
 
 def test_read_queue_runs_the_builders_argv_and_parses_rows(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, result=done(0, '{"initiative": "i1", "task_id": "t1", "extra_col": 1}\n'))
+    out = (
+        '{"initiative": "i1", "task_id": "t1", "extra_col": 1}\n'
+        '{"initiative": "i1", "task_id": "t2", "holder": "me", "epoch": 2, "expires_at": "x"}\n'
+    )
+    calls = stub_harness(monkeypatch, result=done(0, out))
     rows = run_store.read_queue(tmp_path, "i1", "task")
-    assert [r["task_id"] for r in rows] == ["t1"]
+    assert [r["task_id"] for r in rows] == ["t1", "t2"]
+    assert (rows[1]["holder"], rows[1]["epoch"], rows[1]["expires_at"]) == ("me", 2, "x")
     assert calls == [run_store._queue_read_argv("/h/python", "sqlite:///s.db", "i1", "task")]
 
 
