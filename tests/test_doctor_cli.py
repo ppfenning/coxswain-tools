@@ -3,9 +3,11 @@ import os
 import sqlite3
 import stat
 import sys
+from pathlib import Path
 
 import pytest
 
+from agent_tools import cli
 from agent_tools.cli import _run_core_probe, main
 
 
@@ -32,6 +34,7 @@ _STUB = """#!{python}
 import json
 import os
 import sys
+from pathlib import Path
 from pathlib import Path
 
 args = sys.argv[3:]
@@ -590,5 +593,8 @@ def test_a_failing_home_row_exits_nonzero_and_a_warn_row_does_not(tmp_path, monk
     assert main(["setup", "doctor", "--profile", str(profile)]) == 0
     capsys.readouterr()
     monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path / "elsewhere"))
+    record = Path(cli.home_paths.resolve_here(None).record)
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(str(tmp_path / "elsewhere"), encoding="utf-8")  # a migrated machine: a missing home fails
     assert main(["setup", "doctor", "--profile", str(profile), "--json"]) == 1
     assert _rows(capsys)["home root"]["ok"] is False

@@ -385,6 +385,12 @@ _NO_CLAUDE = "not checked: claude is not on PATH"
 _NOT_MIGRATED = "not migrated: run cox setup migrate"
 
 
+def _unmigrated_row(row: dict) -> dict:
+    """On a machine not yet migrated a failing home row is expected, so it warns instead: a release that adds the home
+    must not fail the doctor of every install made before it."""
+    return row if row["ok"] else _home_warn_row(row["check"], f"{_NOT_MIGRATED}; {row['detail']}")
+
+
 def _home_warn_row(check: str, detail: str) -> dict:
     """Not checked is not failed: `ok` stays True so `exit_code` ignores the row."""
     return {"check": check, "ok": True, "warn": True, "detail": detail}
@@ -530,7 +536,11 @@ def home_rows(
     bins = [] if install_bins is None else [install_bins_row(locations, install_bins)]
     if home_record is None:
         unmigrated = ("old layout", "home paths", "home recorded", "cartridge links")
-        return [*root, *(_home_warn_row(check, _NOT_MIGRATED) for check in unmigrated), *bins]
+        return [
+            *(_unmigrated_row(row) for row in root),
+            *(_home_warn_row(check, _NOT_MIGRATED) for check in unmigrated),
+            *(_unmigrated_row(row) for row in bins),
+        ]
     return [
         *root,
         _legacy_layout_row(legacy_path),
