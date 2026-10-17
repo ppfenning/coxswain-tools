@@ -2,10 +2,10 @@
 
 Pure. Takes the facts, returns actions. No pacing, no run history, no I/O.
 """
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import reduce
-from typing import Literal
+from typing import Literal, cast
 
 from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, Launch, RunOutcome, Verdict, launch_budget
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
@@ -19,6 +19,14 @@ Recovery = Literal["rescue", "retry", "needs_chair", "relaunch", "none"]
 
 STRANDED_CAUSE = "stranded"
 MAIN_RED_CAUSE = "main_red"
+# The epic harness triages these on its next launch and amends the ticket, so one relaunch precedes the chair.
+TRIAGED_CAUSES = ("ticket", "code")
+_HALF_REASON = 300
+
+
+def _attempts_on_body(q: QuarantineFacts) -> int:
+    """Quarantined attempts on the current body; 0 when the fact lists none, so an unknown count never relaunches."""
+    return len(q.get("causes") or [])
 
 
 def _recovery(q: QuarantineFacts, approved: set[tuple[str, str]], outcomes: Mapping[str, list[str]]) -> Recovery:
@@ -36,6 +44,9 @@ def _recovery(q: QuarantineFacts, approved: set[tuple[str, str]], outcomes: Mapp
     # nothing and still blocks its initiative (_blocks): relaunching onto a main that keeps going red stacks work on it.
     if q["cause"] == MAIN_RED_CAUSE:
         return "none" if revert_stopped(outcomes.get(q["initiative"], [])) else "relaunch"
+    # A ticket or code quarantine gets one relaunch on its current body; the second attempt on that body reaches the chair.
+    if q["cause"] in TRIAGED_CAUSES:
+        return "relaunch" if _attempts_on_body(q) == 1 else "needs_chair"
     # harness_failures == 0 on a harness cause is not a case the rules name; the chair looks at it.
     if q["cause"] != "harness" or q["harness_failures"] != 1:
         return "needs_chair"
@@ -52,6 +63,15 @@ def _first_cause(q: QuarantineFacts) -> str:
     return causes[0] if causes else q["cause"]
 
 
+def _reason_text(q: QuarantineFacts) -> str:
+    """The first and newest attempt's reason for a ticket or code quarantine with two or more, each cut to 300 characters;
+    the newest reason cut to 600 otherwise. `reasons` is every attempt's reason on the current body, oldest first."""
+    reasons: Sequence[str] = cast(Mapping[str, Sequence[str]], q).get("reasons") or []
+    if q["cause"] in TRIAGED_CAUSES and len(reasons) >= 2:
+        return f"first: {reasons[0].strip()[:_HALF_REASON]} | latest: {reasons[-1].strip()[:_HALF_REASON]}"
+    return trim_reason(q.get("reason"))
+
+
 def _quarantine_action(q: QuarantineFacts, kind: Recovery) -> Action:
     if kind == "needs_chair" and "reason" not in q:
         # A fact that carries no row reason keeps the old shape: there is nothing to record beyond the cause.
@@ -64,7 +84,7 @@ def _quarantine_action(q: QuarantineFacts, kind: Recovery) -> Action:
             "initiative": q["initiative"],
             "task_id": q["task_id"],
             "cause": cause,
-            "reason": trim_reason(q.get("reason")),
+            "reason": _reason_text(q),
             "remedy": remedy["kind"],
             "command": remedy["command"],
         }
@@ -352,6 +372,7 @@ def plan_recover(facts: Facts, now: datetime | None = None) -> list[Action]:
     Every open quarantine blocks its initiative's relaunch except one whose recovery is "none" or "relaunch".
     A main_red quarantine recovers by relaunch until `land_outcomes` for its initiative ends in two reverts.
     Then its recovery is "none" and it keeps blocking.
+    A ticket or code quarantine with exactly one attempt on its current body recovers by relaunch; the second goes to the chair.
     A runaway-ceiling quarantine always reaches the chair, ahead of every other rule: it is never retried or
     rescued, whatever its harness_failures, retry count or approval state.
     A one-failure harness quarantine is rescued if it kept a patch, retried if not, and goes to the chair once a

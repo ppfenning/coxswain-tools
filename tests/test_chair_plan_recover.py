@@ -252,6 +252,55 @@ def test_facts_with_no_landing_key_relaunch_both_initiatives():
     assert plan_recover(facts) == _PAIRS
 
 
+def _triaged(cause: str, reasons: list[str]) -> QuarantineFacts:
+    """A quarantine with one attempt per reason on its current body, oldest first."""
+    return {
+        **_quarantine(cause=cause, failures=0),
+        "causes": [cause] * len(reasons),
+        "reasons": reasons,
+        "reason": reasons[-1],
+        "run": "r-9",
+        "repo": "/repo",
+    }  # type: ignore[typeddict-unknown-key]
+
+
+_ONE_PAIR = [{"kind": "clear_branches", "initiative": "i"}, {"kind": "relaunch", "initiative": "i"}]
+
+
+def test_one_ticket_quarantine_on_the_current_body_plans_a_relaunch():
+    assert plan_recover(_facts([_initiative()], [_triaged("ticket", ["no goal"])])) == _ONE_PAIR
+
+
+def test_one_code_quarantine_on_the_current_body_plans_a_relaunch():
+    assert plan_recover(_facts([_initiative()], [_triaged("code", ["import error"])])) == _ONE_PAIR
+
+
+def test_a_second_ticket_quarantine_on_the_same_body_needs_the_chair_with_both_reasons():
+    (action,) = plan_recover(_facts([_initiative()], [_triaged("ticket", ["no goal stated", "surface missing"])]))
+    assert (action["kind"], action["remedy"]) == ("needs_chair", "re-ground")
+    assert "no goal stated" in action["reason"] and "surface missing" in action["reason"]
+
+
+def test_a_second_code_quarantine_on_the_same_body_needs_the_chair_with_both_reasons():
+    (action,) = plan_recover(_facts([_initiative()], [_triaged("code", ["import error", "test fails"])]))
+    assert (action["kind"], action["remedy"]) == ("needs_chair", "re-ground")
+    assert "import error" in action["reason"] and "test fails" in action["reason"]
+
+
+def test_a_ticket_quarantine_listing_no_attempts_still_needs_the_chair():
+    facts = _facts([_initiative()], [_quarantine(cause="ticket", failures=0)])
+    assert plan_recover(facts) == [{"kind": "needs_chair", "initiative": "i", "task_id": "q1", "cause": "ticket"}]
+
+
+def test_harness_main_red_stranded_and_runaway_quarantines_plan_as_before():
+    assert plan_recover(_facts([], [_quarantine()])) == [{"kind": "retry", "task_id": "q1", "initiative": "i"}]
+    assert plan_recover(_facts([_initiative()], [_quarantine(cause="main_red")])) == _ONE_PAIR
+    stranded = plan_recover(_facts([], [_quarantine(cause="stranded", failures=0)]))
+    assert stranded == [{"kind": "needs_chair", "initiative": "i", "task_id": "q1", "cause": "stranded"}]
+    runaway = plan_recover(_facts([], [_triaged(RUNAWAY_CAUSE, ["ceiling"])]))
+    assert [a["kind"] for a in runaway] == ["needs_chair"]
+
+
 _NOW = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
 
 
