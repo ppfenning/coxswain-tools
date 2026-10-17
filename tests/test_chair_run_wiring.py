@@ -21,10 +21,8 @@ _FACTS_DEPS_METADATA_FIELDS = frozenset({"session", "pid", "host"})
 # `history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir)` (line 5774). That is a fact about
 # what `_chair_run_deps` wires today, not an assumption: if a future change starts passing `queue=` or
 # `stranded_records=`, the assertion below fails and names the field to drop from this set.
-# `decomposed_intake` and `item_counts` join them for the same reason: nothing in `_chair_run_deps` sources a
-# decomposed-intake reader or a work-store item count yet, so `empty_decompose` is always [] in production
-# until a later item wires them.
-_FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset({"queue", "stranded_records", "decomposed_intake", "item_counts"})
+# `decomposed_intake` and `item_counts` are wired and so no longer listed here.
+_FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset({"queue", "stranded_records"})
 
 
 def test_every_facts_deps_field_the_dataclass_declares_is_wired(tmp_path) -> None:
@@ -90,6 +88,66 @@ def test_the_recorder_is_built_with_a_store_runner_and_the_lease_holder(tmp_path
     cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
     assert seen["holder"] == cli.chair.lease_holder("chair", 1, "h")
     assert callable(seen["store"])
+
+
+def test_decomposed_intake_and_item_counts_are_provided(tmp_path) -> None:
+    deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert callable(deps.facts_deps.decomposed_intake)
+    assert callable(deps.facts_deps.item_counts)
+
+
+def _decomposed_workspace(tmp_path, monkeypatch, tasks: tuple[str, ...], intake_id: str = ""):
+    """An initiative `cited` naming intake `cited.md`, one plain initiative, and `tasks` under `cited`; runs are faked."""
+    for name, text in (("cited", "---\nintake: cited.md\n---\n"), ("plain", "---\nrepo: /x\n---\n")):
+        (tmp_path / "work" / name / "p1").mkdir(parents=True)
+        (tmp_path / "work" / name / "initiative.md").write_text(text, encoding="utf-8")
+    for task in tasks:
+        (tmp_path / "work" / "cited" / "p1" / f"{task}.md").write_text(f"---\nid: {task}\n---\nbody\n", encoding="utf-8")
+    if intake_id:
+        (tmp_path / "cited.md").write_text(f"---\nid: {intake_id}\n---\nbody\n", encoding="utf-8")
+    seen: list[str] = []
+
+    def fake_runs(runs_dir, intake):
+        seen.append(intake)
+        return [SimpleNamespace(run_id="cited-1"), SimpleNamespace(run_id="cited-2")]
+
+    monkeypatch.setattr(cli.chair_decompose_runs, "read_decompose_runs", fake_runs)
+    deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    return deps, seen
+
+
+def test_the_wired_facts_report_a_decomposed_initiative_with_no_tasks_exactly_once(tmp_path, monkeypatch) -> None:
+    deps, _ = _decomposed_workspace(tmp_path, monkeypatch, ())
+    counts, decomposed = deps.facts_deps.item_counts(), deps.facts_deps.decomposed_intake()  # type: ignore[misc]
+    assert counts == {"cited": 0}
+    assert chair_facts.empty_decompose_facts(decomposed, set(), counts) == [{"initiative": "cited", "run": "cited-2"}]
+
+
+def test_an_initiative_with_tasks_is_counted_and_its_decompose_runs_are_never_read(tmp_path, monkeypatch) -> None:
+    deps, seen = _decomposed_workspace(tmp_path, monkeypatch, ("a", "b"))
+    counts, decomposed = deps.facts_deps.item_counts(), deps.facts_deps.decomposed_intake()  # type: ignore[misc]
+    assert (counts, decomposed, seen) == ({"cited": 2}, {}, [])
+    assert chair_facts.empty_decompose_facts(decomposed, set(), counts) == []
+
+
+def test_decomposed_intake_is_keyed_by_the_initiative_when_the_intake_id_differs(tmp_path, monkeypatch) -> None:
+    deps, seen = _decomposed_workspace(tmp_path, monkeypatch, (), intake_id="other-id")
+    assert deps.facts_deps.decomposed_intake() == {"cited": "cited-2"}  # type: ignore[misc]
+    assert seen == ["other-id"]
+
+
+def test_newest_run_ids_takes_the_last_of_each_list_and_drops_an_empty_one() -> None:
+    assert cli._newest_run_ids({"a": ["a-1", "a-2"], "b": [], "c": ["c-1"]}) == {"a": "a-2", "c": "c-1"}
+
+
+def test_task_item_counts_counts_task_rows_per_initiative() -> None:
+    tickets = [{"initiative": "a"}, {"initiative": "a", "kind": "task"}, {"initiative": "b", "kind": "intake"}]
+    assert cli._task_item_counts(tickets, ["a", "empty"]) == {"a": 2, "empty": 0}
+
+
+def test_initiative_intakes_keeps_only_initiatives_that_name_an_intake() -> None:
+    texts = {Path("w/work/a/initiative.md"): "---\nintake: x.md\n---\n", Path("w/work/b/initiative.md"): "---\nrepo: r\n---\n"}
+    assert cli._initiative_intakes(texts) == {"a": "x.md"}
 
 
 def test_remote_unfetched_history_and_housekeeping_hours_are_wired_not_none(tmp_path) -> None:
