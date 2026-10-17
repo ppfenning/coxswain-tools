@@ -134,6 +134,7 @@ epic = _LazyModule("agent_tools.epic")
 forge = _LazyModule("agent_tools.forge")
 forge_github = _LazyModule("agent_tools.forge_github")
 generate = _LazyModule("agent_tools.generate")
+home_paths = _LazyModule("agent_tools.home")
 host_cmd = _LazyModule("agent_tools.host_cmd")
 install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
@@ -185,6 +186,8 @@ runs_top_screen = _LazyModule("agent_tools.runs_top_screen")
 schema = _LazyModule("agent_tools.schema")
 settings_model = _LazyModule("agent_tools.settings_model")
 setup_install = _LazyModule("agent_tools.setup_install")
+setup_migrate = _LazyModule("agent_tools.setup_migrate")
+setup_migrate_hosts = _LazyModule("agent_tools.setup_migrate_hosts")
 setup_store = _LazyModule("agent_tools.setup_store")
 setup_store_io = _LazyModule("agent_tools.setup_store_io")
 sources = _LazyModule("agent_tools.sources")
@@ -5857,6 +5860,312 @@ def _setup_install(a: argparse.Namespace) -> int:
     return 0
 
 
+def _migrate_profile(locs) -> dict:
+    """Edge. The profile as a mapping; empty when it is absent or unreadable."""
+    text = _read_text_or_none(Path(locs.profile))
+    try:
+        data = yaml.safe_load(text) if text is not None else None
+    except yaml.YAMLError:
+        return {}
+    return dict(data) if isinstance(data, Mapping) else {}
+
+
+def _migrate_kind(path: Path) -> str:
+    if path.is_symlink():
+        return "symlink"
+    if path.is_dir():
+        return "dir"
+    return "file" if path.exists() else "absent"
+
+
+def _migrate_entry(root: str, name: str, locs) -> dict:
+    old, new = Path(root) / name, Path(locs.installs) / name
+    if old == new:  # the profile already names the installs folder, so the old path is no longer known
+        return {"old": str(old), "old_kind": "symlink", "new_kind": _migrate_kind(new), "old_target": str(new)}
+    target = os.readlink(old) if old.is_symlink() else None
+    return {"old": str(old), "old_kind": _migrate_kind(old), "new_kind": _migrate_kind(new), "old_target": target}
+
+
+def _migrate_worktrees(checkout: Path) -> list[str] | None:
+    """Edge. Every path `git worktree list` names for the checkout, main one first; None when git cannot list."""
+    try:
+        done = subprocess.run(["git", "-C", str(checkout), "worktree", "list", "--porcelain"],
+                              capture_output=True, text=True)
+    except OSError:
+        return None
+    if done.returncode != 0:
+        return None
+    return [line[len("worktree "):] for line in done.stdout.splitlines() if line.startswith("worktree ")]
+
+
+def _migrate_cartridge_links(profile: Mapping) -> dict | None:
+    """Edge. Lexical target of each base and local link under cartridges_dir, at that folder and one team deeper."""
+    folder = profile.get("cartridges_dir")
+    if not isinstance(folder, str):
+        return None
+    root = Path(folder).expanduser()
+    found = {*root.glob("*/base"), *root.glob("*/local"), root / "base", root / "local"}
+    return {str(p): os.readlink(p) for p in sorted(found) if p.is_symlink()}
+
+
+def _migrate_old_root(profile: Mapping, locs) -> str | None:
+    """Pure. The folder holding the old checkouts: the parent of the first checkout-named path component in a
+    profile setting that lies outside the installs folder, else the installs folder when every setting is already
+    there. None when no setting names a checkout, so nothing is observed and the planner refuses."""
+    raw = [item for key in setup_migrate.SETTING_KEYS for item in (profile.get(key) if isinstance(profile.get(key), list) else [profile.get(key)])]
+    roots = [
+        str(p.parent)
+        for value in raw
+        if isinstance(value, str)
+        for p in [Path(value).expanduser(), *Path(value).expanduser().parents]
+        if p.name in setup_migrate.CHECKOUTS
+    ]
+    outside = [r for r in roots if r != locs.installs]
+    return (outside or roots or [None])[0]
+
+
+def _migrate_observe(locs) -> dict:
+    """Edge. The old layout as the plain dict `setup_migrate.migrate_plan` takes. When every setting already names
+    the installs folder no old path is recorded anywhere, so each checkout is reported as a link to its new path."""
+    profile = _migrate_profile(locs)
+    root = _migrate_old_root(profile, locs)
+    entries = {name: _migrate_entry(root, name, locs) for name in setup_migrate.CHECKOUTS} if root else {}
+    seen = {}
+    for name, entry in entries.items():
+        new, old = Path(locs.installs) / name, Path(entry["old"])
+        where = new if _migrate_kind(new) == "dir" else old if _migrate_kind(old) == "dir" else None
+        listed = _migrate_worktrees(where) if where is not None else None
+        if listed is not None:
+            seen[name] = listed
+    record = _read_text_or_none(Path(locs.record))
+    links = _migrate_cartridge_links(profile)
+    return {
+        "entries": entries,
+        "settings": {key: profile[key] for key in setup_migrate.SETTING_KEYS if key in profile},
+        "home_record": record.strip() if record and record.strip() else None,
+        "worktrees": {name: paths[1:] for name, paths in seen.items()},
+        "worktree_status": {name: "clean" for name, paths in seen.items() if all(Path(p).exists() for p in paths)},
+        **({"cartridge_links": links} if links is not None else {}),
+        **({"workspace": {"path": profile["workspace_dir"]}} if isinstance(profile.get("workspace_dir"), str) else {}),
+    }
+
+
+def _migrate_observe_hosts(locs) -> list:
+    """Edge. One ObservedHost per beaten active table row, then per profile lane host the table does not list."""
+    profile = _migrate_profile(locs)
+    declared = _profile_lane_hosts(_read_text_or_none(Path(locs.profile)) or "")
+    declared = () if isinstance(declared, lane_hosts.LaneHostError) else declared
+    workspace = profile.get("workspace_dir")
+    runs = Path(workspace).expanduser() / "runs" if isinstance(workspace, str) else None
+    rows = run_store.hosts(runs) if runs is not None and runs.is_dir() else []
+    by_name = {str(r["name"]): r for r in rows}
+    from_profile = {h.name: h.workspace_dir for h in declared}
+    tabled = host_cmd.host_rows_to_lane_hosts(rows, (), socket.gethostname())
+    seen = [
+        setup_migrate_hosts.ObservedHost(
+            h.name, h.ssh, h.workspace_dir,
+            {Path(p).name: p for p in host_cmd.recorded_repos(by_name[h.name])},
+            from_profile.get(h.name),
+            "beat" if by_name[h.name].get("beat_at") is not None else "fallback",
+        )
+        for h in tabled
+    ]
+    listed = {h.name for h in tabled}
+    return [*seen, *(setup_migrate_hosts.ObservedHost(h.name, h.ssh, h.workspace_dir, {}, h.workspace_dir, "fallback")
+                     for h in declared if h.name not in listed)]
+
+
+def _migrate_move(step: dict) -> str | None:
+    src, dst = Path(step["src"]), Path(step["dst"])
+    if _migrate_kind(dst) != "absent":
+        return f"{dst} already exists, so {src} was left where it is"
+    if _migrate_kind(src) != "dir":
+        return f"{src} is not a directory"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.move(str(src), str(dst))
+    except OSError as exc:
+        return f"cannot move {src} to {dst}: {exc}"
+    print(f"move {src} -> {dst}")
+    return None
+
+
+def _migrate_link(step: dict) -> str | None:
+    path = Path(step["path"])
+    kind = _migrate_kind(path)
+    if kind in ("dir", "file"):
+        return f"{path} is a real {kind}, so it was not replaced by a link"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "symlink":
+        path.unlink()
+    path.symlink_to(step["target"])
+    print(f"link {path} -> {step['target']}")
+    return None
+
+
+def _migrate_profile_value(value) -> str:
+    return "[" + ", ".join(str(v) for v in value) + "]" if isinstance(value, list) else str(value)
+
+
+def _migrate_edit_key(text: str, key: str, new) -> tuple[str | None, str]:
+    """Pure. (edited text, "") with the one top-level `key:` line replaced, or (None, reason) when no one-line
+    edit reads back as `new`."""
+    lines = text.splitlines(keepends=True)
+    hits = [i for i, line in enumerate(lines) if line.startswith(f"{key}:")]
+    if len(hits) != 1:
+        return None, f"the profile has {len(hits)} top-level {key} lines, and one is needed"
+    edited = "".join([*lines[: hits[0]], f"{key}: {_migrate_profile_value(new)}\n", *lines[hits[0] + 1 :]])
+    try:
+        parsed = yaml.safe_load(edited)
+    except yaml.YAMLError:
+        parsed = None
+    if not isinstance(parsed, Mapping) or parsed.get(key) != new:
+        return None, f"{key} cannot be written as one line that reads back as {new!r}"
+    return edited, ""
+
+
+def _migrate_rewrite_line(path: Path, key: str, new) -> str | None:
+    """Edge. Writes `_migrate_edit_key`'s result; the file is untouched when it refuses."""
+    text = _read_text_or_none(path)
+    if text is None:
+        return f"cannot read the profile at {path}"
+    edited, reason = _migrate_edit_key(text, key, new)
+    if edited is None:
+        return f"{path}: {reason}"
+    path.write_text(edited, encoding="utf-8")
+    print(f"profile {key} -> {_migrate_profile_value(new)}")
+    return None
+
+
+def _migrate_git(step: dict) -> str | None:
+    argv = " ".join(step["argv"])
+    try:
+        done = subprocess.run(step["argv"], capture_output=True, text=True)
+    except OSError as exc:
+        return f"{argv}: {exc}"
+    if done.returncode != 0:
+        return f"{argv} exited {done.returncode}: " + " ".join(done.stderr.strip().splitlines()[-3:])
+    listed = [line[len("worktree "):] for line in done.stdout.splitlines() if line.startswith("worktree ")]
+    missing = [p for p in listed if step["op"] == "verify" and not Path(p).exists()]
+    if missing:
+        return f"a worktree names the missing path {missing[0]}"
+    print(f"run: {argv}")
+    return None
+
+
+def _migrate_exec(step: dict, locs) -> str | None:
+    """Edge. Applies one local step; None on success, else the reason it failed."""
+    op = step["op"]
+    if op == "move":
+        return _migrate_move(step)
+    if op == "symlink":
+        return _migrate_link(step)
+    if op == "rewrite_profile_key":
+        return _migrate_rewrite_line(Path(locs.profile), step["key"], step["new"])
+    if op == "rewrite_setting":
+        record = Path(step["path"])
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(step["new"] + "\n", encoding="utf-8")
+        print(f"write {record}")
+        return None
+    if op in ("worktree_repair", "verify"):
+        return _migrate_git(step)
+    if op == "skip":
+        print(f"nothing to do: {step['why']}")
+        return None
+    if op == "print":
+        print(f"note: {step['why']}")
+        return None
+    return step["why"] if op == "refuse" else f"unknown step op: {op!r}"
+
+
+def _migrate_edit_lane_host(text: str, name: str, workspace_dir: str) -> tuple[str | None, str]:
+    """Pure. (edited text, "") with one block-style lane_hosts entry's workspace_dir line re-pointed and checked by
+    re-parsing, or (None, reason)."""
+    lines = text.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if line.startswith("lane_hosts:")), None)
+    if start is None:
+        return None, "the profile has no lane_hosts block"
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].strip() and not lines[i][0].isspace() and not lines[i].startswith("-")), len(lines))
+    starts = [i for i in range(start + 1, end) if lines[i].lstrip().startswith("- ")]
+    for first, last in zip(starts, [*starts[1:], end]):
+        named = [i for i in range(first, last) if re.match(r"^\s*(-\s+)?name:\s*['\"]?" + re.escape(name) + r"['\"]?\s*$", lines[i])]
+        field = [i for i in range(first, last) if re.match(r"^\s*(-\s+)?workspace_dir:", lines[i])]
+        if named and len(field) == 1:
+            prefix = re.match(r"^(\s*(?:-\s+)?)", lines[field[0]]).group(1)
+            lines[field[0]] = f"{prefix}workspace_dir: {workspace_dir}\n"
+            out = "".join(lines)
+            parsed = _profile_lane_hosts(out)
+            found = None if isinstance(parsed, lane_hosts.LaneHostError) else lane_hosts.find_lane_host(parsed, name)
+            if found is None or found.workspace_dir != workspace_dir:
+                return None, f"the lane_hosts entry for {name} does not read back with workspace_dir {workspace_dir}"
+            return out, ""
+    return None, f"the profile has no block-style lane_hosts entry for {name} with one workspace_dir line"
+
+
+def _migrate_rewrite_lane_host(path: Path, name: str, workspace_dir: str) -> str | None:
+    """Edge. Writes `_migrate_edit_lane_host`'s result; the file is untouched when it refuses."""
+    text = _read_text_or_none(path)
+    if text is None:
+        return f"cannot read the profile at {path}"
+    edited, reason = _migrate_edit_lane_host(text, name, workspace_dir)
+    if edited is None:
+        return f"{path}: {reason}"
+    path.write_text(edited, encoding="utf-8")
+    return None
+
+
+def _migrate_run_host_step(step, locs) -> tuple[bool, str]:
+    """Edge. Applies one host step and returns (succeeded, what happened). A skip or print step does nothing and
+    says its reason, so a host the planner could not judge is never reported as migrated. Tests replace this."""
+    if step.op == "remote_migrate":
+        argv = shlex.join(step.argv)
+        try:
+            done = subprocess.run(step.argv, capture_output=True, text=True)
+        except OSError as exc:
+            return False, f"{argv}: {exc}"
+        if done.returncode != 0:
+            return False, f"{argv} exited {done.returncode}: " + " ".join(done.stderr.strip().splitlines()[-3:])
+        return True, f"ran {argv}"
+    if step.op == "rewrite_host_workspace":
+        failure = _migrate_rewrite_lane_host(Path(locs.profile), step.host, step.payload["workspace_dir"])
+        return (False, failure) if failure else (True, f"lane_hosts workspace_dir set to {step.payload['workspace_dir']}")
+    if step.op in ("skip", "print"):
+        return True, step.why
+    return False, f"unknown host step op: {step.op!r}"
+
+
+def _setup_migrate(a: argparse.Namespace) -> int:
+    """Observe, plan and execute; --apply is accepted only because the host planner's remote argv spells it."""
+    locs = home_paths.resolve_here(a.home)
+    if isinstance(locs, home_paths.Refused):
+        print(f"refusing: {locs.reason}")
+        return 2
+    plan = setup_migrate.migrate_plan(_migrate_observe(locs), locs)
+    host_plan = setup_migrate_hosts.host_migrate_plan(_migrate_observe_hosts(locs), locs)
+    if a.dry_run:
+        print(setup_migrate.render_plan(plan))
+        print("\n".join(setup_migrate_hosts.render_hosts_plan(host_plan)))
+        return 0
+    for number, step in enumerate(plan, 1):
+        failure = _migrate_exec(step, locs)
+        if failure is not None:
+            print(f"FAILED step {number} {step['op']}: {failure}")
+            return 1
+    failed = 0
+    for group in host_plan:
+        for number, step in enumerate(group, 1):
+            done, text = _migrate_run_host_step(step, locs)
+            if not done:
+                print(f"host {step.host}: FAILED step {number} {step.op}: {text}")
+                failed += 1
+                break
+            print(f"host {step.host}: {step.op}: {text}")
+    print("verify with: cox setup doctor")
+    return 1 if failed else 0
+
+
 # (attribute, prompt label, flag). The first seven are connection details; the last three name environment variables.
 _STORE_DETAILS = (
     ("host", "Postgres host", "--host"),
@@ -8089,6 +8398,15 @@ SETUP_COMMANDS = [
             commands.Arg(("--weekly-ceiling-usd",), {"type": float, "default": None, "dest": "weekly_ceiling_usd", "help": "write spend: weekly_ceiling_usd into the profile"}),
         ),
         "agent_tools.cli:_setup_install", False, (),
+    ),
+    commands.Command(
+        "migrate", "setup", "move an existing layout under the coxswain home",
+        (
+            commands.Arg(("--home",), {"help": "absolute path of the coxswain home to migrate to"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plans; change nothing"}),
+            commands.Arg(("--apply",), {"action": "store_true", "help": "accepted and ignored; migrating is the default"}),
+        ),
+        "agent_tools.cli:_setup_migrate", False, (),
     ),
     commands.Command(
         "store", "setup", "choose files or a shared store for run records",
