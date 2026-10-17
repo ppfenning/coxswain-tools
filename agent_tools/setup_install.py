@@ -124,7 +124,7 @@ def _agent_steps(cast: dict) -> list:
     return steps
 
 
-def _marketplace_steps(cartridges_dir: str, registered: str | None) -> list:
+def marketplace_steps(cartridges_dir: str, registered: str | None) -> list:
     """Registry-only, per docs/design/coxswain-home.md section 3. `registered`
     is the source text `claude plugin marketplace list` shows for the
     cartridges marketplace, or None when none is listed."""
@@ -224,7 +224,7 @@ def install_plan(
 
     if plugins:
         if claude_on_path:
-            steps.extend(_marketplace_steps(cartridges_dir, registered_marketplace))
+            steps.extend(marketplace_steps(cartridges_dir, registered_marketplace))
             steps.append({"op": "run",
                           "argv": ["claude", "plugin", "install", "local-skills@coxswain-cartridges"],
                           "why": "install the local-skills plugin"})
