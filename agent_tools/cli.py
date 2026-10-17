@@ -6229,37 +6229,105 @@ def _migrate_run_host_step(step, locs) -> tuple[bool, str]:
     return False, f"unknown host step op: {step.op!r}"
 
 
+def _migrate_needs_preflight(plan, host_plan, hosts: bool) -> bool:
+    """Pure. True when a local step, or a host step under --hosts, does anything beyond skip and print."""
+    local = (step["op"] for step in plan)
+    remote = (step.op for group in host_plan for step in group) if hosts else ()
+    return any(op not in ("skip", "print") for op in (*local, *remote))
+
+
+def _migrate_acquire(runs_dir: Path, paths, holder: str) -> list:
+    """Edge. One repo lease per checkout path as (LeaseOutcome, epoch or None); an exception is an error outcome."""
+    taken = []
+    for path in paths:
+        try:
+            got = land_repo_lease.acquire(runs_dir, path, holder, 3600)
+        except Exception as exc:  # any failure to lease must refuse the migration, not crash it
+            taken.append((setup_migrate.LeaseOutcome(path, False, None, f"{type(exc).__name__}: {exc}"), None))
+            continue
+        if isinstance(got, store_cli.LeaseGranted):
+            taken.append((setup_migrate.LeaseOutcome(path, True, got.holder), got.epoch))
+        elif isinstance(got, store_cli.LeaseRefused):
+            taken.append((setup_migrate.LeaseOutcome(path, False, got.holder), None))
+        else:
+            taken.append((setup_migrate.LeaseOutcome(path, False, None, str(getattr(got, "detail", None) or getattr(got, "reason", None) or type(got).__name__)), None))
+    return taken
+
+
+def _migrate_release(runs_dir: Path, taken, holder: str) -> None:
+    """Edge. Releases every granted lease; one failed release does not stop the rest."""
+    for outcome, epoch in taken:
+        if outcome.granted and epoch is not None:
+            try:
+                land_repo_lease.release(runs_dir, outcome.path, holder, epoch)
+            except Exception as exc:  # the lease expires on its ttl, and the other releases still matter
+                print(f"migrate: could not release the lease on {outcome.path}: {exc}")
+
+
+def _migrate_read_holders(runs_dir: Path, hostname: str) -> tuple:
+    """Edge. Live lanes, the chair lease and this host's hosts-table row as the plain types `preflight_refusals` takes."""
+    lanes = tuple(setup_migrate.Lane(lane.run, lane.host) for lane in run_store.live_lanes(runs_dir, _now_iso()))
+    row = chair_read_lease.read_lease(runs_dir, datetime.datetime.now(datetime.UTC))
+    chair_lease = setup_migrate.ChairLease(bool(row["released"]), bool(row["stale"]), row["host"] or None)
+    rows = tuple(setup_migrate.HostRow(str(r["name"]), str(r["state"])) for r in run_store.hosts(runs_dir) if str(r["name"]) == hostname)
+    return lanes, chair_lease, rows
+
+
+def _migrate_runs_dir(locs) -> Path:
+    workspace = _migrate_profile(locs).get("workspace_dir")
+    return Path(workspace if isinstance(workspace, str) else locs.workspaces).expanduser() / "runs"
+
+
 def _setup_migrate(a: argparse.Namespace) -> int:
-    """Plans by default; --apply executes the local steps and --apply --hosts also the host steps. --dry-run is the default spelled out."""
+    """Plans by default; --apply executes the local steps and --apply --hosts also the host steps. --dry-run is the default spelled out.
+    Under --apply a plan with any real step first takes a repo lease per old checkout and refuses while a lane, the chair or this host is live."""
     locs = home_paths.resolve_here(a.home)
     if isinstance(locs, home_paths.Refused):
         print(f"refusing: {locs.reason}")
         return 2
-    plan = setup_migrate.migrate_plan(_migrate_observe(locs), locs)
+    observed = _migrate_observe(locs)
+    plan = setup_migrate.migrate_plan(observed, locs)
     host_plan = setup_migrate_hosts.host_migrate_plan(_migrate_observe_hosts(locs), locs)
     if not a.apply:
         print(setup_migrate.render_plan(plan))
         print("\n".join(setup_migrate_hosts.render_hosts_plan(host_plan)))
         print("no changes made; run with --apply to migrate")
         return 0
-    for number, step in enumerate(plan, 1):
-        failure = _migrate_exec(step, locs)
-        if failure is not None:
-            print(f"FAILED step {number} {step['op']}: {failure}")
-            return 1
-    failed = 0
-    if not a.hosts:
-        print("hosts: not touched; rerun with --apply --hosts on the chair's machine")
-    for group in host_plan if a.hosts else ():
-        for number, step in enumerate(group, 1):
-            done, text = _migrate_run_host_step(step, locs)
-            if not done:
-                print(f"host {step.host}: FAILED step {number} {step.op}: {text}")
-                failed += 1
-                break
-            print(f"host {step.host}: {step.op}: {text}")
-    print("verify with: cox setup doctor")
-    return 1 if failed else 0
+    taken: list = []
+    runs_dir = _migrate_runs_dir(locs)
+    holder = f"migrate@{socket.gethostname()}:{os.getpid()}"
+    try:
+        if _migrate_needs_preflight(plan, host_plan, a.hosts):
+            taken = _migrate_acquire(runs_dir, [observed["entries"][name]["old"] for name in setup_migrate.CHECKOUTS if name in observed["entries"]], holder)
+            lanes, chair_lease, host_rows = _migrate_read_holders(runs_dir, socket.gethostname())
+            refusals = setup_migrate.preflight_refusals(tuple(o for o, _ in taken), lanes, socket.gethostname(), chair_lease, host_rows)
+            if refusals:
+                print("\n".join(refusals))
+                return 1
+            state = Path(locs.state)
+            state.mkdir(parents=True, exist_ok=True)
+            (state / "migrate.json").write_text(
+                json.dumps({"old_root": _migrate_old_root(_migrate_profile(locs), locs), "new_root": locs.installs}), encoding="utf-8")
+        for number, step in enumerate(plan, 1):
+            failure = _migrate_exec(step, locs)
+            if failure is not None:
+                print(f"FAILED step {number} {step['op']}: {failure}")
+                return 1
+        failed = 0
+        if not a.hosts:
+            print("hosts: not touched; rerun with --apply --hosts on the chair's machine")
+        for group in host_plan if a.hosts else ():
+            for number, step in enumerate(group, 1):
+                done, text = _migrate_run_host_step(step, locs)
+                if not done:
+                    print(f"host {step.host}: FAILED step {number} {step.op}: {text}")
+                    failed += 1
+                    break
+                print(f"host {step.host}: {step.op}: {text}")
+        print("verify with: cox setup doctor")
+        return 1 if failed else 0
+    finally:
+        _migrate_release(runs_dir, taken, holder)
 
 
 # (attribute, prompt label, flag). The first seven are connection details; the last three name environment variables.
