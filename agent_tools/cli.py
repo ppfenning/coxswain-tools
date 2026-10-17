@@ -4749,15 +4749,8 @@ def _route_launch(a: argparse.Namespace) -> int:
         dict(os.environ), harness_dir=harness_dir, repo=env_repo, trace_dir=str(trace_dir), chair_model=chair_model,
     )
 
-    launch_harness = str(Path(harness_dir).expanduser()) if harness_dir else None
     if host is not None and a.dry_run:
-        checkouts = _host_checkouts(run_store.hosts(runs_dir), host.name)
-        # The sync steps are listed only for a host with recorded checkouts: test_cli_launch_on pins the bare rsync + ssh plan otherwise.
-        plan = remote_launch.launch_plan(
-            host, launch_dir.name, run_id, _holder_label(a), None, (env_repo or None) if checkouts else None,
-            launch_harness if checkouts else None, home=os.path.expanduser("~"), host_checkouts=checkouts,
-        )
-        for remote_argv in plan:
+        for remote_argv in remote_launch.launch_plan(host, launch_dir.name, run_id, _holder_label(a)):
             print(f"dry-run: {shlex.join(remote_argv)}")
         print(f"host {host.name}")
         return 0
@@ -4771,6 +4764,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         return 0
 
     if host is not None:
+        launch_harness = str(Path(harness_dir).expanduser()) if harness_dir else None
         return _route_launch_on_host(a, host, runs_dir, run_id, env_repo or None, launch_harness, home=os.path.expanduser("~"))
 
     if overlaid_path is not None:
@@ -4901,11 +4895,6 @@ def _pid_probe_ssh(argv: list[str]) -> tuple[int, str] | None:
     return done.returncode, done.stdout
 
 
-def _host_checkouts(rows: Sequence[Mapping[str, object]], name: str) -> tuple[str, ...]:
-    """The checkouts the named host's own beat recorded; () for a host with no row."""
-    return next((tuple(host_cmd.recorded_repos(r)) for r in rows if r.get("name") == name), ())
-
-
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
     harness_dir: str | None = None, *, home: str | None = None,
@@ -4925,7 +4914,7 @@ def _route_launch_on_host(
         )
     result = remote_launch.launch_on_host(
         host, _initiative_path(runs_dir, a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
-        preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name),
+        preflight=preflight, home=home,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
