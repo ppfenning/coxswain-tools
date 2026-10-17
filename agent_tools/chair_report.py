@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from agent_tools.chair_exec import LAUNCH_KINDS, Result
+from agent_tools.chair_land_freeze import LandFreeze, status_text
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_runnable import WaitingInitiative
 from agent_tools.chair_types import EASTERN, HELD_FILE_CAUSE, Action, Facts, QueueFile, ReviewPr
@@ -211,6 +212,13 @@ def _stall(facts: Facts) -> str | None:
     return f"stall: {diagnosis}" if isinstance(diagnosis, str) and diagnosis else None
 
 
+def _freeze(facts: Facts, now: datetime) -> str | None:
+    """The shared freeze text while a freeze is live at `now`; None when absent or expired."""
+    freeze = facts.get("land_freeze")
+    live = isinstance(freeze, LandFreeze) and freeze.expires_at > now
+    return status_text(freeze) if live else None
+
+
 def format_status(
     facts: Facts, all_actions: Sequence[Action | WaitingInitiative], results: Sequence[Result], now: datetime
 ) -> str:
@@ -231,6 +239,7 @@ def format_status(
     drafts = facts.get("drafts", 0)
     review = review_fragment(facts.get("review_prs", []))
     stall = _stall(facts)
+    freeze = _freeze(facts, now)
     parts = [
         f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}",
         f"lanes {dispatch['live_runs']}/{dispatch['max_in_flight']}",
@@ -238,6 +247,7 @@ def format_status(
         *([f"drafts {drafts}"] if drafts > 0 else []),
         f"limits {_five_hour(dict(limits))} {_weekly(dict(limits))}{stop}",
         *([stall] if stall else []),
+        *([freeze] if freeze else []),
         mode_of(actions, results),
         *([f"would: {', '.join(would)}"] if would else []),
         *([f"landing: {', '.join(landing)}"] if landing else []),
