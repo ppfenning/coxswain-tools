@@ -1,6 +1,0 @@
-usage: cox route import [-h] [--profile PROFILE] [--workspace WORKSPACE]
-
-options:
-  -h, --help            show this help message and exit
-  --profile PROFILE
-  --workspace WORKSPACE

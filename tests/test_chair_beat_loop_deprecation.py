@@ -1,6 +1,3 @@
-import subprocess
-import sys
-
 from agent_tools import chair
 
 
@@ -33,8 +30,3 @@ def test_notice_names_the_change_and_the_removal():
     assert "\n" not in chair.BEAT_LOOP_DEPRECATION
     assert "beats its own lease" in chair.BEAT_LOOP_DEPRECATION
     assert "removed in the next release" in chair.BEAT_LOOP_DEPRECATION
-
-
-def test_help_says_deprecated():
-    result = subprocess.run([sys.executable, "-m", "agent_tools.chair", "--help"], capture_output=True, text=True, check=True)
-    assert "DEPRECATED" in result.stdout

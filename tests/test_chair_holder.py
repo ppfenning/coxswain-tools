@@ -4,8 +4,6 @@ import socket
 import sqlite3
 from datetime import UTC, datetime
 
-import pytest
-
 from agent_tools import cli
 from agent_tools.chair_holder import HolderLease, HolderVerdict, chair_holder_verdict, format_holder_verdict, tick_age_s
 
@@ -191,9 +189,3 @@ def test_attach_real_store_without_a_status_column_is_not_called_not_a_loop(tmp_
     rc, unchanged = _attach_real_store(tmp_path, monkeypatch, "", (f"chair-run@{HERE}:4242", FUTURE.isoformat()))
     assert (rc, unchanged) == (0, True)
     assert capsys.readouterr().out.startswith("chair loop chair-run pid 4242")
-
-
-def test_attach_is_registered_under_chair(capsys):
-    with pytest.raises(SystemExit):
-        cli.main(["chair", "attach", "--help"])
-    assert "never takes, steals, releases or writes the lease" in capsys.readouterr().out

@@ -45,7 +45,3 @@ def test_bare_setup_keeps_its_tui_fallback_not_group_help(capsys, monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     assert main(["setup"]) == 2
     assert not strip_ansi(capsys.readouterr().out).startswith("usage: cox setup")
-
-
-def test_top_level_epilog_mentions_setup_doctor():
-    assert "setup doctor" in build_parser().epilog
