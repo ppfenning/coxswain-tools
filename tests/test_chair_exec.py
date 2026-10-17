@@ -266,6 +266,56 @@ def test_a_widen_ticket_with_no_ticket_fails_and_mirrors_nothing(tmp_path, monke
     assert mirrored == []
 
 
+def _close(initiative: str, state: str | None) -> dict:
+    return {"kind": "close_initiative", "initiative": initiative, **({} if state is None else {"state": state}), "epoch": 1}
+
+
+def _closing(monkeypatch, tmp_path, written: list, rows: list, result=None) -> Deps:
+    stored = chair_exec.store_cli.StateSet({}) if result is None else result
+    monkeypatch.setattr(chair_exec.store_cli, "set_state", lambda *a, **k: written.append(a) or stored)
+    return replace(_deps([]), runs_dir=tmp_path / "runs", record=rows.append)
+
+
+def test_a_close_initiative_done_writes_done_by_chair_loop_for_that_initiative(tmp_path, monkeypatch) -> None:
+    written: list = []
+    results = perform([_close("alpha", "done")], _closing(monkeypatch, tmp_path, written, []), lambda: 1, False)
+    assert written == [(tmp_path / "runs", "alpha", "alpha", "done", "chair-loop")]
+    assert (results[0]["status"], results[0]["reason"]) == ("done", "closed alpha as done")
+
+
+def test_a_close_initiative_dropped_writes_dropped(tmp_path, monkeypatch) -> None:
+    written: list = []
+    perform([_close("beta", "dropped")], _closing(monkeypatch, tmp_path, written, []), lambda: 1, False)
+    assert written == [(tmp_path / "runs", "beta", "beta", "dropped", "chair-loop")]
+
+
+def test_a_close_initiative_is_recorded_like_its_neighbours(tmp_path, monkeypatch) -> None:
+    rows: list = []
+    perform([_close("alpha", "done")], _closing(monkeypatch, tmp_path, [], rows), lambda: 1, False)
+    assert rows == [{**_close("alpha", "done"), "status": "done", "reason": "closed alpha as done"}]
+
+
+@pytest.mark.parametrize("state", ["todo", "ready", "", None])
+def test_a_close_initiative_with_an_invalid_state_writes_nothing_and_is_recorded_failed(tmp_path, monkeypatch, state) -> None:
+    written: list = []
+    rows: list = []
+    results = perform([_close("alpha", state)], _closing(monkeypatch, tmp_path, written, rows), lambda: 1, False)
+    assert written == []
+    assert results[0]["status"] == "failed"
+    assert [(r["kind"], r["status"]) for r in rows] == [("close_initiative", "failed")]
+
+
+def test_a_close_initiative_the_store_refuses_is_recorded_failed(tmp_path, monkeypatch) -> None:
+    refused = chair_exec.store_cli.StateRefused("no such row")
+    results = perform([_close("alpha", "done")], _closing(monkeypatch, tmp_path, [], [], refused), lambda: 1, False)
+    assert results[0]["status"] == "failed"
+
+
+def test_the_close_state_problem_is_empty_only_for_done_and_dropped() -> None:
+    assert [chair_exec._close_state_problem(s) for s in ("done", "dropped")] == ["", ""]
+    assert chair_exec._close_state_problem("todo") == "close_initiative state must be done or dropped, not 'todo'"
+
+
 def _land(task: str, repo: str) -> dict:
     return {"kind": "land", "task_id": task, "repo": repo, "run": "run-1", "epoch": 1}
 

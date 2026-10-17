@@ -3,11 +3,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from agent_tools.chair_facts import initiative_facts
+from agent_tools.chair_facts import initiative_facts, todo_initiative_facts
 from agent_tools.chair_plan import (
     _free_lanes,
     _launch_cap,
     initiative_homes,
+    plan_close_initiatives,
     plan_idle_stall,
     plan_stall,
     plan_tick,
@@ -1440,3 +1441,60 @@ def test_a_stale_lane_host_is_skipped_and_its_needs_chair_passes_through_stamped
             "epoch": 7,
         },
     ]
+
+
+def _closing(initiative: str, state: str) -> dict:
+    return {"kind": "close_initiative", "initiative": initiative, "state": state}
+
+
+def _todo(initiative: str, *task_states: str) -> dict:
+    return {"id": initiative, "task_states": list(task_states)}
+
+
+def test_an_initiative_whose_tasks_are_all_done_is_closed_done():
+    assert plan_close_initiatives(_facts(todo_initiatives=[_todo("i", "done", "done")])) == [_closing("i", "done")]
+
+
+def test_an_initiative_with_done_and_dropped_tasks_is_closed_done():
+    assert plan_close_initiatives(_facts(todo_initiatives=[_todo("i", "dropped", "done")])) == [_closing("i", "done")]
+
+
+def test_an_initiative_whose_tasks_are_all_dropped_is_closed_dropped():
+    assert plan_close_initiatives(_facts(todo_initiatives=[_todo("i", "dropped", "dropped")])) == [_closing("i", "dropped")]
+
+
+def test_an_initiative_with_an_open_task_is_not_closed():
+    assert plan_close_initiatives(_facts(todo_initiatives=[_todo("i", "done", "ready")])) == []
+
+
+def test_an_initiative_with_no_tasks_is_not_closed():
+    assert plan_close_initiatives(_facts(todo_initiatives=[_todo("i")])) == []
+
+
+def test_an_initiative_row_not_in_todo_is_not_closed():
+    rows = [
+        {"kind": "initiative", "initiative": "i", "state": "done"},
+        {"kind": "task", "initiative": "i", "state": "done"},
+    ]
+    assert plan_close_initiatives(_facts(todo_initiatives=todo_initiative_facts(rows))) == []
+
+
+def test_two_finished_initiatives_are_closed_in_row_order():
+    facts = _facts(todo_initiatives=[_todo("a", "done"), _todo("b", "dropped")])
+    assert plan_close_initiatives(facts) == [_closing("a", "done"), _closing("b", "dropped")]
+
+
+def test_closing_leaves_the_facts_unchanged_and_absent_facts_plan_nothing():
+    facts = _facts(todo_initiatives=[_todo("i", "done")])
+    before = copy.deepcopy(facts)
+    plan_close_initiatives(facts)
+    assert facts == before
+    assert plan_close_initiatives(_facts()) == []
+
+
+def test_a_close_initiative_is_stamped_and_survives_the_hard_stop():
+    stopped_limits = {"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False}
+    open_tick = _facts(todo_initiatives=[_todo("i", "done")])
+    stopped = _facts(todo_initiatives=[_todo("i", "done")], limits=stopped_limits)
+    assert plan_tick(open_tick) == [{**_closing("i", "done"), "epoch": 7}]
+    assert plan_tick(stopped) == [{**_closing("i", "done"), "epoch": 7}]
