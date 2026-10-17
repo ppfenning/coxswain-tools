@@ -155,7 +155,11 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
     those initiatives, so the caller keeps holding them from launches as a planned land_phase would.
 
     A group whose (initiative, phase, run) has a `land_conflicts` entry plans nothing either: the identical squash
-    conflict still stands, and the executor already recorded its needs_chair. `backoff_held` names those too."""
+    conflict still stands, and the executor already recorded its needs_chair. `backoff_held` names those too.
+
+    A `land_freeze` fact is a live freeze, already judged against the tick's clock: it plans no land_phase and no
+    by-task land. Fetches and needs_chair are still planned, and so is everything else outside this function."""
+    frozen = facts.get("land_freeze") is not None
     fetched: set[str] = set()
     actions: list[Action] = []  # type: ignore[assignment]  # plan_tick stamps the epoch on every action below
     for (initiative, phase), group in _land_groups(facts).items():
@@ -170,6 +174,8 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
         if run not in fetched and any(t["needs_fetch"] and t["run"] == run for t in group):
             actions.append(fetch_action(run, repo, initiative))
             fetched.add(run)
+        if frozen:
+            continue
         task_runs = {t["id"]: t["run"] for t in group}
         if lacks_phase_record(facts, group, run, phase):
             actions.append(by_task_action(initiative, phase, repo, run, task_runs))

@@ -17,6 +17,7 @@ from agent_tools.chair import lease_holder
 from agent_tools.chair_decompose_streak import DecomposeRun, DecomposeStreak, at_limit, streak
 from agent_tools.chair_idle_stall import IDLE_STALL_MINUTES
 from agent_tools.chair_land_backoff import LandRefusal, aligned
+from agent_tools.chair_land_freeze import LandFreeze, read_freeze
 from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, WINDOW
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
@@ -268,6 +269,11 @@ def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], An
 
     module = resolve(forge_name)  # None for a missing forge, and `forge.pr_state` answers unknown for None
     return read_review_prs(Path(runs_dir), lambda url: forge.pr_state(module, url))
+
+
+def land_freeze_fact(runs_dir: str, now: datetime) -> LandFreeze | None:
+    """Edge. The live land freeze, or None. An empty `runs_dir` never touches the store; an expired row is no freeze."""
+    return read_freeze(Path(runs_dir), now) if runs_dir else None
 
 
 def run_host_facts(raw: Mapping[str, str]) -> dict[str, str]:
@@ -1019,6 +1025,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "land_refusals": refusals,
         "land_conflicts": read_land_conflicts(deps.runs_dir(), repos),
         "land_heads": read_land_heads(refusals, repos, deps.rev_parse),
+        **({"land_freeze": freeze} if (freeze := land_freeze_fact(deps.runs_dir(), now)) is not None else {}),
         "launch_history": launch_history_from_actions(action_rows, quarantine, now),
         "max_launches_per_hour": resolve_max_launches_per_hour(
             deps.max_launches_per_hour() if deps.max_launches_per_hour is not None else None
