@@ -47,7 +47,7 @@ def test_setup_install_help_lists_every_flag(capsys):
         build_parser().parse_args(["setup", "install", "--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    for flag in ("--root", "--team", "--workspace", "--provider-profile", "--skills-root",
+    for flag in ("--root", "--team", "--workspace", "--home", "--provider-profile", "--skills-root",
                  "--assume", "--plugins", "--hook", "--force-profile", "--window-ceiling-usd",
                  "--dry-run"):
         assert flag in out
@@ -193,6 +193,96 @@ def test_a_settings_file_with_invalid_json_fails_gracefully(install_env, capsys)
     out = capsys.readouterr().out
     assert "not valid JSON" in out
     assert settings_path.read_text(encoding="utf-8") == "{not valid json"
+
+
+@pytest.fixture
+def home_env(install_env, tmp_path, monkeypatch):
+    coxswain_home = tmp_path / "cox"
+    for name in ("COXSWAIN_HOME", "AGENT_TOOLS_PROFILE", "XDG_DATA_HOME", "XDG_STATE_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("COXSWAIN_HOME", str(coxswain_home))
+    record = install_env["home"] / ".config" / "agent-tools" / "home"
+    return {**install_env, "cox": coxswain_home, "record": record}
+
+
+def test_dry_run_without_root_plans_into_the_home(home_env, capsys):
+    rc = _run(["setup", "install", "--team", "acme", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    cox = home_env["cox"]
+    assert f"run ({cox}/installs/coxswain-tools) " in out
+    assert f"mkdir {cox}/workspaces/main" in out
+    assert f"write {home_env['home']}/.config/agent-tools/profile.yaml" in out
+    assert f"write {home_env['record']}" in out
+    assert not home_env["record"].exists()
+    assert not home_env["log"].exists()
+
+
+def test_the_profile_path_env_var_decides_existence_and_write(home_env, tmp_path, monkeypatch, capsys):
+    profile = tmp_path / "elsewhere" / "profile.yaml"
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
+    assert _run(["setup", "install", "--team", "acme", "--dry-run"]) == 0
+    assert f"write {profile}\n" in capsys.readouterr().out
+    profile.parent.mkdir()
+    profile.write_text("team: x\n", encoding="utf-8")
+    assert _run(["setup", "install", "--team", "acme", "--dry-run"]) == 0
+    assert "skip profile" in capsys.readouterr().out
+
+
+def test_home_flag_names_the_home_and_the_registered_marketplace_is_read(home_env, tmp_path, monkeypatch, capsys):
+    other = tmp_path / "flagged"
+    body = '#!/bin/sh\nif [ "$3" = list ]; then echo \'[{"name":"coxswain-cartridges","path":"/old"}]\'; fi\nexit 0\n'
+    _write_executable(home_env["bin"] / "claude", body)
+    rc = _run(["setup", "install", "--team", "acme", "--home", str(other), "--plugins", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert f"run ({other}/installs/coxswain-tools) " in out
+    assert "claude plugin marketplace remove coxswain-cartridges" in out
+
+
+def test_a_home_record_naming_another_home_is_refused_before_any_step(home_env, tmp_path, monkeypatch, capsys):
+    home_env["record"].parent.mkdir(parents=True)
+    home_env["record"].write_text("/somewhere/else\n", encoding="utf-8")
+    rc = _run(["setup", "install", "--team", "acme"])
+    assert rc == 2
+    assert (f"refusing: the home record names /somewhere/else, not {home_env['cox']}; "
+            f"run cox setup migrate --home {home_env['cox']}") in capsys.readouterr().out
+    assert not home_env["log"].exists()
+    flagged = tmp_path / "flagged"
+    rc = _run(["setup", "install", "--team", "acme", "--home", str(flagged)])
+    assert rc == 2
+    assert f"not {flagged}; run cox setup migrate --home {flagged}" in capsys.readouterr().out
+    assert not home_env["log"].exists()
+
+
+def test_a_matching_or_unnamed_home_record_is_not_refused(home_env, monkeypatch, capsys):
+    home_env["record"].parent.mkdir(parents=True)
+    home_env["record"].write_text(f"{home_env['cox']}\n", encoding="utf-8")
+    assert _run(["setup", "install", "--team", "acme", "--dry-run"]) == 0
+    home_env["record"].write_text("/somewhere/else\n", encoding="utf-8")
+    monkeypatch.delenv("COXSWAIN_HOME")
+    assert _run(["setup", "install", "--team", "acme", "--dry-run"]) == 0
+    assert "run (/somewhere/else/installs/coxswain-tools) " in capsys.readouterr().out
+
+
+def test_a_refused_resolve_exits_2_with_its_reason(home_env, capsys):
+    rc = _run(["setup", "install", "--team", "acme", "--home", "relative/dir"])
+    assert rc == 2
+    assert "refusing: --home must be an absolute path, got 'relative/dir'" in capsys.readouterr().out
+    assert not home_env["log"].exists()
+
+
+def test_root_without_workspace_is_refused(install_env, capsys):
+    rc = _run(["setup", "install", "--root", str(install_env["root"]), "--team", "acme", "--dry-run"])
+    assert rc == 2
+    assert "refusing: --workspace is required with --root" in capsys.readouterr().out
+
+
+def test_root_runs_write_no_home_record(install_env, capsys):
+    assert _run(_base_argv(install_env, "--dry-run")) == 0
+    out = capsys.readouterr().out
+    assert "agent-tools/home" not in out
+    assert "mkdir" not in out
 
 
 def test_marketplace_paths_maps_name_to_path_with_blank_default():
