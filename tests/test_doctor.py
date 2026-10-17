@@ -818,3 +818,52 @@ def test_legacy_layout_present_is_a_warn_naming_setup_migrate():
 def test_legacy_layout_absent_is_ok_without_warn():
     row = _home()[3]
     assert (row["ok"], row.get("warn"), row["detail"]) == (True, None, "no old-layout checkout found")
+
+
+_LINK_BASE, _LINK_LOCAL = "/u/ws/cartridges/base", "/u/ws/cartridges/local"
+_ROOT_LINK = "../../../h/installs/coxswain-cartridges"
+
+
+def _links_row(links):
+    return doctor.home_rows(_LOCATIONS, None, True, True, None, False, links)[-1]
+
+
+def test_cartridge_links_row_is_absent_until_links_are_gathered():
+    assert [r["check"] for r in _home()] == [
+        "home root",
+        "marketplace registered",
+        "marketplace location",
+        "old layout",
+    ]
+
+
+def test_cartridge_links_fail_when_they_point_at_the_checkout_root():
+    row = _links_row({_LINK_BASE: _ROOT_LINK, _LINK_LOCAL: _ROOT_LINK})
+    assert (row["check"], row["ok"]) == ("cartridge links", False)
+    assert row["detail"] == (
+        f"{_LINK_BASE} -> {_ROOT_LINK}; expected {_ROOT_LINK}/cartridges/base; "
+        f"{_LINK_LOCAL} -> {_ROOT_LINK}; expected {_ROOT_LINK}/cartridges/local"
+    )
+
+
+def test_cartridge_links_pass_when_they_point_at_the_subfolders():
+    row = _links_row({_LINK_BASE: f"{_ROOT_LINK}/cartridges/base", _LINK_LOCAL: f"{_ROOT_LINK}/cartridges/local"})
+    assert (row["check"], row["ok"], row["detail"]) == (
+        "cartridge links",
+        True,
+        "2 links reach their subfolder of the checkout under the home",
+    )
+
+
+def test_cartridge_links_compare_text_without_following_links():
+    row = _links_row(
+        {
+            _LINK_BASE: f"{_ROOT_LINK}/cartridges/base",
+            _LINK_LOCAL: "../../../h/installs/../installs/coxswain-cartridges/cartridges/local",
+        }
+    )
+    assert row["ok"] is False and _LINK_BASE not in row["detail"]
+
+
+def test_cartridge_links_fail_when_none_were_found():
+    assert _links_row({})["ok"] is False

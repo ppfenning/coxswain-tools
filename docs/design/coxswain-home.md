@@ -120,12 +120,14 @@ Earlier drafts each missed a stored location. These are all ten. The word migrat
    - Verification: no doctor row checks these today. The new row "lane host paths" passes when every lane_hosts
      entry equals its host's reported values, and tests/test_setup_migrate_hosts.py covers the rewrite.
 3. The workspace cartridges folder, where each team's base and local entries are relative symlinks into the
-   cartridges checkout.
-   - New value: relative symlinks recomputed from the workspace to the checkout under the home.
+   cartridges subfolder of the cartridges checkout.
+   - New value: the target of each entry is the cartridges checkout under the home, then cartridges, then the entry
+     name, for example coxswain-cartridges/cartridges/base. It is written relative to the folder that holds the link.
+     A link to the checkout root is wrong, because the root holds no cartridge.yaml for the entry.
    - Rewriter: a migrate step. The links are relative, so a moved checkout leaves them dangling.
    - Verification: the new row "cartridge links" passes when the lexical target of every base and local entry equals
-     the cartridges checkout path under the home. It does not follow the compatibility link, so it fails before the
-     rewrite.
+     that relative path to the entry's subfolder of the cartridges checkout under the home. It does not follow the
+     compatibility link, so it fails before the rewrite and fails a link to the checkout root.
 4. Editable installs by path: the graphs virtualenv, the tools virtualenv, the uv tool providing cox and the uv tool
    providing the cartridge command.
    - New value: each installs editable from the moved checkout. The graphs virtualenv and the cartridge tool use the

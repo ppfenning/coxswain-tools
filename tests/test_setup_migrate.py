@@ -22,8 +22,14 @@ NEW = "/h/coxswain/installs"
 CART, GRAPHS, TOOLS = CHECKOUTS
 LINK_BASE = "/u/ws/cartridges/base"
 LINK_LOCAL = "/u/ws/cartridges/local"
-OLD_LINK = "../../repos/coxswain-cartridges"
-NEW_LINK = "../../../h/coxswain/installs/coxswain-cartridges"
+OLD_LINKS = {
+    LINK_BASE: "../../repos/coxswain-cartridges/cartridges/base",
+    LINK_LOCAL: "../../repos/coxswain-cartridges/cartridges/local",
+}
+NEW_LINKS = {
+    LINK_BASE: "../../../h/coxswain/installs/coxswain-cartridges/cartridges/base",
+    LINK_LOCAL: "../../../h/coxswain/installs/coxswain-cartridges/cartridges/local",
+}
 
 
 def entry(name, old_kind, new_kind, old_target=None):
@@ -48,7 +54,7 @@ def layout(make_entry, settings, links, home_record):
         "workspace": {"path": "/u/ws"},
         "settings": settings,
         "home_record": home_record,
-        "cartridge_links": {LINK_BASE: links, LINK_LOCAL: links},
+        "cartridge_links": links,
         "worktrees": {CART: ["/u/wt/c1"], GRAPHS: ["/u/wt/g1", "/u/wt/g2"], TOOLS: []},
         "worktree_status": dict.fromkeys(CHECKOUTS, "clean") if make_entry is final_entry else {},
     }
@@ -71,11 +77,11 @@ NEW_SETTINGS = {
 
 
 def old_layout():
-    return layout(old_entry, OLD_SETTINGS, OLD_LINK, None)
+    return layout(old_entry, OLD_SETTINGS, OLD_LINKS, None)
 
 
 def final_layout():
-    return layout(final_entry, NEW_SETTINGS, NEW_LINK, LOCS.home)
+    return layout(final_entry, NEW_SETTINGS, NEW_LINKS, LOCS.home)
 
 
 def ops(steps):
@@ -223,13 +229,37 @@ def test_workspace_symlinks_are_repointed_only_when_stale():
     steps = migrate_plan(old_layout(), LOCS)
     links = [s for s in of(steps, "symlink") if s["path"] in (LINK_BASE, LINK_LOCAL)]
     assert [(s["path"], s["target"], s["old_target"]) for s in links] == [
-        (LINK_BASE, NEW_LINK, OLD_LINK),
-        (LINK_LOCAL, NEW_LINK, OLD_LINK),
+        (LINK_BASE, NEW_LINKS[LINK_BASE], OLD_LINKS[LINK_BASE]),
+        (LINK_LOCAL, NEW_LINKS[LINK_LOCAL], OLD_LINKS[LINK_LOCAL]),
     ]
-    fresh = {**old_layout(), "cartridge_links": {LINK_BASE: NEW_LINK, LINK_LOCAL: OLD_LINK}}
+    fresh = {**old_layout(), "cartridge_links": {LINK_BASE: NEW_LINKS[LINK_BASE], LINK_LOCAL: OLD_LINKS[LINK_LOCAL]}}
     assert [s["path"] for s in of(migrate_plan(fresh, LOCS), "symlink") if s["path"].startswith("/u/ws")] == [
         LINK_LOCAL
     ]
+
+
+def test_workspace_links_keep_the_cartridges_subfolder():
+    observed = {
+        **old_layout(),
+        "cartridge_links": {
+            LINK_BASE: "/u/repos/coxswain-cartridges/cartridges/base",
+            LINK_LOCAL: "/u/repos/coxswain-cartridges/cartridges/local",
+        },
+    }
+    links = [s for s in of(migrate_plan(observed, LOCS), "symlink") if s["path"] in (LINK_BASE, LINK_LOCAL)]
+    assert [(s["path"], s["target"]) for s in links] == [
+        (LINK_BASE, "../../../h/coxswain/installs/coxswain-cartridges/cartridges/base"),
+        (LINK_LOCAL, "../../../h/coxswain/installs/coxswain-cartridges/cartridges/local"),
+    ]
+    assert links[0]["target"].endswith("coxswain-cartridges/cartridges/base")
+    assert links[1]["target"].endswith("coxswain-cartridges/cartridges/local")
+
+
+def test_links_at_the_checkout_root_are_repointed_at_the_subfolders():
+    root = "../../../h/coxswain/installs/coxswain-cartridges"
+    observed = {**final_layout(), "cartridge_links": {LINK_BASE: root, LINK_LOCAL: root}}
+    links = of(migrate_plan(observed, LOCS), "symlink")
+    assert [(s["path"], s["target"]) for s in links] == [(p, NEW_LINKS[p]) for p in (LINK_BASE, LINK_LOCAL)]
 
 
 def test_worktree_repair_and_verify_argv():
@@ -327,9 +357,16 @@ def test_render_plan_is_one_line_per_step():
 def simulate(steps, fs):
     """Apply steps to a dict model of the filesystem, failing on any dangling link, replaced dir or early re-point."""
 
-    def resolves(path, hops=0):
-        node = fs.get(path)
-        return node is not None and (node[0] == "dir" or (hops < 5 and resolves(node[1], hops + 1)))
+    def real(path, hops=0):
+        """The physical path with every symlinked ancestor substituted, or None when links loop."""
+        parent = posixpath.dirname(path)
+        base = path if parent == path else real(parent, hops + 1) if hops < 8 else None
+        full = None if base is None else path if parent == path else posixpath.join(base, posixpath.basename(path))
+        node = fs.get(full)
+        return real(node[1], hops + 1) if node and node[0] == "symlink" and hops < 8 else full
+
+    def resolves(path):
+        return fs.get(real(path), (None,))[0] == "dir"
 
     def within(path):
         return resolves(path) or (path not in ("/", "") and within(posixpath.dirname(path)))
@@ -339,7 +376,8 @@ def simulate(steps, fs):
         if step["op"] == "move":
             assert fs[step["src"]][0] == "dir"
             assert step["dst"] not in fs
-            fs[step["dst"]] = fs.pop(step["src"])
+            inside = [k for k in fs if k == step["src"] or k.startswith(step["src"] + "/")]
+            fs.update({step["dst"] + k[len(step["src"]) :]: fs.pop(k) for k in inside})
         elif step["op"] == "symlink":
             assert fs.get(step["path"], ("symlink",))[0] == "symlink"
             target = posixpath.normpath(posixpath.join(posixpath.dirname(step["path"]), step["target"]))
@@ -354,13 +392,19 @@ def simulate(steps, fs):
 def model(observed):
     fs = {}
     for e in observed["entries"].values():
-        new = f"{NEW}/{posixpath.basename(e['old'])}"
+        name = posixpath.basename(e["old"])
+        new = f"{NEW}/{name}"
+        folders = (
+            (lambda root: {f"{root}/cartridges/{n}": ("dir",) for n in ("base", "local")})
+            if name == CART
+            else (lambda root: {})
+        )
         if e["old_kind"] == "dir":
-            fs[e["old"]] = ("dir",)
+            fs.update({e["old"]: ("dir",), **folders(e["old"])})
         elif e["old_kind"] == "symlink":
             fs[e["old"]] = ("symlink", e["old_target"])
         if e["new_kind"] == "dir":
-            fs[new] = ("dir",)
+            fs.update({new: ("dir",), **folders(new)})
     for path, target in observed["cartridge_links"].items():
         fs[path] = ("symlink", posixpath.normpath(posixpath.join(posixpath.dirname(path), target)))
     return fs
@@ -374,12 +418,12 @@ def test_applying_the_plan_leaves_no_dangling_link_or_early_repoint(make):
 
 
 def test_dangle_check_over_a_layout_whose_links_were_removed():
-    observed = layout(crashed_entry, OLD_SETTINGS, OLD_LINK, None)
+    observed = layout(crashed_entry, OLD_SETTINGS, OLD_LINKS, None)
     steps = migrate_plan(observed, LOCS)
     assert [s["path"] for s in of(steps, "symlink")[:3]] == [f"/u/repos/{n}" for n in CHECKOUTS]
     fs, resolves = simulate(steps, model(observed))
     assert all(resolves(path) for path, node in fs.items() if node[0] == "symlink")
-    assert fs[LINK_BASE] == ("symlink", f"{NEW}/{CART}")
+    assert fs[LINK_BASE] == ("symlink", f"{NEW}/{CART}/cartridges/base")
 
 
 def test_no_symlink_dangles_after_any_step_but_a_move_and_rewrites_come_last():

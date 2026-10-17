@@ -26,7 +26,8 @@ def layout(tmp_path, monkeypatch):
         git("init", "-q", cwd=repos / name)
     cartridges.mkdir(parents=True)
     for link in ("base", "local"):
-        (cartridges / link).symlink_to("../../repos/coxswain-cartridges")
+        (repos / "coxswain-cartridges" / "cartridges" / link).mkdir(parents=True)
+        (cartridges / link).symlink_to(f"../../repos/coxswain-cartridges/cartridges/{link}")
     profile = user / ".config" / "agent-tools" / "profile.yaml"
     profile.parent.mkdir(parents=True)
     profile.write_text(
@@ -85,7 +86,9 @@ def test_apply_moves_the_layout_and_leaves_nothing_dangling(layout, capsys):
     for name in NAMES:
         assert (layout.installs / name).is_dir() and (layout.repos / name).is_symlink()
     for link in ("base", "local"):
-        assert (layout.cartridges / link).resolve() == (layout.installs / "coxswain-cartridges").resolve()
+        assert (layout.cartridges / link).resolve() == (
+            layout.installs / "coxswain-cartridges" / "cartridges" / link
+        ).resolve()
     for path in layout.user.rglob("*"):
         assert path.exists(), f"dangling: {path}"
     text = layout.profile.read_text()
