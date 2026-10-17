@@ -37,8 +37,17 @@ def test_a_stranded_cause_plans_carry_with_the_land_argv() -> None:
     assert (action["remedy"], action["command"]) == ("carry", LAND)
 
 
-def test_a_ticket_cause_plans_re_ground() -> None:
-    assert _plan(_fact(["ticket"]))["remedy"] == "re-ground"
+def test_a_second_ticket_cause_on_the_body_plans_re_ground() -> None:
+    assert _plan(_fact(["ticket", "ticket"]))["remedy"] == "re-ground"
+
+
+def test_a_first_ticket_cause_on_the_body_plans_a_relaunch_not_the_chair() -> None:
+    facts: Facts = {
+        "quarantines": [_fact(["ticket"])],
+        "approved": [],
+        "initiatives": [{"id": "i", "started": True, "ready_tasks": [{"id": "t1", "needs": []}], "landed": set()}],
+    }  # type: ignore[typeddict-item]
+    assert [a["kind"] for a in plan_recover(facts)] == ["clear_branches", "relaunch"]
 
 
 def test_a_fact_with_no_causes_list_uses_its_own_cause() -> None:
@@ -47,7 +56,7 @@ def test_a_fact_with_no_causes_list_uses_its_own_cause() -> None:
 
 
 def test_a_fact_without_a_row_reason_plans_the_old_needs_chair() -> None:
-    q = {k: v for k, v in _fact(["ticket"]).items() if k not in ("reason", "causes", "run", "repo")}
+    q = {k: v for k, v in _fact(["ticket", "ticket"]).items() if k not in ("reason", "causes", "run", "repo")}
     assert _plan(q) == {"kind": "needs_chair", "initiative": "i", "task_id": "q1", "cause": "ticket"}  # type: ignore[arg-type]
 
 
