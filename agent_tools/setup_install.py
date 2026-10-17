@@ -212,11 +212,11 @@ def install_plan(
         for repo in REPOS:
             steps.extend(_repo_steps(repo, installs, python_exists, cartridges_dir))
         steps.append({"op": "run",
-                      "argv": ["uv", "tool", "install", "-q", "-e",
+                      "argv": ["uv", "tool", "install", "--force", "-q", "-e",
                                _tool_target(f"{installs}/coxswain-tools", tool_extras)],
                       "why": "put cox on PATH", "warn_only": True})
         steps.append({"op": "run",
-                      "argv": ["uv", "tool", "install", "-q", "-e",
+                      "argv": ["uv", "tool", "install", "--force", "-q", "-e",
                                _tool_target(cartridges_dir, cartridge_extras)],
                       "why": "puts the `cartridge` command on PATH beside cox",
                       "warn_only": True})
