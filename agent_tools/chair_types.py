@@ -451,6 +451,7 @@ class Facts(TypedDict):
     land_refusals: NotRequired[list[LandRefusal]]
     # Squash conflicts a retry would repeat: the run's newest squash_phase stop, its branch and main unmoved. Absent means [].
     land_conflicts: NotRequired[list[LandConflict]]
+    land_heads: NotRequired[dict[str, str]]  # `<initiative>/<phase>` to the phase branch tip, for refused phases only. Absent means {}.
     phase_tasks: NotRequired[list[PhaseTasks]]  # per phase with an approved or a quarantined task, every task's state; absent means none
     # `<run>:<phase>` of each approved task's run and phase that has a phase record. Absent means unknown: plan land_phase.
     phase_records: NotRequired[list[str]]

@@ -745,6 +745,50 @@ def test_a_landed_row_inside_the_horizon_still_resets_the_count():
     assert refusal["last_refused_at"] == _stamp(NOW - timedelta(hours=3))
 
 
+def test_a_refusal_carries_the_head_of_its_newest_unlanded_row():
+    rows = [
+        {**_refusal(NOW - timedelta(hours=3)), "head": "aaa111"},
+        {**_refusal(NOW - timedelta(hours=2), "failed"), "head": "bbb222"},
+        _refusal(NOW - timedelta(hours=5), "landed"),
+    ]
+    assert land_refusals_from_actions(rows, NOW) == [
+        {"initiative": "i", "phase": "p", "run": "i-1", "attempts": 2, "last_refused_at": _stamp(NOW - timedelta(hours=2)), "head": "bbb222"}
+    ]
+
+
+def test_a_refusal_has_no_head_key_when_its_newest_unlanded_row_has_none():
+    rows = [{**_refusal(NOW - timedelta(hours=3)), "head": "aaa111"}, _refusal(NOW - timedelta(hours=2))]
+    assert land_refusals_from_actions(rows, NOW) == [
+        {"initiative": "i", "phase": "p", "run": "i-1", "attempts": 2, "last_refused_at": _stamp(NOW - timedelta(hours=2))}
+    ]
+
+
+def test_a_refusal_head_is_read_from_the_action_json_of_a_recorded_row():
+    row = {"ts": _stamp(NOW), "action_json": json.dumps({**_refusal(NOW), "head": "ccc333"})}
+    [refusal] = land_refusals_from_actions([row], NOW)
+    assert refusal["head"] == "ccc333"
+
+
+def test_facts_carry_land_heads_for_refused_phases_only():
+    calls: list[tuple[str, str]] = []
+
+    def rev_parse(repo: str, ref: str) -> str | None:
+        calls.append((repo, ref))
+        return {("/r/i", "epic/i/p"): "bbb222", ("/r/i", "epic/i/q"): "ddd444"}.get((repo, ref))
+
+    rows = [_refusal(NOW - timedelta(hours=1)), {**_refusal(NOW - timedelta(hours=2), "landed"), "phase": "q"}]
+    deps = replace(_deps(), actions=lambda: rows, repos=lambda: {"i": "/r/i"}, rev_parse=rev_parse)
+    facts = gather_facts(deps, NOW)
+    assert [r["phase"] for r in facts["land_refusals"]] == ["p"]
+    assert facts["land_heads"] == {"i/p": "bbb222"}
+    assert calls == [("/r/i", "epic/i/p")]
+
+
+def test_facts_carry_empty_land_heads_when_nothing_is_refused():
+    deps = replace(_deps(), rev_parse=lambda repo, ref: pytest.fail("rev_parse called with no refusal"))
+    assert gather_facts(deps, NOW)["land_heads"] == {}
+
+
 def _store_with_recorder(tmp_path, monkeypatch, at: datetime):
     """A sqlite `chair_actions` table and the recorder wired to it as `record-action` writes it: ts, kind, target and the whole line as action_json."""
     db = tmp_path / "store.db"
