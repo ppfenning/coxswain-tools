@@ -1,6 +1,6 @@
 import re
 
-from agent_tools import doctor
+from agent_tools import doctor, home
 
 _CHECK_ORDER = (
     "git",
@@ -739,3 +739,82 @@ def test_render_shows_warn_and_counts_warnings_apart_from_ok_and_failing():
     text = doctor.render(rows)
     assert re.search(r"model freshness\s+warn\s+" + re.escape(_STALE), text)
     assert text.splitlines()[-1] == "doctor: 16 ok, 0 failing, 1 warning"
+
+
+_LOCATIONS = home.resolve({}, "/u", "linux", flag="/h")
+_CHECKOUT = "/h/installs/coxswain-cartridges"
+
+
+def _home(listing=None, exists=True, writable=True, legacy=None, in_project=False):
+    return doctor.home_rows(_LOCATIONS, listing, exists, writable, legacy, in_project)
+
+
+def test_home_rows_come_in_a_fixed_order():
+    rows = _home({"coxswain-cartridges": _CHECKOUT})
+    assert [r["check"] for r in rows] == ["home root", "marketplace registered", "marketplace location", "old layout"]
+
+
+def test_home_root_ok_when_it_exists_and_is_writable():
+    row = _home()[0]
+    assert (row["ok"], row["detail"]) == (True, "/h exists and is writable")
+
+
+def test_home_root_fails_when_missing():
+    row = _home(exists=False, writable=False)[0]
+    assert (row["ok"], row["detail"]) == (False, "/h does not exist; run `cox setup install` to create it")
+
+
+def test_home_root_fails_when_not_writable():
+    row = _home(writable=False)[0]
+    assert (row["ok"], row["detail"]) == (False, "/h exists but is not writable by this user")
+
+
+def test_marketplace_registered_ok_when_listed():
+    assert _home({"coxswain-cartridges": _CHECKOUT})[1]["ok"] is True
+
+
+def test_marketplace_missing_from_the_listing_fails_registered_and_location():
+    rows = _home({"other": "/x"})
+    assert [(r["ok"], r["detail"]) for r in rows[1:3]] == [
+        (False, "coxswain-cartridges is not in the claude marketplace list; run `cox setup install`"),
+        (False, "no coxswain-cartridges entry to compare with the home"),
+    ]
+
+
+def test_claude_absent_leaves_both_marketplace_rows_not_checked():
+    rows = _home(None)
+    assert [r["detail"] for r in rows[1:3]] == ["not checked", "not checked"]
+
+
+def test_marketplace_location_ok_when_source_equals_the_checkout_under_the_home():
+    row = _home({"coxswain-cartridges": _CHECKOUT})[2]
+    assert (row["ok"], row["detail"]) == (True, f"{_CHECKOUT} equals the checkout under the home")
+
+
+def test_marketplace_location_elsewhere_fails_naming_both_paths():
+    row = _home({"coxswain-cartridges": "/old/coxswain-cartridges"})[2]
+    assert (row["ok"], row["detail"]) == (
+        False, f"/old/coxswain-cartridges is not the checkout under the home; expected {_CHECKOUT}")
+
+
+def test_marketplace_location_in_a_project_folder_fails_and_says_so():
+    row = _home({"coxswain-cartridges": "/u/proj/coxswain-cartridges"}, in_project=True)[2]
+    assert (row["ok"], row["detail"]) == (
+        False, f"/u/proj/coxswain-cartridges is inside a user project folder; expected {_CHECKOUT}")
+
+
+def test_marketplace_location_compares_text_without_following_links():
+    row = _home({"coxswain-cartridges": "/h/installs/../installs/coxswain-cartridges"})[2]
+    assert row["ok"] is False
+
+
+def test_legacy_layout_present_is_a_warn_naming_setup_migrate():
+    row = _home(legacy="/u/repos/coxswain-cartridges")[3]
+    assert (row["ok"], row["warn"]) == (True, True)
+    assert row["detail"] == "old layout still present at /u/repos/coxswain-cartridges; run `cox setup migrate` to move it"
+    assert doctor.exit_code([row]) == 0
+
+
+def test_legacy_layout_absent_is_ok_without_warn():
+    row = _home()[3]
+    assert (row["ok"], row.get("warn"), row["detail"]) == (True, None, "no old-layout checkout found")

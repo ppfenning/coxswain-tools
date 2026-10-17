@@ -4,13 +4,15 @@ phase) builds a Facts mapping and hands it to `checks`."""
 
 from __future__ import annotations
 
+import posixpath
 import re
 from collections.abc import Callable, Mapping
 
 from agent_tools import records, route, schema, store_dialect
+from agent_tools.home import Locations
 from agent_tools.store_probe import OBJECT_STORE, POSTGRES, ProbeResult
 
-__all__ = ["checks", "exit_code", "freshness_rows", "parquet_line", "render", "store_rows", "unit_path_entries"]
+__all__ = ["checks", "exit_code", "freshness_rows", "home_rows", "parquet_line", "render", "store_rows", "unit_path_entries"]
 
 _MISSING = object()
 _SKIPPED = "skipped: no profile"
@@ -364,6 +366,68 @@ def freshness_rows(
         return [_warn_row(_FRESHNESS_SKIPPED)]
     lines = freshness_fn(profile, catalog) if vendor_ids is None else freshness_fn(profile, catalog, vendor_ids)
     return [_warn_row(line) for line in lines]
+
+
+_MARKETPLACE = "coxswain-cartridges"
+
+
+def _home_root_row(locations: Locations, root_exists: bool, root_writable: bool) -> dict:
+    root = locations.home
+    if not root_exists:
+        return {"check": "home root", "ok": False, "detail": f"{root} does not exist; run `cox setup install` to create it"}
+    if not root_writable:
+        return {"check": "home root", "ok": False, "detail": f"{root} exists but is not writable by this user"}
+    return {"check": "home root", "ok": True, "detail": f"{root} exists and is writable"}
+
+
+def _marketplace_registered_row(listing: Mapping[str, str] | None) -> dict:
+    """`listing` maps marketplace name to source text from `claude plugin marketplace list`; None when claude is absent."""
+    if listing is None:
+        return _not_checked("marketplace registered")
+    if _MARKETPLACE in listing:
+        return {"check": "marketplace registered", "ok": True, "detail": f"{_MARKETPLACE} is listed"}
+    return {"check": "marketplace registered", "ok": False,
+            "detail": f"{_MARKETPLACE} is not in the claude marketplace list; run `cox setup install`"}
+
+
+def _marketplace_location_row(locations: Locations, listing: Mapping[str, str] | None, in_project: bool) -> dict:
+    """Text compare against the checkout under the resolved installs folder; no link is followed."""
+    if listing is None:
+        return _not_checked("marketplace location")
+    source = listing.get(_MARKETPLACE)
+    if source is None:
+        return {"check": "marketplace location", "ok": False, "detail": f"no {_MARKETPLACE} entry to compare with the home"}
+    expected = posixpath.join(locations.installs, _MARKETPLACE)
+    if source == expected:
+        return {"check": "marketplace location", "ok": True, "detail": f"{source} equals the checkout under the home"}
+    where = "inside a user project folder" if in_project else "not the checkout under the home"
+    return {"check": "marketplace location", "ok": False, "detail": f"{source} is {where}; expected {expected}"}
+
+
+def _legacy_layout_row(legacy_path: str | None) -> dict:
+    """A warn row keeps `ok` True so `exit_code` ignores it; `legacy_path` is the old checkout location when still present."""
+    if legacy_path is None:
+        return {"check": "old layout", "ok": True, "detail": "no old-layout checkout found"}
+    return {"check": "old layout", "ok": True, "warn": True,
+            "detail": f"old layout still present at {legacy_path}; run `cox setup migrate` to move it"}
+
+
+def home_rows(
+    locations: Locations,
+    listing: Mapping[str, str] | None,
+    root_exists: bool,
+    root_writable: bool,
+    legacy_path: str | None,
+    in_project: bool,
+) -> list[dict]:
+    """Rows for the coxswain home: home root, marketplace registered, marketplace location, old layout.
+    The edge gathers the listing, the root's state, the legacy path and whether the listed source sits in a project folder."""
+    return [
+        _home_root_row(locations, root_exists, root_writable),
+        _marketplace_registered_row(listing),
+        _marketplace_location_row(locations, listing, in_project),
+        _legacy_layout_row(legacy_path),
+    ]
 
 
 _STORE_CHECK = "shared store"
