@@ -27,6 +27,7 @@ from agent_tools import (
     chair_apply_review,
     chair_apply_widen,
     chair_housekeeping,
+    chair_land_freeze,
     chair_login_check,
     chair_login_watch,
     chair_plan_prune,
@@ -1185,6 +1186,25 @@ def _resumes_at_wait_checks(action: Action, blocker: Blocker) -> bool:
     )
 
 
+def freeze_skip_reason(freeze: chair_land_freeze.LandFreeze | None, now: datetime) -> str | None:
+    """The skip reason a land gets under a freeze still live at `now`, else None."""
+    if freeze is None or freeze.expires_at <= now:
+        return None
+    return chair_land_freeze.freeze_text(freeze)
+
+
+def _as_utc(stamp: str) -> datetime:
+    """An ISO stamp as an aware datetime; a stamp with no offset is UTC."""
+    parsed = datetime.fromisoformat(stamp)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _frozen_reason(deps: Deps) -> str | None:
+    """Edge. Reads the land freeze at the tick's clock; the skip reason when it is live, else None."""
+    now = _as_utc(deps.now())
+    return freeze_skip_reason(chair_land_freeze.read_freeze(deps.runs_dir, now), now)
+
+
 def perform(
     actions: list[Action], deps: Deps, current_epoch: Callable[[], int], dry_run: bool, sleep: Callable[[float], None] = time.sleep
 ) -> list[Result]:
@@ -1202,6 +1222,8 @@ def perform(
     its command runs blocks nothing. A launch_epic for an initiative whose land_phase was not counted is skipped too.
     A land_phase for the same initiative and phase as an earlier land that stopped at wait_checks is not skipped:
     it resumes from the open PR.
+    Each land's start re-reads the land freeze at `deps.now()`; a live one skips the land, without an escalation, for
+    a later tick to plan again. A land already running is never stopped.
     With a land sink, a land returns `in_progress` at once and the actions after it run in the same tick. The lands
     that finished since the last tick are collected first, so their results lead this tick's.
     """
@@ -1229,6 +1251,7 @@ def perform(
         initiative = action.get("initiative", "")
         holding = [b for b in (blocked_initiatives.get(initiative), blocked.get(action.get("repo", ""))) if b is not None]
         resumes = bool(holding) and all(_resumes_at_wait_checks(action, b) for b in holding)
+        frozen: str | None = None  # set by the freeze branch below, so a frozen land is not escalated
         if action.get("kind") not in _UNFENCED and is_fenced(action, current_epoch()):
             result = _result(action, "fenced", "planned under another lease epoch")
         elif action.get("kind") == "relaunch" and initiative in uncleared:
@@ -1239,6 +1262,8 @@ def perform(
             and not resumes
         ):
             result = _result(action, "skipped", f"an earlier land in {action.get('repo', '')} ({blocked_initiatives[initiative].label}) was not counted")
+        elif action.get("kind") in _LAND_KINDS and (frozen := _frozen_reason(deps)) is not None:
+            result = _result(action, "skipped", frozen)
         else:
             if action.get("kind") in LAUNCH_KINDS:
                 launch_host = action.get("host", "")
@@ -1253,7 +1278,11 @@ def perform(
         if result["status"] != "in_progress":  # the land's own result is recorded when it is collected
             deps.record(_recorded(result))
         results.append(result)
-        if action.get("kind") in _LAND_KINDS and result["status"] not in ("landed", "fenced", "busy", "in_progress", "recorded"):
+        if (
+            action.get("kind") in _LAND_KINDS
+            and frozen is None
+            and result["status"] not in ("landed", "fenced", "busy", "in_progress", "recorded")
+        ):
             escalated = _escalate(action, result)
             deps.record(_recorded(escalated))
             results.append(escalated)
