@@ -8804,6 +8804,10 @@ def _chair_run_deps(
         # An initiative naming an intake is `decomposed` (or `landed`, which holds items) by `intake_state.intake_group`.
         return _task_item_counts(ticket_items(), initiative_intakes())
 
+    def initiative_states() -> dict[str, str]:
+        # The store row of an initiative is keyed by its own id with no phase; the rows are the tick's cached read.
+        return {r["initiative"]: r["state"] for r in store_rows() if r["task_id"] == r["initiative"] and not r["phase"]}
+
     def decomposed_intake() -> dict[str, str]:
         # Only the initiatives with zero task items can be reported by `empty_decompose_facts`, so only their decompose
         # runs are read: no run read for an initiative that has tasks. Keyed by the initiative's directory name, the key
@@ -9034,6 +9038,7 @@ def _chair_run_deps(
         tickets=ticket_items,
         decomposed_intake=decomposed_intake,
         item_counts=item_counts,
+        initiative_states=initiative_states,
         repos=lambda: _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home),
         actions=actions,
         land_watches=lambda: chair_revert_watch.pending_watches(actions),

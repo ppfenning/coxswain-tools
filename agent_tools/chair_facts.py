@@ -104,6 +104,8 @@ class FactsDeps:
         status is decomposed. Optional, and absent means no initiative counts.
     item_counts: initiative id to the count of task items the work store holds for it. Optional, and absent
         means every initiative counts as non-empty, so none is reported as empty-decompose.
+    initiative_states: initiative id to its store state. Optional, and absent means no state is known, so
+        none is left out of empty-decompose as done or dropped.
     newest_run_host: initiative id to its newest run's host, "" meaning the local machine
         (`run_store.newest_run_hosts`). Optional, and absent means no initiative counts.
     run_hosts: run id to the host name that ran it, "" meaning the local machine. Defaults to a callable
@@ -202,6 +204,7 @@ class FactsDeps:
     lost_runs: Callable[[], Mapping[str, str]] | None = None  # initiative to run id, for a lane whose host is stale and whose run has no exit record; absent means {}
     decomposed_intake: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest decompose run id, for a decomposed intake; absent means {}
     item_counts: Callable[[], Mapping[str, int]] | None = None  # initiative to its stored task-item count; absent means every initiative counts as non-empty
+    initiative_states: Callable[[], Mapping[str, str]] | None = None  # initiative to its store state; absent means {}, so none is skipped as done or dropped
     newest_run_host: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest run's host, "" meaning local; absent means {}
     run_hosts: Callable[[], Mapping[str, str]] = lambda: {}  # run id to the host that ran it, "" meaning local; absent means {}
     schema_deaths: Callable[[], Mapping[str, list[str]]] = lambda: {}  # initiative to its newest two run ids when both died on the schema refusal; absent means {}
@@ -707,18 +710,25 @@ def initiative_facts(
 
 
 def empty_decompose_facts(
-    decomposed: Mapping[str, str], live: Collection[str], item_counts: Mapping[str, int]
+    decomposed: Mapping[str, str],
+    live: Collection[str],
+    item_counts: Mapping[str, int],
+    states: Mapping[str, str] | None = None,
 ) -> list[EmptyDecomposeFacts]:
     """One entry per decomposed intake whose decompose run has ended and left zero stored task items.
 
     `decomposed` maps an initiative id to its newest decompose run id, for every initiative whose intake
     status is decomposed. An initiative in `live` still has that run in flight, so it is left out even
     though its intake is decomposed. `item_counts` defaults a missing initiative to 1, non-empty, so an
-    initiative this tick knows nothing about is never reported empty by omission."""
+    initiative this tick knows nothing about is never reported empty by omission. `states` maps an initiative
+    id to its store state: done or dropped is left out, and an initiative with no known state is reported."""
+    known = states or {}
     return [
         {"initiative": initiative, "run": run}
         for initiative, run in decomposed.items()
-        if initiative not in live and item_counts.get(initiative, 1) == 0
+        if initiative not in live
+        and item_counts.get(initiative, 1) == 0
+        and known.get(initiative) not in {"done", "dropped"}
     ]
 
 
@@ -997,6 +1007,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
             dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {},
             live,
             dict(deps.item_counts()) if deps.item_counts is not None else {},
+            dict(deps.initiative_states()) if deps.initiative_states is not None else {},
         ),
         "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs) if deps.decompose_runs is not None else {},
         "decompose_stalled_reported": decompose_stalled_keys(action_rows),
