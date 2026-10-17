@@ -48,6 +48,7 @@ def _deps(calls: list, output: str = LANDED, code: int = 0, deleted: tuple[str, 
         record=lambda action: calls.append(("record", action["kind"])),
         run_id=lambda action: "run-1",
         repo_for=lambda action: action.get("repo", "r"),
+        rev_parse=lambda repo, ref: None,
     )
 
 
@@ -563,6 +564,41 @@ def test_a_land_phase_runs_cox_runs_land_with_phase_repo_apply_no_claim() -> Non
     calls: list = []
     perform([_land_phase("p1", "r")], _deps(calls), lambda: 1, False)
     assert _touched(calls) == [("run", ["cox", "runs", "land", "run-1", "--phase", "p1", "--repo", "r", "--apply", "--no-claim"])]
+
+
+def _recorded_land_phase_rows(tip: str | None) -> tuple[list[dict], list]:
+    """The rows `perform` records for one land_phase whose phase branch tip is `tip`, and the calls in order."""
+    calls: list = []
+    rows: list[dict] = []
+
+    def stub(repo: str, ref: str) -> str | None:
+        calls.append(("rev_parse", repo, ref))
+        return tip
+
+    deps = replace(_deps(calls), rev_parse=stub, record=rows.append)
+    perform([{**_land_phase("p1", "r"), "initiative": "alpha"}], deps, lambda: 1, False)
+    return rows, calls
+
+
+def test_a_land_phase_records_the_phase_branch_head() -> None:
+    rows, calls = _recorded_land_phase_rows("aaa")
+    assert rows[0]["head"] == "aaa"
+    assert ("rev_parse", "r", "epic/alpha/p1") in calls
+
+
+def test_a_land_phase_reads_the_head_before_the_land_command_runs() -> None:
+    _, calls = _recorded_land_phase_rows("aaa")
+    assert [c[0] for c in calls] == ["rev_parse", "run"]
+
+
+def test_a_land_phase_with_an_unresolvable_branch_records_no_head_key() -> None:
+    rows, _ = _recorded_land_phase_rows(None)
+    assert "head" not in rows[0]
+
+
+def test_a_land_phase_with_an_empty_tip_records_no_head_key() -> None:
+    rows, _ = _recorded_land_phase_rows("")
+    assert "head" not in rows[0]
 
 
 def test_a_land_phase_with_only_merge_is_not_counted_and_skips_its_repo_siblings() -> None:
