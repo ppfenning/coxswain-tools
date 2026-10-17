@@ -143,6 +143,25 @@ def test_setup_install_includes_team_and_workspace_when_given():
                         "--team", "acme", "--workspace", "/ws"], None)]
 
 
+def test_setup_install_with_home_sends_home_in_place_of_root():
+    plan = [{"kind": "setup_install", "component": "setup_install"}]
+    steps = install_exec.from_plan(plan, manifest={}, options={"team": "t", "workspace": "w", "home": "/h"})
+    run, calls = _fake_run({})
+    install_exec.execute(steps, root="/root", run=run)
+    assert steps[0]["home"] == "/h"
+    assert calls == [(["cox", "setup", "install", "--home", "/h", "--team", "t", "--workspace", "w"], None)]
+    assert "--root" not in calls[0][0]
+
+
+def test_setup_install_without_home_keeps_the_root_argv():
+    plan = [{"kind": "setup_install", "component": "setup_install"}]
+    steps = install_exec.from_plan(plan, manifest={}, options={"team": "t", "workspace": "w"})
+    run, calls = _fake_run({})
+    install_exec.execute(steps, root="/root", run=run)
+    assert "home" not in steps[0]
+    assert calls == [(["cox", "setup", "install", "--root", "/root", "--team", "t", "--workspace", "w"], None)]
+
+
 def test_skip_runs_nothing_and_is_clean():
     steps = [{"kind": "skip", "component": "cartridges"}]
     run, calls = _fake_run({})

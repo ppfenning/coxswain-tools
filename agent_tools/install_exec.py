@@ -15,7 +15,8 @@ Runner = Callable[[list, str | None], tuple]
 def from_plan(steps: Sequence[Mapping], *, manifest: Mapping, options: Mapping) -> list[dict]:
     """Enriches each planner step with the fields `execute` needs to build
     a real command: `repo`/`tag` for `clone`/`fetch_checkout` from the
-    manifest, `team`/`workspace` for `setup_install` from the options.
+    manifest, `team`/`workspace` (and `home`, when supplied) for
+    `setup_install` from the options.
     Leaves `skip`, `refuse`, `doctor` and `desktop` steps as they arrived."""
     components = manifest.get("components", {})
     return [_enrich(step, components, options) for step in steps]
@@ -29,7 +30,9 @@ def _enrich(step: Mapping, components: Mapping, options: Mapping) -> dict:
         return {**step, "repo": spec.get("repo"), "tag": spec.get("tag"), "ref": spec.get("ref", "main"),
                 "channel": options.get("channel", "release")}
     if kind == "setup_install":
-        return {**step, "team": options.get("team"), "workspace": options.get("workspace")}
+        enriched = {**step, "team": options.get("team"), "workspace": options.get("workspace")}
+        home = options.get("home")
+        return enriched if home is None else {**enriched, "home": home}
     return dict(step)
 
 
@@ -66,7 +69,8 @@ def _checkout_argv(step: Mapping, root: str) -> list:
 
 
 def _setup_install_argv(step: Mapping, root: str) -> list:
-    argv = ["cox", "setup", "install", "--root", root]
+    home = step.get("home")
+    argv = ["cox", "setup", "install", *(["--root", root] if home is None else ["--home", home])]
     if step.get("team") is not None:
         argv += ["--team", step["team"]]
     if step.get("workspace") is not None:
