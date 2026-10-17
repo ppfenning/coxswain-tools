@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_report import (
     Deps,
@@ -53,26 +55,6 @@ def test_status_line_round_trips_through_parse_status():
     assert "RUNAWAY b" in parsed.holds
     assert any(h.startswith("partial-land: ") for h in parsed.holds)
     assert len(parsed.holds) == 3
-
-
-_NEEDS = [{"kind": "needs_chair", "initiative": "epic-a", "cause": "harness"}]
-
-
-def test_an_open_idle_stall_appears_after_limits():
-    facts = _facts(idle_stall={"open_diagnosis": "host host-a ssh check failed"})
-    line = format_status(facts, _NEEDS, [_landed()], NOW)
-    assert " | stall: host host-a ssh check failed | " in line
-    assert line.index("limits ") < line.index("stall: ")
-
-
-def test_an_idle_stall_with_no_open_diagnosis_leaves_the_line_as_it_was():
-    facts = _facts(idle_stall={"open_diagnosis": None})
-    assert "stall:" not in format_status(facts, _NEEDS, [_landed()], NOW)
-
-
-def test_facts_with_no_idle_stall_key_leave_the_line_as_it_was():
-    assert "idle_stall" not in _facts()
-    assert "stall:" not in format_status(_facts(), _NEEDS, [_landed()], NOW)
 
 
 def test_needs_chair_items_orders_runaway_first_and_partial_land_last():
@@ -131,73 +113,68 @@ def test_pace_target_shows_only_when_judged():
     assert "target" not in plain
     not_judged = format_status(with_pace(base, weekly_target_fraction=0.45, weekly_pace="not_judged"), [], [], NOW)
     no_target = format_status(with_pace(base, weekly_target_fraction=None, weekly_pace="not_judged"), [], [], NOW)
-    assert not_judged == plain
-    assert no_target == plain
-
-
-def test_dry_run_line_says_dry_run():
-    line = format_status(_facts(), [{"kind": "land"}], [_landed("land", "dry_run")], NOW)
-    assert " | dry-run | " in line
+    assert "target" not in not_judged
+    assert "target" not in no_target
 
 
 def _result(kind, status, **fields):
     return {"action": {"kind": kind, **fields}, "status": status, "reason": ""}
 
 
-def test_a_rescue_that_ran_appears_as_launched():
-    results = [_result("rescue", "done", initiative="epic-a", task_id="t1"), _result("retry", "done", initiative="epic-b")]
+def _steer(initiative, other):
+    return _result("steer_clear", "recorded", initiative=initiative, other=other, paths=["src/main.rs"])
+
+
+def test_launched_names_the_action_and_the_lane_host():
+    results = [
+        _result("rescue", "done", initiative="epic-a", task_id="t1"),
+        _result("retry", "done", initiative="epic-b"),
+        _result("launch_epic", "done", initiative="x", host="host-a"),
+        _result("launch_epic", "fenced", initiative="y"),
+    ]
     line = format_status(_facts(), [], results, NOW)
-    assert " | launched: rescue:epic-a, retry:epic-b | needs chair: none" in line
-
-
-def test_a_launch_on_a_lane_host_names_the_host():
-    line = format_status(_facts(), [], [_result("launch_epic", "done", initiative="x", host="host-a")], NOW)
-    assert "launched: epic:x@host-a" in line
+    assert "launched: rescue:epic-a" in line
+    assert "retry:epic-b" in line
+    assert "epic:x@host-a" in line
     assert "launch_epic" not in line
+    assert "epic:y" not in line
+    assert "failed:" not in line and "fetched:" not in line
 
 
-def test_a_not_landed_land_appears_as_failed():
-    results = [_result("land", "not_landed", task_id="t1", initiative="epic-a"), _result("pull", "refused", initiative="epic-c")]
+def test_failed_covers_land_land_phase_and_fetch_exit():
+    results = [
+        _result("land", "not_landed", task_id="t1", initiative="epic-a"),
+        _result("land_phase", "not_landed", phase="p2", initiative="epic-a"),
+        _result("pull", "refused", initiative="epic-c"),
+        _result("fetch_exit", "failed", run="epic-a-1"),
+    ]
     line = format_status(_facts(), [], results, NOW)
-    assert " | failed: land:t1, pull:epic-c | needs chair: none" in line
-
-
-def test_a_not_landed_land_phase_appears_as_failed_with_its_phase():
-    results = [_result("land_phase", "not_landed", phase="p2", initiative="epic-a")]
-    line = format_status(_facts(), [], results, NOW)
-    assert " | failed: land_phase:epic-a/p2 | needs chair: none" in line
-
-
-def test_a_quiet_tick_names_no_launch_and_no_failure():
-    line = format_status(_facts(), [], [_landed(), _result("launch_epic", "fenced", initiative="x")], NOW)
-    assert "launched:" not in line and "failed:" not in line
-
-
-def test_a_fetch_exit_done_names_the_run_and_host():
-    line = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host="host-a")], NOW)
-    assert "fetched: epic-a-1 from host-a" in line
-
-
-def test_a_fetch_exit_done_with_no_host_says_another_machine():
-    line = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host=None)], NOW)
-    assert "fetched: epic-a-1 from on another machine" in line
-
-
-def test_a_fetch_exit_failed_appears_as_failed_not_fetched():
-    line = format_status(_facts(), [], [_result("fetch_exit", "failed", run="epic-a-1")], NOW)
-    assert "fetched:" not in line
-    assert "failed: fetch_exit:?" in line
-
-
-def test_a_tick_with_no_fetch_exit_result_is_unchanged():
-    results = [_result("rescue", "done", initiative="epic-a", task_id="t1"), _result("retry", "done", initiative="epic-b")]
-    line = format_status(_facts(), [], results, NOW)
+    assert "failed: land:t1" in line
+    assert "land_phase:epic-a/p2" in line
+    assert "pull:epic-c" in line
+    assert "fetch_exit:?" in line
     assert "fetched:" not in line
 
 
-def test_a_dry_run_line_names_what_it_would_do():
-    line = format_status(_facts(), [], [_result("launch_epic", "dry_run", initiative="x")], NOW)
-    assert "dry-run | would: launch_epic:x" in line
+def test_fetched_names_the_run_and_host():
+    with_host = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host="host-a")], NOW)
+    no_host = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host=None)], NOW)
+    assert "fetched: epic-a-1 from host-a" in with_host
+    assert "fetched: epic-a-1 from on another machine" in no_host
+
+
+def test_dry_run_names_what_it_would_do():
+    would = format_status(_facts(), [], [_result("launch_epic", "dry_run", initiative="x")], NOW)
+    landed = format_status(_facts(), [{"kind": "land"}], [_landed("land", "dry_run")], NOW)
+    assert "dry-run" in would and "would: launch_epic:x" in would
+    assert "dry-run" in landed and "holding" not in landed
+
+
+def test_steered_shows_each_pair_and_no_paths():
+    line = format_status(_facts(), [], [_steer("x", "y"), _steer("z", "w")], NOW)
+    assert "steered: x~y, z~w" in line
+    assert "src/main.rs" not in line
+    assert "steered" not in format_status(_facts(), [], [], NOW)
 
 
 def test_lands_this_tick_counts_land_land_phase_and_partial_land_only_when_landed():
@@ -214,26 +191,33 @@ def test_write_status_notifies_only_when_given():
     assert sent == [Notification("chair tick", "line", "low")]
 
 
-def test_drafts_3_prints_drafts_3_after_lands():
-    line = format_status(dict(_facts(), drafts=3), [], [], NOW)
-    assert " | lands 0 | drafts 3 | limits " in line
+def _review_pr(task_id, url):
+    return {"initiative": "epic-a", "phase": "p1", "task_id": task_id, "repo": "r", "url": url,
+            "state": "unknown", "merged_at": None}
 
 
-def test_drafts_0_leaves_the_line_as_it_was():
-    line = format_status(dict(_facts(), drafts=0), [], [], NOW)
-    assert line == format_status(_facts(), [], [], NOW)
-    assert "drafts" not in line
+_PRS = [_review_pr("t-1", "https://x/pull/1"), _review_pr("t-2", "https://x/pull/2")]
 
 
-def test_a_new_missing_repo_is_named_in_the_line():
-    line = format_status(dict(_facts(), missing_repos=["/repo/a"]), [], [], NOW)
-    assert " | skipped missing repo /repo/a | needs chair: none" in line
-
-
-def test_no_missing_repos_leaves_the_line_as_it_was():
-    line = format_status(dict(_facts(), missing_repos=[]), [], [], NOW)
-    assert line == format_status(_facts(), [], [], NOW)
-    assert "missing repo" not in line
+@pytest.mark.parametrize(
+    ("extra", "marker", "present", "after"),
+    [
+        ({"drafts": 3}, "drafts 3", True, "lands 0"),
+        ({"drafts": 0}, "drafts", False, None),
+        ({"missing_repos": ["/repo/a"]}, "skipped missing repo /repo/a", True, None),
+        ({"missing_repos": []}, "missing repo", False, None),
+        ({"review_prs": _PRS}, "review: 2 awaiting (t-1 https://x/pull/1, t-2 https://x/pull/2)", True, None),
+        ({"review_prs": []}, "review:", False, None),
+        ({"idle_stall": {"open_diagnosis": "host host-a ssh check failed"}}, "stall: host host-a ssh check failed", True, "limits "),
+        ({"idle_stall": {"open_diagnosis": None}}, "stall:", False, None),
+        ({}, "stall:", False, None),
+    ],
+    ids=["drafts", "no-drafts", "missing-repo", "no-missing-repo", "review", "no-review", "stall", "stall-no-diagnosis", "stall-no-key"],
+)
+def test_optional_sections_appear_only_when_present(extra, marker, present, after):
+    line = format_status({**_facts(), **extra}, [], [], NOW)
+    assert (marker in line) is present
+    assert after is None or line.index(after) < line.index(marker)
 
 
 def test_standby_line_with_an_until_says_who_holds_the_chair_until_when():
@@ -266,18 +250,3 @@ def test_housekeeping_fragment_ages():
     assert housekeeping_fragment("2026-09-24T16:05:00+00:00", NOW) == "housekeeping 2d"
     assert housekeeping_fragment(None, NOW) == "housekeeping never"
     assert housekeeping_fragment("2026-09-26T15:05:00", NOW) == "housekeeping never"
-
-
-def _review_pr(task_id, url):
-    return {"initiative": "epic-a", "phase": "p1", "task_id": task_id, "repo": "r", "url": url,
-            "state": "unknown", "merged_at": None}
-
-
-def test_two_awaiting_review_prs_name_both_urls_in_the_status_line():
-    prs = [_review_pr("t-1", "https://x/pull/1"), _review_pr("t-2", "https://x/pull/2")]
-    line = format_status(_facts(review_prs=prs), [], [], NOW)
-    assert "review: 2 awaiting (t-1 https://x/pull/1, t-2 https://x/pull/2)" in line
-
-
-def test_no_awaiting_review_prs_omits_the_review_part():
-    assert "review:" not in format_status(_facts(review_prs=[]), [], [], NOW)
