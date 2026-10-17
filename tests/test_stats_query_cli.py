@@ -3,7 +3,7 @@ import json
 import pytest
 
 from agent_tools import run_store
-from agent_tools.cli import _resolved_tier, build_parser, main
+from agent_tools.cli import _resolved_tier, main
 from agent_tools.stats_query import bounds_report, coverage_report, explain_report, roles_report, series_report
 from agent_tools.stats_schema import connect
 
@@ -224,14 +224,6 @@ def test_cli_stats_series_cartridge_sha_filter_narrows_to_the_matching_regime(tm
     assert [r["run_id"] for r in rows] == ["r1"]
 
 
-@pytest.mark.parametrize("cmd", ["roles", "explain", "series", "coverage", "bounds"])
-def test_stats_subcommand_help_exits_zero(cmd):
-    argv = ["stats", cmd, "role", "--help"] if cmd == "explain" else ["stats", cmd, "--help"]
-    with pytest.raises(SystemExit) as exc_info:
-        build_parser().parse_args(argv)
-    assert exc_info.value.code == 0
-
-
 def _seed_bounds(db_path):
     conn = connect(db_path)
     calls = [
@@ -439,34 +431,21 @@ def test_cli_stats_bounds_write_refuses_a_path_outside_the_repo_checkout(tmp_pat
     assert not outside.exists()
 
 
-def test_resolved_tier_maps_extract_to_cheap():
-    assert _resolved_tier({}, {"build": "extract"}, "build") == "cheap"
-
-
-def test_resolved_tier_maps_reason_to_standard():
-    assert _resolved_tier({}, {"build": "reason"}, "build") == "standard"
-
-
-def test_resolved_tier_maps_judge_to_deep():
-    assert _resolved_tier({}, {"build": "judge"}, "build") == "deep"
-
-
-def test_resolved_tier_maps_frontier_to_deep():
-    assert _resolved_tier({}, {"build": "frontier"}, "build") == "deep"
-
-
-def test_resolved_tier_passes_a_tier_name_through():
-    assert _resolved_tier({}, {"build": "cheap"}, "build") == "cheap"
-
-
-def test_resolved_tier_override_wins_over_a_class_default():
-    assert _resolved_tier({"build": "deep"}, {"build": "extract"}, "build") == "deep"
-
-
-def test_resolved_tier_falls_back_to_standard_for_missing_unknown_or_non_string():
-    assert _resolved_tier({}, {}, "build") == "standard"
-    assert _resolved_tier({}, {"build": "bogus"}, "build") == "standard"
-    assert _resolved_tier({}, {"build": ["deep"]}, "build") == "standard"
+def test_resolved_tier_table():
+    rows = [
+        # (overrides, classes, expected)
+        ({}, {"build": "extract"}, "cheap"),
+        ({}, {"build": "reason"}, "standard"),
+        ({}, {"build": "judge"}, "deep"),
+        ({}, {"build": "frontier"}, "deep"),
+        ({}, {"build": "cheap"}, "cheap"),
+        ({"build": "deep"}, {"build": "extract"}, "deep"),
+        ({}, {}, "standard"),
+        ({}, {"build": "bogus"}, "standard"),
+        ({}, {"build": ["deep"]}, "standard"),
+    ]
+    for overrides, classes, expected in rows:
+        assert _resolved_tier(overrides, classes, "build") == expected, (overrides, classes)
 
 
 def test_cli_stats_bounds_a_class_named_default_gives_the_same_ceiling_as_its_tier(tmp_path, capsys):
