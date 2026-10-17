@@ -427,6 +427,40 @@ def test_a_failed_step_report_includes_the_captured_output(monkeypatch, capsys, 
     assert code == 2 and "FAILED: clone harness" in out and "could not read from remote" in out
 
 
+_DOCTOR_LINE = ("doctor reports failing rows: create your workspace folders and team cartridge "
+                "if you have not, then run cox setup doctor")
+
+
+def _doctor_run(monkeypatch, steps, doctor_exit, tmp_path):
+    from agent_tools import cli
+    manifest = {"components": {"harness": {"repo": "o/harness", "tag": "v1", "required": True}}}
+    monkeypatch.setattr(cli, "_real_run",
+                        lambda argv, cwd: (doctor_exit, "workspace missing") if argv[:3] == ["cox", "setup", "doctor"] else (0, ""))
+    monkeypatch.setattr(cli, "_gather_checkout_facts", lambda root, comps: {})
+    return cli._install_execute(steps, manifest, {}, tmp_path)
+
+
+def test_a_failing_doctor_alone_exits_zero_and_prints_one_closing_line(monkeypatch, capsys, tmp_path):
+    steps = [{"kind": "clone", "component": "harness", "detail": ""}, {"kind": "doctor"}]
+    code = _doctor_run(monkeypatch, steps, 1, tmp_path)
+    out = capsys.readouterr().out
+    assert code == 0 and "FAILED: doctor" in out and out.count(_DOCTOR_LINE) == 1
+
+
+def test_a_desktop_step_after_a_failing_doctor_still_runs():
+    steps = [{"kind": "doctor"}, {"kind": "desktop"}]
+    run, calls = _fake_run({("cox", "setup", "doctor"): (1, "workspace missing")})
+    results = install_exec.execute(steps, root="/root", run=run)
+    assert results[0]["exit"] == 1
+    assert results[1] == {"step": steps[1], "commands": [], "exit": 0, "output": "desktop: planned"}
+
+
+def test_a_passing_doctor_prints_no_closing_line(monkeypatch, capsys, tmp_path):
+    code = _doctor_run(monkeypatch, [{"kind": "doctor"}], 0, tmp_path)
+    out = capsys.readouterr().out
+    assert code == 0 and "doctor reports failing rows" not in out
+
+
 def _upgrade_argv(tmp_path):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(

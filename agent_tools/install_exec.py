@@ -101,9 +101,15 @@ def _run_step(step: Mapping, root: str, run: Runner) -> tuple:
     return [], 1, f"unknown step kind: {kind}"
 
 
+def is_fatal(result: Mapping) -> bool:
+    """True when a step result is a non-zero exit that must stop the run; a doctor step is the only exemption."""
+    return result["exit"] not in (0, None) and result["step"]["kind"] != "doctor"
+
+
 def execute(steps: Sequence[Mapping], *, root: str, run: Runner) -> list[dict]:
     """Runs `steps` in order through the injected `run`, stopping at the
-    first non-zero exit or at a `refuse`. `skip` runs nothing and reports
+    first fatal non-zero exit or at a `refuse`; a non-zero `doctor` does not
+    stop the steps after it. `skip` runs nothing and reports
     clean; `desktop` prints its no-op line instead of calling `run`. Every
     step gets one `{"step", "commands", "exit", "output"}` record (`commands` is
     always a list of argv, empty for a step that ran no command); steps after
@@ -128,7 +134,7 @@ def execute(steps: Sequence[Mapping], *, root: str, run: Runner) -> list[dict]:
             results.append({"step": step, "commands": [], "exit": 0, "output": output})
             continue
         commands, exit_code, output = _run_step(step, root, run)
-        results.append({"step": step, "commands": commands, "exit": exit_code, "output": output})
-        if exit_code != 0:
-            stopped = True
+        result = {"step": step, "commands": commands, "exit": exit_code, "output": output}
+        results.append(result)
+        stopped = is_fatal(result)
     return results
