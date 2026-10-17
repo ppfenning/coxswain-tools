@@ -102,6 +102,7 @@ class Rig:
             record=self.recorded.append,
             run_id=lambda action: "run-1",
             repo_for=lambda action: "r",
+            launch_stagger_s=0.0,  # the stagger decision is pinned in tests/test_chair_exec.py; this rig does not need the real sleep
         )
         return RunDeps(
             facts_deps=object(),

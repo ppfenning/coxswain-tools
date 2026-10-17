@@ -117,7 +117,8 @@ class FakeForgejo:
     def __enter__(self) -> FakeForgejo:
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        # The default 0.5 s poll makes every shutdown wait up to 0.5 s.
+        threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
         return self
 
     def __exit__(self, *exc: object) -> None:
