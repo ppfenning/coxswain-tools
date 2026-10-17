@@ -6183,7 +6183,7 @@ def _migrate_run_host_step(step, locs) -> tuple[bool, str]:
 
 
 def _setup_migrate(a: argparse.Namespace) -> int:
-    """Plans by default; executes the local steps, then the host steps, only under --apply. --dry-run is the default spelled out."""
+    """Plans by default; --apply executes the local steps and --apply --hosts also the host steps. --dry-run is the default spelled out."""
     locs = home_paths.resolve_here(a.home)
     if isinstance(locs, home_paths.Refused):
         print(f"refusing: {locs.reason}")
@@ -6201,7 +6201,9 @@ def _setup_migrate(a: argparse.Namespace) -> int:
             print(f"FAILED step {number} {step['op']}: {failure}")
             return 1
     failed = 0
-    for group in host_plan:
+    if not a.hosts:
+        print("hosts: not touched; rerun with --apply --hosts on the chair's machine")
+    for group in host_plan if a.hosts else ():
         for number, step in enumerate(group, 1):
             done, text = _migrate_run_host_step(step, locs)
             if not done:
@@ -8453,6 +8455,7 @@ SETUP_COMMANDS = [
             commands.Arg(("--home",), {"help": "absolute path of the coxswain home to migrate to"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "same as the default: print the plans; change nothing"}),
             commands.Arg(("--apply",), {"action": "store_true", "help": "execute the plans; without it the command only prints them"}),
+            commands.Arg(("--hosts",), {"action": "store_true", "help": "with --apply, also run the host steps; use it on the chair's machine"}),
         ),
         "agent_tools.cli:_setup_migrate", False, (),
     ),

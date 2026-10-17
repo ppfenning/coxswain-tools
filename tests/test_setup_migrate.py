@@ -7,7 +7,17 @@ import pytest
 
 from agent_tools import setup_migrate
 from agent_tools.home import Locations
-from agent_tools.setup_migrate import CHECKOUTS, OPS, migrate_plan, render_plan
+from agent_tools.setup_migrate import (
+    CHECKOUTS,
+    OPS,
+    ChairLease,
+    HostRow,
+    Lane,
+    LeaseOutcome,
+    migrate_plan,
+    preflight_refusals,
+    render_plan,
+)
 
 LOCS = Locations(
     home="/h/coxswain",
@@ -448,3 +458,84 @@ def test_module_imports_only_standard_library_and_home():
     }
     assert imported <= {"__future__", "posixpath", "typing", "agent_tools"}
     assert "agent_tools.home" in {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+
+
+ME = "box1"
+FREE_CHAIR = ChairLease(released=True, stale=False, host=ME)
+
+
+def refusals(leases=(), lanes=(), chair=FREE_CHAIR, hosts=()):
+    return preflight_refusals(tuple(leases), tuple(lanes), ME, chair, tuple(hosts))
+
+
+def test_preflight_clean_returns_empty_list():
+    granted = LeaseOutcome("/u/repos/coxswain-tools", granted=True)
+    assert refusals(leases=[granted]) == []
+
+
+def test_preflight_refused_lease_names_path_and_holder():
+    lease = LeaseOutcome("/u/repos/coxswain-tools", granted=False, holder="run-7")
+    assert refusals(leases=[lease]) == ["migrate: refusing, run-7 holds /u/repos/coxswain-tools"]
+
+
+def test_preflight_errored_lease_names_path():
+    lease = LeaseOutcome("/u/repos/coxswain-graphs", granted=False, error="timeout")
+    assert refusals(leases=[lease]) == [
+        "migrate: refusing, an unknown holder (lease error: timeout) holds /u/repos/coxswain-graphs"
+    ]
+
+
+def test_preflight_local_live_lane_counts():
+    assert refusals(lanes=[Lane("lane-a", ME)]) == ["migrate: refusing, live lane lane-a holds a run on this machine"]
+
+
+def test_preflight_lane_with_no_host_counts():
+    assert refusals(lanes=[Lane("lane-b", None)]) == ["migrate: refusing, live lane lane-b holds a run on this machine"]
+
+
+def test_preflight_remote_lane_is_ignored():
+    assert refusals(lanes=[Lane("lane-c", "box2")]) == []
+
+
+def test_preflight_chair_lease_held_here_counts():
+    held = ChairLease(released=False, stale=False, host=ME)
+    assert refusals(chair=held) == ["migrate: refusing, the chair holds its lease on box1"]
+
+
+@pytest.mark.parametrize(
+    "chair",
+    [
+        ChairLease(released=True, stale=False, host=ME),
+        ChairLease(released=False, stale=True, host=ME),
+        ChairLease(released=False, stale=False, host="box2"),
+        ChairLease(released=False, stale=False, host=None),
+    ],
+)
+def test_preflight_chair_lease_not_held_here_is_ignored(chair):
+    assert refusals(chair=chair) == []
+
+
+def test_preflight_active_host_row_asks_for_drain():
+    assert refusals(hosts=[HostRow(ME, "active")]) == [
+        "migrate: refusing, host box1 holds active state, run cox host drain box1 first"
+    ]
+
+
+@pytest.mark.parametrize("row", [HostRow(ME, "draining"), HostRow(ME, "drained"), HostRow("box2", "active")])
+def test_preflight_other_host_rows_are_ignored(row):
+    assert refusals(hosts=[row]) == []
+
+
+def test_preflight_orders_leases_lanes_chair_host_row():
+    lines = refusals(
+        leases=[LeaseOutcome("/p", granted=False, holder="h")],
+        lanes=[Lane("l", None)],
+        chair=ChairLease(released=False, stale=False, host=ME),
+        hosts=[HostRow(ME, "active")],
+    )
+    assert [line.split(", ", 1)[1].split(" holds")[0] for line in lines] == [
+        "h",
+        "live lane l",
+        "the chair",
+        "host box1",
+    ]
