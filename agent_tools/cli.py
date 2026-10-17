@@ -5989,6 +5989,10 @@ def _execute_step(step: dict) -> str | None:
     if op == "skip":
         print(f"skip {step['what']} — {step['why']}")
         return None
+    if op == "mkdir":
+        Path(step["path"]).mkdir(parents=True, exist_ok=True)
+        print(f"mkdir {step['path']}")
+        return None
     if op == "hook":
         path = Path(step["path"])
         try:
@@ -6022,6 +6026,7 @@ def _setup_install(a: argparse.Namespace) -> int:
     for step in steps:
         failure = _execute_step(step)
         if failure is not None:
+            print(f"setup install: stopped: {failure}")
             return 1
     return 0
 
