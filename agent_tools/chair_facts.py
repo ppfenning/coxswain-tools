@@ -22,7 +22,8 @@ from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
 from agent_tools.chair_read_docket import docket_from_rows
 from agent_tools.chair_read_intake import intake_from_rows
-from agent_tools.chair_read_land_conflicts import read_land_conflicts
+from agent_tools.chair_read_land_conflicts import _rev_parse, read_land_conflicts
+from agent_tools.chair_read_land_heads import read_land_heads
 from agent_tools.chair_read_quarantined import quarantined_from_rows
 from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
@@ -237,6 +238,7 @@ class FactsDeps:
     handoff_stops: Callable[[], Sequence[Row]] = lambda: []  # chair_read_handoff_stops.read_handoff_stops rows; absent means []
     queue_files: Callable[[], list[QueueFile]] = lambda: []  # `read_queue_files` bound to the workspace and store; absent means []
     held_files: Callable[[], Sequence[HeldFile]] = lambda: []  # `queue_export.read_held_record` bound to the workspace; absent means []
+    rev_parse: Callable[[str, str], str | None] = _rev_parse  # (repo, ref) to the commit sha or None; read by `read_land_heads` for refused phases only
 
 
 def read_queue_files(workspace: Path, rows: Sequence[Row], stored: Mapping[tuple[str, str], str]) -> list[QueueFile]:
@@ -595,9 +597,11 @@ def land_refusals_from_actions(
         ]
         if not failed:
             return None
+        head = failed[-1].get("head")
         return {
             "initiative": key[0], "phase": key[1], "run": key[2],
             "attempts": len(failed), "last_refused_at": str(failed[-1]["ts"]),
+            **({"head": head} if isinstance(head, str) and head else {}),
         }
 
     return [r for r in map(refusal, keys) if r is not None]
@@ -963,6 +967,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     quarantine = quarantine_facts(quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives))
     action_rows = list(deps.actions()) if deps.actions is not None else []
     login_hosts = deps.hosts()
+    refusals = land_refusals_from_actions(action_rows, now)
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
@@ -1000,8 +1005,9 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "held_reported": held_file_keys(action_rows),
         "host_env": host_env_from_rows(login_hosts),
         "relaunch_loop_reported": relaunch_loop_keys(action_rows),
-        "land_refusals": land_refusals_from_actions(action_rows, now),
+        "land_refusals": refusals,
         "land_conflicts": read_land_conflicts(deps.runs_dir(), repos),
+        "land_heads": read_land_heads(refusals, repos, deps.rev_parse),
         "launch_history": launch_history_from_actions(action_rows, quarantine, now),
         "max_launches_per_hour": resolve_max_launches_per_hour(
             deps.max_launches_per_hour() if deps.max_launches_per_hour is not None else None
