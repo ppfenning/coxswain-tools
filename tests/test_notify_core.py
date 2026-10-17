@@ -32,10 +32,20 @@ def test_render_truncates_long_body_with_ellipsis():
     assert (len(title), len(body), body[-1], click) == (60, 200, "…", "https://x")
 
 
-def test_due_drops_at_3599_and_sends_at_3600():
+def test_due_never_resends_a_key_that_still_stands():
     e = _event()
     assert due([e], {"k1": 0.0}, 3599.0)[0] == []
-    assert due([e], {"k1": 0.0}, 3600.0)[0] == [e]
+    assert due([e], {"k1": 0.0}, 86400.0)[0] == []
+    assert due([e], {"k1": 0.0}, 86400.0)[1] == {"k1": 0.0}
+
+
+def test_due_resends_a_key_that_cleared_more_than_a_window_ago():
+    e = _event()
+    _, cleared = due([], {"k1": 0.0}, 3599.0)
+    assert cleared == {"k1": 0.0}
+    assert due([e], cleared, 3599.0)[0] == []
+    assert due([], {"k1": 0.0}, 3600.0)[1] == {}
+    assert due([e], {}, 3600.0)[0] == [e]
 
 
 def test_due_sends_repeated_key_once():

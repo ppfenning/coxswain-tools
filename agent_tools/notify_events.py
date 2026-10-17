@@ -62,9 +62,15 @@ def _event(action: Mapping) -> Event:
     return _needs_chair(action)
 
 
+# Holds the loop clears by itself on a later tick: a land between fetch and record (no_run), a launch deferred behind a
+# running initiative that shares a file (steer_deferred), and a work file the export left alone (held_file).
+SELF_CLEARING_CAUSES = frozenset({"no_run", "steer_deferred", "held_file"})
+
+
 def _is_dependency_wait(action: Mapping) -> bool:
-    """A task waiting on another task of its own initiative clears by itself, so it never pushes."""
-    return isinstance(cause := action.get("cause"), str) and cause.startswith("waiting on ")
+    """A task waiting on another task of its own initiative, or a hold the loop clears by itself, never pushes."""
+    cause = action.get("cause")
+    return isinstance(cause, str) and (cause.startswith("waiting on ") or cause in SELF_CLEARING_CAUSES)
 
 
 def events_from_tick(facts: Mapping, actions: Sequence[Mapping]) -> list[Event]:

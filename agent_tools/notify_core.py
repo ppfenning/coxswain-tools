@@ -47,7 +47,10 @@ def render(event: Event) -> tuple[str, str, str]:
 
 def due(events: Sequence[Event], sent: Mapping[str, float], now: float,
         window_s: float = 3600) -> tuple[list[Event], dict[str, float]]:
-    """Events to push and the new sent map. A key pushed less than `window_s` ago is dropped; older entries are pruned."""
-    live = {k: t for k, t in sent.items() if now - t < window_s}
+    """Events to push and the new sent map. A key is pushed once per occurrence: while it is in `events` (the hold still
+    stands) it is never pushed again, however old its entry; once it is gone from `events` its entry is kept for
+    `window_s`, so a hold that clears and comes back within that window stays quiet, and is then pruned."""
+    standing = {e.key for e in events}
+    live = {k: t for k, t in sent.items() if k in standing or now - t < window_s}
     fresh = [e for i, e in enumerate(events) if e.key not in live and e.key not in {p.key for p in events[:i]}]
     return fresh, {**live, **{e.key: now for e in fresh}}

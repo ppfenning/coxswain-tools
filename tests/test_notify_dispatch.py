@@ -60,15 +60,16 @@ def test_each_of_the_five_kinds_arrives_once_with_title_body_and_click(
     assert got == [(f"{k} title", f"{k} body".encode(), f"https://example.com/{k}") for k in KINDS]
 
 
-def test_same_key_twice_within_an_hour_arrives_once_and_again_after(
+def test_a_standing_key_arrives_once_and_again_only_after_it_cleared_for_an_hour(
     fake: tuple[_Fake, NotifyConfig], tmp_path: Path
 ) -> None:
     state, config = fake
     path = tmp_path / "sent.json"
     assert dispatch([_event()], config, path, NOW) == ["k1"]
-    assert dispatch([_event()], config, path, NOW + 3599) == []
+    assert dispatch([_event()], config, path, NOW + 86400) == []
     assert len(state.requests) == 1
-    assert dispatch([_event()], config, path, NOW + 3600) == ["k1"]
+    assert dispatch([], config, path, NOW + 86400 + 3600) == []
+    assert dispatch([_event()], config, path, NOW + 86400 + 3600) == ["k1"]
     assert len(state.requests) == 2
 
 
@@ -131,6 +132,7 @@ def test_failed_push_of_an_expired_key_is_not_recorded(fake: tuple[_Fake, Notify
     state, config = fake
     path = tmp_path / "sent.json"
     assert dispatch([_event()], config, path, NOW) == ["k1"]
+    assert dispatch([], config, path, NOW + 3600) == []
     state.status = 500
     assert dispatch([_event()], config, path, NOW + 3600) == []
     assert json.loads(path.read_text()) == {}
