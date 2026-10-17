@@ -218,6 +218,16 @@ def test_dry_run_without_root_plans_into_the_home(home_env, capsys):
     assert not home_env["log"].exists()
 
 
+def test_a_real_run_without_root_creates_the_workspace_and_records_the_home(home_env, capsys):
+    cox = home_env["cox"]
+    for repo in ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools"):
+        (cox / "installs" / repo).mkdir(parents=True)
+    assert _run(["setup", "install", "--team", "acme"]) == 0
+    for folder in ("work", "runs", "intake", "cartridges"):
+        assert (cox / "workspaces" / "main" / folder).is_dir()
+    assert home_env["record"].exists()
+
+
 def test_the_profile_path_env_var_decides_existence_and_write(home_env, tmp_path, monkeypatch, capsys):
     profile = tmp_path / "elsewhere" / "profile.yaml"
     monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
