@@ -131,6 +131,21 @@ def test_failed_host_beats_empty_stub():
     assert got["kind"] == "host"
 
 
+def test_blocked_ready_beats_empty_stub():
+    got = diagnose(
+        make(
+            empty_stubs=["cartridges-landing-model-project-checks"],
+            blocked_ready=[{"task": "held-initiative/t9", "unlanded_needs": ["t1"]}],
+        )
+    )
+    assert got == {
+        "kind": "blocked_needs",
+        "subject": "held-initiative/t9",
+        "text": "task held-initiative/t9 waits on unlanded needs: t1",
+        "signature": "blocked_needs:held-initiative/t9",
+    }
+
+
 def test_unknown_signature_ignores_counts():
     a = diagnose(make(free_lanes=1, ready=1))
     b = diagnose(make(free_lanes=5, ready=0, queued=9))

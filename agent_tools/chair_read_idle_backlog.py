@@ -61,11 +61,25 @@ def stub_candidates(initiative_texts: Mapping[str, str]) -> list[str]:
     return sorted(i for i, text in initiative_texts.items() if not _is_draft(text))
 
 
+def stored_initiatives(rows: Sequence[Item]) -> list[str]:
+    """Initiatives with at least one store work-item row of any state; a row naming no initiative is skipped."""
+    return sorted({str(r["initiative"]) for r in rows if r.get("initiative")})
+
+
 def empty_stubs(
-    with_file: Collection[str], items: Sequence[Item], decomposed: Mapping[str, str], live: Collection[str]
+    with_file: Collection[str],
+    items: Sequence[Item],
+    decomposed: Mapping[str, str],
+    live: Collection[str],
+    stored: Collection[str] = (),
 ) -> list[str]:
-    """Initiatives `empty_decompose_facts` reports, plus any with a file, no task items and no live run."""
-    counts = {i: sum(1 for item in items if item["initiative"] == i) for i in with_file}
+    """Initiatives `empty_decompose_facts` reports, plus any with a file, no task items and no live run.
+
+    `stored` names initiatives that have a store row but may have no task file, as when a finished task's file is pruned."""
+    # Applied here, not in chair_facts: the helper only sees the counts built below. A task in any state counts,
+    # done and dropped included, and so does a store row whose task file is gone.
+    with_task = {item["initiative"] for item in items} | set(stored)
+    counts = {i: int(i in with_task) for i in with_file}
     reported = {e["initiative"] for e in empty_decompose_facts(decomposed, live, counts)}
     stubs = {i for i, n in counts.items() if n == 0 and i not in live}
     return sorted(reported | stubs)
@@ -85,7 +99,7 @@ def blocked_ready(items: Sequence[Item]) -> list[BlockedReady]:
 
 
 def idle_backlog(plain: Mapping[str, Any]) -> IdleBacklog:
-    """`plain` keys: docket, items, queued, last_launch, last_land, node_calls, with_file, decomposed, live."""
+    """`plain` keys: docket, items, queued, last_launch, last_land, node_calls, with_file, decomposed, live, stored."""
     docket = plain["docket"]
     lanes, busy = (int(docket["max_in_flight"]), int(docket["busy_lanes"])) if docket else (0, 0)
     return {
@@ -93,7 +107,9 @@ def idle_backlog(plain: Mapping[str, Any]) -> IdleBacklog:
         "ready": docket_ready(docket),
         "queued": len(plain["queued"]),
         "last_progress_at": last_progress_at(plain["last_launch"], plain["last_land"], plain["node_calls"]),
-        "empty_stubs": empty_stubs(plain["with_file"], plain["items"], plain["decomposed"], plain["live"]),
+        "empty_stubs": empty_stubs(
+            plain["with_file"], plain["items"], plain["decomposed"], plain["live"], plain.get("stored", ())
+        ),
         "blocked_ready": blocked_ready(plain["items"]),
     }
 
@@ -110,6 +126,13 @@ def _safe(read: Any, default: Any) -> Any:
         return read()
     except Exception:  # the edge never raises: an unreadable source reads as empty
         return default
+
+
+def _store_rows(runs_dir: Path, mode: str, store_rows: Sequence[Mapping] | None) -> Sequence[Mapping]:
+    """Edge. The store's work-item rows under mode "store", or `store_rows` when the tick already holds them."""
+    if mode != "store":
+        return []
+    return store_rows if store_rows is not None else run_store.work_items(runs_dir)
 
 
 def _initiative_texts(ws: Path, files: WorkFiles | None = None) -> dict[str, str]:
@@ -131,6 +154,8 @@ def read_idle_backlog(
     now_text = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     work = [item for _, _, item in _safe(lambda: read_work_items(ws, mode, files, store_rows), [])]
     with_file = stub_candidates(_safe(lambda: _initiative_texts(ws, files), {}))
+    # Under mode "store" the store holds a task's state; a pruned task file must not make its initiative a stub.
+    stored = stored_initiatives(_safe(lambda: _store_rows(runs_dir, mode, store_rows), []))
     # A stub has no work items, so its id comes from its file; probing only item initiatives never sees it live.
     probe = sorted({i["initiative"] for i in work} | set(with_file))
     # None is the caller that has not been wired to the shared rows yet; it still reads its own.
@@ -147,6 +172,7 @@ def read_idle_backlog(
             "last_land": _newest_action(rows, LAND_KINDS),
             "node_calls": [str(c) for c in calls],
             "with_file": with_file,
+            "stored": stored,
             "decomposed": {},  # no caller wires `FactsDeps.decomposed_intake` yet
             "live": _safe(lambda: read_live_initiatives(runs_dir, probe, now_text), []),
         }

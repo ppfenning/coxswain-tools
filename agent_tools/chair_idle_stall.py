@@ -51,12 +51,16 @@ def _diagnosis(
 
 
 def diagnose(inputs: IdleStallInputs) -> Diagnosis:
-    """First match wins: failed host, empty stub, land without checks, blocked ready task, unknown."""
+    """First match wins: failed host, blocked ready task, empty stub, land without checks, unknown."""
     failed = [h for h in inputs["hosts"] if not h["ok"]]
     unchecked = [w for w in inputs["lands_waiting"] if not w["checks_started"]]
     if failed:
         host = failed[0]
         return _diagnosis("host", host["host"], f"host {host['host']} failed its check: {host['detail']}")
+    if inputs["blocked_ready"]:
+        entry = inputs["blocked_ready"][0]
+        needs = ", ".join(entry["unlanded_needs"])
+        return _diagnosis("blocked_needs", entry["task"], f"task {entry['task']} waits on unlanded needs: {needs}")
     if inputs["empty_stubs"]:
         stub = inputs["empty_stubs"][0]
         return _diagnosis("stub", stub, f"the intake has an initiative stub and no tasks: {stub}")
@@ -67,10 +71,6 @@ def diagnose(inputs: IdleStallInputs) -> Diagnosis:
         return _diagnosis(
             "land_ci", land["run"], f"run {land['run']} pr {land['pr']} has not started its checks{quoted}"
         )
-    if inputs["blocked_ready"]:
-        entry = inputs["blocked_ready"][0]
-        needs = ", ".join(entry["unlanded_needs"])
-        return _diagnosis("blocked_needs", entry["task"], f"task {entry['task']} waits on unlanded needs: {needs}")
     counts = (
         f"free_lanes={inputs['free_lanes']} ready={inputs['ready']} "
         f"queued={inputs['queued']} lands_waiting={len(inputs['lands_waiting'])}"

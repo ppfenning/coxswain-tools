@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.notify_core import Event
-
-HARNESS_FAILURE_LIMIT = 2
 
 
 def _host_login(action: Mapping) -> Event:
@@ -35,50 +32,42 @@ def _stall(action: Mapping) -> Event:
     )
 
 
-def _failures(action: Mapping, facts: Mapping) -> int:
-    """The action's own count when it has one, else the highest count on a quarantine row of the same initiative."""
-    own = action.get("harness_failures")
-    return (
-        int(own)
-        if own is not None
-        else max(
-            (
-                int(row.get("harness_failures") or 0)
-                for row in facts.get("quarantines") or []
-                if row.get("initiative") == action.get("initiative")
-            ),
-            default=0,
-        )
+def _remedy_line(action: Mapping) -> str:
+    """The remedy argv as one line; empty when the action carries no command."""
+    command = " ".join(str(part) for part in action.get("command") or [])
+    return f"Remedy: {command}" if command else ""
+
+
+def _subject(action: Mapping) -> str:
+    """What the hold is on: the initiative, else the task, run or host the action names, else 'unknown'."""
+    return next((str(v) for k in ("initiative", "task_id", "run", "host") if (v := action.get(k))), "unknown")
+
+
+def _needs_chair(action: Mapping) -> Event:
+    # The push body is cut to 200 characters and a reason runs to 600, so the remedy goes before the reason.
+    cause = str(action.get("cause") or "")
+    subject = _subject(action)
+    lines = [f"{subject} needs you: {cause}.", _remedy_line(action), str(action.get("reason") or "")]
+    return Event(
+        "needs_chair", f"needs_chair:{subject}:{cause}", f"Needs you: {subject}", "\n".join(x for x in lines if x)
     )
 
 
-def _needs_chair(action: Mapping, facts: Mapping) -> Event | None:
-    # No action carries a person field, so the cause rule stands in: stranded, or repeated harness failures.
-    cause = str(action.get("cause") or "")
-    if cause != STRANDED_CAUSE and _failures(action, facts) < HARNESS_FAILURE_LIMIT:
-        return None
-    initiative = str(action.get("initiative") or "")
-    reason = str(action.get("reason") or "")
-    body = f"{initiative} needs you: {cause}." + (f" {reason}" if reason else "")
-    return Event("needs_chair", f"needs_chair:{initiative}:{cause}", f"Needs you: {initiative}", body)
-
-
-def _event(action: Mapping, facts: Mapping) -> Event | None:
+def _event(action: Mapping) -> Event:
     cause = action.get("cause")
     if cause == "login_lapsed":
         return _host_login(action)
     if cause in ("stalled", "idle_stall"):
         return _stall(action)
-    return _needs_chair(action, facts)
+    return _needs_chair(action)
 
 
 def events_from_tick(facts: Mapping, actions: Sequence[Mapping]) -> list[Event]:
-    """Events in action order, one per key. Only needs_chair actions are read."""
-    found = [
-        e
-        for a in actions
-        if a.get("kind") == "needs_chair"
-        for e in [_event(a, facts)]
-        if e is not None
-    ]
-    return [e for i, e in enumerate(found) if e.key not in {p.key for p in found[:i]}]
+    """Events in first-seen key order, one per key, the first action that carries a remedy winning; facts is unused."""
+    chosen: dict[str, tuple[Mapping, Event]] = {}
+    for a in (a for a in actions if a.get("kind") == "needs_chair"):
+        e = _event(a)
+        held = chosen.get(e.key)
+        if held is None or (_remedy_line(a) and not _remedy_line(held[0])):
+            chosen[e.key] = (a, e)
+    return [e for _, e in chosen.values()]
