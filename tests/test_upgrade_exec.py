@@ -29,16 +29,16 @@ def test_umbrella_moves_before_crew_and_dash_and_each_gets_fetch_then_checkout()
     assert code == 0
     assert calls == [
         _git("coxswain", "fetch", "--tags"), _git("coxswain", "checkout", "v2"),
-        _git("crew", "fetch", "--tags"), _git("crew", "checkout", "v2"),
-        ["/r/crew/install.sh"],
-        _git("dash", "fetch", "--tags"), _git("dash", "checkout", "v2"),
+        _git("coxswain-crew", "fetch", "--tags"), _git("coxswain-crew", "checkout", "v2"),
+        ["/r/coxswain-crew/install.sh"],
+        _git("coxswain-dash", "fetch", "--tags"), _git("coxswain-dash", "checkout", "v2"),
     ]
 
 
 def test_install_script_is_not_run_when_crew_has_no_step():
     run, calls = _recorder()
     run_plan(Plan((UMBRELLA, DASH), ()), root=ROOT, run=run, dry_run=False)
-    assert ["/r/crew/install.sh"] not in calls
+    assert ["/r/coxswain-crew/install.sh"] not in calls
 
 
 def test_dry_run_prints_the_steps_and_makes_no_calls(capsys):
@@ -65,7 +65,7 @@ def test_a_failed_checkout_stops_the_plan_with_exit_2(capsys):
 def test_a_component_with_a_clone_url_is_cloned_not_fetched():
     run, calls = _recorder()
     run_plan(Plan((DASH,), ()), root=ROOT, run=run, dry_run=False, clone_urls={"dash": "u"})
-    assert calls == [["git", "clone", "u", "/r/dash"], _git("dash", "checkout", "v2")]
+    assert calls == [["git", "clone", "u", "/r/coxswain-dash"], _git("coxswain-dash", "checkout", "v2")]
 
 
 def test_newest_release_skips_prereleases():
