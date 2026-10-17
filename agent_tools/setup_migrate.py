@@ -20,6 +20,8 @@ Observed layout, a dict with these keys:
 - `worktree_status`: checkout name to "clean" when `git worktree list` names no missing
   path. A checkout at its new path with any other status, or none, is repaired and verified
   again, because the planner cannot tell whether an earlier run finished that step.
+- `chair_unit`: the chair systemd unit file text, or None when there is none. A unit whose
+  `Environment=PATH=` line still names the old checkout root yields one last `chair_unit` step.
 
 Settings may hold tilde-form paths. They are expanded against the user home, taken as the
 parent of `Locations.config`, before they are compared with the checkout paths.
@@ -50,6 +52,7 @@ OPS = frozenset(
         "refuse",
         "worktree_repair",
         "verify",
+        "chair_unit",
     }
 )
 SETTING_KEYS = ("skills_roots", "provider_profile", "harness_dir")
@@ -206,6 +209,18 @@ def _prints(workspace: dict[str, Any] | None, pairs: dict[str, tuple[str, str]],
     return [*notes, _step("print", f"The workspace stays {where} and is never moved.", item="workspace", path=path)]
 
 
+PATH_PREFIX = "Environment=PATH="
+
+
+def _chair_unit_steps(unit: str | None, old_root: str) -> list[Step]:
+    """One chair_unit step when the unit's PATH line still names `old_root/coxswain-`."""
+    lines = [line for line in (unit or "").splitlines() if line.startswith(PATH_PREFIX)]
+    if not any(old_root + "/coxswain-" in line for line in lines):
+        return []
+    why = "The chair systemd unit still names the old checkout root in its PATH, so it is regenerated."
+    return [_step("chair_unit", why)]
+
+
 def migrate_plan(observed: dict[str, Any], locs: Locations) -> list[Step]:
     """Ordered steps for the remaining migration; one skip when none remain, only refuses when any checkout refuses."""
     entries = observed.get("entries", {})
@@ -236,9 +251,11 @@ def migrate_plan(observed: dict[str, Any], locs: Locations) -> list[Step]:
         *(step for name in repaired for step in _repair_steps(name, news[name], worktrees[name])),
         *_setting_steps(observed.get("settings", {}), observed.get("home_record"), tuple(pairs.values()), locs),
     ]
+    # The old root is the parent folder of the old coxswain-cartridges checkout.
+    unit = _chair_unit_steps(observed.get("chair_unit"), posixpath.dirname(pairs[CARTRIDGES][0]))
     if not body:
-        return [_step("skip", "Every checkout, link, setting and profile key is already final.")]
-    return [*body, *_prints(observed.get("workspace"), pairs, locs)]
+        return unit or [_step("skip", "Every checkout, link, setting and profile key is already final.")]
+    return [*body, *_prints(observed.get("workspace"), pairs, locs), *unit]
 
 
 def _detail(step: Step) -> str:

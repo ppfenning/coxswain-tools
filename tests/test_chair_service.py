@@ -35,6 +35,18 @@ def test_unit_text_renders_one_path_line_only_when_given_a_path() -> None:
     assert "Environment=" not in chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, None)
 
 
+def test_unit_args_round_trips_unit_text() -> None:
+    full = chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, "/h/garage.env", profile="/p.yaml", path="/a:/b")
+    assert chair_service.unit_args(full) == {"label": "chair", "interval": "60", "profile": "/p.yaml", "env_file": "/h/garage.env"}
+    bare = chair_service.unit_text("/usr/local/bin/cox", "/ws", "night", 90, None)
+    assert chair_service.unit_args(bare) == {"label": "night", "interval": "90", "profile": None, "env_file": None}
+
+
+def test_unit_args_is_none_for_text_that_does_not_run_the_chair() -> None:
+    assert chair_service.unit_args("[Service]\nExecStart=/usr/bin/other serve --label x\n") is None
+    assert chair_service.unit_args("") is None
+
+
 def test_unsafe_values_names_what_systemd_would_split_or_expand() -> None:
     assert chair_service.unsafe_values({"--label": "a b", "cox": "/bin/cox", "x": "50%", "y": "$HOME", "z": ""}) == [
         "--label", "x", "y", "z",
