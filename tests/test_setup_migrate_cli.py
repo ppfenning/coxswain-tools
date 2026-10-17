@@ -1,11 +1,12 @@
 import argparse
+import json
 import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from agent_tools import cli
+from agent_tools import chair_read_lease, cli, store_cli
 from agent_tools.setup_migrate_hosts import ObservedHost
 
 ORIGINAL_OBSERVE_HOSTS = cli._migrate_observe_hosts
@@ -43,7 +44,20 @@ def layout(tmp_path, monkeypatch):
     for var in ("AGENT_TOOLS_PROFILE", "XDG_DATA_HOME", "XDG_STATE_HOME"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: [])
-    return types_ns(user=user, repos=repos, cartridges=cartridges, profile=profile, installs=tmp_path / "coxhome" / "installs")
+    calls = []
+
+    def acquire(runs_dir, repo, holder, ttl):
+        calls.append(("acquire", runs_dir, repo, holder, ttl))
+        return store_cli.LeaseGranted(len(calls), holder)
+
+    monkeypatch.setattr(cli.land_repo_lease, "acquire", acquire)
+    monkeypatch.setattr(cli.land_repo_lease, "release", lambda runs_dir, repo, holder, epoch: calls.append(("release", repo)))
+    monkeypatch.setattr(cli.run_store, "live_lanes", lambda runs_dir, now: [])
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [])
+    monkeypatch.setattr(cli.chair_read_lease, "read_lease", lambda runs_dir, now: dict(chair_read_lease.ABSENT))
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: "here")
+    return types_ns(user=user, repos=repos, cartridges=cartridges, profile=profile, installs=tmp_path / "coxhome" / "installs",
+                    calls=calls)
 
 
 def types_ns(**fields):
@@ -275,3 +289,85 @@ def test_apply_flag_parses_for_the_remote_argv():
     args = cli.build_parser().parse_args(["setup", "migrate", "--apply"])
     assert args.apply is True and args.dry_run is False and args.hosts is False
     assert cli.build_parser().parse_args(["setup", "migrate", "--apply", "--hosts"]).hosts is True
+
+
+def taken(layout, kind):
+    return [c for c in layout.calls if c[0] == kind]
+
+
+def test_a_live_local_lane_refuses_and_releases_every_lease(layout, monkeypatch, capsys):
+    monkeypatch.setattr(cli.run_store, "live_lanes", lambda runs_dir, now: [cli.run_store.Lane("run-7", None, "t0", "t1")])
+    before = tree(layout.user)
+    assert run(apply=True) == 1
+    assert "migrate: refusing, live lane run-7 holds a run on this machine" in capsys.readouterr().out
+    assert tree(layout.user) == before
+    assert len(taken(layout, "acquire")) == 3
+    assert sorted(c[1] for c in taken(layout, "release")) == sorted(c[2] for c in taken(layout, "acquire"))
+    assert not (Path(cli.home_paths.resolve_here(None).state) / "migrate.json").exists()
+
+
+def test_a_refused_lease_releases_the_other_two(layout, monkeypatch, capsys):
+    def acquire(runs_dir, repo, holder, ttl):
+        layout.calls.append(("acquire", runs_dir, repo, holder, ttl))
+        if repo.endswith("coxswain-graphs"):
+            return store_cli.LeaseRefused(4, "land@other:9")
+        return store_cli.LeaseGranted(len(layout.calls), holder)
+
+    monkeypatch.setattr(cli.land_repo_lease, "acquire", acquire)
+    before = tree(layout.user)
+    assert run(apply=True) == 1
+    assert f"migrate: refusing, land@other:9 holds {layout.repos}/coxswain-graphs" in capsys.readouterr().out
+    released = sorted(c[1] for c in taken(layout, "release"))
+    assert released == [f"{layout.repos}/{n}" for n in NAMES if n != "coxswain-graphs"]
+    assert tree(layout.user) == before
+
+
+def test_an_acquire_that_raises_is_an_error_outcome_not_a_crash(layout, monkeypatch, capsys):
+    def acquire(runs_dir, repo, holder, ttl):
+        raise OSError("no store")
+
+    monkeypatch.setattr(cli.land_repo_lease, "acquire", acquire)
+    assert run(apply=True) == 1
+    assert "lease error: OSError: no store" in capsys.readouterr().out
+
+
+def test_a_clean_preflight_writes_migrate_json_and_releases_after_the_last_step(layout, monkeypatch):
+    seen = []
+    real = cli._migrate_exec
+    monkeypatch.setattr(cli, "_migrate_exec", lambda step, locs: seen.append(len(taken(layout, "release"))) or real(step, locs))
+    assert run(apply=True) == 0
+    locs = cli.home_paths.resolve_here(None)
+    written = json.loads((Path(locs.state) / "migrate.json").read_text())
+    assert written == {"old_root": str(layout.repos), "new_root": str(layout.installs)}
+    acquires = taken(layout, "acquire")
+    assert len(acquires) == 3 and all(c[2].startswith(str(layout.repos)) and c[4] == 3600 for c in acquires)
+    assert acquires[0][1] == layout.user / "ws" / "runs" and acquires[0][3] == f"migrate@here:{os.getpid()}"
+    assert seen and all(n == 0 for n in seen) and len(taken(layout, "release")) == 3
+
+
+def test_leases_are_released_when_a_local_step_raises(layout, monkeypatch):
+    def boom(step, locs):
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr(cli, "_migrate_exec", boom)
+    with pytest.raises(RuntimeError):
+        run(apply=True)
+    assert len(taken(layout, "release")) == 3
+
+
+def test_a_plan_of_only_skip_steps_takes_no_lease(layout):
+    assert run(apply=True) == 0
+    layout.calls.clear()
+    assert run(apply=True) == 0
+    assert layout.calls == []
+
+
+def test_dry_run_takes_no_lease(layout):
+    assert run() == 0 and run(dry_run=True) == 0
+    assert layout.calls == []
+
+
+def test_needs_preflight_ignores_skip_and_print_steps():
+    skip, move = {"op": "skip"}, {"op": "move"}
+    assert not cli._migrate_needs_preflight([skip, {"op": "print"}], [], False)
+    assert cli._migrate_needs_preflight([skip, move], [], False)
