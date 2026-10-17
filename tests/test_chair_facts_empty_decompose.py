@@ -1,3 +1,5 @@
+import os
+import sqlite3
 from dataclasses import replace
 
 from agent_tools.chair_facts import empty_decompose_facts, gather_facts
@@ -63,3 +65,43 @@ def _gathered(states):
 def test_gather_facts_wires_initiative_states_into_empty_decompose():
     assert _gathered({"i": "done"}) == []
     assert _gathered({"i": "todo"}) == [{"initiative": "i", "run": "i-decompose-1"}]
+
+
+def test_a_decompose_run_with_an_alive_pid_is_left_out_though_its_row_ended():
+    facts = empty_decompose_facts(
+        decomposed={"i": "i-decompose-1"}, live=set(), item_counts={"i": 0}, states={}, alive={"i-decompose-1"}
+    )
+    assert facts == []
+
+
+def test_a_decompose_run_with_a_dead_pid_is_still_reported():
+    facts = empty_decompose_facts(
+        decomposed={"i": "i-decompose-1"}, live=set(), item_counts={"i": 0}, states={}, alive=set()
+    )
+    assert facts == [{"initiative": "i", "run": "i-decompose-1"}]
+
+
+def _gathered_with_pid(tmp_path, pid):
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("CREATE TABLE leases (name TEXT, holder TEXT, epoch INTEGER, heartbeat_at TEXT, expires_at TEXT)")
+    conn.execute(
+        "INSERT INTO leases VALUES ('runs:i-decompose', 'i-decompose-1', 1, '2026-09-25T10:00:00Z', '2026-09-25T10:05:00Z')"
+    )
+    conn.commit()
+    conn.close()
+    (tmp_path / "i-decompose-1.pid").write_text(str(pid))
+    deps = replace(
+        _deps(),
+        runs_dir=lambda: str(tmp_path),
+        decomposed_intake=lambda: {"i": "i-decompose-1"},
+        item_counts=lambda: {"i": 0},
+    )
+    return gather_facts(deps, NOW)["empty_decompose"]
+
+
+def test_edge_leaves_out_an_initiative_whose_pid_is_alive_despite_an_expired_lease(tmp_path):
+    assert _gathered_with_pid(tmp_path, os.getpid()) == []
+
+
+def test_edge_reports_an_initiative_whose_pid_is_dead_with_an_expired_lease(tmp_path):
+    assert _gathered_with_pid(tmp_path, 99999999) == [{"initiative": "i", "run": "i-decompose-1"}]

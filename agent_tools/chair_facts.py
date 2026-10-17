@@ -724,6 +724,7 @@ def empty_decompose_facts(
     live: Collection[str],
     item_counts: Mapping[str, int],
     states: Mapping[str, str] | None = None,
+    alive: Collection[str] = frozenset(),
 ) -> list[EmptyDecomposeFacts]:
     """One entry per decomposed intake whose decompose run has ended and left zero stored task items.
 
@@ -731,15 +732,35 @@ def empty_decompose_facts(
     status is decomposed. An initiative in `live` still has that run in flight, so it is left out even
     though its intake is decomposed. `item_counts` defaults a missing initiative to 1, non-empty, so an
     initiative this tick knows nothing about is never reported empty by omission. `states` maps an initiative
-    id to its store state: done or dropped is left out, and an initiative with no known state is reported."""
+    id to its store state: done or dropped is left out, and an initiative with no known state is reported.
+    `alive` holds decompose run ids whose process still runs: the runs row can end before the process has
+    written every item, so an initiative whose newest run is in `alive` is left out like one in `live`."""
     known = states or {}
     return [
         {"initiative": initiative, "run": run}
         for initiative, run in decomposed.items()
         if initiative not in live
+        and run not in alive
         and item_counts.get(initiative, 1) == 0
         and known.get(initiative) not in {"done", "dropped"}
     ]
+
+
+def alive_decompose_runs(
+    runs_dir: str, decomposed: Mapping[str, str], pid_probe: Mapping[str, PidProbeFact]
+) -> set[str]:
+    """Edge. The newest decompose runs whose process is alive, probed from `<runs_dir>/<run>.pid` itself.
+
+    Not `epic.run_live`: it returns the lease verdict whenever a lease row exists, so an ended run whose process is
+    still writing would read as dead. A missing or unreadable pid file is not alive; so is an empty `runs_dir`."""
+    from agent_tools.chair_read_lost import _pid_alive  # lazy: chair_read_lost imports this module
+
+    return {
+        run
+        for initiative, run in decomposed.items()
+        if pid_probe.get(initiative, {}).get("alive")
+        or (bool(runs_dir) and _pid_alive(Path(runs_dir) / f"{run}.pid"))
+    }
 
 
 def dispatch_facts(
@@ -997,6 +1018,8 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     quarantine = quarantine_facts(quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives))
     action_rows = list(deps.actions()) if deps.actions is not None else []
     login_hosts = deps.hosts()
+    decomposed = dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {}
+    probe = dict(deps.pid_probe())
     refusals = land_refusals_from_actions(action_rows, now)
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
@@ -1022,12 +1045,13 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "remote_unfetched": dict(deps.remote_unfetched()) if deps.remote_unfetched is not None else {},
         "schema_deaths": {i: list(r) for i, r in deps.schema_deaths().items()},
         "lost_runs": dict(deps.lost_runs()) if deps.lost_runs is not None else {},
-        "pid_probe": dict(deps.pid_probe()),
+        "pid_probe": probe,
         "empty_decompose": empty_decompose_facts(
-            dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {},
+            decomposed,
             live,
             dict(deps.item_counts()) if deps.item_counts is not None else {},
             dict(deps.initiative_states()) if deps.initiative_states is not None else {},
+            alive=alive_decompose_runs(deps.runs_dir(), decomposed, probe),
         ),
         "todo_initiatives": todo_initiative_facts(list(deps.work_rows())) if deps.work_rows is not None else [],
         "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs) if deps.decompose_runs is not None else {},
