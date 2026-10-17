@@ -3,7 +3,7 @@ import json
 import shlex
 
 from agent_tools.home import resolve
-from agent_tools.setup_migrate_hosts import ObservedHost, host_migrate_plan, render_hosts_plan
+from agent_tools.setup_migrate_hosts import ObservedHost, host_migrate_plan, is_migrated, render_hosts_plan
 
 LOCATIONS = resolve({}, "/home/user", "linux")
 
@@ -27,6 +27,14 @@ MAC_OLD = ObservedHost(
 
 def ops(plan):
     return [[step.op for step in group] for group in plan]
+
+
+def test_is_migrated_is_true_when_every_checkout_sits_under_installs():
+    assert is_migrated(LINUX_MIGRATED) is True
+
+
+def test_is_migrated_is_false_when_a_checkout_sits_outside_installs():
+    assert is_migrated(MAC_OLD) is False
 
 
 def test_linux_migrated_and_macos_not():
