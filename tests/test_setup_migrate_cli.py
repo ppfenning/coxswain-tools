@@ -51,13 +51,21 @@ def layout(tmp_path, monkeypatch):
         return store_cli.LeaseGranted(len(calls), holder)
 
     monkeypatch.setattr(cli.land_repo_lease, "acquire", acquire)
-    monkeypatch.setattr(cli.land_repo_lease, "release", lambda runs_dir, repo, holder, epoch: calls.append(("release", repo)))
+    monkeypatch.setattr(
+        cli.land_repo_lease, "release", lambda runs_dir, repo, holder, epoch: calls.append(("release", repo))
+    )
     monkeypatch.setattr(cli.run_store, "live_lanes", lambda runs_dir, now: [])
     monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [])
     monkeypatch.setattr(cli.chair_read_lease, "read_lease", lambda runs_dir, now: dict(chair_read_lease.ABSENT))
     monkeypatch.setattr(cli.socket, "gethostname", lambda: "here")
-    return types_ns(user=user, repos=repos, cartridges=cartridges, profile=profile, installs=tmp_path / "coxhome" / "installs",
-                    calls=calls)
+    return types_ns(
+        user=user,
+        repos=repos,
+        cartridges=cartridges,
+        profile=profile,
+        installs=tmp_path / "coxhome" / "installs",
+        calls=calls,
+    )
 
 
 def types_ns(**fields):
@@ -139,7 +147,10 @@ def test_move_onto_an_existing_destination_fails_without_touching_the_source(tmp
 
 
 def test_each_host_is_reported_and_one_failure_does_not_hide_the_others(layout, monkeypatch, capsys):
-    hosts = [ObservedHost(n, f"ssh-{n}", "/w", {"coxswain-tools": "/old/coxswain-tools"}, "/w", "beat") for n in ("a", "b", "c")]
+    hosts = [
+        ObservedHost(n, f"ssh-{n}", "/w", {"coxswain-tools": "/old/coxswain-tools"}, "/w", "beat")
+        for n in ("a", "b", "c")
+    ]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
     called = []
 
@@ -194,7 +205,9 @@ def test_remote_migrate_runs_the_planned_argv_and_reports_each_host(layout, monk
         bad = argv[1] == "ssh-y"
         return subprocess.CompletedProcess(argv, 255 if bad else 0, "", "no route" if bad else "")
 
-    hosts = [ObservedHost(n, f"ssh-{n}", "/w", {"coxswain-tools": "/old/coxswain-tools"}, "/w", "beat") for n in ("x", "y")]
+    hosts = [
+        ObservedHost(n, f"ssh-{n}", "/w", {"coxswain-tools": "/old/coxswain-tools"}, "/w", "beat") for n in ("x", "y")
+    ]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
     monkeypatch.setattr(cli.subprocess, "run", fake)
     assert run(apply=True, hosts=True) == 1
@@ -263,7 +276,9 @@ def test_observed_hosts_fall_back_to_the_profile_when_the_table_is_empty(layout,
 def test_rerun_after_a_stop_resumes_from_the_remaining_steps(layout, capsys):
     good = layout.profile.read_text()
     old_roots = f"skills_roots: [{layout.repos}/coxswain-cartridges/skills]\n"
-    layout.profile.write_text(good.replace(old_roots, f"skills_roots:\n  - {layout.repos}/coxswain-cartridges/skills\n"))
+    layout.profile.write_text(
+        good.replace(old_roots, f"skills_roots:\n  - {layout.repos}/coxswain-cartridges/skills\n")
+    )
     assert run(apply=True) == 1
     assert "FAILED step" in capsys.readouterr().out
     assert all((layout.installs / n).is_dir() for n in NAMES)
@@ -278,7 +293,9 @@ def test_rerun_rewrites_a_setting_left_pointing_at_the_old_path(layout, capsys):
     assert run(apply=True) == 0
     text = layout.profile.read_text()
     new_provider = f"provider_profile: {layout.installs}/coxswain-cartridges/provider.yaml\n"
-    layout.profile.write_text(text.replace(new_provider, f"provider_profile: {layout.repos}/coxswain-cartridges/provider.yaml\n"))
+    layout.profile.write_text(
+        text.replace(new_provider, f"provider_profile: {layout.repos}/coxswain-cartridges/provider.yaml\n")
+    )
     capsys.readouterr()
     assert run(apply=True) == 0
     assert "profile provider_profile" in capsys.readouterr().out
@@ -296,7 +313,9 @@ def taken(layout, kind):
 
 
 def test_a_live_local_lane_refuses_and_releases_every_lease(layout, monkeypatch, capsys):
-    monkeypatch.setattr(cli.run_store, "live_lanes", lambda runs_dir, now: [cli.run_store.Lane("run-7", None, "t0", "t1")])
+    monkeypatch.setattr(
+        cli.run_store, "live_lanes", lambda runs_dir, now: [cli.run_store.Lane("run-7", None, "t0", "t1")]
+    )
     before = tree(layout.user)
     assert run(apply=True) == 1
     assert "migrate: refusing, live lane run-7 holds a run on this machine" in capsys.readouterr().out
@@ -334,7 +353,9 @@ def test_an_acquire_that_raises_is_an_error_outcome_not_a_crash(layout, monkeypa
 def test_a_clean_preflight_writes_migrate_json_and_releases_after_the_last_step(layout, monkeypatch):
     seen = []
     real = cli._migrate_exec
-    monkeypatch.setattr(cli, "_migrate_exec", lambda step, locs: seen.append(len(taken(layout, "release"))) or real(step, locs))
+    monkeypatch.setattr(
+        cli, "_migrate_exec", lambda step, locs: seen.append(len(taken(layout, "release"))) or real(step, locs)
+    )
     assert run(apply=True) == 0
     locs = cli.home_paths.resolve_here(None)
     written = json.loads((Path(locs.state) / "migrate.json").read_text())
@@ -371,3 +392,89 @@ def test_needs_preflight_ignores_skip_and_print_steps():
     skip, move = {"op": "skip"}, {"op": "move"}
     assert not cli._migrate_needs_preflight([skip, {"op": "print"}], [], False)
     assert cli._migrate_needs_preflight([skip, move], [], False)
+
+
+@pytest.fixture
+def chair_unit(layout, monkeypatch):
+    """An installed chair unit whose PATH names the old checkout root, with `which cox` and systemctl faked."""
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: "/usr/local/bin/cox")
+    monkeypatch.setattr(cli.sys, "platform", "linux")
+    path = cli.chair_service.unit_path(layout.user)
+    path.parent.mkdir(parents=True)
+    old = cli.chair_service.unit_text(
+        "/usr/local/bin/cox",
+        f"{layout.user}/ws",
+        "chair",
+        60,
+        None,
+        str(layout.profile),
+        f"{layout.repos}/coxswain-tools/.venv/bin:/usr/bin",
+    )
+    path.write_text(old, encoding="utf-8")
+    calls = []
+    answers = types_ns(active="inactive\n")
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout=answers.active, stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    return types_ns(path=path, old=old, calls=calls, answers=answers)
+
+
+def exec_chair_unit(layout):
+    return cli._migrate_exec({"op": "chair_unit", "why": "x"}, types_ns(profile=layout.profile))
+
+
+def test_observe_returns_the_unit_text_on_linux_with_the_file_present(layout, chair_unit):
+    assert cli._migrate_observe(cli.home_paths.resolve_here(None))["chair_unit"] == chair_unit.old
+
+
+def test_observe_returns_none_on_darwin(layout, chair_unit, monkeypatch):
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    assert cli._migrate_observe(cli.home_paths.resolve_here(None))["chair_unit"] is None
+
+
+def test_observe_returns_none_with_no_unit_file(layout, chair_unit):
+    chair_unit.path.unlink()
+    assert cli._migrate_observe(cli.home_paths.resolve_here(None))["chair_unit"] is None
+
+
+def test_an_inactive_chair_is_reloaded_but_not_restarted(layout, chair_unit, capsys):
+    assert exec_chair_unit(layout) is None
+    assert chair_unit.calls == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "is-active", "coxswain-chair.service"],
+    ]
+    assert capsys.readouterr().out == f"chair unit -> {chair_unit.path}\n"
+
+
+def test_an_active_chair_is_reloaded_and_restarted(layout, chair_unit):
+    chair_unit.answers.active = "active\n"
+    assert exec_chair_unit(layout) is None
+    assert [c[2] for c in chair_unit.calls] == ["daemon-reload", "is-active", "restart"]
+    assert chair_unit.calls[-1] == ["systemctl", "--user", "restart", "coxswain-chair.service"]
+
+
+def test_the_written_unit_is_what_install_would_build_from_the_old_units_args(layout, chair_unit):
+    args = cli.chair_service.unit_args(chair_unit.old)
+    expected = cli._chair_unit_text(args["label"], args["interval"], args["env_file"], Path(args["profile"]))
+    assert isinstance(expected, str) and expected != chair_unit.old
+    assert exec_chair_unit(layout) is None
+    assert chair_unit.path.read_text(encoding="utf-8") == expected
+
+
+def test_a_unit_that_does_not_run_the_chair_is_left_alone_and_nothing_is_run(layout, chair_unit, capsys):
+    chair_unit.path.write_text("[Service]\nExecStart=/bin/true\n", encoding="utf-8")
+    assert exec_chair_unit(layout) is None
+    assert chair_unit.path.read_text(encoding="utf-8") == "[Service]\nExecStart=/bin/true\n"
+    assert chair_unit.calls == []
+    assert "no `chair run` line" in capsys.readouterr().out
+
+
+def test_a_refused_unit_is_left_alone_and_nothing_is_run(layout, chair_unit, monkeypatch, capsys):
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+    assert exec_chair_unit(layout) is None
+    assert chair_unit.path.read_text(encoding="utf-8") == chair_unit.old
+    assert chair_unit.calls == []
+    assert "chair service: cox is not on PATH" in capsys.readouterr().out
