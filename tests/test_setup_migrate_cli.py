@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from agent_tools import chair_read_lease, cli, store_cli
 from agent_tools.setup_migrate_hosts import ObservedHost
 
 ORIGINAL_OBSERVE_HOSTS = cli._migrate_observe_hosts
+ORIGINAL_TOOL_DIR = cli._migrate_tool_dir
 NAMES = ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools")
 
 
@@ -44,6 +46,7 @@ def layout(tmp_path, monkeypatch):
     for var in ("AGENT_TOOLS_PROFILE", "XDG_DATA_HOME", "XDG_STATE_HOME"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: [])
+    monkeypatch.setattr(cli, "_migrate_tool_dir", lambda: None)  # never let a test reach the real uv
     calls = []
 
     def acquire(runs_dir, repo, holder, ttl):
@@ -478,3 +481,123 @@ def test_a_refused_unit_is_left_alone_and_nothing_is_run(layout, chair_unit, mon
     assert chair_unit.path.read_text(encoding="utf-8") == chair_unit.old
     assert chair_unit.calls == []
     assert "chair service: cox is not on PATH" in capsys.readouterr().out
+def uv_recorder(monkeypatch, tmp_path, events):
+    """Fake `uv tool dir` to an empty folder, so every editable source reads as absent, and record each other uv call."""
+    real = subprocess.run
+    tool_dir = tmp_path / "uvtools"
+    tool_dir.mkdir(exist_ok=True)
+
+    def fake(argv, **kw):
+        if argv[0] != "uv":
+            return real(argv, **kw)
+        events.append((argv, kw.get("cwd")))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(cli, "_migrate_tool_dir", lambda: str(tool_dir))
+    monkeypatch.setattr(cli.subprocess, "run", fake)
+    return tool_dir
+
+
+def reinstall_calls(installs):
+    pip = ["uv", "pip", "install", "-q", "-e", ".[dev]"]
+    venv = ["uv", "venv", "--clear", "-q"]
+    tools, graphs, carts = (f"{installs}/coxswain-{n}" for n in ("tools", "graphs", "cartridges"))
+    return [
+        (venv, tools), (pip, tools),
+        (venv, graphs), ([*pip, "-e", carts], graphs),
+        (venv, carts), (pip, carts),
+        (["uv", "tool", "install", "--force", "-q", "-e", tools], None),
+        (["uv", "tool", "install", "--force", "-q", "-e", carts], None),
+    ]
+
+
+def test_apply_loads_the_lazy_modules_then_runs_the_eight_reinstall_steps_in_order(layout, monkeypatch, tmp_path, capsys):
+    events = []
+    uv_recorder(monkeypatch, tmp_path, events)
+    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: events.append("lazy"))
+    assert run(apply=True) == 0
+    assert events[0] == "lazy" and events.count("lazy") == 1
+    assert events[1:] == reinstall_calls(layout.installs)
+    assert "run: uv venv --clear -q" in capsys.readouterr().out
+
+
+def test_a_failing_reinstall_step_stops_the_apply(layout, monkeypatch, tmp_path, capsys):
+    events = []
+    uv_recorder(monkeypatch, tmp_path, events)
+    recording = cli.subprocess.run
+
+    def fail_pip(argv, **kw):
+        if argv[:2] == ["uv", "pip"]:
+            return subprocess.CompletedProcess(argv, 3, "", "boom")
+        return recording(argv, **kw)
+
+    monkeypatch.setattr(cli.subprocess, "run", fail_pip)
+    assert run(apply=True) == 1
+    assert "FAILED step" in capsys.readouterr().out
+    assert [argv[1] for argv, _ in events] == ["venv"]
+
+
+def test_a_bare_command_prints_the_reinstall_steps_and_runs_none(layout, monkeypatch, tmp_path, capsys):
+    events = []
+    uv_recorder(monkeypatch, tmp_path, events)
+    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: events.append("lazy"))
+    assert run() == 0
+    out = capsys.readouterr().out
+    assert sum(bool(re.match(r"\d+\. run ", line)) for line in out.splitlines()) == 8 and out.rstrip().endswith(CLOSING)
+    assert events == []
+
+
+def test_uv_tool_dir_is_none_when_uv_fails_or_is_missing(monkeypatch):
+    def missing(argv, **kw):
+        raise FileNotFoundError("uv")
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 2, "/t\n", "no"))
+    assert ORIGINAL_TOOL_DIR() is None
+    monkeypatch.setattr(cli.subprocess, "run", missing)
+    assert ORIGINAL_TOOL_DIR() is None
+    monkeypatch.setattr(cli.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "/t/dir\n", ""))
+    assert ORIGINAL_TOOL_DIR() == "/t/dir"
+
+
+def test_no_tool_dir_observes_no_install_bins(layout):
+    assert cli._migrate_install_bins(cli.home_paths.resolve_here(None)) is None
+
+
+def final_install_bins(installs, tool_dir):
+    for name, dist in (("coxswain-graphs", "agent_graphs"), ("coxswain-tools", "coxswain_tools")):
+        info = Path(installs) / name / ".venv" / "lib" / "python3.13" / "site-packages" / f"{dist}-0.1.dist-info"
+        info.mkdir(parents=True)
+        (info / "direct_url.json").write_text(json.dumps({"url": f"file://{installs}/{name}"}))
+    for name, folder in (("coxswain-tools", "coxswain-tools"), ("coxswain-cartridges", "agent-cartridges")):
+        receipt = tool_dir / folder
+        receipt.mkdir(parents=True)
+        requirement = f'{{ name = "{folder}", editable = "{installs}/{name}" }}'
+        (receipt / "uv-receipt.toml").write_text(f"[tool]\nrequirements = [{requirement}]\n")
+
+
+def test_a_final_layout_with_matching_install_bins_runs_no_step(layout, monkeypatch, tmp_path, capsys):
+    assert run(apply=True) == 0
+    events = []
+    tool_dir = uv_recorder(monkeypatch, tmp_path, events)
+    final_install_bins(layout.installs, tool_dir)
+    monkeypatch.setattr(cli, "_load_lazy_modules", lambda: events.append("lazy"))
+    capsys.readouterr()
+    assert run(apply=True) == 0
+    assert "nothing to do" in capsys.readouterr().out
+    assert events == []
+
+
+def test_the_doctor_reports_the_install_bins_row(layout, monkeypatch, tmp_path, capsys):
+    uv_recorder(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    rows = {row["check"]: row for row in cli._doctor_home_rows(cli._migrate_profile(cli.home_paths.resolve_here(None)))}
+    assert rows["install bins"]["ok"] is False
+    assert "missing graphs venv, tools venv, tools receipt, cartridges receipt" in rows["install bins"]["detail"]
+
+
+def test_the_doctor_flattens_the_observation_into_the_four_named_sources():
+    bins = {"coxswain-graphs": {"source": "/g"}, "coxswain-tools": {"source": None},
+            "tool:coxswain-tools": {"editable": "/t", "extras": []}, "tool:coxswain-cartridges": {"editable": None, "extras": []}}
+    assert cli._doctor_install_sources(bins) == {
+        "graphs venv": "/g", "tools venv": None, "tools receipt": "/t", "cartridges receipt": None}
+    assert cli._doctor_install_sources(None) is None

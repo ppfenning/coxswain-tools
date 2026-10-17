@@ -5809,6 +5809,7 @@ def _doctor_home_rows(profile: dict | None) -> list[dict]:
         _doctor_legacy_path(profile, locs),
         in_project,
         _migrate_cartridge_links(profile),
+        _doctor_install_sources(_migrate_install_bins(locs)),
         home_record=(record or "").strip() or None,
         skills_roots=profile.get("skills_roots") or (),
         provider_profile=profile.get("provider_profile") or "",
@@ -6058,6 +6059,34 @@ def _migrate_old_root(profile: Mapping, locs) -> str | None:
     return (outside or roots or [None])[0]
 
 
+def _migrate_tool_dir() -> str | None:
+    """Edge. The output of `uv tool dir`; None when uv is missing, exits non-zero or prints nothing."""
+    try:
+        done = subprocess.run(["uv", "tool", "dir"], capture_output=True, text=True)
+    except OSError:
+        return None
+    return done.stdout.strip() or None if done.returncode == 0 else None
+
+
+def _migrate_install_bins(locs) -> dict | None:
+    """Edge. `setup_migrate.observe_install_bins` for this machine; None when the uv tool dir is unknown."""
+    tool_dir = _migrate_tool_dir()
+    return None if tool_dir is None else setup_migrate.observe_install_bins(locs, tool_dir)
+
+
+def _doctor_install_sources(bins: Mapping | None) -> dict[str, str | None] | None:
+    """Pure. The `install_bins` observation flattened to the four named sources `doctor.home_rows` compares."""
+    if bins is None:
+        return None
+    tools, carts = setup_migrate.TOOLS, setup_migrate.CARTRIDGES
+    return {
+        "graphs venv": (bins.get(setup_migrate.GRAPHS) or {}).get("source"),
+        "tools venv": (bins.get(tools) or {}).get("source"),
+        "tools receipt": (bins.get(f"tool:{tools}") or {}).get("editable"),
+        "cartridges receipt": (bins.get(f"tool:{carts}") or {}).get("editable"),
+    }
+
+
 def _migrate_observe(locs) -> dict:
     """Edge. The old layout as the plain dict `setup_migrate.migrate_plan` takes. When every setting already names
     the installs folder no old path is recorded anywhere, so each checkout is reported as a link to its new path."""
@@ -6081,6 +6110,7 @@ def _migrate_observe(locs) -> dict:
         "home_record": record.strip() if record and record.strip() else None,
         "worktrees": {name: paths[1:] for name, paths in seen.items()},
         "worktree_status": {name: "clean" for name, paths in seen.items() if all(Path(p).exists() for p in paths)},
+        "install_bins": _migrate_install_bins(locs),
         **({"cartridge_links": links} if links is not None else {}),
         **({"workspace": {"path": profile["workspace_dir"]}} if isinstance(profile.get("workspace_dir"), str) else {}),
     }
@@ -6208,6 +6238,8 @@ def _migrate_exec(step: dict, locs) -> str | None:
         return _migrate_git(step)
     if op == "chair_unit":
         return _migrate_chair_unit(locs)
+    if op == "run":
+        return _install_run(step)
     if op == "skip":
         print(f"nothing to do: {step['why']}")
         return None
@@ -6396,6 +6428,8 @@ def _setup_migrate(a: argparse.Namespace) -> int:
             state.mkdir(parents=True, exist_ok=True)
             (state / "migrate.json").write_text(
                 json.dumps({"old_root": _migrate_old_root(_migrate_profile(locs), locs), "new_root": locs.installs}), encoding="utf-8")
+        if any(step["op"] == "run" for step in plan):
+            _load_lazy_modules()  # the reinstall replaces this tool's own environment, so import everything first
         for number, step in enumerate(plan, 1):
             failure = _migrate_exec(step, locs)
             if failure is not None:
