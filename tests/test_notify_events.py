@@ -118,6 +118,12 @@ def test_login_stalled_and_idle_never_give_needs_chair():
     assert [e.kind for e in events] == ["host_login", "stall", "stall"]
 
 
+def test_a_dependency_wait_gives_no_event_beside_a_ticket_cause():
+    wait = {"kind": "needs_chair", "initiative": "init-w", "cause": "waiting on x"}
+    ticket = {"kind": "needs_chair", "initiative": "init-t", "cause": "ticket", "reason": "ticket body is vague"}
+    assert [e.key for e in events_from_tick({}, [wait, ticket])] == ["needs_chair:init-t:ticket"]
+
+
 def test_healthy_tick_gives_nothing():
     assert events_from_tick({}, [{"kind": "mark_lost", "initiative": "init-a"}, {"kind": "noop"}]) == []
     assert events_from_tick({}, []) == []

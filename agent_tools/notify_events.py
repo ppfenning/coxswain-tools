@@ -62,10 +62,15 @@ def _event(action: Mapping) -> Event:
     return _needs_chair(action)
 
 
+def _is_dependency_wait(action: Mapping) -> bool:
+    """A task waiting on another task of its own initiative clears by itself, so it never pushes."""
+    return isinstance(cause := action.get("cause"), str) and cause.startswith("waiting on ")
+
+
 def events_from_tick(facts: Mapping, actions: Sequence[Mapping]) -> list[Event]:
     """Events in first-seen key order, one per key, the first action that carries a remedy winning; facts is unused."""
     chosen: dict[str, tuple[Mapping, Event]] = {}
-    for a in (a for a in actions if a.get("kind") == "needs_chair"):
+    for a in (a for a in actions if a.get("kind") == "needs_chair" and not _is_dependency_wait(a)):
         e = _event(a)
         held = chosen.get(e.key)
         if held is None or (_remedy_line(a) and not _remedy_line(held[0])):
