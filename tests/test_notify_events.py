@@ -1,4 +1,4 @@
-from agent_tools.notify_core import Event
+from agent_tools.notify_core import Event, render
 from agent_tools.notify_events import events_from_tick
 
 STRANDED = {"kind": "needs_chair", "initiative": "init-a", "cause": "stranded", "reason": "no patch"}
@@ -20,36 +20,71 @@ IDLE = {
 }
 
 
-def _quarantine(initiative: str, failures: int) -> dict:
-    return {"quarantines": [{"initiative": initiative, "task_id": "t1", "cause": "odd", "harness_failures": failures}]}
-
-
 def test_stranded_gives_one_needs_chair_event():
     events = events_from_tick({}, [STRANDED])
     assert [(e.kind, e.key) for e in events] == [("needs_chair", "needs_chair:init-a:stranded")]
     assert "init-a" in events[0].title and "stranded" in events[0].body and "no patch" in events[0].body
 
 
-def test_quarantine_with_two_failures_gives_one_event():
-    events = events_from_tick(_quarantine("init-b", 2), [UNRELATED])
-    assert [e.key for e in events] == ["needs_chair:init-b:odd"]
+def test_ticket_cause_gives_one_event_with_cause_and_reason():
+    action = {"kind": "needs_chair", "initiative": "init-t", "cause": "ticket", "reason": "ticket body is vague"}
+    (event,) = events_from_tick({}, [action])
+    assert event.key == "needs_chair:init-t:ticket"
+    assert "ticket" in event.body and "ticket body is vague" in event.body
 
 
-def test_quarantine_with_one_failure_gives_none():
-    assert events_from_tick(_quarantine("init-b", 1), [UNRELATED]) == []
+def test_review_cause_gives_one_event():
+    action = {"kind": "needs_chair", "initiative": "init-r", "cause": "review", "reason": "revise"}
+    assert [e.key for e in events_from_tick({}, [action])] == ["needs_chair:init-r:review"]
 
 
-def test_quarantine_of_another_initiative_gives_none():
-    assert events_from_tick(_quarantine("other", 5), [UNRELATED]) == []
+def test_no_run_cause_gives_one_event():
+    action = {"kind": "needs_chair", "initiative": "init-n", "cause": "no_run", "reason": "no run"}
+    assert [e.key for e in events_from_tick({}, [action])] == ["needs_chair:init-n:no_run"]
 
 
-def test_own_harness_failures_field_wins():
-    action = {**UNRELATED, "harness_failures": 3}
-    assert [e.key for e in events_from_tick(_quarantine("init-b", 0), [action])] == ["needs_chair:init-b:odd"]
+def test_a_remedy_command_is_carried_in_the_body():
+    action = {**UNRELATED, "reason": "stuck", "remedy": "carry", "command": ["cox", "runs", "land", "r1"]}
+    (event,) = events_from_tick({}, [action])
+    assert event.body == "init-b needs you: odd.\nRemedy: cox runs land r1\nstuck"
 
 
-def test_unrelated_cause_without_failures_gives_none():
-    assert events_from_tick({"quarantines": []}, [UNRELATED]) == []
+def test_no_remedy_command_leaves_no_remedy_line():
+    (absent,) = events_from_tick({}, [{**UNRELATED, "reason": "stuck"}])
+    (empty,) = events_from_tick({}, [{**UNRELATED, "reason": "stuck", "command": []}])
+    assert absent.body == empty.body == "init-b needs you: odd.\nstuck"
+
+
+def test_a_long_reason_cannot_push_the_remedy_out_of_the_pushed_body():
+    action = {**UNRELATED, "reason": "x" * 600, "command": ["cox", "runs", "land", "r1"]}
+    (event,) = events_from_tick({}, [action])
+    assert "Remedy: cox runs land r1" in render(event)[1]
+
+
+def test_a_harness_cause_with_no_failures_still_gives_one_event():
+    action = {"kind": "needs_chair", "initiative": "init-h", "cause": "harness", "harness_failures": 0}
+    assert [e.key for e in events_from_tick({}, [action])] == ["needs_chair:init-h:harness"]
+
+
+def test_same_initiative_and_cause_share_one_key():
+    first = {**UNRELATED, "reason": "one"}
+    second = {**UNRELATED, "reason": "two"}
+    assert [e.key for e in events_from_tick({}, [first, second])] == ["needs_chair:init-b:odd"]
+
+
+def test_a_later_action_with_a_remedy_beats_an_earlier_one_without():
+    bare = {**UNRELATED, "reason": "one"}
+    fixed = {**UNRELATED, "reason": "two", "command": ["cox", "go"]}
+    (event,) = events_from_tick({}, [bare, fixed])
+    assert event.body == "init-b needs you: odd.\nRemedy: cox go\ntwo"
+
+
+def test_an_action_with_no_initiative_is_named_by_its_task_and_keyed_apart_from_another():
+    one = {"kind": "needs_chair", "initiative": "", "task_id": "t1", "cause": "conflict"}
+    two = {"kind": "needs_chair", "initiative": "", "task_id": "t2", "cause": "conflict"}
+    events = events_from_tick({}, [one, two])
+    assert [e.key for e in events] == ["needs_chair:t1:conflict", "needs_chair:t2:conflict"]
+    assert events[0].title == "Needs you: t1"
 
 
 def test_login_with_url_clicks_through():

@@ -9,6 +9,7 @@ from agent_tools.chair_read_idle_backlog import (
     idle_backlog,
     last_progress_at,
     read_idle_backlog,
+    stored_initiatives,
     stub_candidates,
 )
 
@@ -66,6 +67,27 @@ def test_an_initiative_with_a_task_is_not_a_stub():
     assert empty_stubs(["a"], [item("t1", "ready")], {}, []) == []
 
 
+def test_an_initiative_whose_only_task_is_done_is_not_a_stub():
+    assert empty_stubs(["a"], [item("t1", "done")], {}, []) == []
+
+
+def test_an_initiative_whose_tasks_are_all_dropped_is_not_a_stub():
+    assert empty_stubs(["a"], [item("t1", "dropped"), item("t2", "dropped")], {}, []) == []
+
+
+def test_an_initiative_with_one_done_and_one_ready_task_is_not_a_stub():
+    assert empty_stubs(["a"], [item("t1", "done"), item("t2", "ready")], {}, []) == []
+
+
+def test_an_initiative_with_only_a_stored_done_row_and_no_task_file_is_not_a_stub():
+    assert empty_stubs(["a"], [], {}, [], ["a"]) == []
+
+
+def test_stored_initiatives_lists_each_initiative_with_a_row_of_any_state():
+    rows = [{"initiative": "b", "state": "done"}, {"initiative": "a", "state": "dropped"}, {"initiative": "b"}, {}]
+    assert stored_initiatives(rows) == ["a", "b"]
+
+
 def test_a_stub_with_a_live_decompose_is_not_a_stub():
     assert empty_stubs(["a"], [], {"a": "a-1"}, ["a"]) == []
 
@@ -95,6 +117,15 @@ def test_the_edge_probes_stubs_for_a_live_run(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(mod, "read_live_initiatives", lambda _runs, names, _now: [n for n in names if n == "live-stub"])
     monkeypatch.setattr(mod, "read_docket", lambda *_a, **_k: docket(ready=0))
     assert read_idle_backlog(tmp_path, "files", 4, NOW)["empty_stubs"] == ["stub"]
+
+
+def test_the_edge_leaves_out_an_initiative_whose_done_task_file_is_gone_under_store_mode(tmp_path: Path, monkeypatch):
+    _stub_workspace(tmp_path)
+    monkeypatch.setattr(mod, "read_live_initiatives", lambda *_a: [])
+    monkeypatch.setattr(mod, "read_docket", lambda *_a, **_k: docket(ready=0))
+    rows = [{"initiative": "stub", "task_id": "t1", "state": "done"}]
+    assert read_idle_backlog(tmp_path, "store", 4, NOW, store_rows=rows)["empty_stubs"] == ["live-stub"]
+    assert read_idle_backlog(tmp_path, "files", 4, NOW, store_rows=rows)["empty_stubs"] == ["live-stub", "stub"]
 
 
 def test_an_unreadable_docket_frees_no_lanes_even_with_ready_items(tmp_path: Path, monkeypatch):
