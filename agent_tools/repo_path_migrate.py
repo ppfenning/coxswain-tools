@@ -8,7 +8,7 @@ from typing import Any, TypedDict
 
 from agent_tools import repo_path, route
 
-__all__ = ["Change", "migrate_row", "migrate_text", "plan"]
+__all__ = ["Change", "migrate_row", "migrate_text", "move_changes", "plan"]
 
 
 class Change(TypedDict):
@@ -30,12 +30,27 @@ def _contract_surface(value: Any, home: str) -> Any:
     return value
 
 
-def migrate_row(row: Mapping[str, Any], home: str) -> dict[str, Any] | None:
-    """A new row with `extra["repo"]` and absolute `surfaces` entries contracted; None when nothing changes."""
+def _swap_prefix(value: Any, move: tuple[str, str] | None) -> Any:
+    """`old` replaced by `new` when the value is `old` or lies beneath it; a shared leading string is not enough."""
+    if move is None or not isinstance(value, str):
+        return value
+    old, new = move
+    return new + value[len(old) :] if value == old or value.startswith(old + "/") else value
+
+
+def _swap_surface(value: Any, move: tuple[str, str] | None) -> Any:
+    """Only an absolute or tilde entry is a candidate; a relative surface never moves."""
+    if isinstance(value, str) and value[:1] in ("/", "~"):
+        return _swap_prefix(value, move)
+    return value
+
+
+def migrate_row(row: Mapping[str, Any], home: str, *, move: tuple[str, str] | None = None) -> dict[str, Any] | None:
+    """A new row with `extra["repo"]` and absolute `surfaces` entries contracted, then moved; None when nothing changes."""
     extra = row.get("extra") or {}
     surfaces = list(row.get("surfaces") or [])
-    new_repo = _contract_repo(extra.get("repo"), home)
-    new_surfaces = [_contract_surface(s, home) for s in surfaces]
+    new_repo = _swap_prefix(_contract_repo(extra.get("repo"), home), move)
+    new_surfaces = [_swap_surface(_contract_surface(s, home), move) for s in surfaces]
     if new_repo == extra.get("repo") and new_surfaces == surfaces:
         return None
     new_extra = {**extra, "repo": new_repo} if "repo" in extra else dict(extra)
@@ -95,16 +110,20 @@ def _swap_lines(lines: Sequence[str], repo_move: tuple[str, str] | None, moves: 
     return out
 
 
-def migrate_text(text: str, home: str) -> str | None:
-    """The work-file text with only its `repo:` line and `surfaces` entries contracted; None when nothing changes."""
+def migrate_text(text: str, home: str, *, move: tuple[str, str] | None = None) -> str | None:
+    """The work-file text with only its `repo:` line and `surfaces` entries contracted, then moved; None when nothing changes."""
     fields, _ = route.parse_frontmatter(text)
     if not fields:
         return None
     repo = fields.get("repo")
-    new_repo = _contract_repo(repo, home)
+    new_repo = _swap_prefix(_contract_repo(repo, home), move)
     repo_move = (repo, new_repo) if isinstance(repo, str) and new_repo != repo else None
     surfaces = fields.get("surfaces")
-    moves = {s: n for s in surfaces if (n := _contract_surface(s, home)) != s} if isinstance(surfaces, list) else {}
+    moves = (
+        {s: n for s in surfaces if (n := _swap_surface(_contract_surface(s, home), move)) != s}
+        if isinstance(surfaces, list)
+        else {}
+    )
     if repo_move is None and not moves:
         return None
     opening, closing = "---\n", "\n---\n"
@@ -123,8 +142,8 @@ def _moves(key: str, old: Sequence[Any], new: Sequence[Any]) -> list[Change]:
     return [{"key": key, "old": o, "new": n} for o, n in zip(old, new) if o != n]
 
 
-def _row_changes(row: Mapping[str, Any], home: str) -> list[Change]:
-    migrated = migrate_row(row, home)
+def _row_changes(row: Mapping[str, Any], home: str, move: tuple[str, str] | None) -> list[Change]:
+    migrated = migrate_row(row, home, move=move)
     if migrated is None:
         return []
     key = _row_key(row)
@@ -132,8 +151,8 @@ def _row_changes(row: Mapping[str, Any], home: str) -> list[Change]:
     return repos + _moves(key, row.get("surfaces") or [], migrated.get("surfaces") or [])
 
 
-def _text_changes(path: str, text: str, home: str) -> list[Change]:
-    migrated = migrate_text(text, home)
+def _text_changes(path: str, text: str, home: str, move: tuple[str, str] | None) -> list[Change]:
+    migrated = migrate_text(text, home, move=move)
     if migrated is None:
         return []
     old, new = route.parse_frontmatter(text)[0], route.parse_frontmatter(migrated)[0]
@@ -141,8 +160,21 @@ def _text_changes(path: str, text: str, home: str) -> list[Change]:
     return repos + _moves(path, old.get("surfaces") or [], new.get("surfaces") or [])
 
 
-def plan(rows: Sequence[Mapping[str, Any]], files: Mapping[str, str], home: str) -> list[Change]:
+def plan(
+    rows: Sequence[Mapping[str, Any]],
+    files: Mapping[str, str],
+    home: str,
+    *,
+    move: tuple[str, str] | None = None,
+) -> list[Change]:
     """Every value that would move: rows in the order given, then files by sorted path."""
-    from_rows = [c for row in rows for c in _row_changes(row, home)]
-    from_files = [c for path in sorted(files) for c in _text_changes(path, files[path], home)]
+    from_rows = [c for row in rows for c in _row_changes(row, home, move)]
+    from_files = [c for path in sorted(files) for c in _text_changes(path, files[path], home, move)]
     return from_rows + from_files
+
+
+def move_changes(
+    rows: Sequence[Mapping[str, Any]], files: Mapping[str, str], home: str, old: str, new: str
+) -> list[Change]:
+    """What `plan` returns when tilde prefix `old` is swapped for `new` after contraction."""
+    return plan(rows, files, home, move=(old, new))
