@@ -58,8 +58,22 @@ def final_entry(name):
     return entry(name, "symlink", "dir", f"{NEW}/{name}")
 
 
-def layout(make_entry, settings, links, home_record):
+def bins(graphs, tools, tool_tools, tool_carts):
     return {
+        GRAPHS: {"source": graphs},
+        TOOLS: {"source": tools},
+        f"tool:{TOOLS}": {"editable": tool_tools, "extras": ["traces", "parquet", "lake", "postgres"]},
+        f"tool:{CART}": {"editable": tool_carts, "extras": []},
+    }
+
+
+OLD_BINS = bins(f"/u/repos/{GRAPHS}", f"/u/repos/{TOOLS}", f"/u/repos/{TOOLS}", f"/u/repos/{CART}")
+FINAL_BINS = bins(f"{NEW}/{GRAPHS}", f"{NEW}/{TOOLS}", f"{NEW}/{TOOLS}", f"{NEW}/{CART}")
+
+
+def layout(make_entry, settings, links, home_record, install_bins=None):
+    return {
+        **({"install_bins": install_bins} if install_bins is not None else {}),
         "entries": {name: make_entry(name) for name in CHECKOUTS},
         "workspace": {"path": "/u/ws"},
         "settings": settings,
@@ -87,11 +101,11 @@ NEW_SETTINGS = {
 
 
 def old_layout():
-    return layout(old_entry, OLD_SETTINGS, OLD_LINKS, None)
+    return layout(old_entry, OLD_SETTINGS, OLD_LINKS, None, OLD_BINS)
 
 
 def final_layout():
-    return layout(final_entry, NEW_SETTINGS, NEW_LINKS, LOCS.home)
+    return layout(final_entry, NEW_SETTINGS, NEW_LINKS, LOCS.home, FINAL_BINS)
 
 
 def ops(steps):
@@ -112,9 +126,10 @@ def test_full_old_layout():
         ["move", "symlink"] * 3
         + ["symlink"] * 2
         + ["worktree_repair", "verify"] * 3
+        + ["run"] * 8
         + ["rewrite_profile_key"] * 3
         + ["rewrite_setting"]
-        + ["print"] * 4
+        + ["print"] * 3
     )
     assert [s["key"] for s in of(steps, "rewrite_profile_key")] == ["skills_roots", "provider_profile", "harness_dir"]
     assert of(steps, "rewrite_profile_key")[0]["new"] == [f"{NEW}/coxswain-cartridges/skills"]
@@ -303,10 +318,131 @@ def test_unobserved_cartridge_links_refuse_instead_of_skipping():
 
 def test_follow_on_prints_name_each_installer_item_and_prefix():
     notes = {s["item"]: s for s in of(migrate_plan(old_layout(), LOCS), "print")}
-    assert set(notes) == {"editable installs", "marketplace", "repo paths", "workspace"}
+    assert set(notes) == {"marketplace", "repo paths", "workspace"}
     assert notes["marketplace"]["checkouts"] == {CART: {"old": f"/u/repos/{CART}", "new": f"{NEW}/{CART}"}}
     assert notes["repo paths"]["checkouts"][TOOLS] == {"old": f"/u/repos/{TOOLS}", "new": f"{NEW}/{TOOLS}"}
     assert not of(migrate_plan(final_layout(), LOCS), "print")
+
+
+def installs_runs(observed):
+    return of(migrate_plan(observed, LOCS), "run")
+
+
+def test_old_layout_emits_eight_run_steps_in_order():
+    runs = installs_runs(old_layout())
+    assert [(s["argv"], s.get("cwd")) for s in runs] == [
+        (["uv", "venv", "--clear", "-q"], f"{NEW}/{TOOLS}"),
+        (["uv", "pip", "install", "-q", "-e", ".[dev]"], f"{NEW}/{TOOLS}"),
+        (["uv", "venv", "--clear", "-q"], f"{NEW}/{GRAPHS}"),
+        (["uv", "pip", "install", "-q", "-e", ".[dev]", "-e", f"{NEW}/{CART}"], f"{NEW}/{GRAPHS}"),
+        (["uv", "venv", "--clear", "-q"], f"{NEW}/{CART}"),
+        (["uv", "pip", "install", "-q", "-e", ".[dev]"], f"{NEW}/{CART}"),
+        (["uv", "tool", "install", "--force", "-q", "-e", f"{NEW}/{TOOLS}[traces,parquet,lake,postgres]"], None),
+        (["uv", "tool", "install", "--force", "-q", "-e", f"{NEW}/{CART}"], None),
+    ]
+
+
+def test_run_steps_follow_the_worktree_steps_and_precede_the_settings():
+    kinds = ops(migrate_plan(old_layout(), LOCS))
+    assert kinds.index("run") > max(i for i, k in enumerate(kinds) if k in ("worktree_repair", "verify"))
+    assert kinds.index("run") < kinds.index("rewrite_profile_key")
+
+
+def test_final_layout_emits_no_run_step_and_no_print():
+    steps = migrate_plan(final_layout(), LOCS)
+    assert not of(steps, "run")
+    assert not of(steps, "print")
+
+
+def test_matching_sources_emit_no_run_step_when_other_work_remains():
+    steps = migrate_plan(layout(old_entry, OLD_SETTINGS, OLD_LINKS, None, FINAL_BINS), LOCS)
+    assert not of(steps, "run")
+    assert "editable installs" not in {s["item"] for s in of(steps, "print")}
+
+
+def test_unobserved_install_bins_emit_no_run_step():
+    assert not installs_runs({k: v for k, v in old_layout().items() if k != "install_bins"})
+
+
+@pytest.mark.parametrize(
+    "stale",
+    [
+        bins(None, f"{NEW}/{TOOLS}", f"{NEW}/{TOOLS}", f"{NEW}/{CART}"),
+        bins(f"{NEW}/{GRAPHS}", None, f"{NEW}/{TOOLS}", f"{NEW}/{CART}"),
+        bins(f"{NEW}/{GRAPHS}", f"{NEW}/{TOOLS}", None, f"{NEW}/{CART}"),
+        bins(f"{NEW}/{GRAPHS}", f"{NEW}/{TOOLS}", f"{NEW}/{TOOLS}", None),
+        bins(f"{NEW}/{GRAPHS}", f"{NEW}/{TOOLS}", f"{NEW}/{TOOLS}", f"/u/repos/{CART}"),
+    ],
+)
+def test_one_absent_or_differing_source_emits_all_eight(stale):
+    assert len(installs_runs({**final_layout(), "install_bins": stale})) == 8
+
+
+def test_observed_extras_are_carried_into_each_tool_install():
+    stale = {
+        **OLD_BINS,
+        f"tool:{TOOLS}": {"editable": None, "extras": []},
+        f"tool:{CART}": {"editable": None, "extras": ["x", "y"]},
+    }
+    installs = installs_runs({**old_layout(), "install_bins": stale})[-2:]
+    assert [s["argv"][-1] for s in installs] == [f"{NEW}/{TOOLS}", f"{NEW}/{CART}[x,y]"]
+
+
+def locs_at(installs):
+    return Locations(
+        home=LOCS.home,
+        installs=str(installs),
+        workspaces=LOCS.workspaces,
+        config=LOCS.config,
+        state=LOCS.state,
+        profile=LOCS.profile,
+        record=LOCS.record,
+    )
+
+
+def write_dist(root, checkout, dist, url):
+    folder = root / checkout / ".venv/lib/python3.14/site-packages" / f"{dist}-0.1.0.dist-info"
+    folder.mkdir(parents=True)
+    (folder / "direct_url.json").write_text(json.dumps({"url": url, "dir_info": {"editable": True}}))
+
+
+def write_receipt(tool_dir, tool, text):
+    (tool_dir / tool).mkdir(parents=True)
+    (tool_dir / tool / "uv-receipt.toml").write_text(text)
+
+
+def test_observe_install_bins_reads_sources_and_receipts(tmp_path):
+    installs, tool_dir = tmp_path / "installs", tmp_path / "tools"
+    write_dist(installs, GRAPHS, "agent_graphs", "file:///src/graphs")
+    write_dist(installs, TOOLS, "coxswain_tools", "file:///src/tools")
+    write_receipt(
+        tool_dir,
+        "coxswain-tools",
+        '[tool]\nrequirements = [{ name = "coxswain-tools", editable = "/src/tools", '
+        'extras = ["traces", "parquet", "lake", "postgres"] }]\n',
+    )
+    write_receipt(
+        tool_dir,
+        "agent-cartridges",
+        '[tool]\nrequirements = [{ name = "agent-cartridges", editable = "/src/carts" }]\n',
+    )
+    assert setup_migrate.observe_install_bins(locs_at(installs), str(tool_dir)) == {
+        GRAPHS: {"source": "/src/graphs"},
+        TOOLS: {"source": "/src/tools"},
+        f"tool:{TOOLS}": {"editable": "/src/tools", "extras": ["traces", "parquet", "lake", "postgres"]},
+        f"tool:{CART}": {"editable": "/src/carts", "extras": []},
+    }
+
+
+def test_observe_install_bins_records_missing_and_broken_files_as_absent(tmp_path):
+    write_receipt(tmp_path / "tools", "coxswain-tools", "not [valid toml")
+    absent = {"editable": None, "extras": []}
+    assert setup_migrate.observe_install_bins(locs_at(tmp_path / "installs"), str(tmp_path / "tools")) == {
+        GRAPHS: {"source": None},
+        TOOLS: {"source": None},
+        f"tool:{TOOLS}": absent,
+        f"tool:{CART}": absent,
+    }
 
 
 def unit_text(root):
@@ -480,7 +616,7 @@ def test_module_imports_only_standard_library_and_home():
         if isinstance(node, (ast.Import, ast.ImportFrom))
         for alias in (node.names if isinstance(node, ast.Import) else [None])
     }
-    assert imported <= {"__future__", "posixpath", "typing", "agent_tools"}
+    assert imported <= {"__future__", "json", "pathlib", "posixpath", "tomllib", "typing", "agent_tools"}
     assert "agent_tools.home" in {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
 
 

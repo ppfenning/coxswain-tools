@@ -1,8 +1,8 @@
 """Pure plan for moving an existing local layout to the coxswain home.
 
 The plan follows docs/design/coxswain-home.md, section 4. Nothing here executes a
-step or reads the filesystem: `migrate_plan` takes the observed layout as plain
-data and returns step dicts that a later executor applies.
+step: `migrate_plan` takes the observed layout as plain data and returns step dicts
+that a later executor applies. Only `observe_install_bins` reads files, and it is an edge.
 
 Observed layout, a dict with these keys:
 
@@ -23,6 +23,13 @@ Observed layout, a dict with these keys:
 - `chair_unit`: the chair systemd unit file text, or None when there is none. A unit whose
   `Environment=PATH=` line still names the old checkout root yields one last `chair_unit` step.
 
+- `install_bins`: optional. Where each editable install points, as `observe_install_bins` returns it.
+  `coxswain-graphs` and `coxswain-tools` hold `source`, read from the checkout venv. `tool:coxswain-tools`
+  and `tool:coxswain-cartridges` hold `editable` and `extras`, read from the uv tool receipts. A value of
+  None is an absent source. When any source differs from its checkout under `Locations.installs`, the plan
+  emits eight `run` steps that recreate the venvs and reinstall the tools. When the key is not observed,
+  the plan emits none.
+
 Settings may hold tilde-form paths. They are expanded against the user home, taken as the
 parent of `Locations.config`, before they are compared with the checkout paths.
 
@@ -32,15 +39,25 @@ planner emits no step that deletes or replaces a real directory.
 
 from __future__ import annotations
 
+import json
 import posixpath
+import tomllib
+from pathlib import Path
 from typing import Any, NamedTuple
 
+from agent_tools import setup_install
 from agent_tools.home import Locations
 
 Step = dict[str, Any]
 
 CARTRIDGES = "coxswain-cartridges"
-CHECKOUTS = (CARTRIDGES, "coxswain-graphs", "coxswain-tools")
+GRAPHS = "coxswain-graphs"
+TOOLS = "coxswain-tools"
+CHECKOUTS = (CARTRIDGES, GRAPHS, TOOLS)
+# uv tool receipt folder for each tool install, keyed by the checkout it installs.
+TOOL_RECEIPTS = {TOOLS: "coxswain-tools", CARTRIDGES: "agent-cartridges"}
+# Order of the venv steps: tools, graphs, cartridges.
+REINSTALL_ORDER = (TOOLS, GRAPHS, CARTRIDGES)
 OPS = frozenset(
     {
         "move",
@@ -53,6 +70,7 @@ OPS = frozenset(
         "worktree_repair",
         "verify",
         "chair_unit",
+        "run",
     }
 )
 SETTING_KEYS = ("skills_roots", "provider_profile", "harness_dir")
@@ -185,12 +203,6 @@ def _prints(workspace: dict[str, Any] | None, pairs: dict[str, tuple[str, str]],
     notes = [
         _step(
             "print",
-            "Each editable install is recreated from its moved checkout by its own installer.",
-            item="editable installs",
-            checkouts=moved,
-        ),
-        _step(
-            "print",
             "The Claude marketplace entry is re-registered by the installer, which this plan does not duplicate.",
             item="marketplace",
             checkouts={CARTRIDGES: moved[CARTRIDGES]},
@@ -221,6 +233,85 @@ def _chair_unit_steps(unit: str | None, old_root: str) -> list[Step]:
     return [_step("chair_unit", why)]
 
 
+def _venv_source(checkout: str, dist: str) -> str | None:
+    """Edge. The editable source in the dist-info direct_url.json of `checkout`'s .venv, without file://."""
+    pattern = f".venv/lib/python*/site-packages/{dist}-*.dist-info/direct_url.json"
+    for path in sorted(Path(checkout).glob(pattern)):
+        try:
+            url = json.loads(path.read_text()).get("url")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(url, str):
+            return url.removeprefix("file://")
+    return None
+
+
+def _receipt_entry(tool_dir: str, tool: str) -> dict[str, Any]:
+    """Edge. The editable value and extras of `tool`'s uv receipt; None and [] when absent or unreadable."""
+    absent: dict[str, Any] = {"editable": None, "extras": []}
+    try:
+        data = tomllib.loads((Path(tool_dir) / tool / "uv-receipt.toml").read_text())
+        requirements = data["tool"]["requirements"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return absent
+    found = [r for r in requirements if isinstance(r, dict) and r.get("name") == tool]
+    if not found:
+        return absent
+    editable, extras = found[0].get("editable"), found[0].get("extras")
+    return {
+        "editable": editable if isinstance(editable, str) else None,
+        "extras": [x for x in extras if isinstance(x, str)] if isinstance(extras, list) else [],
+    }
+
+
+def observe_install_bins(locs: Locations, tool_dir: str) -> dict[str, Any]:
+    """Edge. The `install_bins` observation: venv sources of graphs and tools, uv tool receipts of tools and cartridges.
+
+    A missing or unreadable file is recorded as None, never raised. `tool_dir` is the output of `uv tool dir`.
+    """
+    return {
+        GRAPHS: {"source": _venv_source(posixpath.join(locs.installs, GRAPHS), "agent_graphs")},
+        TOOLS: {"source": _venv_source(posixpath.join(locs.installs, TOOLS), "coxswain_tools")},
+        **{f"tool:{name}": _receipt_entry(tool_dir, folder) for name, folder in TOOL_RECEIPTS.items()},
+    }
+
+
+def _tool_install(name: str, new: str, extras: list[str]) -> Step:
+    target = f"{new}[{','.join(extras)}]" if extras else new
+    return _step(
+        "run",
+        f"The {name} uv tool must be editable from its checkout under the installs folder.",
+        argv=["uv", "tool", "install", "--force", "-q", "-e", target],
+    )
+
+
+def _reinstall_steps(install_bins: dict[str, Any] | None, news: dict[str, str], locs: Locations) -> list[Step]:
+    """Eight run steps when any observed editable source differs from its checkout; none when all match or none was observed."""
+    if install_bins is None:
+        return []
+    tools_receipt = install_bins.get(f"tool:{TOOLS}") or {}
+    carts_receipt = install_bins.get(f"tool:{CARTRIDGES}") or {}
+    sources = {
+        GRAPHS: (install_bins.get(GRAPHS) or {}).get("source"),
+        TOOLS: (install_bins.get(TOOLS) or {}).get("source"),
+        f"tool:{TOOLS}": tools_receipt.get("editable"),
+        f"tool:{CARTRIDGES}": carts_receipt.get("editable"),
+    }
+    wanted = {GRAPHS: news[GRAPHS], TOOLS: news[TOOLS], f"tool:{TOOLS}": news[TOOLS], f"tool:{CARTRIDGES}": news[CARTRIDGES]}
+    if all(sources[key] == wanted[key] for key in sources):
+        return []
+    venvs = [
+        {**step, "why": step["why"] + " because its editable source is not the checkout under the installs folder."}
+        for name in REINSTALL_ORDER
+        for step in setup_install.venv_steps(name, locs.installs, news[CARTRIDGES], True)
+    ]
+    return [
+        *venvs,
+        _tool_install(TOOLS, news[TOOLS], list(tools_receipt.get("extras") or [])),
+        _tool_install(CARTRIDGES, news[CARTRIDGES], list(carts_receipt.get("extras") or [])),
+    ]
+
+
 def migrate_plan(observed: dict[str, Any], locs: Locations) -> list[Step]:
     """Ordered steps for the remaining migration; one skip when none remain, only refuses when any checkout refuses."""
     entries = observed.get("entries", {})
@@ -249,6 +340,7 @@ def migrate_plan(observed: dict[str, Any], locs: Locations) -> list[Step]:
         *(step for name in moved for step in verdicts[name][1]),
         *_link_steps(observed["cartridge_links"], locs),
         *(step for name in repaired for step in _repair_steps(name, news[name], worktrees[name])),
+        *_reinstall_steps(observed.get("install_bins"), news, locs),
         *_setting_steps(observed.get("settings", {}), observed.get("home_record"), tuple(pairs.values()), locs),
     ]
     # The old root is the parent folder of the old coxswain-cartridges checkout.
