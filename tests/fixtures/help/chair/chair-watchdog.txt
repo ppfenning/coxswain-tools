@@ -1,0 +1,16 @@
+usage: cox chair watchdog [-h] [--idle-minutes IDLE_MINUTES] [--stale-minutes STALE_MINUTES]
+                          [--dry-run] [--profile PROFILE]
+
+A one-shot check meant for a five-minute timer.
+It reads only the store and exits 0 whether or not it pushed.
+It exits 1 only when the store cannot be read.
+
+options:
+  -h, --help            show this help message and exit
+  --idle-minutes IDLE_MINUTES
+                        minutes of idle status lines before an alert (default: 30)
+  --stale-minutes STALE_MINUTES
+                        minutes without a lease beat before the loop is down (default: 10)
+  --dry-run             print each alert and push nothing
+  --profile PROFILE     the routing profile (default: ~/.config/agent-tools/profile.yaml or
+                        $AGENT_TOOLS_PROFILE)
