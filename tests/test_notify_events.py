@@ -38,9 +38,11 @@ def test_review_cause_gives_one_event():
     assert [e.key for e in events_from_tick({}, [action])] == ["needs_chair:init-r:review"]
 
 
-def test_no_run_cause_gives_one_event():
-    action = {"kind": "needs_chair", "initiative": "init-n", "cause": "no_run", "reason": "no run"}
-    assert [e.key for e in events_from_tick({}, [action])] == ["needs_chair:init-n:no_run"]
+def test_self_clearing_causes_give_no_event():
+    actions = [{"kind": "needs_chair", "initiative": f"init-{c}", "cause": c, "reason": "r"}
+               for c in ("no_run", "steer_deferred", "held_file")]
+    real = {"kind": "needs_chair", "initiative": "init-t", "cause": "ticket", "reason": "r"}
+    assert [e.key for e in events_from_tick({}, [*actions, real])] == ["needs_chair:init-t:ticket"]
 
 
 def test_a_remedy_command_is_carried_in_the_body():
