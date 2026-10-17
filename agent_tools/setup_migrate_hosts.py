@@ -36,7 +36,7 @@ class Step:
     payload: dict = field(default_factory=dict)
 
 
-def _is_migrated(host: ObservedHost) -> bool:
+def is_migrated(host: ObservedHost) -> bool:
     """Reports a checkout, and every reported path sits directly under a folder named installs."""
     return bool(host.checkouts) and all(
         posixpath.basename(posixpath.dirname(path)) == "installs" for path in host.checkouts.values()
@@ -46,7 +46,7 @@ def _is_migrated(host: ObservedHost) -> bool:
 def _host_steps(host: ObservedHost) -> list[Step]:
     if host.source == "fallback":
         return [Step("print", host.name, f"{host.name} has no beat row, so its paths cannot be judged until it beats.")]
-    if not _is_migrated(host):
+    if not is_migrated(host):
         return [
             Step(
                 "remote_migrate",
