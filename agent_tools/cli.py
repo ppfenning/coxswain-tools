@@ -6023,6 +6023,7 @@ def _setup_install(a: argparse.Namespace) -> int:
     if a.dry_run:
         print(setup_install.render_plan(steps))
         return 0
+    _load_lazy_modules()  # a `uv tool install --force` step replaces this cox tool's own environment mid-run
     for step in steps:
         failure = _execute_step(step)
         if failure is not None:

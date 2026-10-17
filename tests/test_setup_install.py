@@ -62,8 +62,8 @@ def test_install_plan_orders_venv_steps_with_graphs_carrying_the_cartridges_dep(
     assert argvs[4] == ["uv", "venv", "-q"] and runs[4]["cwd"] == f"{INSTALLS}/coxswain-tools"
     assert argvs[5] == ["uv", "pip", "install", "-q", "-e", ".[dev]"]
     assert runs[5]["cwd"] == f"{INSTALLS}/coxswain-tools"
-    assert argvs[6] == ["uv", "tool", "install", "-q", "-e", f"{INSTALLS}/coxswain-tools"]
-    assert argvs[7] == ["uv", "tool", "install", "-q", "-e", CARTRIDGES]
+    assert argvs[6] == ["uv", "tool", "install", "--force", "-q", "-e", f"{INSTALLS}/coxswain-tools"]
+    assert argvs[7] == ["uv", "tool", "install", "--force", "-q", "-e", CARTRIDGES]
     cartridge_tool_installs = [a for a in argvs if a[-1] == CARTRIDGES
                                 and a[:3] == ["uv", "tool", "install"]]
     assert len(cartridge_tool_installs) == 1
@@ -354,9 +354,9 @@ def test_tool_install_target_carries_extras_and_empty_is_unchanged():
     extras = ("traces", "parquet", "lake", "postgres")
     with_extras = tool_argvs(_plan(tool_extras=extras))
     without = tool_argvs(_plan())
-    assert with_extras[0] == ["uv", "tool", "install", "-q", "-e", f"{tools_checkout}[traces,parquet,lake,postgres]"]
+    assert with_extras[0] == ["uv", "tool", "install", "--force", "-q", "-e", f"{tools_checkout}[traces,parquet,lake,postgres]"]
     assert with_extras[1] == without[1]
-    assert without[0] == ["uv", "tool", "install", "-q", "-e", tools_checkout]
+    assert without[0] == ["uv", "tool", "install", "--force", "-q", "-e", tools_checkout]
     assert tool_argvs(_plan(tool_extras=())) == without
 
 

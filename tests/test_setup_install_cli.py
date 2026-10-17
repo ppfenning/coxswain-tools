@@ -71,7 +71,7 @@ def test_full_install_calls_uv_in_order_and_writes_profile(install_env):
     lines = install_env["log"].read_text(encoding="utf-8").splitlines()
     assert lines[0] == "venv -q"
     assert lines[1] == "pip install -q -e .[dev]"
-    assert lines[6] == f"tool install -q -e {install_env['root']}/coxswain-tools"
+    assert lines[6] == f"tool install --force -q -e {install_env['root']}/coxswain-tools"
     profile_path = install_env["home"] / ".config" / "agent-tools" / "profile.yaml"
     profile = route.parse_profile(profile_path.read_text(encoding="utf-8"))
     assert profile["team"] == "acme"
