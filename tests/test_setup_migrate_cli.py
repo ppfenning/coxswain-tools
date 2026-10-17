@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -41,6 +42,10 @@ def layout(tmp_path, monkeypatch):
         f"harness_dir: {repos}/coxswain-graphs\n"
         f"workspace_dir: {user}/ws\n"
     )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "git").symlink_to(shutil.which("git"))
+    monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setenv("HOME", str(user))
     monkeypatch.setenv("COXSWAIN_HOME", str(tmp_path / "coxhome"))
     for var in ("AGENT_TOOLS_PROFILE", "XDG_DATA_HOME", "XDG_STATE_HOME"):
@@ -67,6 +72,7 @@ def layout(tmp_path, monkeypatch):
         cartridges=cartridges,
         profile=profile,
         installs=tmp_path / "coxhome" / "installs",
+        bin=bin_dir,
         calls=calls,
     )
 
@@ -601,3 +607,94 @@ def test_the_doctor_flattens_the_observation_into_the_four_named_sources():
     assert cli._doctor_install_sources(bins) == {
         "graphs venv": "/g", "tools venv": None, "tools receipt": "/t", "cartridges receipt": None}
     assert cli._doctor_install_sources(None) is None
+
+
+MARKET = "coxswain-cartridges"
+
+
+@pytest.fixture
+def fake_claude(layout):
+    """A claude first on PATH that logs every argv and answers the two list queries."""
+    log = layout.bin / "claude.log"
+    script = layout.bin / "claude"
+    plugins = json.dumps([{"id": f"base@{MARKET}"}, {"id": "other@elsewhere"}])
+
+    def install(registered: str) -> None:
+        market = json.dumps([{"name": MARKET, "path": registered}])
+        script.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\n' \"$*\" >> {log}\n"
+            'case "$*" in\n'
+            f"  'plugin marketplace list --json') printf '%s\\n' '{market}' ;;\n"
+            f"  'plugin list --json') printf '%s\\n' '{plugins}' ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+
+    def argvs() -> list[str]:
+        queries = ("plugin marketplace list --json", "plugin list --json")
+        return [line for line in log.read_text().splitlines() if line not in queries] if log.exists() else []
+
+    return types_ns(install=install, argvs=argvs, new=str(layout.installs / MARKET))
+
+
+def test_apply_re_registers_the_marketplace_and_reinstalls_the_plugin_in_order(layout, fake_claude):
+    fake_claude.install(f"{layout.repos}/{MARKET}")
+    assert run(apply=True) == 0
+    assert fake_claude.argvs() == [
+        f"plugin marketplace remove {MARKET}",
+        f"plugin marketplace add {fake_claude.new}",
+        f"plugin install base@{MARKET}",
+    ]
+
+
+def test_without_apply_the_marketplace_steps_are_printed_and_not_run(layout, fake_claude, capsys):
+    fake_claude.install(f"{layout.repos}/{MARKET}")
+    assert run() == 0
+    assert fake_claude.argvs() == []
+    assert "run - register coxswain-cartridges as a plugin marketplace" in capsys.readouterr().out
+
+
+def test_a_marketplace_at_the_final_path_runs_no_remove_add_or_install(layout, fake_claude):
+    fake_claude.install(fake_claude.new)
+    assert run(apply=True) == 0
+    assert fake_claude.argvs() == []
+
+
+def test_claude_absent_from_path_prints_the_not_checked_line_and_runs_no_claude(layout, monkeypatch, capsys):
+    real, spawned = subprocess.run, []
+
+    def spy(argv, *args, **kwargs):
+        spawned.append(argv[0])
+        return real(argv, *args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", spy)
+    assert run(apply=True) == 0
+    assert "claude" not in spawned
+    assert "The Claude marketplace was not checked because claude is not on PATH." in capsys.readouterr().out
+
+
+def test_observe_reports_the_marketplace_keys(layout, fake_claude):
+    fake_claude.install(f"{layout.repos}/{MARKET}")
+    seen = cli._migrate_observe(cli.home_paths.resolve_here(None))
+    assert (seen["claude_on_path"], seen["marketplace"], seen["marketplace_plugins"]) == (
+        True, f"{layout.repos}/{MARKET}", [f"base@{MARKET}"])
+
+
+def test_observe_without_claude_reports_nothing_registered(layout):
+    seen = cli._migrate_observe(cli.home_paths.resolve_here(None))
+    assert (seen["claude_on_path"], seen["marketplace"], seen["marketplace_plugins"]) == (False, None, [])
+
+
+def test_plugin_ids_keep_only_this_marketplace_in_order():
+    parsed = [
+        {"id": f"b@{MARKET}"},
+        {"id": "x@other"},
+        {"id": f"a@{MARKET}"},
+        {"name": f"n@{MARKET}"},
+        "c@coxswain-cartridges",
+        {"id": 3},
+    ]
+    assert cli._marketplace_plugin_ids(parsed) == [f"b@{MARKET}", f"a@{MARKET}"]
+    assert cli._marketplace_plugin_ids({"id": f"a@{MARKET}"}) == []

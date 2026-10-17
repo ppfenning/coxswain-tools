@@ -5867,6 +5867,30 @@ def _marketplace_listing() -> dict[str, str] | None:
         return None
 
 
+def _marketplace_plugin_ids(parsed: object) -> list[str]:
+    """Maps `claude plugin list --json` entries to their ids ending @coxswain-cartridges, in order."""
+    if not isinstance(parsed, list):
+        return []
+    ids = (e.get("id") for e in parsed if isinstance(e, dict))
+    return [i for i in ids if isinstance(i, str) and i.endswith("@coxswain-cartridges")]
+
+
+def _marketplace_plugins() -> list[str]:
+    """Edge: the plugin ids installed from coxswain-cartridges; [] when claude is absent, fails, or prints non-JSON."""
+    if shutil.which("claude") is None:
+        return []
+    try:
+        r = subprocess.run(["claude", "plugin", "list", "--json"], capture_output=True, text=True)
+    except OSError:
+        return []
+    if r.returncode != 0:
+        return []
+    try:
+        return _marketplace_plugin_ids(json.loads(r.stdout))
+    except ValueError:
+        return []
+
+
 def _install_home_refusal(home: str, record: str | None, named: bool) -> str | None:
     """The refusal text when a home named by flag or environment differs from a non-empty record."""
     recorded = (record or "").strip()
@@ -6103,7 +6127,11 @@ def _migrate_observe(locs) -> dict:
     record = _read_text_or_none(Path(locs.record))
     links = _migrate_cartridge_links(profile)
     unit = _read_text_or_none(chair_service.unit_path(Path.home())) if sys.platform.startswith("linux") else None
+    claude_on_path = shutil.which("claude") is not None
     return {
+        "claude_on_path": claude_on_path,
+        "marketplace": (_marketplace_listing() or {}).get("coxswain-cartridges"),
+        "marketplace_plugins": _marketplace_plugins(),
         "chair_unit": unit,
         "entries": entries,
         "settings": {key: profile[key] for key in setup_migrate.SETTING_KEYS if key in profile},
