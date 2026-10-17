@@ -29,7 +29,7 @@ import tomllib
 import types
 import urllib.parse
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 
 import yaml
@@ -139,6 +139,7 @@ home_paths = _LazyModule("agent_tools.home")
 host_cmd = _LazyModule("agent_tools.host_cmd")
 install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
+intake_state = _LazyModule("agent_tools.intake_state")
 lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
 land = _LazyModule("agent_tools.land")
@@ -8716,6 +8717,23 @@ def _resolve_land_with(
     return resolve
 
 
+def _initiative_intakes(initiative_texts: Mapping[Path, str]) -> dict[str, str]:
+    """Initiative id (its directory name) to the intake path its `initiative.md` names; one naming none is left out."""
+    named = {p.parent.name: intake_state.intake_field(text) for p, text in initiative_texts.items()}
+    return {initiative: intake for initiative, intake in named.items() if intake}
+
+
+def _newest_run_ids(run_ids_by_initiative: Mapping[str, Sequence[str]]) -> dict[str, str]:
+    """Initiative id to its newest decompose run id. Each list is oldest first, as `read_decompose_runs` returns it."""
+    return {initiative: run_ids[-1] for initiative, run_ids in run_ids_by_initiative.items() if run_ids}
+
+
+def _task_item_counts(tickets: Sequence[Mapping], initiatives: Collection[str]) -> dict[str, int]:
+    """Initiative id to its task count, a row with no `kind` being a task. Each id in `initiatives` carries an explicit 0, since a missing id reads as non-empty."""
+    counts = collections.Counter(str(t["initiative"]) for t in tickets if t.get("kind", "task") == "task")
+    return {**dict.fromkeys(initiatives, 0), **counts}
+
+
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
     profile_path: Path, mode: str,
@@ -8771,6 +8789,28 @@ def _chair_run_deps(
 
     def stranded_inputs() -> tuple[list[dict], list[dict]]:
         return once("stranded", lambda: _chair_stranded_inputs(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
+
+    def ticket_items() -> list[dict]:
+        return once("tickets", lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
+
+    def decompose_runs_of(path: str) -> list:
+        iid = chair_exec.decompose_id(path, chair_exec.read_intake_id(ws, path))
+        return [] if isinstance(iid, chair_exec.Refusal) else chair_decompose_runs.read_decompose_runs(Path(runs_dir), iid)
+
+    def initiative_intakes() -> dict[str, str]:
+        return _initiative_intakes(chair_read_quarantined.initiative_files(ws, work_files()))
+
+    def item_counts() -> dict[str, int]:
+        # An initiative naming an intake is `decomposed` (or `landed`, which holds items) by `intake_state.intake_group`.
+        return _task_item_counts(ticket_items(), initiative_intakes())
+
+    def decomposed_intake() -> dict[str, str]:
+        # Only the initiatives with zero task items can be reported by `empty_decompose_facts`, so only their decompose
+        # runs are read: no run read for an initiative that has tasks. Keyed by the initiative's directory name, the key
+        # tickets and live runs use; the run list is read under the intake's own decompose id, which may differ from it.
+        intakes = initiative_intakes()
+        empty = [initiative for initiative, count in item_counts().items() if count == 0]
+        return _newest_run_ids({i: [r.run_id for r in decompose_runs_of(intakes[i])] for i in empty})
 
     def docket() -> dict:
         if not snapshot:
@@ -8991,7 +9031,9 @@ def _chair_run_deps(
             runs_dir, [row["id"] for row in docket()["initiatives"]]
         ),
         lost_runs=lambda: chair_read_lost.read_lost_runs(runs_dir, now_text()),
-        tickets=lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()),
+        tickets=ticket_items,
+        decomposed_intake=decomposed_intake,
+        item_counts=item_counts,
         repos=lambda: _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home),
         actions=actions,
         land_watches=lambda: chair_revert_watch.pending_watches(actions),
@@ -8999,11 +9041,7 @@ def _chair_run_deps(
         green_since=green_since,
         land_hold=lambda: chair_smoke.read_hold(str(runs_dir)),
         land_outcomes=lambda: chair_revert_watch.outcomes(actions),
-        decompose_runs=lambda path: (
-            []
-            if isinstance(iid := chair_exec.decompose_id(path, chair_exec.read_intake_id(ws, path)), chair_exec.Refusal)
-            else chair_decompose_runs.read_decompose_runs(Path(runs_dir), iid)
-        ),
+        decompose_runs=decompose_runs_of,
         newest_run_host=lambda: run_store.newest_run_hosts(runs_dir, [row["id"] for row in docket()["initiatives"]]),
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),

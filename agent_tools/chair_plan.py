@@ -479,10 +479,22 @@ def plan_held_files(facts: Facts) -> list[Action]:
 
 
 def _empty_decompose_needs_chair_actions(facts: Facts) -> list[Action]:
-    """One needs_chair per empty_decompose entry: a decomposed intake whose ended decompose run left zero stored task items."""
+    """One needs_chair per empty_decompose entry not yet reported for its `<initiative>|<run>`. It only reports; the remedy is the requeue argv."""
+    # `<initiative>|<run>` of each empty_decompose needs_chair already in the action log; absent means none. Not yet declared
+    # on Facts, like login_hosts: the facts task fills it from chair_actions and then declares it.
+    reported = set(facts.get("empty_decompose_reported", []))
     return [
-        {"kind": "needs_chair", "initiative": entry["initiative"], "run": entry["run"], "cause": "empty_decompose"}
+        {
+            "kind": "needs_chair",
+            "initiative": entry["initiative"],
+            "run": entry["run"],
+            "cause": "empty_decompose",
+            "reason": entry.get("refusal") or f"refusal line not found in the decompose log for {entry['run']}",
+            "remedy": "requeue",
+            "command": ["cox", "route", "requeue", entry["initiative"]],
+        }
         for entry in facts.get("empty_decompose", [])
+        if f"{entry['initiative']}|{entry['run']}" not in reported
     ]
 
 

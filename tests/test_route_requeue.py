@@ -75,3 +75,54 @@ def test_an_initiative_whose_only_tasks_are_dropped_counts_as_empty(tmp_path, mo
     code, _ = _requeue(tmp_path, "demo")
     assert code == 0
     assert [row["state"] for row in writes] == ["queued", "dropped"]
+
+
+UNLINKED_INTAKE = {"kind": "intake", "initiative": "intake", "task_id": "idea", "state": "queued", "extra": {}}
+UNLINKED_INITIATIVE = {"kind": "initiative", "initiative": "demo", "task_id": "demo", "state": "todo"}
+
+
+def _initiative_md(tmp_path, intake):
+    path = tmp_path / "work" / "demo" / "initiative.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(f"---\nintake: {intake}\n---\n\nbody\n")
+
+
+def test_initiative_md_names_the_intake_when_the_row_has_no_initiative(tmp_path, monkeypatch):
+    writes = _store(monkeypatch, [UNLINKED_INTAKE, UNLINKED_INITIATIVE])
+    _initiative_md(tmp_path, "intake/idea.md")
+    code, message = _requeue(tmp_path, "demo")
+    assert code == 0
+    assert writes == [{"initiative": "demo", "task_id": "demo", "state": "dropped"}]
+    assert "intake idea queued" in message
+
+
+def test_a_field_naming_an_unknown_intake_is_refused(tmp_path, monkeypatch):
+    writes = _store(monkeypatch, [UNLINKED_INTAKE, UNLINKED_INITIATIVE])
+    _initiative_md(tmp_path, "intake/ghost.md")
+    code, message = _requeue(tmp_path, "demo")
+    assert (code, writes) == (2, [])
+    assert "ghost" in message
+
+
+def test_a_field_naming_a_non_queued_intake_is_refused(tmp_path, monkeypatch):
+    writes = _store(monkeypatch, [{**UNLINKED_INTAKE, "state": "decomposed"}, UNLINKED_INITIATIVE])
+    _initiative_md(tmp_path, "intake/idea.md")
+    code, message = _requeue(tmp_path, "demo")
+    assert (code, writes) == (2, [])
+    assert "decomposed, not queued" in message
+
+
+def test_no_row_and_no_field_keeps_the_original_refusal(tmp_path, monkeypatch):
+    writes = _store(monkeypatch, [UNLINKED_INTAKE, UNLINKED_INITIATIVE])
+    code, message = _requeue(tmp_path, "demo")
+    assert (code, writes) == (2, [])
+    assert message == "requeue: refused: no intake or initiative named demo, or no intake linked to the initiative"
+
+
+def test_the_row_link_wins_over_the_field(tmp_path, monkeypatch):
+    other = {**UNLINKED_INTAKE, "task_id": "other"}
+    writes = _store(monkeypatch, [INTAKE, other, INITIATIVE])
+    _initiative_md(tmp_path, "intake/other.md")
+    code, _ = _requeue(tmp_path, "demo")
+    assert code == 0
+    assert writes[0] == {"initiative": "intake", "task_id": "idea", "state": "queued"}

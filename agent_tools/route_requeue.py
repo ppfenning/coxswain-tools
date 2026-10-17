@@ -77,9 +77,32 @@ def _state_row(row: Mapping, state: str) -> dict:
     return {"initiative": row["initiative"], "task_id": row["task_id"], "state": state}
 
 
-def plan_requeue(rows: Sequence[Mapping], id: str) -> Plan | Refused:
-    """Pure. Refuses an unknown id and an initiative with a task that is not dropped; otherwise the rows still to write."""
+def intake_from_field(initiative_id: str, field: str, rows: Sequence[Mapping]) -> Mapping | Refused:
+    """The queued intake that initiative.md's `intake:` value names, matched by file stem; Refused when it is unknown or not queued."""
+    stem = field.rsplit("/", 1)[-1].removesuffix(".md")
+    named = _intake_named(rows, stem)
+    if named is None:
+        return Refused(f"initiative {initiative_id} names intake {stem} in initiative.md, which is not a known intake")
+    if named.get("state") != QUEUED:
+        return Refused(
+            f"initiative {initiative_id} names intake {stem} in initiative.md, which is {named.get('state')}, not queued"
+        )
+    return named
+
+
+def plan_requeue(rows: Sequence[Mapping], id: str, field_intake: str | None = None) -> Plan | Refused:
+    """Pure. Refuses an unknown id and an initiative with a task that is not dropped; otherwise the rows still to write.
+
+    `field_intake` is initiative.md's `intake:` value; it is consulted only when no row links an intake to the initiative.
+    """
     pair = find_pair(rows, id)
+    if pair is None and field_intake:
+        initiative = _initiative_row(rows, id)
+        if initiative is not None and _intake_of(rows, initiative) is None:
+            found = intake_from_field(id, field_intake, rows)
+            if isinstance(found, Refused):
+                return found
+            pair = (found, initiative)
     if pair is None:
         return Refused(f"no intake or initiative named {id}, or no intake linked to the initiative")
     intake, initiative = pair
@@ -98,9 +121,29 @@ def plan_requeue(rows: Sequence[Mapping], id: str) -> Plan | Refused:
     return Plan(writes, f"intake {intake['task_id']} queued, initiative {initiative['task_id']} dropped")
 
 
+def _read_intake_field(workspace: Path, initiative_id: str) -> str | None:
+    """Edge. The `intake:` value in the frontmatter of work/<initiative>/initiative.md; None when the file or the key is absent."""
+    try:
+        lines = (workspace / "work" / initiative_id / "initiative.md").read_text().splitlines()
+    except OSError:
+        return None
+    if not lines or lines[0].strip() != "---":
+        return None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return None
+        key, sep, value = line.partition(":")
+        if sep and key.strip() == "intake":
+            return value.strip().strip("\"'") or None
+    return None
+
+
 def requeue(workspace: Path, runs_dir: Path, id: str, *, dry_run: bool = False) -> tuple[int, str]:
     """Edge. (0, message) done or already done, (2, message) refused. Writes store rows only: no file under `workspace` is touched."""
-    plan = plan_requeue(run_store.read_queue(runs_dir), id)
+    rows = run_store.read_queue(runs_dir)
+    plan = plan_requeue(rows, id)
+    if isinstance(plan, Refused):  # the row link is absent or unusable: try the field in initiative.md
+        plan = plan_requeue(rows, id, _read_intake_field(workspace, id)) if _initiative_row(rows, id) else plan
     if isinstance(plan, Refused):
         return REFUSED, f"requeue: refused: {plan.reason}"
     if not plan.writes or dry_run:

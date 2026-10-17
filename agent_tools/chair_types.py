@@ -208,6 +208,7 @@ class EmptyDecomposeFacts(TypedDict):
 
     initiative: str
     run: str  # the initiative's most recent decompose run id
+    refusal: NotRequired[str]  # the refusal line from that run's decompose log; absent means none was found
 
 
 class PidProbeFact(TypedDict):
