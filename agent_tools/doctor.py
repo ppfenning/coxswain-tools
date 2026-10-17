@@ -402,8 +402,10 @@ def _marketplace_registered_row(listing: Mapping[str, str] | None) -> dict:
         return _home_warn_row("marketplace registered", _NO_CLAUDE)
     if _MARKETPLACE in listing:
         return {"check": "marketplace registered", "ok": True, "detail": f"{_MARKETPLACE} is listed"}
-    return {"check": "marketplace registered", "ok": False,
-            "detail": f"{_MARKETPLACE} is not in the claude marketplace list; run `cox setup install`"}
+    # The plugins step of `cox setup install` is optional and provider-specific (`--plugins`), so an install without it
+    # is not broken: the row warns. A marketplace registered at the wrong path still fails, on "marketplace location".
+    return _home_warn_row(
+        "marketplace registered", f"{_MARKETPLACE} is not in the claude marketplace list; run `cox setup install --plugins`")
 
 
 def _marketplace_location_row(locations: Locations, listing: Mapping[str, str] | None, in_project: bool) -> dict:
@@ -412,7 +414,7 @@ def _marketplace_location_row(locations: Locations, listing: Mapping[str, str] |
         return _home_warn_row("marketplace location", _NO_CLAUDE)
     source = listing.get(_MARKETPLACE)
     if source is None:
-        return {"check": "marketplace location", "ok": False, "detail": f"no {_MARKETPLACE} entry to compare with the home"}
+        return _home_warn_row("marketplace location", f"no {_MARKETPLACE} entry to compare with the home")
     expected = posixpath.join(locations.installs, _MARKETPLACE)
     if source == expected:
         return {"check": "marketplace location", "ok": True, "detail": f"{source} equals the checkout under the home"}

@@ -788,11 +788,11 @@ def test_marketplace_registered_ok_when_listed():
     assert _home({"coxswain-cartridges": _CHECKOUT})[1]["ok"] is True
 
 
-def test_marketplace_missing_from_the_listing_fails_registered_and_location():
+def test_marketplace_missing_from_the_listing_warns_on_registered_and_location():
     rows = _home({"other": "/x"})
-    assert [(r["ok"], r["detail"]) for r in rows[1:3]] == [
-        (False, "coxswain-cartridges is not in the claude marketplace list; run `cox setup install`"),
-        (False, "no coxswain-cartridges entry to compare with the home"),
+    assert [(r["ok"], r.get("warn"), r["detail"]) for r in rows[1:3]] == [
+        (True, True, "coxswain-cartridges is not in the claude marketplace list; run `cox setup install --plugins`"),
+        (True, True, "no coxswain-cartridges entry to compare with the home"),
     ]
 
 
