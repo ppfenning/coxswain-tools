@@ -597,7 +597,7 @@ def test_the_doctor_reports_the_install_bins_row(layout, monkeypatch, tmp_path, 
     uv_recorder(monkeypatch, tmp_path, [])
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     rows = {row["check"]: row for row in cli._doctor_home_rows(cli._migrate_profile(cli.home_paths.resolve_here(None)))}
-    assert rows["install bins"]["ok"] is False
+    assert rows["install bins"]["warn"] is True  # this layout is not migrated yet, so a stale source warns
     assert "missing graphs venv, tools venv, tools receipt, cartridges receipt" in rows["install bins"]["detail"]
 
 

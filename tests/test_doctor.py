@@ -852,6 +852,17 @@ def test_unmigrated_machine_warns_on_four_rows_and_produces_no_failure():
     assert doctor.exit_code(rows) == 0
 
 
+def test_unmigrated_machine_warns_instead_of_failing_on_the_home_root_marketplace_and_install_bins():
+    bins = {"graphs venv": None, "tools venv": None, "tools receipt": "/u/repos/coxswain-tools", "cartridges receipt": None}
+    rows = doctor.home_rows(
+        _LOCATIONS, {"coxswain-cartridges": "/u/proj/coxswain-cartridges"}, False, False, "/u/old", True, None, bins)
+    by = {r["check"]: r for r in rows}
+    for check in ("home root", "marketplace location", "install bins"):
+        assert (by[check]["ok"], by[check]["warn"]) == (True, True)
+        assert by[check]["detail"].startswith("not migrated: run cox setup migrate; ")
+    assert doctor.exit_code(rows) == 0
+
+
 def test_marketplace_location_ok_when_source_equals_the_checkout_under_the_home():
     row = _home({"coxswain-cartridges": _CHECKOUT})[2]
     assert (row["ok"], row["detail"]) == (True, f"{_CHECKOUT} equals the checkout under the home")
@@ -950,7 +961,7 @@ _BINS = {
 
 
 def _bins_row(sources):
-    return doctor.home_rows(_LOCATIONS, None, True, True, None, False, install_bins=sources)[-1]
+    return doctor.home_rows(_LOCATIONS, None, True, True, None, False, install_bins=sources, **_MIGRATED)[-1]
 
 
 def test_install_bins_row_is_absent_until_sources_are_gathered():
