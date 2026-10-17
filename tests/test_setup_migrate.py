@@ -73,6 +73,9 @@ FINAL_BINS = bins(f"{NEW}/{GRAPHS}", f"{NEW}/{TOOLS}", f"{NEW}/{TOOLS}", f"{NEW}
 
 def layout(make_entry, settings, links, home_record, install_bins=None):
     return {
+        "marketplace": f"{NEW}/{CART}",
+        "marketplace_plugins": [],
+        "claude_on_path": True,
         **({"install_bins": install_bins} if install_bins is not None else {}),
         "entries": {name: make_entry(name) for name in CHECKOUTS},
         "workspace": {"path": "/u/ws"},
@@ -129,7 +132,7 @@ def test_full_old_layout():
         + ["run"] * 8
         + ["rewrite_profile_key"] * 3
         + ["rewrite_setting"]
-        + ["print"] * 3
+        + ["print"] * 2
     )
     assert [s["key"] for s in of(steps, "rewrite_profile_key")] == ["skills_roots", "provider_profile", "harness_dir"]
     assert of(steps, "rewrite_profile_key")[0]["new"] == [f"{NEW}/coxswain-cartridges/skills"]
@@ -318,10 +321,61 @@ def test_unobserved_cartridge_links_refuse_instead_of_skipping():
 
 def test_follow_on_prints_name_each_installer_item_and_prefix():
     notes = {s["item"]: s for s in of(migrate_plan(old_layout(), LOCS), "print")}
-    assert set(notes) == {"marketplace", "repo paths", "workspace"}
-    assert notes["marketplace"]["checkouts"] == {CART: {"old": f"/u/repos/{CART}", "new": f"{NEW}/{CART}"}}
+    assert set(notes) == {"repo paths", "workspace"}
     assert notes["repo paths"]["checkouts"][TOOLS] == {"old": f"/u/repos/{TOOLS}", "new": f"{NEW}/{TOOLS}"}
     assert not of(migrate_plan(final_layout(), LOCS), "print")
+
+
+def claude_argvs(observed):
+    return [s["argv"] for s in installs_runs(observed) if s["argv"][0] == "claude"]
+
+
+def test_old_registered_path_yields_remove_add_install_after_the_profile_rewrites():
+    observed = {**old_layout(), "marketplace": f"/u/repos/{CART}"}
+    steps = migrate_plan(observed, LOCS)
+    tail = [
+        s["argv"]
+        for s in steps[max(i for i, s in enumerate(steps) if s["op"].startswith("rewrite")) + 1 :]
+        if s["op"] == "run"
+    ]
+    assert tail == [
+        ["claude", "plugin", "marketplace", "remove", "coxswain-cartridges"],
+        ["claude", "plugin", "marketplace", "add", f"{NEW}/{CART}"],
+        ["claude", "plugin", "install", "local-skills@coxswain-cartridges"],
+    ]
+
+
+def test_each_observed_plugin_is_reinstalled_in_order():
+    observed = {
+        **old_layout(),
+        "marketplace": f"/u/repos/{CART}",
+        "marketplace_plugins": ["b@coxswain-cartridges", "a@coxswain-cartridges"],
+    }
+    assert claude_argvs(observed)[2:] == [
+        ["claude", "plugin", "install", "b@coxswain-cartridges"],
+        ["claude", "plugin", "install", "a@coxswain-cartridges"],
+    ]
+
+
+def test_absent_registration_adds_without_a_remove():
+    assert claude_argvs({**old_layout(), "marketplace": None}) == [
+        ["claude", "plugin", "marketplace", "add", f"{NEW}/{CART}"],
+        ["claude", "plugin", "install", "local-skills@coxswain-cartridges"],
+    ]
+
+
+def test_registered_path_equal_to_the_final_path_yields_no_marketplace_step():
+    assert claude_argvs(old_layout()) == []
+    assert not [s for s in migrate_plan(old_layout(), LOCS) if s["op"] == "skip"]
+
+
+def test_claude_absent_yields_one_not_checked_print_and_no_claude_run_step():
+    observed = {**old_layout(), "marketplace": f"/u/repos/{CART}", "claude_on_path": False}
+    steps = migrate_plan(observed, LOCS)
+    checked = [s for s in of(steps, "print") if s["item"] == "marketplace not checked"]
+    assert [s["why"] for s in checked] == ["The Claude marketplace was not checked because claude is not on PATH."]
+    assert claude_argvs(observed) == []
+    assert "marketplace" not in {s["item"] for s in of(steps, "print")}
 
 
 def installs_runs(observed):

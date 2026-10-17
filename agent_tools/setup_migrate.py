@@ -30,6 +30,13 @@ Observed layout, a dict with these keys:
   emits eight `run` steps that recreate the venvs and reinstall the tools. When the key is not observed,
   the plan emits none.
 
+- `marketplace`, `marketplace_plugins`, `claude_on_path`: the path registered for coxswain-cartridges
+  (None when absent), the plugin ids ending @coxswain-cartridges, and whether `claude` is on PATH. When
+  `claude` is on PATH and the registered path is not the checkout under `Locations.installs`, the plan ends
+  its body with the `run` steps of `setup_install.marketplace_steps`, then one `claude plugin install` per
+  plugin id, or for local-skills@coxswain-cartridges when none was observed. When `claude` is not on PATH
+  (or the key is missing) the plan emits one print saying the marketplace was not checked.
+
 Settings may hold tilde-form paths. They are expanded against the user home, taken as the
 parent of `Locations.config`, before they are compared with the checkout paths.
 
@@ -203,12 +210,6 @@ def _prints(workspace: dict[str, Any] | None, pairs: dict[str, tuple[str, str]],
     notes = [
         _step(
             "print",
-            "The Claude marketplace entry is re-registered by the installer, which this plan does not duplicate.",
-            item="marketplace",
-            checkouts={CARTRIDGES: moved[CARTRIDGES]},
-        ),
-        _step(
-            "print",
             "Queue rows and work files holding the old tilde paths are rewritten by repo_path_migrate with these prefixes.",
             item="repo paths",
             checkouts=moved,
@@ -219,6 +220,30 @@ def _prints(workspace: dict[str, Any] | None, pairs: dict[str, tuple[str, str]],
     path = workspace["path"]
     where = "under the workspaces folder" if path.startswith(locs.workspaces + "/") else "where it is registered"
     return [*notes, _step("print", f"The workspace stays {where} and is never moved.", item="workspace", path=path)]
+
+
+DEFAULT_PLUGIN = f"local-skills@{CARTRIDGES}"
+
+
+def _marketplace_steps(observed: dict[str, Any], locs: Locations) -> tuple[list[Step], list[Step]]:
+    """Run steps that re-register the marketplace and its plugins, and the one print when claude was not checked."""
+    if not observed.get("claude_on_path", False):
+        why = "The Claude marketplace was not checked because claude is not on PATH."
+        return [], [_step("print", why, item="marketplace not checked")]
+    target = posixpath.join(locs.installs, CARTRIDGES)
+    registered = observed.get("marketplace")
+    if registered == target:
+        return [], []
+    plugins = observed.get("marketplace_plugins") or [DEFAULT_PLUGIN]
+    installs = [
+        _step(
+            "run",
+            f"reinstall {plugin} from the re-registered marketplace",
+            argv=["claude", "plugin", "install", plugin],
+        )
+        for plugin in plugins
+    ]
+    return [*setup_install.marketplace_steps(target, registered), *installs], []
 
 
 PATH_PREFIX = "Environment=PATH="
@@ -336,18 +361,20 @@ def migrate_plan(observed: dict[str, Any], locs: Locations) -> list[Step]:
         return unseen
     user_home = posixpath.dirname(locs.config)
     pairs = {name: (_expand_all(entries[name]["old"], user_home), news[name]) for name in CHECKOUTS}
+    market_runs, market_notes = _marketplace_steps(observed, locs)
     body = [
         *(step for name in moved for step in verdicts[name][1]),
         *_link_steps(observed["cartridge_links"], locs),
         *(step for name in repaired for step in _repair_steps(name, news[name], worktrees[name])),
         *_reinstall_steps(observed.get("install_bins"), news, locs),
         *_setting_steps(observed.get("settings", {}), observed.get("home_record"), tuple(pairs.values()), locs),
+        *market_runs,
     ]
     # The old root is the parent folder of the old coxswain-cartridges checkout.
     unit = _chair_unit_steps(observed.get("chair_unit"), posixpath.dirname(pairs[CARTRIDGES][0]))
     if not body:
         return unit or [_step("skip", "Every checkout, link, setting and profile key is already final.")]
-    return [*body, *_prints(observed.get("workspace"), pairs, locs), *unit]
+    return [*body, *_prints(observed.get("workspace"), pairs, locs), *market_notes, *unit]
 
 
 def _detail(step: Step) -> str:
