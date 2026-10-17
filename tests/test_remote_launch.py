@@ -4,7 +4,7 @@ import subprocess
 import pytest
 
 from agent_tools.lane_hosts import LaneHost
-from agent_tools.remote_argv import launch_argv, ssh_argv, sync_argv
+from agent_tools.remote_argv import branch_push_argv, epic_refspec, launch_argv, ssh_argv, sync_argv
 from agent_tools.remote_lane import remote_record
 from agent_tools.remote_launch import LaunchError, Relaunch, env_preflight, launch_on_host, launch_plan
 
@@ -250,3 +250,72 @@ def test_a_relaunch_without_a_repo_is_refused_before_anything_runs():
     result = launch_on_host(host, "init", "r2", "lbl", "t", lambda argv: calls.append(argv) or 0, relaunch=Relaunch("init-1"))
     assert result == LaunchError("push", "a relocated relaunch to box has no repo to push epic/init/* into: nothing was run")
     assert calls == []
+
+
+MAC_HOME = "/".join(("", "Users", "me"))
+LINUX_HOME = "/".join(("", "home", "lane"))
+INSTALLS = ".local/share/coxswain/installs"
+
+
+def _under(root, *parts):
+    return "/".join((root, *parts))
+
+
+def _harness_plan(harness_dir, host_checkouts=(), home=None):
+    host = LaneHost("box2", "me@box2", "/ws")
+    return launch_plan(
+        host, "init-x", "init-x-1", "l", harness_dir=harness_dir, home=home, host_checkouts=host_checkouts
+    )
+
+
+def test_a_chair_harness_under_installs_syncs_the_host_checkout_under_repos():
+    checkout = _under(LINUX_HOME, "repos", "coxswain-graphs")
+    plan = _harness_plan(_under(MAC_HOME, INSTALLS, "coxswain-graphs"), [checkout], LINUX_HOME)
+    assert plan[1] == ssh_argv("me@box2", sync_argv(checkout))
+
+
+def test_a_chair_harness_under_repos_syncs_the_host_checkout_under_installs():
+    checkout = _under(LINUX_HOME, INSTALLS, "coxswain-graphs")
+    plan = _harness_plan(_under(MAC_HOME, "repos", "coxswain-graphs"), [checkout], LINUX_HOME)
+    assert plan[1] == ssh_argv("me@box2", sync_argv(checkout))
+
+
+def test_a_harness_without_a_host_checkout_syncs_the_home_relative_form():
+    plan = _harness_plan(_under(MAC_HOME, INSTALLS, "coxswain-graphs"), (), LINUX_HOME)
+    assert plan[1] == ssh_argv("me@box2", sync_argv(_under(INSTALLS, "coxswain-graphs")))
+
+
+def test_a_harness_without_checkouts_or_home_is_synced_unchanged():
+    plan = _harness_plan("/h")
+    assert plan == launch_plan(LaneHost("box2", "me@box2", "/ws"), "init-x", "init-x-1", "l", harness_dir="/h")
+    assert plan[1] == ssh_argv("me@box2", sync_argv("/h"))
+
+
+def test_a_checkout_of_another_name_is_not_used():
+    plan = _harness_plan("/h", [_under(LINUX_HOME, "repos", "other")], LINUX_HOME)
+    assert plan[1] == ssh_argv("me@box2", sync_argv("/h"))
+
+
+def test_a_repo_with_a_host_checkout_is_synced_and_pushed_at_that_path():
+    host = LaneHost("box2", "me@box2", "/ws")
+    repo = _under(MAC_HOME, "repos", "coxswain-tools")
+    checkout = _under(LINUX_HOME, INSTALLS, "coxswain-tools")
+    plan = launch_plan(
+        host, "init-x", "init-x-1", "l", repo=repo, relaunch=Relaunch("old"), home=MAC_HOME, host_checkouts=[checkout]
+    )
+    assert plan[1] == ssh_argv("me@box2", sync_argv(checkout))
+    assert plan[2] == branch_push_argv(repo, "me@box2", checkout, epic_refspec("init-x"))
+    assert len(plan) == 4
+
+
+def test_a_failing_harness_sync_names_the_path_it_synced():
+    host = LaneHost("box2", "me@box2", "/ws")
+    checkout = _under(LINUX_HOME, "repos", "coxswain-graphs")
+    chair_dir = _under(MAC_HOME, INSTALLS, "coxswain-graphs")
+    codes = iter([0, 1])
+    result = launch_on_host(
+        host, "init-x", "init-x-1", "l", "t", lambda argv: next(codes), harness_dir=chair_dir, host_checkouts=[checkout]
+    )
+    assert isinstance(result, LaunchError) and result.step == "harness"
+    assert f"updating the harness at {checkout} on box2" in result.message
+    assert chair_dir not in result.message
