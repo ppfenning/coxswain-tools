@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 
 from agent_tools import records, route, schema, store_dialect
 from agent_tools.home import Locations
+from agent_tools.setup_migrate import cartridge_link_target
 from agent_tools.store_probe import OBJECT_STORE, POSTGRES, ProbeResult
 
 __all__ = ["checks", "exit_code", "freshness_rows", "home_rows", "parquet_line", "render", "store_rows", "unit_path_entries"]
@@ -412,6 +413,28 @@ def _legacy_layout_row(legacy_path: str | None) -> dict:
             "detail": f"old layout still present at {legacy_path}; run `cox setup migrate` to move it"}
 
 
+def _cartridge_links_row(locations: Locations, links: Mapping[str, str]) -> dict:
+    """Text compare of each base and local link target with `cartridge_link_target`; no link is followed."""
+    if not links:
+        return {
+            "check": "cartridge links",
+            "ok": False,
+            "detail": "no base or local link found to compare with the home",
+        }
+    stale = [
+        f"{path} -> {target}; expected {expected}"
+        for path, target in sorted(links.items())
+        if target != (expected := cartridge_link_target(path, locations))
+    ]
+    if stale:
+        return {"check": "cartridge links", "ok": False, "detail": "; ".join(stale)}
+    return {
+        "check": "cartridge links",
+        "ok": True,
+        "detail": f"{len(links)} links reach their subfolder of the checkout under the home",
+    }
+
+
 def home_rows(
     locations: Locations,
     listing: Mapping[str, str] | None,
@@ -419,14 +442,17 @@ def home_rows(
     root_writable: bool,
     legacy_path: str | None,
     in_project: bool,
+    cartridge_links: Mapping[str, str] | None = None,
 ) -> list[dict]:
-    """Rows for the coxswain home: home root, marketplace registered, marketplace location, old layout.
+    """Rows for the coxswain home: home root, marketplace registered, marketplace location, old layout, and
+    cartridge links when `cartridge_links` (link path to lexical target) was gathered.
     The edge gathers the listing, the root's state, the legacy path and whether the listed source sits in a project folder."""
     return [
         _home_root_row(locations, root_exists, root_writable),
         _marketplace_registered_row(listing),
         _marketplace_location_row(locations, listing, in_project),
         _legacy_layout_row(legacy_path),
+        *([] if cartridge_links is None else [_cartridge_links_row(locations, cartridge_links)]),
     ]
 
 

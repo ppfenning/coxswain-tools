@@ -156,13 +156,18 @@ def _setting_steps(
     return [*keys, *record]
 
 
+def cartridge_link_target(path: str, locs: Locations) -> str:
+    """Expected lexical target of a base or local link: <installs>/coxswain-cartridges/cartridges/<entry name>, relative to the folder holding the link."""
+    entry = posixpath.join(locs.installs, CARTRIDGES, "cartridges", posixpath.basename(path))
+    return posixpath.relpath(entry, posixpath.dirname(path))
+
+
 def _link_steps(links: dict[str, str], locs: Locations) -> list[Step]:
-    checkout = posixpath.join(locs.installs, CARTRIDGES)
-    wanted = {path: posixpath.relpath(checkout, posixpath.dirname(path)) for path in links}
+    wanted = {path: cartridge_link_target(path, locs) for path in links}
     return [
         _step(
             "symlink",
-            "The relative link must reach the cartridges checkout under the home.",
+            "The relative link must reach its cartridges subfolder in the checkout under the home.",
             path=path,
             target=wanted[path],
             old_target=links[path],
