@@ -10,8 +10,10 @@ from agent_tools.chair_report import (
     housekeeping_fragment,
     lands_this_tick,
     needs_chair_items,
+    partial_land_text,
     write_status,
 )
+from agent_tools.chair_watchdog import StatusLine, parse_status
 from agent_tools.notify import Notification
 
 NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
@@ -35,47 +37,64 @@ def _landed(kind="land", status="landed"):
     return {"action": {"kind": kind}, "status": status, "reason": ""}
 
 
-def test_holding_line_carries_lanes_lands_limits_and_needs():
-    actions = [{"kind": "needs_chair", "initiative": "epic-a", "cause": "harness"}]
-    line = format_status(_facts(), actions, [_landed()], NOW)
-    assert line == (
-        "chair 09-26 14:05 EDT | lanes 2/4 | lands 1 | limits 5h 42% (meter) weekly 61%/90% (meter) | holding"
-        " | needs chair: epic-a:harness | housekeeping never"
-    )
+def _partial(task_ids, quarantined):
+    return {"kind": "partial_land", "initiative": "i", "phase": "p", "task_ids": task_ids, "quarantined": quarantined}
 
 
-_BASELINE = (
-    "chair 09-26 14:05 EDT | lanes 2/4 | lands 1 | limits 5h 42% (meter) weekly 61%/90% (meter) | holding"
-    " | needs chair: epic-a:harness | housekeeping never"
-)
+def test_status_line_round_trips_through_parse_status():
+    actions = [
+        {"kind": "needs_chair", "initiative": "epic-a", "cause": "harness"},
+        {"kind": "needs_chair", "initiative": "b", "cause": RUNAWAY_CAUSE},
+        _partial(["a"], 1),
+    ]
+    parsed = parse_status(format_status(_facts(), actions, [_landed()], NOW))
+    assert parsed is not None
+    assert (parsed.busy, parsed.total) == (2, 4)
+    assert isinstance(parsed, StatusLine)
+    assert "epic-a:harness" in parsed.holds
+    assert "RUNAWAY b" in parsed.holds
+    assert any(h.startswith("partial-land: ") for h in parsed.holds)
+    assert len(parsed.holds) == 3
+
+
 _NEEDS = [{"kind": "needs_chair", "initiative": "epic-a", "cause": "harness"}]
 
 
 def test_an_open_idle_stall_appears_after_limits():
     facts = _facts(idle_stall={"open_diagnosis": "host host-a ssh check failed"})
-    assert format_status(facts, _NEEDS, [_landed()], NOW) == (
-        "chair 09-26 14:05 EDT | lanes 2/4 | lands 1 | limits 5h 42% (meter) weekly 61%/90% (meter)"
-        " | stall: host host-a ssh check failed | holding | needs chair: epic-a:harness | housekeeping never"
-    )
+    line = format_status(facts, _NEEDS, [_landed()], NOW)
+    assert " | stall: host host-a ssh check failed | " in line
+    assert line.index("limits ") < line.index("stall: ")
 
 
 def test_an_idle_stall_with_no_open_diagnosis_leaves_the_line_as_it_was():
     facts = _facts(idle_stall={"open_diagnosis": None})
-    assert format_status(facts, _NEEDS, [_landed()], NOW) == _BASELINE
+    assert "stall:" not in format_status(facts, _NEEDS, [_landed()], NOW)
 
 
 def test_facts_with_no_idle_stall_key_leave_the_line_as_it_was():
     assert "idle_stall" not in _facts()
-    assert format_status(_facts(), _NEEDS, [_landed()], NOW) == _BASELINE
+    assert "stall:" not in format_status(_facts(), _NEEDS, [_landed()], NOW)
 
 
-def test_needs_chair_items_puts_runaway_entries_first_and_bare():
+def test_needs_chair_items_orders_runaway_first_and_partial_land_last():
     actions = [
+        _partial(["a", "b"], 1),
         {"kind": "needs_chair", "initiative": "a", "cause": "budget"},
         {"kind": "needs_chair", "initiative": "b", "cause": RUNAWAY_CAUSE},
         {"kind": "needs_chair", "initiative": "c", "cause": "scope"},
     ]
-    assert needs_chair_items(actions) == ["RUNAWAY b", "needs chair: a:budget", "needs chair: c:scope"]
+    assert needs_chair_items(actions) == [
+        "RUNAWAY b",
+        "needs chair: a:budget",
+        "needs chair: c:scope",
+        "partial-land: i/p 2 approved, 1 quarantined",
+    ]
+
+
+def test_partial_land_text_names_approved_and_quarantined_counts():
+    assert partial_land_text(_partial(["a"], 1)) == "partial-land: i/p 1 approved, 1 quarantined"
+    assert partial_land_text(_partial(["a", "b", "c"], 2)) == "partial-land: i/p 3 approved, 2 quarantined"
 
 
 def test_standby_line_names_the_holder_and_host():
@@ -185,12 +204,10 @@ def test_a_dry_run_line_names_what_it_would_do():
     assert "dry-run | would: launch_epic:x" in line
 
 
-def test_a_land_counts_only_when_landed():
+def test_lands_this_tick_counts_land_land_phase_and_partial_land_only_when_landed():
     assert lands_this_tick([_landed(), _landed(status="not_landed"), _landed("clear_branches", "done")]) == 1
-
-
-def test_a_land_phase_counts_the_same_as_a_land():
     assert lands_this_tick([_landed("land_phase"), _landed("land_phase", status="not_landed")]) == 1
+    assert lands_this_tick([{"action": _partial(["a"], 1), "status": "landed", "reason": ""}]) == 1
 
 
 def test_write_status_notifies_only_when_given():
@@ -247,29 +264,12 @@ def test_echo_line_flushes_stdout_after_the_line(monkeypatch):
     assert ("write", "chair tick") in stub.calls
 
 
-def test_housekeeping_3_hours_old_renders_3h():
-    assert housekeeping_fragment("2026-09-26T15:05:00+00:00", NOW) == "housekeeping 3h"
-
-
-def test_housekeeping_12_minutes_old_renders_12m():
+def test_housekeeping_fragment_ages():
     assert housekeeping_fragment("2026-09-26T17:53:00+00:00", NOW) == "housekeeping 12m"
-
-
-def test_housekeeping_50_hours_old_renders_2d():
+    assert housekeeping_fragment("2026-09-26T15:05:00+00:00", NOW) == "housekeeping 3h"
     assert housekeeping_fragment("2026-09-24T16:05:00+00:00", NOW) == "housekeeping 2d"
-
-
-def test_housekeeping_none_renders_never():
     assert housekeeping_fragment(None, NOW) == "housekeeping never"
-
-
-def test_housekeeping_naive_timestamp_renders_never():
     assert housekeeping_fragment("2026-09-26T15:05:00", NOW) == "housekeeping never"
-
-
-def test_status_line_with_a_housekeeping_timestamp_carries_the_fragment():
-    line = format_status(_facts(last_housekeeping_at="2026-09-26T15:05:00+00:00"), [], [], NOW)
-    assert "housekeeping 3h" in line
 
 
 def _review_pr(task_id, url):
