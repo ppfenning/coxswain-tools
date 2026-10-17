@@ -8,6 +8,7 @@ from agent_tools.setup_install import (
     _agent_steps,
     hook_settings,
     install_plan,
+    marketplace_steps,
     profile_text,
     render_plan,
     venv_steps,
@@ -292,6 +293,20 @@ def test_marketplace_listed_elsewhere_is_removed_then_added():
     steps = _plan(registered_marketplace="/home/user/projects/coxswain-cartridges")
     market = [s["argv"][3:] for s in steps if s["op"] == "run" and s["argv"][:3] == ["claude", "plugin", "marketplace"]]
     assert market == [["remove", "coxswain-cartridges"], ["add", CARTRIDGES]]
+
+
+def test_public_marketplace_call_removes_then_adds_when_the_source_differs():
+    steps = marketplace_steps(CARTRIDGES, "/home/user/projects/coxswain-cartridges")
+    assert [s["argv"] for s in steps] == [
+        ["claude", "plugin", "marketplace", "remove", "coxswain-cartridges"],
+        ["claude", "plugin", "marketplace", "add", CARTRIDGES],
+    ]
+
+
+def test_public_marketplace_call_only_skips_when_the_source_matches():
+    steps = marketplace_steps(CARTRIDGES, CARTRIDGES)
+    assert [s["op"] for s in steps] == ["skip"]
+    assert steps[0]["what"] == "marketplace"
 
 
 def test_a_second_run_over_its_own_result_changes_nothing():
