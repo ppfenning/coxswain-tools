@@ -98,7 +98,8 @@ def _land_groups(facts: Facts) -> dict[tuple[str, str], list[ApprovedTask]]:
 
 
 def _backing_off(facts: Facts, initiative: str, phase: str, run: str, now: datetime | None) -> bool:
-    return now is not None and bool(run) and suppressing(facts.get("land_refusals", []), initiative, phase, run, now) is not None
+    head = facts.get("land_heads", {}).get(f"{initiative}/{phase}")
+    return now is not None and bool(run) and suppressing(facts.get("land_refusals", []), initiative, phase, run, now, current_head=head) is not None
 
 
 def _conflict_stands(facts: Facts, initiative: str, phase: str, run: str) -> bool:

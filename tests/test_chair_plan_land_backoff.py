@@ -14,8 +14,9 @@ def _facts(run: str = "i-1", **extra) -> dict:
     return {"approved": [task], "initiatives": [{"id": "i", "started": True, "ready_tasks": [], "landed": set()}], **extra}
 
 
-def _refusal(run: str = "i-1", attempts: int = 1) -> dict:
-    return {"initiative": "i", "phase": "p", "run": run, "attempts": attempts, "last_refused_at": T0.isoformat()}
+def _refusal(run: str = "i-1", attempts: int = 1, head: str | None = None) -> dict:
+    row = {"initiative": "i", "phase": "p", "run": run, "attempts": attempts, "last_refused_at": T0.isoformat()}
+    return row if head is None else {**row, "head": head}
 
 
 def _kinds(facts: dict, now: datetime | None) -> list[str]:
@@ -58,6 +59,30 @@ def test_a_naive_now_against_an_aware_stamp_and_a_partial_row_do_not_raise():
     naive = (T0 + timedelta(minutes=5)).replace(tzinfo=None)
     assert _kinds(_facts(land_refusals=[_refusal()]), naive) == []
     assert _kinds(_facts(land_refusals=[{"initiative": "i", "phase": "p", "run": "i-1"}]), T0) == ["fetch", "land_phase"]
+
+
+INSIDE = T0 + timedelta(minutes=5)
+
+
+def test_a_refusal_at_the_head_the_phase_is_still_at_keeps_suppressing():
+    facts = _facts(land_refusals=[_refusal(head="aaa")], land_heads={"i/p": "aaa"})
+    assert (_kinds(facts, INSIDE), backoff_held(facts, INSIDE)) == ([], frozenset({"i"}))
+
+
+def test_a_refusal_whose_phase_head_moved_releases_the_window_and_plans_the_land():
+    facts = _facts(land_refusals=[_refusal(head="aaa")], land_heads={"i/p": "bbb"})
+    assert (_kinds(facts, INSIDE), backoff_held(facts, INSIDE)) == (["fetch", "land_phase"], frozenset())
+
+
+def test_a_refusal_with_no_recorded_head_keeps_suppressing_whatever_the_current_head():
+    facts = _facts(land_refusals=[_refusal()], land_heads={"i/p": "bbb"})
+    assert _kinds(facts, INSIDE) == []
+
+
+def test_a_refusal_with_a_head_but_no_current_head_entry_keeps_suppressing():
+    refusals = [_refusal(head="aaa")]
+    assert _kinds(_facts(land_refusals=refusals, land_heads={}), INSIDE) == []
+    assert _kinds(_facts(land_refusals=refusals, land_heads={"other/p": "bbb"}), INSIDE) == []
 
 
 def _tick_facts(**extra) -> dict:

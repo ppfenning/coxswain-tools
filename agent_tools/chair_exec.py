@@ -45,6 +45,7 @@ from agent_tools import (
 )
 from agent_tools.chair_carry_exec import ForgePort, GitPort, StorePort, perform_carry
 from agent_tools.chair_facts import STRANDED_CAUSE
+from agent_tools.chair_read_land_conflicts import _rev_parse as rev_parse
 from agent_tools.chair_rebase_exec import RebasePort, perform_rebase
 from agent_tools.chair_revert_exec import MERGED, RevertResult, perform_revert
 from agent_tools.chair_revert_exec import ForgePort as RevertForgePort
@@ -162,6 +163,7 @@ class Deps:
     quarantine_phase: Callable[[str, str, str, str], None] | None = None  # (initiative, phase, cause, reason): quarantines that phase's tasks
     resolve_land: Callable[[str, str, str], None] | None = None  # (initiative, phase, outcome): the store's resolve write for a land
     rerun_main: Callable[[str, str], tuple[str, str]] | None = None  # a rerun_main's (repo, commit) -> chair_revert_ports.rerun_infra's (state, line); None refuses it
+    rev_parse: Callable[[str, str], str | None] = rev_parse  # (repo, ref) -> the ref's tip, None when it does not resolve; the only door to a land_phase's head
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -537,6 +539,13 @@ def _carry_forward(
     return merged, None, None
 
 
+def _with_head(action: Action, deps: Deps, repo: str) -> Action:
+    """The land_phase action with `head` set to the tip of its phase branch just before the land; unchanged, with no `head` key, when the branch does not resolve."""
+    initiative, phase = action.get("initiative", ""), action.get("phase", "")
+    tip = deps.rev_parse(repo, f"epic/{initiative}/{phase}") if initiative and phase else None
+    return {**action, "head": tip} if tip else action  # type: ignore[typeddict-item]
+
+
 def _land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     """Same shape as `_land`, one command for a whole phase: its own `mark_done:` lines mark every task in the
     phase done, so this only runs the command and reads its output."""
@@ -546,6 +555,7 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Resu
         return _result(action, "refused", "land_phase needs a run id, a phase and a repo")
     if repo in blocked:
         return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
+    action = _with_head(action, deps, repo)
     code, output = _run_land(deps, argv)
     if code == TIMED_OUT:
         return _land_timed_out(action, argv)
