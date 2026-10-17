@@ -192,6 +192,7 @@ settings_model = _LazyModule("agent_tools.settings_model")
 setup_install = _LazyModule("agent_tools.setup_install")
 setup_migrate = _LazyModule("agent_tools.setup_migrate")
 setup_migrate_hosts = _LazyModule("agent_tools.setup_migrate_hosts")
+setup_receipts = _LazyModule("agent_tools.setup_receipts")
 setup_store = _LazyModule("agent_tools.setup_store")
 setup_store_io = _LazyModule("agent_tools.setup_store_io")
 sources = _LazyModule("agent_tools.sources")
@@ -5926,7 +5927,13 @@ def _install_facts(a: argparse.Namespace) -> dict:
         registered = (listing or {}).get("coxswain-cartridges")
     python_exists = {repo: (Path(root) / repo / ".venv" / "bin" / "python").exists()
                       for repo in setup_install.REPOS}
+    tool_dir = setup_receipts.default_tool_dir(os.environ, str(Path.home()))
+    receipt_extras = {
+        key: setup_receipts.read_tool_extras(tool_dir, setup_migrate.TOOL_RECEIPTS[repo])
+        for key, repo in (("tool_extras", setup_migrate.TOOLS), ("cartridge_extras", setup_migrate.CARTRIDGES))
+    }
     return {
+        **receipt_extras,
         "root": root,
         "team": a.team,
         "workspace": a.workspace or "",

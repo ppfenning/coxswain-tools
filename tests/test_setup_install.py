@@ -360,6 +360,16 @@ def test_tool_install_target_carries_extras_and_empty_is_unchanged():
     assert tool_argvs(_plan(tool_extras=())) == without
 
 
+def test_cartridge_install_target_carries_extras_and_empty_is_unchanged():
+    def cartridge_argv(steps):
+        return [s["argv"] for s in steps if s["op"] == "run" and s["argv"][:2] == ["uv", "tool"]][1]
+
+    checkout = f"{INSTALLS}/coxswain-cartridges"
+    assert cartridge_argv(_plan(cartridge_extras=("x", "y")))[-1] == f"{checkout}[x,y]"
+    assert cartridge_argv(_plan())[-1] == checkout
+    assert cartridge_argv(_plan(cartridge_extras=())) == cartridge_argv(_plan())
+
+
 def test_assume_flows_into_the_written_profile():
     steps = _plan(assume="r")
     writes = [s for s in steps if s["op"] == "write"]

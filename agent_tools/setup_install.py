@@ -174,6 +174,7 @@ def install_plan(
     registered_marketplace: str | None = None,
     workspace_exists: bool = False,
     tool_extras: tuple[str, ...] = (),
+    cartridge_extras: tuple[str, ...] = (),
 ) -> list:
     """Ordered setup steps. With `locations`, every checkout, venv and the
     profile path come from the resolved record (`installs`, `profile`) and
@@ -189,7 +190,8 @@ def install_plan(
     `<workspaces>/main` and its folders are made unless `workspace_exists`.
     With `locations`, the last write records `<home>` at `locations.record`.
     `tool_extras` are the extras of the coxswain-tools checkout, already read
-    from the receipt by the caller; they ride on its `uv tool install` target."""
+    from the receipt by the caller; they ride on its `uv tool install` target.
+    `cartridge_extras` do the same for the cartridges checkout."""
     default_workspace = locations is not None and not workspace
     if locations is not None and default_workspace:
         workspace = posixpath.join(locations.workspaces, "main")
@@ -214,7 +216,8 @@ def install_plan(
                                _tool_target(f"{installs}/coxswain-tools", tool_extras)],
                       "why": "put cox on PATH", "warn_only": True})
         steps.append({"op": "run",
-                      "argv": ["uv", "tool", "install", "-q", "-e", cartridges_dir],
+                      "argv": ["uv", "tool", "install", "-q", "-e",
+                               _tool_target(cartridges_dir, cartridge_extras)],
                       "why": "puts the `cartridge` command on PATH beside cox",
                       "warn_only": True})
 
