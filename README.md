@@ -160,7 +160,7 @@ cox steward propose [--db DB] [--profile PROFILE] [--json]   write each candidat
 cox steward draft [--profile PROFILE] [--json]   write each grounded proposal in intake as a draft initiative under work/, list those that exist or could not be grounded
 cox setup doctor [--profile PROFILE] [--repo REPO] [--json] [--host HOST]   check this machine's profile against what it needs
 cox setup install --root ROOT --team TEAM --workspace WORKSPACE [--provider-profile PROVIDER_PROFILE] [--skills-root SKILLS_ROOT] [--assume a|r] [--plugins] [--hook] [--force-profile] [--dry-run] [--window-ceiling-usd WINDOW_CEILING_USD] [--weekly-ceiling-usd WEEKLY_CEILING_USD]   clone components and write a profile for this machine
-cox setup migrate [--home HOME] [--dry-run] [--apply]   move an existing layout under the coxswain home
+cox setup migrate [--home HOME] [--dry-run] [--apply]   plan moving a layout under the home; --apply migrates
 cox setup store switch files|shared [--host HOST] [--port PORT] [--database DATABASE] [--user USER] [--bucket BUCKET] [--endpoint ENDPOINT] [--region REGION] [--password-env PASSWORD_ENV] [--access-key-env ACCESS_KEY_ENV] [--secret-key-env SECRET_KEY_ENV] [--dry-run]   copy the run store and traces to the other backend, then record store.mode
 ```
 <!-- commands:end -->

@@ -6137,16 +6137,17 @@ def _migrate_run_host_step(step, locs) -> tuple[bool, str]:
 
 
 def _setup_migrate(a: argparse.Namespace) -> int:
-    """Observe, plan and execute; --apply is accepted only because the host planner's remote argv spells it."""
+    """Plans by default; executes the local steps, then the host steps, only under --apply. --dry-run is the default spelled out."""
     locs = home_paths.resolve_here(a.home)
     if isinstance(locs, home_paths.Refused):
         print(f"refusing: {locs.reason}")
         return 2
     plan = setup_migrate.migrate_plan(_migrate_observe(locs), locs)
     host_plan = setup_migrate_hosts.host_migrate_plan(_migrate_observe_hosts(locs), locs)
-    if a.dry_run:
+    if not a.apply:
         print(setup_migrate.render_plan(plan))
         print("\n".join(setup_migrate_hosts.render_hosts_plan(host_plan)))
+        print("no changes made; run with --apply to migrate")
         return 0
     for number, step in enumerate(plan, 1):
         failure = _migrate_exec(step, locs)
@@ -8400,11 +8401,11 @@ SETUP_COMMANDS = [
         "agent_tools.cli:_setup_install", False, (),
     ),
     commands.Command(
-        "migrate", "setup", "move an existing layout under the coxswain home",
+        "migrate", "setup", "plan moving a layout under the home; --apply migrates",
         (
             commands.Arg(("--home",), {"help": "absolute path of the coxswain home to migrate to"}),
-            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plans; change nothing"}),
-            commands.Arg(("--apply",), {"action": "store_true", "help": "accepted and ignored; migrating is the default"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "same as the default: print the plans; change nothing"}),
+            commands.Arg(("--apply",), {"action": "store_true", "help": "execute the plans; without it the command only prints them"}),
         ),
         "agent_tools.cli:_setup_migrate", False, (),
     ),
