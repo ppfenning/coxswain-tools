@@ -141,6 +141,59 @@ def test_a_refused_row_is_reported_the_rest_are_tried_and_the_exit_is_non_zero(
     assert len(exports) == 1
 
 
+def test_move_dry_run_lists_the_swaps_and_writes_nothing(tmp_path: Path, home: Path, capsys) -> None:
+    ws = _workspace(tmp_path, "~/repos/old/demo")
+    before = {p: p.read_bytes() for p in ws.rglob("*.md")}
+    assert main(["route", "paths", "--workspace", str(ws), "--move", str(home / "repos" / "old"), "~/repos/new"]) == 0
+    out = capsys.readouterr().out
+    assert len(_change_lines(out)) == 2
+    assert "~/repos/old/demo -> ~/repos/new/demo" in out
+    assert "still under" not in out
+    assert {p: p.read_bytes() for p in ws.rglob("*.md")} == before
+
+
+def test_move_apply_rewrites_the_files_and_reports_no_residue(tmp_path: Path, home: Path, capsys) -> None:
+    ws = _workspace(tmp_path, "~/repos/old/demo")
+    argv = ["route", "paths", "--workspace", str(ws), "--apply", "--move", "~/repos/old", "~/repos/new"]
+    assert main(argv) == 0
+    out = capsys.readouterr().out
+    for rel in ("work/demo/initiative.md", "work/demo/1-build/task.md"):
+        assert "repo: ~/repos/new/demo\n" in (ws / rel).read_text()
+    assert out.splitlines()[-1] == "route paths: 0 value(s) still under ~/repos/old"
+
+
+def test_move_apply_in_store_mode_sends_only_moved_columns(tmp_path: Path, home: Path, monkeypatch) -> None:
+    ws = _workspace(tmp_path, "~/repos/demo")
+    rows = [_row("a", "~/repos/old/a")]
+    upserted: list[dict] = []
+
+    def upsert(runs_dir: Path, row: dict) -> bool:
+        upserted.append(row)
+        rows[:] = [{**r, **row} for r in rows]  # the store now holds the moved values
+        return True
+
+    exports = _store_mode(monkeypatch, rows, upsert)
+    assert main(["route", "paths", "--workspace", str(ws), "--apply", "--move", "~/repos/old", "~/repos/new"]) == 0
+    assert upserted == [{"initiative": "demo", "task_id": "a", "extra": {"repo": "~/repos/new/a"}, "surfaces": []}]
+    assert len(exports) == 1
+
+
+def test_a_value_left_under_old_after_apply_prints_the_count_and_exits_one(
+    tmp_path: Path, home: Path, monkeypatch, capsys
+) -> None:
+    ws = _workspace(tmp_path, "~/repos/demo")
+    rows = [_row("a", "~/repos/old/a"), _row("b", "~/repos/old/b")]
+    _store_mode(monkeypatch, rows, lambda runs_dir, row: True)  # read_queue keeps returning the stale rows
+    assert main(["route", "paths", "--workspace", str(ws), "--apply", "--move", "~/repos/old", "~/repos/new"]) == 1
+    assert capsys.readouterr().out.splitlines()[-1] == "route paths: 2 value(s) still under ~/repos/old"
+
+
+def test_apply_without_move_prints_no_residue_line(tmp_path: Path, home: Path, capsys) -> None:
+    ws = _workspace(tmp_path, str(home / "repos" / "demo"))
+    assert main(["route", "paths", "--workspace", str(ws), "--apply"]) == 0
+    assert "still under" not in capsys.readouterr().out
+
+
 def test_a_workspace_without_work_or_intake_is_refused(tmp_path: Path, home: Path, capsys) -> None:
     assert main(["route", "paths", "--workspace", str(tmp_path)]) == 2
     assert "no work/ or intake/" in capsys.readouterr().out
