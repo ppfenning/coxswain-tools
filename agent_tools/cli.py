@@ -3465,13 +3465,13 @@ def _paths_lines(changes: Sequence[Mapping[str, str]]) -> list[str]:
     return [f"{c['key']}: {c['old']} -> {c['new']}" for c in changes] + [f"{len(changes)} change(s)"]
 
 
-def _paths_apply_rows(runs_dir: Path, rows: Sequence[Mapping], home: str) -> int:
+def _paths_apply_rows(runs_dir: Path, rows: Sequence[Mapping], home: str, move: tuple[str, str] | None = None) -> int:
     """Edge. Upsert only `extra` and `surfaces` of each changed row, then export once; exit 1 on a refusal or failed export.
     The store owns state, needs and the claim columns, so a stale snapshot of them is never written back."""
     refused = 0
     taken = 0
     for row in rows:
-        migrated = repo_path_migrate.migrate_row(row, home)
+        migrated = repo_path_migrate.migrate_row(row, home, move=move)
         if migrated is None:
             continue
         partial = {k: migrated[k] for k in ("initiative", "task_id", "extra", "surfaces") if k in migrated}
@@ -3489,10 +3489,10 @@ def _paths_apply_rows(runs_dir: Path, rows: Sequence[Mapping], home: str) -> int
     return 1 if refused else 0
 
 
-def _paths_apply_files(ws: Path, files: Mapping[str, str], home: str) -> int:
+def _paths_apply_files(ws: Path, files: Mapping[str, str], home: str, move: tuple[str, str] | None = None) -> int:
     """Edge. Write each changed work file in place."""
     for rel, text in files.items():
-        migrated = repo_path_migrate.migrate_text(text, home)
+        migrated = repo_path_migrate.migrate_text(text, home, move=move)
         if migrated is not None:
             (ws / rel).write_text(migrated, encoding="utf-8")
     return 0
@@ -3517,10 +3517,18 @@ def _route_paths(a: argparse.Namespace) -> int:
         print(f"route paths: the store under {runs_dir} cannot be read; nothing was checked")
         return 2
     files = {} if store_mode else {"/".join(parts): text for parts, text in store_fill._workspace_files(ws)}
-    print("\n".join(_paths_lines(repo_path_migrate.plan(rows, files, home))))
+    move = (repo_path.contract(a.move[0], home), repo_path.contract(a.move[1], home)) if a.move else None
+    print("\n".join(_paths_lines(repo_path_migrate.plan(rows, files, home, move=move))))
     if not a.apply:
         return 0
-    return _paths_apply_rows(runs_dir, rows, home) if store_mode else _paths_apply_files(ws, files, home)
+    code = _paths_apply_rows(runs_dir, rows, home, move) if store_mode else _paths_apply_files(ws, files, home, move)
+    if move is None:
+        return code
+    rows_after = run_store.read_queue(runs_dir) if store_mode else []
+    files_after = {} if store_mode else {"/".join(parts): text for parts, text in store_fill._workspace_files(ws)}
+    left = len(repo_path_migrate.plan(rows_after, files_after, home, move=move))
+    print(f"route paths: {left} value(s) still under {a.move[0]}")
+    return 1 if left else code
 
 
 def _initiative_token(runs_dir: Path, token: str) -> str:
@@ -8170,6 +8178,7 @@ ROUTE_COMMANDS = [
         (
             commands.Arg(("--profile",)), commands.Arg(("--workspace",)),
             commands.Arg(("--apply",), {"action": "store_true", "help": "write the changes; the default only lists them"}),
+            commands.Arg(("--move",), {"nargs": 2, "metavar": ("OLD", "NEW"), "help": "swap repo prefix OLD for NEW"}),
         ),
         "agent_tools.cli:_route_paths", False, (),
     ),
