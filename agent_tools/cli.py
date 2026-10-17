@@ -5782,6 +5782,31 @@ def _setup_doctor(a: argparse.Namespace) -> int:
     return rc
 
 
+def _marketplace_paths(parsed: object) -> dict[str, str] | None:
+    """Maps `claude plugin marketplace list --json` entries to name -> path; "" when an entry has no path."""
+    if not isinstance(parsed, list):
+        return None
+    return {
+        e["name"]: str(e.get("path") or "") for e in parsed if isinstance(e, dict) and isinstance(e.get("name"), str)
+    }
+
+
+def _marketplace_listing() -> dict[str, str] | None:
+    """Edge: the installed marketplaces, or None when claude is absent, fails, or prints non-JSON."""
+    if shutil.which("claude") is None:
+        return None
+    try:
+        r = subprocess.run(["claude", "plugin", "marketplace", "list", "--json"], capture_output=True, text=True)
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        return _marketplace_paths(json.loads(r.stdout))
+    except ValueError:
+        return None
+
+
 def _install_facts(a: argparse.Namespace) -> dict:
     """Gathers exactly what `install_plan` needs and nothing it decides:
     PATH lookups, each repo's venv, the profile's existence, and the

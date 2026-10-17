@@ -13,6 +13,7 @@ written, so `profile_text` refuses those with `ValueError`.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from typing import TYPE_CHECKING
 
@@ -129,6 +130,11 @@ def _marketplace_steps(cartridges_dir: str, registered: str | None) -> list:
     return [remove, add]
 
 
+def _workspace_steps(workspace: str) -> list:
+    folders = (workspace, *(f"{workspace}/{name}" for name in ("work", "runs", "intake", "cartridges")))
+    return [{"op": "mkdir", "path": path, "why": "create the workspace folder"} for path in folders]
+
+
 def install_plan(
     *,
     root: str,
@@ -151,6 +157,7 @@ def install_plan(
     weekly_ceiling_usd: float | None = None,
     locations: Locations | None = None,
     registered_marketplace: str | None = None,
+    workspace_exists: bool = False,
 ) -> list:
     """Ordered setup steps. With `locations`, every checkout, venv and the
     profile path come from the resolved record (`installs`, `profile`) and
@@ -161,13 +168,22 @@ def install_plan(
     `cartridges_dir` here is the checkout `-e` installs and the plugin
     marketplace registers; the profile's own `cartridges_dir` field is a
     workspace path (`profile_cartridges_dir`), a different thing that
-    happens to share a name in the field the routing layer reads."""
+    happens to share a name in the field the routing layer reads.
+    With `locations` and an empty `workspace`, the workspace is
+    `<workspaces>/main` and its folders are made unless `workspace_exists`.
+    With `locations`, the last write records `<home>` at `locations.record`."""
+    default_workspace = locations is not None and not workspace
+    if locations is not None and default_workspace:
+        workspace = posixpath.join(locations.workspaces, "main")
     installs = locations.installs if locations else root
     profile_file = locations.profile if locations else profile_path(config_dir)
     cartridges_dir = f"{installs}/coxswain-cartridges"
     harness_dir = f"{installs}/coxswain-graphs"
     profile_cartridges_dir = f"{workspace}/cartridges"
     steps: list = []
+
+    if default_workspace and not workspace_exists:
+        steps.extend(_workspace_steps(workspace))
 
     if not uv_on_path:
         steps.append({"op": "skip", "what": "venvs",
@@ -206,6 +222,10 @@ def install_plan(
             steps.append({"op": "skip", "what": "plugins",
                           "why": "claude is not on PATH; this step is provider-specific"})
 
+    if locations is not None:
+        steps.append({"op": "write", "path": locations.record, "text": f"{locations.home}\n",
+                      "why": "record the coxswain home"})
+
     if hook:
         steps.append({"op": "hook", "path": claude_settings_path,
                       "why": "add a SessionStart hook that prints route context"})
@@ -242,6 +262,8 @@ def render_plan(steps: list) -> str:
             lines.append(f"run{cwd} {' '.join(step['argv'])}")
         elif op == "write":
             lines.append(f"write {step['path']}")
+        elif op == "mkdir":
+            lines.append(f"mkdir {step['path']}")
         elif op == "remove":
             lines.append(f"remove {step['path']}")
         elif op == "skip":
