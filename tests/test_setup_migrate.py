@@ -1,23 +1,36 @@
 import ast
 import json
 import posixpath
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from agent_tools import setup_migrate
+from agent_tools import repo_path_migrate, setup_migrate
 from agent_tools.home import Locations
 from agent_tools.setup_migrate import (
     CHECKOUTS,
+    MARKER_NAME,
     OPS,
     ChairLease,
+    FinishEdge,
+    FinishFacts,
     HostRow,
     Lane,
     LeaseOutcome,
+    LinkFact,
+    delete_marker,
+    finish,
+    marker_path,
     migrate_plan,
+    observe_links,
     preflight_refusals,
+    removal_decisions,
+    remove_link,
     render_plan,
+    resolve_old_root,
 )
+from agent_tools.setup_migrate_hosts import ObservedHost
 
 LOCS = Locations(
     home="/h/coxswain",
@@ -324,6 +337,194 @@ def test_follow_on_prints_name_each_installer_item_and_prefix():
     assert set(notes) == {"repo paths", "workspace"}
     assert notes["repo paths"]["checkouts"][TOOLS] == {"old": f"/u/repos/{TOOLS}", "new": f"{NEW}/{TOOLS}"}
     assert not of(migrate_plan(final_layout(), LOCS), "print")
+
+
+def test_repo_paths_line_points_at_finish():
+    note = next(s for s in of(migrate_plan(old_layout(), LOCS), "print") if s["item"] == "repo paths")
+    assert note["why"] == "run cox setup migrate --finish once every host has migrated."
+    assert "repo paths - run cox setup migrate --finish once every host has migrated." in render_plan([note])
+
+
+UHOME = "/u"
+FINST = f"{UHOME}/coxswain/installs"
+FOLD = f"{UHOME}/repos"
+MARKER = json.dumps({"old_root": FOLD, "new_root": FINST})
+OK_ROWS = [{"check": "home root", "ok": True, "detail": ""}]
+BEAT = ObservedHost("m", "m", "/w", {TOOLS: "/m/x/coxswain/installs/coxswain-tools"}, None, "beat")
+OLD_ROW = {"kind": "task", "initiative": "i", "task_id": "t", "extra": {"repo": f"~/repos/{TOOLS}"}, "surfaces": []}
+OLD_FILE = {"work/i/p/t.md": f"---\nrepo: ~/repos/{GRAPHS}\n---\nbody\n"}
+RIGHT = LinkFact(TOOLS, f"{FOLD}/{TOOLS}", "symlink", f"{FINST}/{TOOLS}")
+
+
+def facts(**over):
+    base = FinishFacts(
+        FOLD, MARKER, FINST, UHOME, [{"op": "skip", "why": "x."}], OK_ROWS, [BEAT], [OLD_ROW], OLD_FILE, [RIGHT]
+    )
+    return base._replace(**over)
+
+
+class Spy:
+    """Records edge calls in order. `write` rewrites the rows it holds; `stuck` makes it a no-op."""
+
+    def __init__(self, rows, files, stuck=False):
+        self.rows, self.files, self.stuck, self.events = list(rows), dict(files), stuck, []
+
+    def edge(self):
+        return FinishEdge(self.write, self.rescan, self.remove, self.delete_marker)
+
+    def write(self, moves):
+        self.events.append("write")
+        if not self.stuck:
+            for old, new in moves:
+                self.rows = [
+                    m or r for r in self.rows for m in [repo_path_migrate.migrate_row(r, UHOME, move=(old, new))]
+                ]
+                self.files = {
+                    k: repo_path_migrate.migrate_text(t, UHOME, move=(old, new)) or t for k, t in self.files.items()
+                }
+
+    def rescan(self):
+        self.events.append("rescan")
+        return self.rows, self.files
+
+    def remove(self, path):
+        self.events.append(f"remove {path}")
+
+    def delete_marker(self):
+        self.events.append("delete_marker")
+
+
+def run_finish(f=None, apply=True, stuck=False):
+    f = f or facts()
+    spy = Spy(f.rows, f.files, stuck)
+    return finish(f, apply, spy.edge()), spy
+
+
+def test_no_marker_and_no_explicit_root_exits_two():
+    result, spy = run_finish(facts(old_root=None, marker_text=None))
+    assert (result.code, result.lines) == (2, ("finish: no old root known; pass --old-root",))
+    assert spy.events == []
+
+
+def test_no_marker_with_explicit_root_proceeds():
+    result, _ = run_finish(facts(marker_text=None), apply=False)
+    assert result.code == 0
+    assert "finish: would delete the marker" not in result.lines
+
+
+def test_marker_supplies_the_old_root_when_none_is_given():
+    assert resolve_old_root(None, MARKER) == FOLD
+    assert resolve_old_root("/x", MARKER) == "/x"
+    assert resolve_old_root(None, "not json") is None
+    assert resolve_old_root(None, "{}") is None
+
+
+def test_gate_local_plan_not_single_skip():
+    result, spy = run_finish(facts(plan=[{"op": "symlink", "why": "x."}]))
+    assert (result.code, result.lines) == (1, ("finish: waiting on the local plan to reach a single skip step",))
+    assert spy.events == []
+
+
+def test_gate_failing_home_row():
+    result, spy = run_finish(facts(home_rows=[{"check": "home root", "ok": False, "detail": "skipped"}]))
+    assert (result.code, result.lines) == (1, ("finish: waiting on home check home root",))
+    assert spy.events == []
+
+
+def test_gate_host_without_a_beat():
+    result, _ = run_finish(facts(hosts=[replace(BEAT, source="fallback")]))
+    assert (result.code, result.lines) == (1, ("finish: waiting on host m to beat",))
+
+
+def test_gate_host_not_migrated():
+    old = replace(BEAT, checkouts={TOOLS: "/m/x/repos/coxswain-tools"})
+    result, spy = run_finish(facts(hosts=[old]))
+    assert (result.code, result.lines) == (1, ("finish: waiting on host m to migrate",))
+    assert spy.events == []
+
+
+def test_plan_form_lists_and_writes_nothing():
+    result, spy = run_finish(apply=False)
+    assert result.code == 0
+    assert spy.events == []
+    assert f"finish: would remove {FOLD}/{TOOLS}" in result.lines
+    assert "finish: would delete the marker" in result.lines
+    assert sorted(c["key"] for c in result.rewritten) == ["task:i/t", "work/i/p/t.md"]
+
+
+def test_rewrite_then_clean_rescan_then_removal():
+    result, spy = run_finish()
+    assert result.code == 0
+    assert spy.rows[0]["extra"]["repo"] == f"~/coxswain/installs/{TOOLS}"
+    assert f"repo: ~/coxswain/installs/{GRAPHS}" in spy.files["work/i/p/t.md"]
+    assert result.removed == (f"{FOLD}/{TOOLS}",)
+
+
+def test_leftover_value_stops_before_any_removal():
+    result, spy = run_finish(stuck=True)
+    assert result.code == 1
+    assert result.lines == (f"finish: 2 value(s) still under {FOLD}",)
+    assert spy.events == ["write", "rescan"]
+
+
+def test_marker_is_deleted_only_after_the_removals():
+    _, spy = run_finish()
+    assert spy.events == ["write", "rescan", f"remove {FOLD}/{TOOLS}", "delete_marker"]
+
+
+def test_real_directory_and_wrong_link_are_kept():
+    wrong = LinkFact(GRAPHS, f"{FOLD}/{GRAPHS}", "symlink", "/elsewhere")
+    real = LinkFact(CART, f"{FOLD}/{CART}", "dir")
+    result, spy = run_finish(facts(links=[RIGHT, wrong, real]))
+    assert result.removed == (f"{FOLD}/{TOOLS}",)
+    assert result.kept == (
+        f"{FOLD}/{GRAPHS}: a link to /elsewhere, not {FINST}/{GRAPHS}",
+        f"{FOLD}/{CART}: a real directory",
+    )
+    assert [e for e in spy.events if e.startswith("remove")] == [f"remove {FOLD}/{TOOLS}"]
+    assert spy.events[-1] == "delete_marker"
+
+
+def test_second_run_is_a_noop(tmp_path):
+    installs, old = tmp_path / "installs", tmp_path / "repos"
+    installs.mkdir()
+    old.mkdir()
+    for name in CHECKOUTS:
+        (installs / name).mkdir()
+        (old / name).symlink_to(installs / name)
+    marker = tmp_path / MARKER_NAME
+    marker.write_text(MARKER)
+    links = observe_links(str(old), UHOME)
+    assert [(link.kind, link.target) for link in links] == [("symlink", str(installs / n)) for n in CHECKOUTS]
+    removals, kept = removal_decisions(links, str(installs))
+    assert len(removals) == 3 and kept == ()
+    for path in removals:
+        remove_link(path)
+    delete_marker(str(marker))
+    assert not marker.exists() and not any(old.iterdir())
+    again = facts(
+        old_root=str(old),
+        marker_text=None,
+        installs=str(installs),
+        rows=[],
+        files={},
+        links=observe_links(str(old), UHOME),
+    )
+    result, spy = run_finish(again)
+    assert (result.code, result.lines) == (0, ("finish: nothing to do",))
+    assert spy.events == []
+    delete_marker(str(marker))
+
+
+def test_observe_links_expands_only_a_tilde_root():
+    tilde = observe_links("~/repos", UHOME)
+    assert [(link.path, link.kind) for link in tilde] == [(f"/u/repos/{n}", "absent") for n in CHECKOUTS]
+    absolute = observe_links("/nowhere/repos", UHOME)
+    assert [link.path for link in absolute] == [f"/nowhere/repos/{n}" for n in CHECKOUTS]
+
+
+def test_marker_path_sits_in_the_state_folder():
+    assert marker_path(LOCS) == "/u/.local/state/coxswain/migrate.json"
 
 
 def claude_argvs(observed):
@@ -670,7 +871,7 @@ def test_module_imports_only_standard_library_and_home():
         if isinstance(node, (ast.Import, ast.ImportFrom))
         for alias in (node.names if isinstance(node, ast.Import) else [None])
     }
-    assert imported <= {"__future__", "json", "pathlib", "posixpath", "tomllib", "typing", "agent_tools"}
+    assert imported <= {"__future__", "collections", "json", "pathlib", "posixpath", "tomllib", "typing", "agent_tools"}
     assert "agent_tools.home" in {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
 
 

@@ -49,11 +49,14 @@ from __future__ import annotations
 import json
 import posixpath
 import tomllib
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from agent_tools import setup_install
+from agent_tools import repo_path, repo_path_migrate, setup_install
 from agent_tools.home import Locations
+from agent_tools.repo_path_migrate import Change
+from agent_tools.setup_migrate_hosts import ObservedHost, is_migrated
 
 Step = dict[str, Any]
 
@@ -82,6 +85,9 @@ OPS = frozenset(
 )
 SETTING_KEYS = ("skills_roots", "provider_profile", "harness_dir")
 WORKTREES_CLEAN = "no worktree names a missing path"
+FINISH_HINT = "run cox setup migrate --finish once every host has migrated."
+FINISH_NO_ROOT = "finish: no old root known; pass --old-root"
+MARKER_NAME = "migrate.json"
 
 
 def _step(op: str, why: str, **fields: Any) -> Step:
@@ -210,7 +216,7 @@ def _prints(workspace: dict[str, Any] | None, pairs: dict[str, tuple[str, str]],
     notes = [
         _step(
             "print",
-            "Queue rows and work files holding the old tilde paths are rewritten by repo_path_migrate with these prefixes.",
+            FINISH_HINT,
             item="repo paths",
             checkouts=moved,
         ),
@@ -452,3 +458,178 @@ def preflight_refusals(
             if row.name == hostname and row.state == "active"
         ),
     ]
+
+
+class LinkFact(NamedTuple):
+    """What the edge saw at an old checkout path: kind is absent, dir, symlink or file; target is the raw link text."""
+
+    name: str
+    path: str
+    kind: str
+    target: str | None = None
+
+
+class FinishFacts(NamedTuple):
+    """Everything `finish` decides on. `marker_text` is None when the marker file is absent."""
+
+    old_root: str | None
+    marker_text: str | None
+    installs: str
+    home: str
+    plan: Sequence[Step]
+    home_rows: Sequence[Mapping[str, Any]]
+    hosts: Sequence[ObservedHost]
+    rows: Sequence[Mapping[str, Any]]
+    files: Mapping[str, str]
+    links: Sequence[LinkFact]
+
+
+class FinishEdge(NamedTuple):
+    """The only side effects `finish` may cause, and only in apply mode. `write` takes (old, new) tilde prefixes."""
+
+    write: Callable[[tuple[tuple[str, str], ...]], None]
+    rescan: Callable[[], tuple[Sequence[Mapping[str, Any]], Mapping[str, str]]]
+    remove: Callable[[str], None]
+    delete_marker: Callable[[], None]
+
+
+class FinishResult(NamedTuple):
+    code: int
+    lines: tuple[str, ...]
+    rewritten: tuple[Change, ...] = ()
+    removed: tuple[str, ...] = ()
+    kept: tuple[str, ...] = ()
+
+
+def marker_path(locs: Locations) -> str:
+    return posixpath.join(locs.state, MARKER_NAME)
+
+
+def resolve_old_root(explicit: str | None, marker_text: str | None) -> str | None:
+    """The explicit root, else `old_root` from the marker JSON; None when neither names one."""
+    if explicit:
+        return explicit
+    if marker_text is None:
+        return None
+    try:
+        data = json.loads(marker_text)
+    except ValueError:
+        return None
+    root = data.get("old_root") if isinstance(data, dict) else None
+    return root if isinstance(root, str) and root else None
+
+
+def finish_gates(
+    plan: Sequence[Step], home_rows: Sequence[Mapping[str, Any]], hosts: Sequence[ObservedHost]
+) -> list[str]:
+    """One `finish: waiting on` line per failing gate; `hosts` are the active rows only."""
+    single_skip = len(plan) == 1 and plan[0].get("op") == "skip"
+    return [
+        *([] if single_skip else ["finish: waiting on the local plan to reach a single skip step"]),
+        *(f"finish: waiting on home check {row.get('check')}" for row in home_rows if not row.get("ok")),
+        *(f"finish: waiting on host {h.name} to beat" for h in hosts if h.source != "beat"),
+        *(f"finish: waiting on host {h.name} to migrate" for h in hosts if h.source == "beat" and not is_migrated(h)),
+    ]
+
+
+def rewrite_moves(old_root: str, installs: str, home: str) -> tuple[tuple[str, str], ...]:
+    """Per checkout, the tilde prefix under the old root and the tilde prefix under the installs folder."""
+    return tuple(
+        (repo_path.contract(posixpath.join(old_root, n), home), repo_path.contract(posixpath.join(installs, n), home))
+        for n in CHECKOUTS
+    )
+
+
+def _under(value: str, prefix: str) -> bool:
+    return value == prefix or value.startswith(prefix + "/")
+
+
+def pending_changes(
+    rows: Sequence[Mapping[str, Any]], files: Mapping[str, str], home: str, moves: tuple[tuple[str, str], ...]
+) -> list[Change]:
+    """Values still under an old prefix. A change that only contracts an unrelated path is not finish's to report."""
+    return [
+        c
+        for old, new in moves
+        for c in repo_path_migrate.move_changes(rows, files, home, old, new)
+        if _under(repo_path.contract(c["old"], home), old)
+    ]
+
+
+def _verdict(link: LinkFact, installs: str) -> tuple[str, str]:
+    want = posixpath.join(installs, link.name)
+    if link.kind == "absent":
+        return "none", ""
+    if link.kind == "symlink" and link.target == want:
+        return "remove", ""
+    if link.kind == "symlink":
+        return "keep", f"a link to {link.target}, not {want}"
+    return "keep", "a real directory" if link.kind == "dir" else "a file, not a link"
+
+
+def removal_decisions(links: Sequence[LinkFact], installs: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Paths to remove: symlinks whose target equals the checkout under `installs`. The rest are kept, with a reason."""
+    verdicts = [(link, *_verdict(link, installs)) for link in links]
+    return (
+        tuple(link.path for link, what, _ in verdicts if what == "remove"),
+        tuple(f"{link.path}: {why}" for link, what, why in verdicts if what == "keep"),
+    )
+
+
+def finish(facts: FinishFacts, apply: bool, edge: FinishEdge) -> FinishResult:
+    """Plan by default. Gates first, then rewrite and rescan, then link removal, then the marker. Writes only when `apply`."""
+    old_root = resolve_old_root(facts.old_root, facts.marker_text)
+    if old_root is None:
+        return FinishResult(2, (FINISH_NO_ROOT,))
+    waiting = finish_gates(facts.plan, facts.home_rows, facts.hosts)
+    if waiting:
+        return FinishResult(1, tuple(waiting))
+    moves = rewrite_moves(old_root, facts.installs, facts.home)
+    changes = pending_changes(facts.rows, facts.files, facts.home, moves)
+    removals, kept = removal_decisions(facts.links, facts.installs)
+    shown = "" if apply else "would "
+    kept_lines = tuple(f"finish: kept {k}" for k in kept)
+    if not (changes or removals or kept or facts.marker_text is not None):
+        return FinishResult(0, ("finish: nothing to do",))
+    if apply and changes:
+        edge.write(moves)
+        left = pending_changes(*edge.rescan(), facts.home, moves)
+        if left:
+            return FinishResult(1, (f"finish: {len(left)} value(s) still under {old_root}",), tuple(changes))
+    if apply:
+        for path in removals:
+            edge.remove(path)
+        if facts.marker_text is not None:
+            edge.delete_marker()
+    lines = (
+        *(f"finish: {shown}rewrite {c['key']}: {c['old']} -> {c['new']}" for c in changes),
+        *(f"finish: {shown}remove {path}" for path in removals),
+        *kept_lines,
+        *([f"finish: {shown}delete the marker"] if facts.marker_text is not None else []),
+    )
+    return FinishResult(0, lines, tuple(changes), removals, kept)
+
+
+def observe_links(old_root: str, home: str) -> tuple[LinkFact, ...]:
+    """Edge. What sits at <old root>/<name> for each checkout."""
+    root = repo_path.expand(old_root, home) if old_root.startswith("~") else old_root
+    return tuple(_observe_link(n, posixpath.join(root, n)) for n in CHECKOUTS)
+
+
+def _observe_link(name: str, path: str) -> LinkFact:
+    p = Path(path)
+    if p.is_symlink():
+        return LinkFact(name, path, "symlink", str(p.readlink()))
+    if p.is_dir():
+        return LinkFact(name, path, "dir")
+    return LinkFact(name, path, "file" if p.exists() else "absent")
+
+
+def remove_link(path: str) -> None:
+    """Edge. Unlinks one symlink; `finish` only passes paths it judged to be links to the installs checkout."""
+    Path(path).unlink()
+
+
+def delete_marker(path: str) -> None:
+    """Edge. Removes the marker file; an absent marker is fine."""
+    Path(path).unlink(missing_ok=True)
