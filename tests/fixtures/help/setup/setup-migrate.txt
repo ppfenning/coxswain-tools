@@ -1,7 +1,8 @@
-usage: cox setup migrate [-h] [--home HOME] [--dry-run] [--apply]
+usage: cox setup migrate [-h] [--home HOME] [--dry-run] [--apply] [--hosts]
 
 options:
   -h, --help   show this help message and exit
   --home HOME  absolute path of the coxswain home to migrate to
   --dry-run    same as the default: print the plans; change nothing
   --apply      execute the plans; without it the command only prints them
+  --hosts      with --apply, also run the host steps; use it on the chair's machine

@@ -31,7 +31,7 @@ planner emits no step that deletes or replaces a real directory.
 from __future__ import annotations
 
 import posixpath
-from typing import Any
+from typing import Any, NamedTuple
 
 from agent_tools.home import Locations
 
@@ -260,3 +260,59 @@ def render_plan(steps: list[Step]) -> str:
         " ".join(part for part in (f"{n}.", step["op"], _detail(step), "-", step["why"]) if part)
         for n, step in enumerate(steps, 1)
     )
+
+
+class LeaseOutcome(NamedTuple):
+    path: str
+    granted: bool
+    holder: str | None = None
+    error: str | None = None
+
+
+class Lane(NamedTuple):
+    name: str
+    host: str | None
+
+
+class ChairLease(NamedTuple):
+    released: bool
+    stale: bool
+    host: str | None
+
+
+class HostRow(NamedTuple):
+    name: str
+    state: str
+
+
+def _lease_line(lease: LeaseOutcome) -> str:
+    who = lease.holder or f"an unknown holder (lease error: {lease.error})"
+    return f"migrate: refusing, {who} holds {lease.path}"
+
+
+def preflight_refusals(
+    leases: tuple[LeaseOutcome, ...],
+    lanes: tuple[Lane, ...],
+    hostname: str,
+    chair: ChairLease,
+    hosts: tuple[HostRow, ...],
+) -> list[str]:
+    """Refusal lines in the order leases, lanes, chair, host row; a lane with host None counts as local."""
+    return [
+        *(_lease_line(lease) for lease in leases if not lease.granted),
+        *(
+            f"migrate: refusing, live lane {lane.name} holds a run on this machine"
+            for lane in lanes
+            if lane.host is None or lane.host == hostname
+        ),
+        *(
+            [f"migrate: refusing, the chair holds its lease on {hostname}"]
+            if not chair.released and not chair.stale and chair.host == hostname
+            else []
+        ),
+        *(
+            f"migrate: refusing, host {row.name} holds active state, run cox host drain {row.name} first"
+            for row in hosts
+            if row.name == hostname and row.state == "active"
+        ),
+    ]

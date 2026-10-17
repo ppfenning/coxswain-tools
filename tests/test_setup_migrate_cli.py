@@ -50,8 +50,8 @@ def types_ns(**fields):
     return argparse.Namespace(**fields)
 
 
-def run(dry_run=False, apply=False):
-    return cli._setup_migrate(argparse.Namespace(home=None, dry_run=dry_run, apply=apply))
+def run(dry_run=False, apply=False, hosts=False):
+    return cli._setup_migrate(argparse.Namespace(home=None, dry_run=dry_run, apply=apply, hosts=hosts))
 
 
 def tree(root: Path):
@@ -134,7 +134,7 @@ def test_each_host_is_reported_and_one_failure_does_not_hide_the_others(layout, 
         return (False, "connection refused") if step.host == "b" else (True, "migrated")
 
     monkeypatch.setattr(cli, "_migrate_run_host_step", fake)
-    assert run(apply=True) == 1
+    assert run(apply=True, hosts=True) == 1
     out = capsys.readouterr().out
     assert "host a: remote_migrate: migrated" in out and "host c: remote_migrate: migrated" in out
     assert "host b: FAILED step 1 remote_migrate: connection refused" in out
@@ -147,13 +147,23 @@ def test_a_failed_local_step_runs_no_host_step(layout, monkeypatch):
     hosts = [ObservedHost("a", "ssh-a", "/w", {"coxswain-tools": "/old/coxswain-tools"}, "/w", "beat")]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
     monkeypatch.setattr(cli, "_migrate_run_host_step", lambda step, locs: pytest.fail("host step ran"))
-    assert run(apply=True) == 1
+    assert run(apply=True, hosts=True) == 1
+
+
+def test_apply_alone_runs_no_host_step_and_says_so(layout, monkeypatch, capsys):
+    hosts = [ObservedHost("a", "ssh-a", "/w", {"coxswain-tools": "/old/coxswain-tools"}, "/w", "beat")]
+    monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
+    monkeypatch.setattr(cli, "_migrate_run_host_step", lambda step, locs: pytest.fail("host step ran"))
+    assert run(apply=True) == 0
+    out = capsys.readouterr().out
+    assert "hosts: not touched; rerun with --apply --hosts on the chair's machine" in out
+    assert "host a:" not in out
 
 
 def test_a_host_the_planner_cannot_judge_is_not_reported_as_migrated(layout, monkeypatch, capsys):
     hosts = [ObservedHost("d", "ssh-d", "", {}, "/w", "fallback")]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
-    assert run(apply=True) == 0
+    assert run(apply=True, hosts=True) == 0
     out = capsys.readouterr().out
     assert "host d: print: d has no beat row, so its paths cannot be judged until it beats." in out
     assert "host d: ok" not in out
@@ -173,11 +183,29 @@ def test_remote_migrate_runs_the_planned_argv_and_reports_each_host(layout, monk
     hosts = [ObservedHost(n, f"ssh-{n}", "/w", {"coxswain-tools": "/old/coxswain-tools"}, "/w", "beat") for n in ("x", "y")]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
     monkeypatch.setattr(cli.subprocess, "run", fake)
-    assert run(apply=True) == 1
+    assert run(apply=True, hosts=True) == 1
     out = capsys.readouterr().out
     assert seen[0] == ["ssh", "ssh-x", "cox", "setup", "migrate", "--apply"] and len(seen) == 2
     assert "host x: remote_migrate: ran ssh ssh-x cox setup migrate --apply" in out
     assert "host y: FAILED step 1 remote_migrate: ssh ssh-y cox setup migrate --apply exited 255: no route" in out
+
+
+def test_apply_with_hosts_builds_the_remote_argv_without_hosts(layout, monkeypatch, capsys):
+    real = subprocess.run
+    seen = []
+
+    def fake(argv, **kw):
+        if argv[0] != "ssh":
+            return real(argv, **kw)
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    hosts = [ObservedHost("x", "ssh-x", "/w", {"coxswain-tools": "/old/coxswain-tools"}, "/w", "beat")]
+    monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
+    monkeypatch.setattr(cli.subprocess, "run", fake)
+    assert run(apply=True, hosts=True) == 0
+    assert seen == [["ssh", "ssh-x", "cox", "setup", "migrate", "--apply"]]
+    assert "hosts: not touched" not in capsys.readouterr().out
 
 
 LANES = "lane_hosts:\n  - name: h\n    ssh: ssh-h\n    workspace_dir: /old/ws\n  - name: k\n    ssh: ssh-k\n    workspace_dir: /k/ws\n"
@@ -188,7 +216,7 @@ def test_lane_host_workspace_is_repointed_through_the_real_runner(layout, monkey
     moved = {"coxswain-tools": "/new/installs/coxswain-tools"}
     hosts = [ObservedHost("h", "ssh-h", "/new/ws", moved, "/old/ws", "beat")]
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: hosts)
-    assert run(apply=True) == 0
+    assert run(apply=True, hosts=True) == 0
     parsed = cli._profile_lane_hosts(layout.profile.read_text())
     assert [(h.name, h.workspace_dir) for h in parsed] == [("h", "/new/ws"), ("k", "/k/ws")]
 
@@ -245,4 +273,5 @@ def test_rerun_rewrites_a_setting_left_pointing_at_the_old_path(layout, capsys):
 
 def test_apply_flag_parses_for_the_remote_argv():
     args = cli.build_parser().parse_args(["setup", "migrate", "--apply"])
-    assert args.apply is True and args.dry_run is False
+    assert args.apply is True and args.dry_run is False and args.hosts is False
+    assert cli.build_parser().parse_args(["setup", "migrate", "--apply", "--hosts"]).hosts is True
