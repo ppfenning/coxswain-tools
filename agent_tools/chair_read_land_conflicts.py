@@ -6,6 +6,7 @@ and the phase is named by the branch in `stop_detail`, `squash of epic/<initiati
 """
 
 import json
+import os
 import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
@@ -45,7 +46,9 @@ def land_conflicts(rows: Sequence[Row], current: Mapping[tuple[str, str], Commit
 
 
 def _rev_parse(repo: str, ref: str) -> str | None:
-    r = subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref], capture_output=True, text=True)
+    r = subprocess.run(
+        ["git", "-C", os.path.expanduser(repo), "rev-parse", "--verify", "--quiet", ref], capture_output=True, text=True
+    )
     return r.stdout.strip() or None if r.returncode == 0 else None
 
 
