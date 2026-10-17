@@ -6433,13 +6433,103 @@ def _migrate_runs_dir(locs) -> Path:
     return Path(workspace if isinstance(workspace, str) else locs.workspaces).expanduser() / "runs"
 
 
+def _migrate_finish_queue(ws: Path, store_mode: bool) -> tuple[list, dict[str, str]] | None:
+    """Edge. The queue rows (store mode) or the work files (file mode) `finish` rewrites; None when the store cannot be read."""
+    from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
+
+    runs_dir = ws / "runs"
+    rows = run_store.read_queue(runs_dir) if store_mode else []
+    if store_mode and not rows and store_fill._read_store(runs_dir) is None:
+        return None
+    files = {} if store_mode else {"/".join(parts): text for parts, text in store_fill._workspace_files(ws)}
+    return rows, files
+
+
+class _FinishStopped(RuntimeError):
+    """A queue read or write failed inside `finish`; args are (message, exit code). No link or marker is removed after it."""
+
+
+def _migrate_unreadable(ws: Path) -> str:
+    return f"finish: the store under {ws / 'runs'} cannot be read; no link or marker was removed"
+
+
+def _migrate_finish_edge(ws: Path, store_mode: bool, home: str, locs) -> setup_migrate.FinishEdge:
+    """Edge. Each move re-reads the queue, since a row with a repo and a surface under different checkouts takes one upsert per move."""
+
+    def read() -> tuple[list, dict[str, str]]:
+        queue = _migrate_finish_queue(ws, store_mode)
+        if queue is None:
+            raise _FinishStopped(_migrate_unreadable(ws), 2)
+        return queue
+
+    def write(moves: tuple[tuple[str, str], ...]) -> None:
+        for move in moves:
+            rows, files = read()
+            code = _paths_apply_rows(ws / "runs", rows, home, move) if store_mode else _paths_apply_files(ws, files, home, move)
+            if code:
+                raise _FinishStopped("finish: rewriting the queue failed; no link or marker was removed", 1)
+
+    return setup_migrate.FinishEdge(
+        write,
+        read,
+        setup_migrate.remove_link,
+        lambda: setup_migrate.delete_marker(setup_migrate.marker_path(locs)),
+    )
+
+
+def _migrate_finish(a: argparse.Namespace, locs) -> int:
+    """Edge. `--finish`: rewrite the queue's old-root paths, then remove the old-path links. Plans unless `--apply`."""
+    home = os.path.expanduser("~")
+    marker = _read_text_or_none(Path(setup_migrate.marker_path(locs)))
+    old_root = setup_migrate.resolve_old_root(a.old_root, marker)
+    ws = _migrate_runs_dir(locs).parent
+    provider, problem = _lake_provider(argparse.Namespace(profile=str(locs.profile)))
+    if old_root and problem:
+        print(f"finish: cannot tell where the queue lives ({problem}); no link or marker was removed")
+        return 2
+    store_mode = work_state.work_state_mode(provider) == "store"
+    queue = _migrate_finish_queue(ws, store_mode) if old_root else ([], {})
+    if queue is None:
+        print(_migrate_unreadable(ws))
+        return 2
+    rows, files = queue
+    if old_root and a.apply:
+        lanes, chair_lease, host_rows = _migrate_read_holders(ws / "runs", socket.gethostname())
+        if busy := setup_migrate.preflight_refusals((), lanes, socket.gethostname(), chair_lease, host_rows):
+            print("\n".join(busy))
+            return 1
+    facts = setup_migrate.FinishFacts(
+        a.old_root, marker, locs.installs, home,
+        setup_migrate.migrate_plan(_migrate_observe(locs), locs),
+        _doctor_home_rows(_migrate_profile(locs)),
+        _migrate_observe_hosts(locs), rows, files,
+        setup_migrate.observe_links(old_root, home) if old_root else (),
+    )
+    try:
+        result = setup_migrate.finish(facts, a.apply and not a.dry_run, _migrate_finish_edge(ws, store_mode, home, locs))
+    except _FinishStopped as stop:
+        print(stop.args[0])
+        return stop.args[1]
+    print("\n".join(result.lines))
+    return result.code
+
+
 def _setup_migrate(a: argparse.Namespace) -> int:
     """Plans by default; --apply executes the local steps and --apply --hosts also the host steps. --dry-run is the default spelled out.
-    Under --apply a plan with any real step first takes a repo lease per old checkout and refuses while a lane, the chair or this host is live."""
+    Under --apply a plan with any real step first takes a repo lease per old checkout and refuses while a lane, the chair or this host is live.
+    --finish is its own mode: it takes --apply, --dry-run and --old-root; --hosts and a bare --old-root are refused."""
     locs = home_paths.resolve_here(a.home)
     if isinstance(locs, home_paths.Refused):
         print(f"refusing: {locs.reason}")
         return 2
+    if a.finish and a.hosts:
+        print("refusing: --finish is its own mode; --hosts belongs to the plain apply mode, so run them separately")
+        return 2
+    if a.old_root and not a.finish:
+        print("refusing: --old-root belongs to --finish; pass --finish or drop --old-root")
+        return 2
+    if a.finish:
+        return _migrate_finish(a, locs)
     observed = _migrate_observe(locs)
     plan = setup_migrate.migrate_plan(observed, locs)
     host_plan = setup_migrate_hosts.host_migrate_plan(_migrate_observe_hosts(locs), locs)
@@ -8757,6 +8847,8 @@ SETUP_COMMANDS = [
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "same as the default: print the plans; change nothing"}),
             commands.Arg(("--apply",), {"action": "store_true", "help": "execute the plans; without it the command only prints them"}),
             commands.Arg(("--hosts",), {"action": "store_true", "help": "with --apply, also run the host steps; use it on the chair's machine"}),
+            commands.Arg(("--finish",), {"action": "store_true", "help": "own mode, after every host migrated: rewrite queue paths, remove old links"}),
+            commands.Arg(("--old-root",), {"metavar": "PATH", "help": "with --finish, the old checkout root when no marker names it"}),
         ),
         "agent_tools.cli:_setup_migrate", False, (),
     ),

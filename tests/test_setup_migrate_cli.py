@@ -81,8 +81,10 @@ def types_ns(**fields):
     return argparse.Namespace(**fields)
 
 
-def run(dry_run=False, apply=False, hosts=False):
-    return cli._setup_migrate(argparse.Namespace(home=None, dry_run=dry_run, apply=apply, hosts=hosts))
+def run(dry_run=False, apply=False, hosts=False, finish=False, old_root=None):
+    return cli._setup_migrate(
+        argparse.Namespace(home=None, dry_run=dry_run, apply=apply, hosts=hosts, finish=finish, old_root=old_root)
+    )
 
 
 def tree(root: Path):
@@ -698,3 +700,169 @@ def test_plugin_ids_keep_only_this_marketplace_in_order():
     ]
     assert cli._marketplace_plugin_ids(parsed) == [f"b@{MARKET}", f"a@{MARKET}"]
     assert cli._marketplace_plugin_ids({"id": f"a@{MARKET}"}) == []
+
+
+def host(under="installs"):
+    return ObservedHost("mac", "mac.local", "/m/ws", {"coxswain-tools": f"/m/{under}/coxswain-tools"}, "/m/ws", "beat")
+
+
+@pytest.fixture
+def migrated(layout, monkeypatch):
+    """The layout after a plain apply: the old paths are links, the marker names the old root, one task file names an old path."""
+    task = layout.user / "ws" / "work" / "demo" / "1-build" / "task.md"
+    task.parent.mkdir(parents=True)
+    task.write_text(f"---\nstate: ready\ntitle: Do it\nrepo: {layout.repos}/coxswain-tools\n---\n\nDo it\n")
+    (layout.repos / "coxswain-cartridges" / "provider.yaml").write_text("# files mode\n")
+    assert run(apply=True) == 0
+    monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: [host()])
+    layout.task = task
+    layout.marker = layout.user / ".local" / "state" / "coxswain" / "migrate.json"
+    return layout
+
+
+def test_finish_without_a_marker_or_old_root_exits_two(layout, capsys):
+    assert run(finish=True) == 2
+    assert capsys.readouterr().out.strip() == "finish: no old root known; pass --old-root"
+
+
+def test_finish_with_an_unmigrated_host_exits_one_and_touches_nothing(migrated, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: [host(under="repos")])
+    before, text = tree(migrated.user), migrated.task.read_text()
+    capsys.readouterr()
+    assert run(finish=True, apply=True) == 1
+    assert "finish: waiting on host mac to migrate" in capsys.readouterr().out
+    assert tree(migrated.user) == before and migrated.task.read_text() == text and migrated.marker.exists()
+
+
+def test_finish_apply_rewrites_rows_and_removes_only_the_links(migrated, capsys):
+    capsys.readouterr()
+    assert run(finish=True, apply=True) == 0
+    out = capsys.readouterr().out
+    assert f"finish: remove {migrated.repos}/coxswain-tools" in out
+    assert f"repo: {migrated.installs}/coxswain-tools\n" in migrated.task.read_text()
+    for name in NAMES:
+        assert not (migrated.repos / name).exists() and (migrated.installs / name).is_dir()
+    assert not migrated.marker.exists()
+
+
+def test_finish_keeps_a_real_directory_at_the_old_path_and_prints_it(migrated, capsys):
+    (migrated.repos / "coxswain-graphs").unlink()
+    (migrated.repos / "coxswain-graphs").mkdir()
+    capsys.readouterr()
+    assert run(finish=True, apply=True) == 0
+    assert f"finish: kept {migrated.repos}/coxswain-graphs: a real directory" in capsys.readouterr().out
+    assert (migrated.repos / "coxswain-graphs").is_dir() and not (migrated.repos / "coxswain-tools").exists()
+
+
+def test_finish_without_apply_changes_nothing(migrated, capsys):
+    before, text = tree(migrated.user), migrated.task.read_text()
+    capsys.readouterr()
+    assert run(finish=True) == 0
+    out = capsys.readouterr().out
+    assert "finish: would rewrite" in out and "finish: would remove" in out and "finish: would delete the marker" in out
+    assert tree(migrated.user) == before and migrated.task.read_text() == text and migrated.marker.exists()
+
+
+def test_finish_rerun_has_nothing_to_do(migrated, capsys):
+    assert run(finish=True, apply=True) == 0
+    capsys.readouterr()
+    assert run(finish=True, old_root=str(migrated.repos)) == 0
+    assert capsys.readouterr().out.strip() == "finish: nothing to do"
+
+
+def test_finish_refuses_to_mix_with_hosts(layout, capsys):
+    before = tree(layout.user)
+    assert run(finish=True, apply=True, hosts=True) == 2
+    assert "--finish is its own mode" in capsys.readouterr().out
+    assert tree(layout.user) == before
+
+
+def test_finish_dry_run_plans_even_with_apply(migrated, capsys):
+    before = tree(migrated.user)
+    capsys.readouterr()
+    assert run(finish=True, apply=True, dry_run=True) == 0
+    assert "finish: would remove" in capsys.readouterr().out
+    assert tree(migrated.user) == before and migrated.marker.exists()
+
+
+def test_finish_with_an_unusable_provider_profile_exits_two_and_keeps_every_link(migrated, capsys):
+    (migrated.installs / "coxswain-cartridges" / "provider.yaml").unlink()
+    before = tree(migrated.user)
+    capsys.readouterr()
+    assert run(finish=True, apply=True) == 2
+    assert "cannot tell where the queue lives (provider profile not readable" in capsys.readouterr().out
+    assert tree(migrated.user) == before and migrated.marker.exists()
+
+
+def test_finish_apply_refuses_while_a_lane_is_live_and_keeps_every_link(migrated, monkeypatch, capsys):
+    monkeypatch.setattr(cli.run_store, "live_lanes", lambda runs_dir, now: [types_ns(run="r1", host=None)])
+    before = tree(migrated.user)
+    capsys.readouterr()
+    assert run(finish=True, apply=True) == 1
+    assert "live lane r1 holds a run on this machine" in capsys.readouterr().out
+    assert tree(migrated.user) == before and migrated.marker.exists()
+
+
+def store_queue(monkeypatch, repo, broken=False, break_on_upsert=False):
+    """Store mode over an in-memory queue of one task. `state["broken"]` makes the store unreadable: no rows, no store."""
+    from agent_tools import store_fill
+
+    state = {"broken": broken, "upserts": []}
+    row = {"kind": "task", "initiative": "demo", "task_id": "a", "extra": {"repo": repo}, "surfaces": []}
+
+    def upsert(runs_dir, partial):
+        state["upserts"].append(partial)
+        row.update(partial)
+        state["broken"] = state["broken"] or break_on_upsert
+        return True
+
+    monkeypatch.setattr(cli.work_state, "work_state_mode", lambda profile: "store")
+    monkeypatch.setattr(cli.run_store, "read_queue", lambda runs_dir, *a, **k: [] if state["broken"] else [dict(row)])
+    monkeypatch.setattr(cli.run_store, "upsert_row", upsert)
+    monkeypatch.setattr(cli, "_export_board", lambda runs_dir, ws: [])
+    monkeypatch.setattr(store_fill, "_read_store", lambda runs_dir: None if state["broken"] else object())
+    return state, row
+
+
+def test_finish_in_store_mode_upserts_the_rows_then_removes_the_links(migrated, monkeypatch, capsys):
+    state, row = store_queue(monkeypatch, f"{migrated.repos}/coxswain-tools")
+    capsys.readouterr()
+    assert run(finish=True, apply=True) == 0
+    assert row["extra"]["repo"] == f"{migrated.installs}/coxswain-tools"
+    assert state["upserts"] and not (migrated.repos / "coxswain-tools").exists()
+    assert not migrated.marker.exists()
+
+
+def test_finish_with_an_unreadable_store_exits_two_and_keeps_every_link(migrated, monkeypatch, capsys):
+    store_queue(monkeypatch, f"{migrated.repos}/coxswain-tools", broken=True)
+    before = tree(migrated.user)
+    capsys.readouterr()
+    assert run(finish=True, apply=True) == 2
+    assert "cannot be read; no link or marker was removed" in capsys.readouterr().out
+    assert tree(migrated.user) == before and migrated.marker.exists()
+
+
+def test_finish_stops_before_removing_links_when_the_store_goes_unreadable_mid_apply(migrated, monkeypatch, capsys):
+    state, row = store_queue(monkeypatch, f"{migrated.repos}/coxswain-tools", break_on_upsert=True)
+    capsys.readouterr()
+    assert run(finish=True, apply=True) == 2
+    assert "cannot be read; no link or marker was removed" in capsys.readouterr().out
+    assert all((migrated.repos / name).is_symlink() for name in NAMES) and migrated.marker.exists()
+
+
+def test_finish_stops_before_removing_links_when_the_board_export_fails(migrated, monkeypatch, capsys):
+    store_queue(monkeypatch, f"{migrated.repos}/coxswain-tools")
+
+    def failing(runs_dir, ws):
+        raise RuntimeError("no export")
+
+    monkeypatch.setattr(cli, "_export_board", failing)
+    capsys.readouterr()
+    assert run(finish=True, apply=True) == 1
+    assert "rewriting the queue failed; no link or marker was removed" in capsys.readouterr().out
+    assert all((migrated.repos / name).is_symlink() for name in NAMES) and migrated.marker.exists()
+
+
+def test_old_root_without_finish_is_refused(layout, capsys):
+    assert run(old_root="/x") == 2
+    assert "--old-root belongs to --finish" in capsys.readouterr().out
