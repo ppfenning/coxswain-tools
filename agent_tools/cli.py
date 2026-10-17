@@ -6930,7 +6930,7 @@ def _upgrade(a: argparse.Namespace) -> int:
         return 2
     umbrella = root / "coxswain"
     umbrella_tag = _checkout_facts(umbrella)["tag"]
-    target = a.to or upgrade_exec.newest_release(_offered_tags(umbrella))
+    target = upgrade_plan.release_tag(a.to) if a.to else upgrade_exec.newest_release(_offered_tags(umbrella))
     if target is None:
         print(f"refusing: {umbrella} offers no release tag to upgrade to; pass --to")
         return 2

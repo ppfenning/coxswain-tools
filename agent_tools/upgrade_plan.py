@@ -31,6 +31,12 @@ class Plan:
     left_behind: tuple[LeftBehind, ...]
 
 
+def release_tag(version: str) -> str:
+    """A release tag always carries a leading v; a bare 0.43.0 becomes v0.43.0."""
+    stripped = version.strip()
+    return stripped if stripped.startswith("v") else f"v{stripped}"
+
+
 def _decide(
     name: str, pin: str | None, installed: str | None, offered: frozenset[str]
 ) -> Step | LeftBehind | None:

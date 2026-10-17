@@ -5,7 +5,17 @@ from agent_tools.upgrade_plan import (
     Plan,
     Step,
     plan_upgrade,
+    release_tag,
 )
+
+
+def test_release_tag_adds_missing_v():
+    assert release_tag("0.43.0") == "v0.43.0"
+    assert release_tag(" 0.43.0 ") == "v0.43.0"
+    assert release_tag("v0.43.0") == "v0.43.0"
+    for given in ("0.43.0", "v0.43.0"):
+        plan = plan_upgrade(release_tag(given), "v0.42.0", {}, {}, {})
+        assert plan.steps == (Step("umbrella", "umbrella", "v0.42.0", "v0.43.0"),)
 
 
 def test_umbrella_step_precedes_component_steps():
