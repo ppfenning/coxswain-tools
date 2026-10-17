@@ -86,18 +86,28 @@ def profile_text(
     return "\n".join(lines) + "\n"
 
 
-def _repo_steps(repo: str, root: str, python_exists: dict, cartridges_dir: str) -> list:
-    cwd = f"{root}/{repo}"
-    steps = []
-    if not python_exists.get(repo, False):
-        steps.append({"op": "run", "argv": ["uv", "venv", "-q"], "cwd": cwd,
-                      "why": f"{repo} has no virtualenv yet"})
+def venv_steps(repo: str, installs: str, cartridges_dir: str, clear: bool) -> list:
+    """The venv step then the editable dev install for `installs/repo`.
+    `clear` adds `--clear -q` to the venv step; the graphs repo also installs
+    `cartridges_dir` editable."""
+    cwd = f"{installs}/{repo}"
+    if clear:
+        venv = {"op": "run", "argv": ["uv", "venv", "--clear", "-q"], "cwd": cwd,
+                "why": f"recreate the {repo} virtualenv"}
+    else:
+        venv = {"op": "run", "argv": ["uv", "venv", "-q"], "cwd": cwd,
+                "why": f"{repo} has no virtualenv yet"}
     install_argv = ["uv", "pip", "install", "-q", "-e", ".[dev]"]
     if repo == "coxswain-graphs":
         install_argv = install_argv + ["-e", cartridges_dir]
-    steps.append({"op": "run", "argv": install_argv, "cwd": cwd,
-                  "why": f"install {repo} and its dev extras"})
-    return steps
+    install = {"op": "run", "argv": install_argv, "cwd": cwd,
+               "why": f"install {repo} and its dev extras"}
+    return [venv, install]
+
+
+def _repo_steps(repo: str, root: str, python_exists: dict, cartridges_dir: str) -> list:
+    built = venv_steps(repo, root, cartridges_dir, False)
+    return built[1:] if python_exists.get(repo, False) else built
 
 
 def _agent_steps(cast: dict) -> list:

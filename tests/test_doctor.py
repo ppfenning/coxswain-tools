@@ -867,3 +867,70 @@ def test_cartridge_links_compare_text_without_following_links():
 
 def test_cartridge_links_fail_when_none_were_found():
     assert _links_row({})["ok"] is False
+
+
+_BIN_GRAPHS, _BIN_TOOLS = "/h/installs/coxswain-graphs", "/h/installs/coxswain-tools"
+_BINS = {
+    "graphs venv": _BIN_GRAPHS,
+    "tools venv": _BIN_TOOLS,
+    "tools receipt": _BIN_TOOLS,
+    "cartridges receipt": _CHECKOUT,
+}
+
+
+def _bins_row(sources):
+    return doctor.home_rows(_LOCATIONS, None, True, True, None, False, install_bins=sources)[-1]
+
+
+def test_install_bins_row_is_absent_until_sources_are_gathered():
+    assert "install bins" not in [r["check"] for r in _home()]
+
+
+def test_install_bins_row_comes_last_after_cartridge_links():
+    rows = doctor.home_rows(_LOCATIONS, None, True, True, None, False, {}, _BINS)
+    assert [r["check"] for r in rows][-2:] == ["cartridge links", "install bins"]
+
+
+def test_install_bins_pass_when_each_source_equals_its_own_checkout():
+    row = _bins_row(_BINS)
+    assert (row["check"], row["ok"], row["detail"]) == (
+        "install bins",
+        True,
+        "all 4 sources reach their checkout under the home",
+    )
+
+
+def test_install_bins_each_source_fails_alone_when_stale():
+    for name in _BINS:
+        row = _bins_row(dict(_BINS, **{name: "/old/checkout"}))
+        assert (row["ok"], row["detail"]) == (False, f"{name} -> /old/checkout; expected {_BINS[name]}")
+
+
+def test_install_bins_fail_when_a_source_points_at_another_repos_checkout():
+    row = _bins_row(dict(_BINS, **{"tools receipt": _CHECKOUT}))
+    assert (row["ok"], row["detail"]) == (False, f"tools receipt -> {_CHECKOUT}; expected {_BIN_TOOLS}")
+
+
+def test_install_bins_compare_text_without_following_links():
+    row = _bins_row(dict(_BINS, **{"graphs venv": "/h/installs/../installs/coxswain-graphs"}))
+    assert row["ok"] is False and row["detail"].startswith("graphs venv -> ")
+
+
+def test_install_bins_fail_naming_a_missing_receipt():
+    row = _bins_row(dict(_BINS, **{"tools receipt": None}))
+    assert (row["ok"], row["detail"]) == (False, "missing tools receipt")
+
+
+def test_install_bins_fail_when_a_key_is_absent_from_the_mapping():
+    row = _bins_row({k: v for k, v in _BINS.items() if k != "cartridges receipt"})
+    assert (row["ok"], row["detail"]) == (False, "missing cartridges receipt")
+
+
+def test_install_bins_name_every_missing_source_in_order():
+    row = _bins_row({"tools venv": _BIN_TOOLS, "cartridges receipt": _CHECKOUT})
+    assert row["detail"] == "missing graphs venv, tools receipt"
+
+
+def test_install_bins_report_a_stale_source_beside_a_missing_one():
+    row = _bins_row(dict(_BINS, **{"tools receipt": None, "graphs venv": "/old/graphs"}))
+    assert row["detail"] == f"missing tools receipt; graphs venv -> /old/graphs; expected {_BIN_GRAPHS}"
