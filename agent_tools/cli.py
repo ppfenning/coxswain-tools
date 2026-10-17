@@ -5825,25 +5825,54 @@ def _marketplace_listing() -> dict[str, str] | None:
         return None
 
 
+def _install_home_refusal(home: str, record: str | None, named: bool) -> str | None:
+    """The refusal text when a home named by flag or environment differs from a non-empty record."""
+    recorded = (record or "").strip()
+    if named and recorded and recorded != home:
+        return f"the home record names {recorded}, not {home}; run cox setup migrate --home {home}"
+    return None
+
+
 def _install_facts(a: argparse.Namespace) -> dict:
     """Gathers exactly what `install_plan` needs and nothing it decides:
     PATH lookups, each repo's venv, the profile's existence, and the
-    config/settings paths expanded once, here."""
-    root = a.root
+    config/settings paths expanded once, here. Without `--root` the checkouts,
+    profile and workspace come from the resolved coxswain home; a refusal
+    raises ValueError for the caller to print."""
     config_dir = str(Path("~/.config").expanduser())
     claude_settings_path = str(Path("~/.claude/settings.json").expanduser())
+    if a.root:
+        if not a.workspace:
+            raise ValueError("--workspace is required with --root")
+        root, locs, workspace_exists, registered = a.root, None, False, None
+        profile_file = setup_install.profile_path(config_dir)
+    else:
+        locs = home_paths.resolve_here(a.home)
+        if isinstance(locs, home_paths.Refused):
+            raise ValueError(locs.reason)
+        refusal = _install_home_refusal(
+            locs.home, _read_text_or_none(Path(locs.record)), bool(a.home or os.environ.get("COXSWAIN_HOME")))
+        if refusal:
+            raise ValueError(refusal)
+        root, profile_file = locs.installs, locs.profile
+        workspace_exists = Path(locs.workspaces, "main").exists()
+        listing = _marketplace_listing() if a.plugins and shutil.which("claude") is not None else None
+        registered = (listing or {}).get("coxswain-cartridges")
     python_exists = {repo: (Path(root) / repo / ".venv" / "bin" / "python").exists()
                       for repo in setup_install.REPOS}
     return {
         "root": root,
         "team": a.team,
-        "workspace": a.workspace,
+        "workspace": a.workspace or "",
+        "locations": locs,
+        "registered_marketplace": registered,
+        "workspace_exists": workspace_exists,
         "provider_profile": a.provider_profile or f"{root}/coxswain-cartridges/providers/claude-code.yaml",
         "skills_root": a.skills_root or f"{root}/coxswain-cartridges/skills-plugins",
         "uv_on_path": shutil.which("uv") is not None,
         "python_exists": python_exists,
         "claude_on_path": shutil.which("claude") is not None,
-        "profile_exists": Path(setup_install.profile_path(config_dir)).exists(),
+        "profile_exists": Path(profile_file).exists(),
         "force_profile": a.force_profile,
         "plugins": a.plugins,
         "hook": a.hook,
@@ -8463,7 +8492,8 @@ SETUP_COMMANDS = [
     commands.Command(
         "install", "setup", "clone components and write a profile for this machine",
         (
-            commands.Arg(("--root",), {"required": True}), commands.Arg(("--team",), {"required": True}), commands.Arg(("--workspace",), {"required": True}),
+            commands.Arg(("--root",)), commands.Arg(("--team",), {"required": True}), commands.Arg(("--workspace",)),
+            commands.Arg(("--home",), {"help": "absolute path of the coxswain home; used when --root is omitted"}),
             commands.Arg(("--provider-profile",)), commands.Arg(("--skills-root",)), commands.Arg(("--assume",), {"default": "a", "choices": ("a", "r")}),
             commands.Arg(("--plugins",), {"action": "store_true"}), commands.Arg(("--hook",), {"action": "store_true"}),
             commands.Arg(("--force-profile",), {"action": "store_true"}), commands.Arg(("--dry-run",), {"action": "store_true"}),
