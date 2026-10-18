@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 from agent_tools import epic, route, route_sync, run_store
 
 __all__ = [
-    "auth_ok", "create_project", "execute", "existing", "existing_item", "find_project", "items_from_store",
-    "project_item_from_response",
+    "api_login_ok", "auth_ok", "create_project", "execute", "existing", "existing_item", "find_project",
+    "items_from_store", "project_item_from_response",
 ]
 
 _LABEL = "coxswain"
@@ -36,6 +37,15 @@ _PARENT_QUERY = "query($id:ID!){node(id:$id){... on Issue{parent{id}}}}"
 def auth_ok(run) -> bool:
     """Whether the active `gh` login works; plain `status` exits 1 when any stored login is bad."""
     return run(["gh", "auth", "status", "--active"], capture_output=True, text=True).returncode == 0
+
+
+def api_login_ok(run) -> bool:
+    """Whether `gh api user` names a login; `auth status` can reject a token that still works."""
+    try:
+        done = run(["gh", "api", "user", "--jq", ".login"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return done.returncode == 0 and bool(done.stdout.strip())
 
 
 def _origin_slug(checkout: str) -> str:

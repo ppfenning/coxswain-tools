@@ -5646,7 +5646,7 @@ def _git_and_forge_facts(profile: dict) -> dict:
     facts = {"git_version": git_version or None, "forge": name, "forge_found": forge.forge_for(name) is not None}
     if name in ("github", "auto"):
         try:
-            facts["gh_auth"] = route_sync_gh.auth_ok(subprocess.run)
+            facts["gh_auth"] = route_sync_gh.api_login_ok(subprocess.run)
         except OSError:
             facts["gh_auth"] = False
     return facts
