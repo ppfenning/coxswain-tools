@@ -171,7 +171,7 @@ class ReadyTask(TypedDict):
 
 
 class RunningInitiative(TypedDict):
-    """An initiative with a live lane on any machine; surfaces is the union of its ready or approved tasks' surfaces."""
+    """A live initiative or one with approved tasks not yet landed; surfaces is the union of the tasks it holds."""
 
     id: str
     repo: str

@@ -448,17 +448,23 @@ def ticket_surfaces(items: Sequence[Row], ready_ids: Mapping[str, Collection[str
     }
 
 
-def running_initiatives(live: Collection[str], items: Sequence[Row], repos: Mapping[str, str]) -> list[RunningInitiative]:
-    """One entry per live initiative, by id; surfaces are the sorted union over its ready or approved tasks."""
+def running_initiatives(
+    live: Collection[str], items: Sequence[Row], repos: Mapping[str, str], *, unlanded: Collection[str] = frozenset()
+) -> list[RunningInitiative]:
+    """Live initiatives hold ready and approved surfaces; a non-live unlanded one holds approved surfaces only."""
+
+    def held(initiative: str) -> list[Row]:
+        states = STEER_STATES if initiative in live else frozenset({"approved"})
+        return [i for i in items if i["initiative"] == initiative and i.get("state") in states]
+
     return [
         {
             "id": initiative,
             "repo": repos.get(initiative, ""),
-            "surfaces": sorted(
-                {s for i in items if i["initiative"] == initiative and i.get("state") in STEER_STATES for s in _surfaces_of(i)}
-            ),
+            "surfaces": sorted({s for i in held(initiative) for s in _surfaces_of(i)}),
         }
-        for initiative in sorted(live)
+        for initiative in sorted(set(live) | set(unlanded))
+        if initiative in live or held(initiative)
     ]
 
 
@@ -1100,7 +1106,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "review_prs": list(deps.review_prs()),
         "phase_tasks": list(deps.phase_tasks()),
         **({"phase_records": list(deps.phase_records(approved))} if deps.phase_records is not None else {}),
-        "running": running_initiatives(live, items, repos) if deps.tickets is not None else [],
+        "running": running_initiatives(live, items, repos, unlanded=unfinished) if deps.tickets is not None else [],
         "steer_streaks": steer_streaks_from_actions(action_rows),
         "waiting_reported": waiting_reported_from_actions(action_rows),
         "pull_age_s": pull_age_s(action_rows, now),

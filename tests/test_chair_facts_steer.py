@@ -43,6 +43,29 @@ def test_an_approved_tasks_surfaces_count_for_a_running_initiative_and_a_done_ta
     assert running_initiatives({"x"}, items, {"x": "/r"}) == [{"id": "x", "repo": "/r", "surfaces": ["a.rs"]}]
 
 
+def test_a_non_live_unlanded_initiative_holds_only_its_approved_surfaces():
+    items = [_item("x", "a", "approved", ["a.rs"]), _item("x", "b", "ready", ["b.rs"])]
+    assert running_initiatives(set(), items, {"x": "/r"}, unlanded={"x"}) == [
+        {"id": "x", "repo": "/r", "surfaces": ["a.rs"]}
+    ]
+
+
+def test_a_non_live_unlanded_initiative_with_only_ready_tasks_gives_no_entry():
+    items = [_item("x", "b", "ready", ["b.rs"])]
+    assert running_initiatives(set(), items, {"x": "/r"}, unlanded={"x"}) == []
+
+
+def test_steer_check_defers_a_candidate_sharing_a_surface_with_an_unlanded_initiative():
+    items = [_item("x", "a", "approved", ["a.rs"]), _item("x", "b", "ready", ["b.rs"])]
+    running = running_initiatives(set(), items, {"x": "/r"}, unlanded={"x"})
+    assert steer_check("y", "/r", ["a.rs"], running, {}) == {
+        "kind": "steer_clear",
+        "initiative": "y",
+        "other": "x",
+        "paths": ["a.rs"],
+    }
+
+
 def test_two_steer_clears_then_a_launch_of_the_initiative_leave_no_key():
     rows = [
         {"ts": "1", "kind": "steer_clear", "initiative": "x", "other": "y"},
