@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +72,23 @@ def refuse_unended(lease_released: bool, ended_at: str | None) -> str | None:
     if lease_released and ended_at:
         return None
     return "the lane has not ended: its lease is held or it has no ended_at"
+
+
+def _utc(stamp: str | None) -> datetime | None:
+    """A store timestamp as an aware datetime; a trailing Z is UTC and a naive value is taken as UTC. None when missing or unparseable."""
+    if not stamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(stamp[:-1] + "+00:00" if stamp.endswith("Z") else stamp)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def changed_after_start(updated_at: str | None, started_at: str | None) -> bool:
+    """True when the work item was updated strictly after the run started, so the fetch keeps its state. A missing, unparseable or equal value is False."""
+    updated, started = _utc(updated_at), _utc(started_at)
+    return updated is not None and started is not None and updated > started
 
 
 def _swap(from_prefix: str, to_prefix: str, path: str) -> str:
