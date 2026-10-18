@@ -249,6 +249,13 @@ def beat_argv(name: str, versions: dict) -> list[str]:
     return ["host", "beat", name, "--versions", json.dumps(versions, sort_keys=True)]
 
 
+def beat_name_refusal(name: str | None, hostname: str) -> str | None:
+    """A refusal line when `name` is neither this machine's hostname nor its short form, else None."""
+    if not name or name in (hostname, hostname.split(".")[0]):
+        return None
+    return f"refusing: cox host beat records this machine ({hostname}), not {name}; run cox host beat on {name} itself"
+
+
 def _out(run: Run, argv: list[str]) -> str | None:
     """First stdout line of `argv`; None on any failure, so a missing tool is a null value and never a refusal."""
     try:

@@ -10491,6 +10491,10 @@ def _beat_argv(profile: Mapping, name: str) -> list[str]:
 
 
 def _host_beat(a: argparse.Namespace) -> int:
+    refusal = host_cmd.beat_name_refusal(a.name, socket.gethostname())
+    if refusal is not None:
+        print(refusal)
+        return 2
     profile, runs_dir, rc = _leader_runs_dir_or_refuse(a)
     if rc is not None:
         return rc
