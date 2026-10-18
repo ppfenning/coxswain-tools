@@ -11,9 +11,10 @@ from collections.abc import Callable, Mapping, Sequence
 from agent_tools import records, route, schema, store_dialect
 from agent_tools.home import Locations
 from agent_tools.setup_migrate import cartridge_link_target
+from agent_tools.setup_migrate_hosts import ObservedHost, is_migrated
 from agent_tools.store_probe import OBJECT_STORE, POSTGRES, ProbeResult
 
-__all__ = ["checks", "exit_code", "freshness_rows", "home_rows", "parquet_line", "render", "store_rows", "unit_path_entries"]
+__all__ = ["checks", "exit_code", "freshness_rows", "home_rows", "lane_host_paths_row", "parquet_line", "render", "store_rows", "unit_path_entries"]
 
 _MISSING = object()
 _SKIPPED = "skipped: no profile"
@@ -108,7 +109,7 @@ def _expected_paths(parsed: Mapping) -> set[str]:
     must not be used to build these keys, or an installed machine whose
     profile uses `~` will show every one of its own paths as "not checked"
     here."""
-    singles = (parsed.get(k) for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir"))
+    singles = (parsed.get(k) for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir", "umbrella_dir"))
     roots = parsed.get("skills_roots") or []
     return {p for p in (*singles, *roots) if p}
 
@@ -554,6 +555,36 @@ def home_rows(
         *([] if cartridge_links is None else [_cartridge_links_row(locations, cartridge_links)]),
         *bins,
     ]
+
+
+def _host_findings(host: ObservedHost) -> list[str]:
+    return [
+        *([f"{host.name} has no beat row"] if host.source == "fallback" else []),
+        *(
+            []
+            if is_migrated(host)
+            else [f"{host.name} reports checkouts outside an installs folder; run cox setup migrate --apply on it"]
+        ),
+        *(
+            [
+                f"{host.name}: lane_hosts workspace_dir {host.profile_workspace_dir}, host reports "
+                f"{host.workspace_dir}; run cox setup migrate --apply --hosts"
+            ]
+            if host.profile_workspace_dir and host.profile_workspace_dir != host.workspace_dir
+            else []
+        ),
+    ]
+
+
+def lane_host_paths_row(hosts: Sequence[ObservedHost]) -> dict:
+    """Warn-only: a lane host off the installs paths is advice, never a failure."""
+    check = "lane host paths"
+    if not hosts:
+        return {"check": check, "ok": True, "detail": "no lane hosts"}
+    findings = [f for host in hosts for f in _host_findings(host)]
+    if findings:
+        return {"check": check, "ok": True, "warn": True, "detail": "; ".join(findings)}
+    return {"check": check, "ok": True, "detail": f"{len(hosts)} hosts on installs paths"}
 
 
 _STORE_CHECK = "shared store"

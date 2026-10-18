@@ -1,6 +1,7 @@
 import re
 
 from agent_tools import chair_unit, doctor, home
+from agent_tools.setup_migrate_hosts import ObservedHost
 
 _CHECK_ORDER = (
     "git",
@@ -1042,3 +1043,51 @@ def test_install_bins_name_every_missing_source_in_order():
 def test_install_bins_report_a_stale_source_beside_a_missing_one():
     row = _bins_row(dict(_BINS, **{"tools receipt": None, "graphs venv": "/old/graphs"}))
     assert row["detail"] == f"missing tools receipt; graphs venv -> /old/graphs; expected {_BIN_GRAPHS}"
+
+
+def test_a_profile_naming_umbrella_dir_the_edge_never_gathered_fails_profile_paths():
+    facts = _good_facts()
+    facts["profile_text"] += "umbrella_dir: /u\n"
+    rows = _rows_for(doctor.checks(facts), "profile paths")
+    assert [(r["ok"], r["detail"]) for r in rows] == [(False, "not checked: /u")]
+
+
+def _lane_host(**over):
+    base = {
+        "name": "h1",
+        "ssh": "h1",
+        "workspace_dir": "/w",
+        "checkouts": {"coxswain-tools": "/home/user/installs/coxswain-tools"},
+        "profile_workspace_dir": "/w",
+        "source": "beat",
+    }
+    return ObservedHost(**{**base, **over})
+
+
+def test_lane_host_paths_with_no_hosts_is_ok_and_says_so():
+    assert doctor.lane_host_paths_row([]) == {"check": "lane host paths", "ok": True, "detail": "no lane hosts"}
+
+
+def test_lane_host_paths_with_a_clean_host_counts_it():
+    assert doctor.lane_host_paths_row([_lane_host()]) == {
+        "check": "lane host paths", "ok": True, "detail": "1 hosts on installs paths",
+    }
+
+
+def test_lane_host_paths_warns_on_a_fallback_host():
+    row = doctor.lane_host_paths_row([_lane_host(source="fallback")])
+    assert (row["ok"], row["warn"], row["detail"]) == (True, True, "h1 has no beat row")
+
+
+def test_lane_host_paths_warns_on_checkouts_outside_installs():
+    row = doctor.lane_host_paths_row([_lane_host(checkouts={"coxswain-tools": "/srv/repos/coxswain-tools"})])
+    assert (row["ok"], row["warn"], row["detail"]) == (
+        True, True, "h1 reports checkouts outside an installs folder; run cox setup migrate --apply on it",
+    )
+
+
+def test_lane_host_paths_warns_when_the_profile_workspace_dir_differs():
+    row = doctor.lane_host_paths_row([_lane_host(profile_workspace_dir="/old")])
+    assert (row["ok"], row["warn"], row["detail"]) == (
+        True, True, "h1: lane_hosts workspace_dir /old, host reports /w; run cox setup migrate --apply --hosts",
+    )
