@@ -4183,6 +4183,15 @@ def _sync_filed_items(mapping: dict, ws: Path, a: argparse.Namespace) -> None:
               else f"route file: wrote {item_id}; issue sync failed (exit {rc}{reason}); run `route sync --item {item_id}`")
 
 
+def _is_git_checkout_path(value: str, home: str) -> bool:
+    """A leading tilde is expanded against `home`; an empty value is never a checkout (it would read as the cwd)."""
+    return bool(value) and route.is_git_checkout(Path(repo_path.expand(value, home)))
+
+
+def _not_a_checkout_message(value: str) -> str:
+    return f"route file: refusing, {value} is not a git checkout on this machine"
+
+
 def _route_file_from_intake(a: argparse.Namespace, ws: Path, profile: dict) -> int:
     intake_path = Path(a.from_intake)
     if intake_path.parent.resolve() != (ws / "intake").resolve():
@@ -4195,6 +4204,9 @@ def _route_file_from_intake(a: argparse.Namespace, ws: Path, profile: dict) -> i
     fields, intake_body = route.parse_frontmatter(intake_text)
     [entry] = route.intake_entries({intake_path.name: intake_text})
     repo = fields.get("repo", "")
+    if not _is_git_checkout_path(repo, str(Path.home())):
+        print(_not_a_checkout_message(repo))
+        return 2
     candidates = route.surface_candidates(intake_body, repo)
     surfaces = [c for c in candidates if (Path(repo) / c).is_file()]
     print(f"surfaces: {', '.join(surfaces)}" if surfaces else "surfaces: none resolved from the intake body")
@@ -4250,6 +4262,9 @@ def _route_file(a: argparse.Namespace) -> int:
     repo = route.resolve_repo(a.repo, ws.absolute().parent, route.is_git_checkout, home)
     if isinstance(repo, route.RepoRefused):
         print(repo.message)
+        return 2
+    if not _is_git_checkout_path(repo, home):
+        print(_not_a_checkout_message(a.repo))
         return 2
     repo = route.repo_field(repo, home)
     if a.body == "-":

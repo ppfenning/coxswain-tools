@@ -100,6 +100,13 @@ def test_an_unrecognized_shape_is_not_reported_as_a_store_outage(tmp_path, monke
 # -- `cox route file`, the command the ticket names -------------------------------------------
 
 
+def _widget(tmp_path):
+    """A repo folder `route file` accepts: it holds a `.git` directory."""
+    repo = tmp_path / "widget"
+    (repo / ".git").mkdir(parents=True, exist_ok=True)
+    return str(repo)
+
+
 def _write_file_profile(tmp_path):
     ws = tmp_path / "workspace"
     ws.mkdir()
@@ -127,7 +134,7 @@ def test_cox_route_file_upserts_the_task_row_before_the_task_file_exists(tmp_pat
 
     monkeypatch.setattr(run_store, "upsert_row", fake_upsert_row)
 
-    rc = main(["route", "file", "--profile", str(profile), "--repo", "/repos/widget", "--title", "Fix the thing"])
+    rc = main(["route", "file", "--profile", str(profile), "--repo", _widget(tmp_path), "--title", "Fix the thing"])
 
     assert rc == 0
     # Exactly one upsert: the task carries a queue row, the initiative doc beside it does not.
@@ -150,7 +157,7 @@ def test_cox_route_file_intake_upserts_the_intake_row_before_the_intake_file_exi
     monkeypatch.setattr(run_store, "upsert_row", fake_upsert_row)
 
     rc = main([
-        "route", "file", "--profile", str(profile), "--repo", "/repos/widget",
+        "route", "file", "--profile", str(profile), "--repo", _widget(tmp_path),
         "--title", "Fix the thing", "--intake",
     ])
 
@@ -165,7 +172,7 @@ def test_cox_route_file_still_files_the_task_when_the_store_is_unavailable(tmp_p
     task_path = ws / "work" / slug / "build" / f"{slug}.md"
     monkeypatch.setattr(run_store, "upsert_row", lambda runs_dir, row: False)
 
-    rc = main(["route", "file", "--profile", str(profile), "--repo", "/repos/widget", "--title", "Fix the thing"])
+    rc = main(["route", "file", "--profile", str(profile), "--repo", _widget(tmp_path), "--title", "Fix the thing"])
 
     assert rc == 0
     assert task_path.exists()

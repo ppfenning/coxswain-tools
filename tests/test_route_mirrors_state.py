@@ -19,6 +19,7 @@ def _no_gh_sync_on_file(monkeypatch):
 
 
 def _profile(tmp_path: Path):
+    (tmp_path / "widget" / ".git").mkdir(parents=True)
     ws = tmp_path / "workspace"
     ws.mkdir()
     profile = tmp_path / "profile.yaml"
@@ -29,7 +30,8 @@ def _profile(tmp_path: Path):
 
 
 def _file(profile: Path, *extra: str) -> int:
-    return main(["route", "file", "--profile", str(profile), "--repo", "/repos/widget", "--title", "Fix the thing", *extra])
+    repo = profile.parent / "widget"
+    return main(["route", "file", "--profile", str(profile), "--repo", str(repo), "--title", "Fix the thing", *extra])
 
 
 @pytest.fixture
@@ -59,7 +61,8 @@ def test_a_filed_item_mirrors_ready_with_the_right_arguments_after_the_write(tmp
 
     monkeypatch.setattr("agent_tools.store_cli.mirror_state", record)
     assert _file(profile) == 0
-    task_text = route.initiative_files("Fix the thing", "", "/repos/widget")["work/fix-the-thing/build/fix-the-thing.md"]
+    repo = str(tmp_path / "widget")
+    task_text = route.initiative_files("Fix the thing", "", repo)["work/fix-the-thing/build/fix-the-thing.md"]
     assert seen == [(ws / "runs", "fix-the-thing", "fix-the-thing", "ready", "leader-a", task_text)]
 
 
