@@ -6,8 +6,13 @@ import posixpath
 import re
 from itertools import pairwise
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 UNIT_NAME = "coxswain-chair.service"
+WATCHDOG_SERVICE_NAME = "coxswain-chair-watchdog.service"
+WATCHDOG_TIMER_NAME = "coxswain-chair-watchdog.timer"
+WATCHDOG_PLIST_LABEL = "coxswain-chair-watchdog"
+WATCHDOG_PLIST_NAME = "coxswain-chair-watchdog.plist"
 
 # systemd splits ExecStart on whitespace and expands `%`, `$` and `\`; a value outside this set reaches the chair changed.
 _UNIT_SAFE = re.compile(r"[A-Za-z0-9._@+:,/=-]+")
@@ -65,6 +70,65 @@ def unit_text(
         "",
         "[Install]",
         "WantedBy=default.target",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def watchdog_service_text(cox: str, profile: str, path: str, environment_file: str | None) -> str:
+    """`EnvironmentFile=-` is written only when a file is given; the oneshot is fired by the timer."""
+    env_lines = [f"EnvironmentFile=-{environment_file}"] if environment_file is not None else []
+    lines = [
+        "[Unit]",
+        "Description=Coxswain chair watchdog",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        f"ExecStart={cox} chair watchdog --profile {profile}",
+        f"Environment=PATH={path}",
+        *env_lines,
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def watchdog_timer_text(minutes: int) -> str:
+    lines = [
+        "[Unit]",
+        "Description=Run the Coxswain chair watchdog on a schedule",
+        "",
+        "[Timer]",
+        f"OnBootSec={minutes}min",
+        f"OnUnitActiveSec={minutes}min",
+        f"Unit={WATCHDOG_SERVICE_NAME}",
+        "",
+        "[Install]",
+        "WantedBy=timers.target",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def watchdog_plist_text(cox: str, profile: str, path: str, minutes: int) -> str:
+    """StartInterval is in seconds; every interpolated value is XML-escaped."""
+    arguments = [cox, "chair", "watchdog", "--profile", profile]
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">',
+        "<dict>",
+        "  <key>Label</key>",
+        f"  <string>{escape(WATCHDOG_PLIST_LABEL)}</string>",
+        "  <key>ProgramArguments</key>",
+        "  <array>",
+        *(f"    <string>{escape(argument)}</string>" for argument in arguments),
+        "  </array>",
+        "  <key>StartInterval</key>",
+        f"  <integer>{minutes * 60}</integer>",
+        "  <key>EnvironmentVariables</key>",
+        "  <dict>",
+        "    <key>PATH</key>",
+        f"    <string>{escape(path)}</string>",
+        "  </dict>",
+        "</dict>",
+        "</plist>",
     ]
     return "\n".join(lines) + "\n"
 
