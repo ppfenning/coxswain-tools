@@ -5872,6 +5872,7 @@ def _doctor_home_rows(profile: dict | None) -> list[dict]:
         provider_profile=profile.get("provider_profile") or "",
         harness_dir=profile.get("harness_dir") or "",
         user_home=str(Path.home()),
+        workspace_dir=workspace or "",
     )
     return [*rows, doctor.lane_host_paths_row(_migrate_observe_hosts(locs))]
 
