@@ -5,9 +5,10 @@ notify callable is injected, sends the same line. Nothing here performs an actio
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from agent_tools.chair_exec import LAUNCH_KINDS, Result
 from agent_tools.chair_land_freeze import LandFreeze, status_text
@@ -219,6 +220,17 @@ def _freeze(facts: Facts, now: datetime) -> str | None:
     return status_text(freeze) if live else None
 
 
+def lanes_text(dispatch: Mapping[str, Any]) -> str:
+    """A host missing live_runs or capacity adds nothing to that side of L/C."""
+    here = f"{dispatch['live_runs']}/{dispatch['max_in_flight']}"
+    hosts = dispatch.get("hosts") or []
+    if not hosts:
+        return f"lanes {here}"
+    live = dispatch["live_runs"] + sum(h.get("live_runs") or 0 for h in hosts)
+    cap = dispatch["max_in_flight"] + sum(h.get("capacity") or 0 for h in hosts)
+    return f"lanes {live}/{cap} (here {here})"
+
+
 def format_status(
     facts: Facts, all_actions: Sequence[Action | WaitingInitiative], results: Sequence[Result], now: datetime
 ) -> str:
@@ -242,7 +254,7 @@ def format_status(
     freeze = _freeze(facts, now)
     parts = [
         f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}",
-        f"lanes {dispatch['live_runs']}/{dispatch['max_in_flight']}",
+        lanes_text(dispatch),
         f"lands {lands_this_tick(results)}",
         *([f"drafts {drafts}"] if drafts > 0 else []),
         f"limits {_five_hour(dict(limits))} {_weekly(dict(limits))}{stop}",

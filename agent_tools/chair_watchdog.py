@@ -18,7 +18,7 @@ from agent_tools.notify_core import Event, NotifyConfig
 from agent_tools.notify_dispatch import dispatch
 
 LOOP_DOWN_TITLE = "Chair loop down"
-_LANES = re.compile(r"lanes (\d+)/(\d+)")
+_LANES = re.compile(r"lanes (\d+)/(\d+)(?: \(here \d+/\d+\))?")  # the suffix is the fleet line's local share
 _NEEDS_ITEM_SPLIT = re.compile(r", (?=RUNAWAY |needs chair: |partial-land: )")
 _NEEDS_PREFIXES = ("needs chair: ", "RUNAWAY ", "partial-land: ")
 _WAITING_PREFIX = "waiting: "
