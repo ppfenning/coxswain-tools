@@ -1,4 +1,4 @@
-from agent_tools.chair_decompose_runs import parse_run, select_runs
+from agent_tools.chair_decompose_runs import decompose_refusals, parse_run, refusal_reason, select_runs
 from agent_tools.chair_decompose_streak import DecomposeRun, at_limit, streak
 
 REFUSAL = "chair: plan approved but not executed: launch_decompose"
@@ -84,3 +84,25 @@ def test_a_log_with_neither_line_falls_back_to_the_store_count():
 
 def test_approved_but_not_executed_still_yields_its_refusal_line():
     assert _run("idea-8", f"start\n{REFUSAL}\n", items=0) == DecomposeRun("idea-8", False, REFUSAL)
+
+
+LINT_HEAD = "initiative-decompose failed: lint-refused: t1 contract"
+LINT_DETAIL = "t1: contract — interface version-record: contract task has no .json surface (src/a.py)"
+
+
+def test_refusal_reason_joins_the_detail_line():
+    assert refusal_reason(f"{LINT_HEAD}\n{LINT_DETAIL}\n") == f"{LINT_HEAD} — {LINT_DETAIL}"
+
+
+def test_refusal_reason_drops_an_indented_usage_line():
+    assert refusal_reason(f"start\n{LINT_HEAD}\n  usage: cox initiative-decompose\n") == LINT_HEAD
+
+
+def test_refusal_reason_is_none_without_a_refusal():
+    assert refusal_reason("start\ndone\n") is None
+
+
+def test_decompose_refusals_keeps_only_refusing_logs(tmp_path):
+    (tmp_path / "a-1.log").write_text(f"{LINT_HEAD}\n{LINT_DETAIL}\n", encoding="utf-8")
+    (tmp_path / "a-3.log").write_text("start\ndone\n", encoding="utf-8")
+    assert decompose_refusals(tmp_path, ["a-1", "a-2", "a-3"]) == {"a-1": f"{LINT_HEAD} — {LINT_DETAIL}"}
