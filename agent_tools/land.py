@@ -191,6 +191,11 @@ def squash_missing_files(approved_files: Sequence[dict[str, Any]], squashed_file
     return None
 
 
+def append_only_paths(paths: Sequence[str]) -> bool:
+    """True when `paths` is non-empty and every path is under `tests/`."""
+    return bool(paths) and all(p.startswith("tests/") for p in paths)
+
+
 def phase_pr_body(phase_record: dict[str, Any], task_records: list[dict[str, Any]]) -> str:
     """The phase PR body (§2): the phase's own verdict reasoning, then one
     block per landed ticket, dropped tickets listed last with their reason."""
