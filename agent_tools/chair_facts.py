@@ -749,6 +749,7 @@ def empty_decompose_facts(
     item_counts: Mapping[str, int],
     states: Mapping[str, str] | None = None,
     alive: Collection[str] = frozenset(),
+    refusals: Mapping[str, str] = {},
 ) -> list[EmptyDecomposeFacts]:
     """One entry per decomposed intake whose decompose run has ended and left zero stored task items.
 
@@ -758,10 +759,11 @@ def empty_decompose_facts(
     initiative this tick knows nothing about is never reported empty by omission. `states` maps an initiative
     id to its store state: done or dropped is left out, and an initiative with no known state is reported.
     `alive` holds decompose run ids whose process still runs: the runs row can end before the process has
-    written every item, so an initiative whose newest run is in `alive` is left out like one in `live`."""
+    written every item, so an initiative whose newest run is in `alive` is left out like one in `live`.
+    `refusals` maps a run id to its lint-refusal text: only an entry whose run is listed gains a `refusal` key."""
     known = states or {}
     return [
-        {"initiative": initiative, "run": run}
+        {"initiative": initiative, "run": run, **({"refusal": refusals[run]} if run in refusals else {})}
         for initiative, run in decomposed.items()
         if initiative not in live
         and run not in alive
@@ -1044,6 +1046,8 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     login_hosts = deps.hosts()
     decomposed = dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {}
     probe = dict(deps.pid_probe())
+    from agent_tools.chair_decompose_runs import decompose_refusals  # lazy: chair_decompose_runs imports this module
+
     refusals = land_refusals_from_actions(action_rows, now)
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
@@ -1076,6 +1080,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
             dict(deps.item_counts()) if deps.item_counts is not None else {},
             dict(deps.initiative_states()) if deps.initiative_states is not None else {},
             alive=alive_decompose_runs(deps.runs_dir(), decomposed, probe),
+            refusals=decompose_refusals(Path(deps.runs_dir()), decomposed.values()),
         ),
         "todo_initiatives": todo_initiative_facts(list(deps.work_rows())) if deps.work_rows is not None else [],
         "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs) if deps.decompose_runs is not None else {},
