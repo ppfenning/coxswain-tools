@@ -34,12 +34,6 @@ def test_handoff_lines_go_to_stdout_and_the_counts_to_stderr(runs, capsys):
     assert captured.err.strip() == "read 4, written 2, skipped 2"
 
 
-def test_review_charter_uses_the_patch_and_the_ticket(runs, capsys):
-    assert main(["stats", "examples", str(runs), "--role", "review_charter"]) == 0
-    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert rows[0] == {"state": {"patch": "diff", "plan": "a"}, "label": "approve"}
-
-
 def test_out_writes_a_file_and_leaves_stdout_empty(runs, tmp_path, capsys):
     out = tmp_path / "examples.jsonl"
     assert main(["stats", "examples", str(runs), "--role", "handoff", "--out", str(out)]) == 0

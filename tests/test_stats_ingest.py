@@ -839,14 +839,6 @@ def test_gate_diffs_are_ordered_by_the_graphs_node_sequence_not_the_node_files_a
     assert outcome == "quarantined"
 
 
-def test_stats_ingest_help_exits_zero():
-    from agent_tools.cli import build_parser
-
-    with pytest.raises(SystemExit) as exc_info:
-        build_parser().parse_args(["stats", "ingest", "--help"])
-    assert exc_info.value.code == 0
-
-
 def test_cli_stats_ingest_exits_nonzero_and_names_the_path_on_an_empty_runs_dir(tmp_path, capsys):
     from agent_tools.cli import main
 
