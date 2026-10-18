@@ -1,6 +1,6 @@
 import re
 
-from agent_tools import doctor, home
+from agent_tools import chair_unit, doctor, home
 
 _CHECK_ORDER = (
     "git",
@@ -606,22 +606,45 @@ def test_gather_says_the_same_for_a_postgres_server_with_no_runs_table(tmp_path,
 _UNIT = "[Unit]\nDescription=x\n\n[Service]\nExecStart=/opt/bin/cox chair run\nEnvironment=PATH={path}\nRestart=on-failure\n"
 
 
-def _unit_row(text, tools=None):
-    facts = {**_good_facts(), "chair_unit_text": text}
+_NO_PATH_UNIT = "[Service]\nExecStart=/x\n"
+_FROM_UNIT = " (from coxswain-chair.service)"
+
+
+def _unit_row(text, tools=None, drop_ins=()):
+    observed = None if text is None else chair_unit.effective_path(text, drop_ins)
+    facts = {**_good_facts(), "chair_unit_text": text, "chair_unit_path": observed}
     if tools is not None:
         facts["chair_unit_tools"] = tools
     return _rows_by_check(doctor.checks(facts))["chair unit PATH"]
 
 
-def test_unit_path_entries_reads_the_environment_path_line():
-    assert doctor.unit_path_entries(_UNIT.format(path="/opt/bin:/usr/bin")) == ["/opt/bin", "/usr/bin"]
-    assert doctor.unit_path_entries("[Service]\nExecStart=/x\n") is None
+def test_unit_path_entries_splits_the_path_value():
+    assert doctor.unit_path_entries("/opt/bin:/usr/bin") == ["/opt/bin", "/usr/bin"]
 
 
 def test_a_unit_path_with_all_four_tools_passes():
     row = _unit_row(_UNIT.format(path="/opt/bin:/usr/bin"),
                     {"/opt/bin": ["cox", "claude"], "/usr/bin": ["uv", "pytest"]})
-    assert row == {"check": "chair unit PATH", "ok": True, "detail": "2 entries"}
+    assert row == {"check": "chair unit PATH", "ok": True, "detail": "2 entries" + _FROM_UNIT}
+
+
+def test_a_drop_in_only_path_naming_old_folders_is_flagged_and_names_the_drop_in():
+    row = _unit_row(_NO_PATH_UNIT, {"/old/checkout/bin": []}, (("10-path.conf", "Environment=PATH=/old/checkout/bin\n"),))
+    assert row == {"check": "chair unit PATH", "ok": False,
+                   "detail": "not found on the unit PATH: cox, claude, uv, pytest (from 10-path.conf)"}
+
+
+def test_a_drop_in_only_path_naming_new_folders_passes_and_names_the_drop_in():
+    row = _unit_row(_NO_PATH_UNIT, {"/new/bin": ["cox", "claude", "uv", "pytest"]},
+                    (("10-path.conf", "Environment=PATH=/new/bin\n"),))
+    assert row == {"check": "chair unit PATH", "ok": True, "detail": "1 entries (from 10-path.conf)"}
+
+
+def test_a_drop_in_path_overrides_the_unit_path():
+    row = _unit_row(_UNIT.format(path="/old/bin"), {"/old/bin": ["cox", "claude", "uv", "pytest"], "/new/bin": []},
+                    (("10-path.conf", "Environment=PATH=/new/bin\n"),))
+    assert row["ok"] is False
+    assert row["detail"].endswith("(from 10-path.conf)")
 
 
 def test_a_unit_path_with_every_tool_in_one_entry_passes():
@@ -631,7 +654,7 @@ def test_a_unit_path_with_every_tool_in_one_entry_passes():
 
 def test_a_unit_path_without_cox_fails_naming_cox():
     row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["claude", "uv", "pytest"]})
-    assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: cox"}
+    assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: cox" + _FROM_UNIT}
 
 
 def test_a_unit_path_without_claude_fails_naming_claude():
@@ -648,19 +671,22 @@ def test_a_unit_path_without_uv_fails_naming_uv():
 
 def test_a_unit_path_without_pytest_fails_naming_pytest():
     row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["cox", "claude", "uv"]})
-    assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: pytest"}
+    assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: pytest" + _FROM_UNIT}
 
 
 def test_two_missing_tools_are_named_in_tuple_order():
     row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["cox", "uv"]})
-    assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: claude, pytest"}
+    assert row == {"check": "chair unit PATH", "ok": False,
+                   "detail": "not found on the unit PATH: claude, pytest" + _FROM_UNIT}
     row = _unit_row(_UNIT.format(path="/opt/bin"), {"/opt/bin": ["claude", "pytest"]})
-    assert row == {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: cox, uv"}
+    assert row == {"check": "chair unit PATH", "ok": False,
+                   "detail": "not found on the unit PATH: cox, uv" + _FROM_UNIT}
 
 
-def test_a_unit_with_no_path_line_fails_naming_the_line():
-    row = _unit_row("[Service]\nExecStart=/x\n")
-    assert row == {"check": "chair unit PATH", "ok": False, "detail": "no Environment=PATH= line in the unit"}
+def test_neither_the_unit_nor_a_drop_in_setting_path_fails_saying_both_were_checked():
+    row = _unit_row(_NO_PATH_UNIT, drop_ins=(("10-other.conf", "Environment=FOO=bar\n"),))
+    assert row == {"check": "chair unit PATH", "ok": False,
+                   "detail": "no Environment=PATH= line in the unit or any drop-in (both checked)"}
 
 
 def test_a_tilde_entry_fails_naming_it_even_when_the_tools_are_found():

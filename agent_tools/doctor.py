@@ -287,34 +287,37 @@ _UNIT_PATH_LINE = "Environment=PATH="
 _UNIT_TOOLS = ("cox", "claude", "uv", "pytest")
 
 
-def unit_path_entries(text: str) -> list[str] | None:
-    """The `:`-split value of the unit's `Environment=PATH=` line; None when the unit has no such line."""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(_UNIT_PATH_LINE):
-            return stripped[len(_UNIT_PATH_LINE):].strip('"').split(":")
-    return None
+def unit_path_entries(path: str) -> list[str]:
+    """The `:`-split entries of an effective PATH value."""
+    return path.split(":")
 
 
 def _unit_path_row(facts: Mapping) -> dict:
-    """Independent of the profile, so it never cascades. systemd does not expand `~`, so a non-absolute entry fails."""
+    """Independent of the profile, so it never cascades. `chair_unit_text` says whether the unit is installed;
+    `chair_unit_path` is the `chair_unit.PathObservation` (or None) across the unit and its drop-ins.
+    systemd does not expand `~`, so a non-absolute entry fails."""
     text = facts.get("chair_unit_text", _MISSING)
     if text is _MISSING:
         return {"check": "chair unit PATH", "ok": True, "detail": "not gathered"}
     if text is None:
         return {"check": "chair unit PATH", "ok": True, "detail": "not installed"}
-    entries = unit_path_entries(text)
-    if entries is None:
-        return {"check": "chair unit PATH", "ok": False, "detail": f"no {_UNIT_PATH_LINE} line in the unit"}
+    observed = facts.get("chair_unit_path")
+    if observed is None:
+        return {"check": "chair unit PATH", "ok": False,
+                "detail": f"no {_UNIT_PATH_LINE} line in the unit or any drop-in (both checked)"}
+    entries = unit_path_entries(observed.path)
+    origin = f" (from {observed.source})"
     relative = [entry for entry in entries if not entry.startswith("/")]
     if relative:
         return {"check": "chair unit PATH", "ok": False,
-                "detail": "not an absolute entry (systemd does not expand `~`): " + ", ".join(repr(e) for e in relative)}
+                "detail": "not an absolute entry (systemd does not expand `~`): "
+                + ", ".join(repr(e) for e in relative) + origin}
     tools = facts.get("chair_unit_tools") or {}
     missing = [name for name in _UNIT_TOOLS if not any(name in tools.get(entry, ()) for entry in entries)]
     if missing:
-        return {"check": "chair unit PATH", "ok": False, "detail": "not found on the unit PATH: " + ", ".join(missing)}
-    return {"check": "chair unit PATH", "ok": True, "detail": f"{len(entries)} entries"}
+        return {"check": "chair unit PATH", "ok": False,
+                "detail": "not found on the unit PATH: " + ", ".join(missing) + origin}
+    return {"check": "chair unit PATH", "ok": True, "detail": f"{len(entries)} entries{origin}"}
 
 
 def checks(facts: Mapping) -> list[dict]:

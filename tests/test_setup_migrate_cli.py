@@ -467,6 +467,55 @@ def test_an_active_chair_is_reloaded_and_restarted(layout, chair_unit):
     assert chair_unit.calls[-1] == ["systemctl", "--user", "restart", "coxswain-chair.service"]
 
 
+def dropin_step(restart):
+    pairs = [[f"{ROOT_OLD}/coxswain-tools", "/new/coxswain-tools"]]
+    return {"op": "chair_unit_dropin", "why": "x", "dropin": "10-path.conf", "pairs": pairs, "restart": restart}
+
+
+ROOT_OLD = "/old"
+
+
+@pytest.fixture
+def dropin(chair_unit):
+    folder = chair_unit.path.parent / "coxswain-chair.service.d"
+    folder.mkdir()
+    conf = folder / "10-path.conf"
+    conf.write_text("[Service]\nEnvironment=PATH=/old/coxswain-tools/bin:/usr/bin\n", encoding="utf-8")
+    other = folder / "20-other.conf"
+    other.write_text("[Service]\nEnvironment=PATH=/old/coxswain-tools/bin\n", encoding="utf-8")
+    return types_ns(conf=conf, other=other)
+
+
+def test_observe_reads_the_drop_ins_and_asks_systemd_only_when_there_are_some(layout, chair_unit, dropin):
+    chair_unit.answers.active = "active\n"
+    observed = cli._migrate_observe(cli.home_paths.resolve_here(None))
+    assert [name for name, _ in observed["chair_unit_drop_ins"]] == ["10-path.conf", "20-other.conf"]
+    assert observed["chair_active"] is True
+    dropin.conf.unlink()
+    dropin.other.unlink()
+    chair_unit.calls.clear()
+    observed = cli._migrate_observe(cli.home_paths.resolve_here(None))
+    assert observed["chair_unit_drop_ins"] == () and observed["chair_active"] is False
+    assert ["systemctl", "--user", "is-active", "coxswain-chair.service"] not in chair_unit.calls
+
+
+def test_dropin_apply_writes_only_that_drop_in_and_restarts_only_when_planned(layout, chair_unit, dropin):
+    unit_before, other_before = chair_unit.path.read_text(encoding="utf-8"), dropin.other.read_text(encoding="utf-8")
+    assert cli._migrate_exec(dropin_step(True), types_ns(profile=layout.profile)) is None
+    assert dropin.conf.read_text(encoding="utf-8") == "[Service]\nEnvironment=PATH=/new/coxswain-tools/bin:/usr/bin\n"
+    assert chair_unit.path.read_text(encoding="utf-8") == unit_before
+    assert dropin.other.read_text(encoding="utf-8") == other_before
+    assert chair_unit.calls == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "restart", "coxswain-chair.service"],
+    ]
+
+
+def test_dropin_apply_reloads_without_restart_when_the_service_was_not_active(layout, chair_unit, dropin):
+    assert cli._migrate_exec(dropin_step(False), types_ns(profile=layout.profile)) is None
+    assert chair_unit.calls == [["systemctl", "--user", "daemon-reload"]]
+
+
 def test_the_written_unit_is_what_install_would_build_from_the_old_units_args(layout, chair_unit):
     args = cli.chair_service.unit_args(chair_unit.old)
     expected = cli._chair_unit_text(args["label"], args["interval"], args["env_file"], Path(args["profile"]))

@@ -116,6 +116,7 @@ chair_run = _LazyModule("agent_tools.chair_run")
 chair_service = _LazyModule("agent_tools.chair_service")
 chair_service_host = _LazyModule("agent_tools.chair_service_host")
 chair_smoke = _LazyModule("agent_tools.chair_smoke")
+chair_unit = _LazyModule("agent_tools.chair_unit")
 chair_watchdog = _LazyModule("agent_tools.chair_watchdog")
 checkout = _LazyModule("agent_tools.checkout")
 cleanup = _LazyModule("agent_tools.cleanup")
@@ -5663,11 +5664,14 @@ def _doctor_profile(text: str | None) -> dict | None:
 
 
 def _chair_unit_facts() -> dict:
-    """Edge: the installed chair unit's text, and per absolute PATH entry the names of the doctor's unit tools executable there."""
-    text = _read_text_or_none(chair_service.unit_path(Path.home()))
+    """Edge: the installed chair unit's text, its effective PATH across unit and drop-ins, and per absolute PATH entry the names of the doctor's unit tools executable there."""
+    unit_file = chair_service.unit_path(Path.home())
+    text = _read_text_or_none(unit_file)
     facts: dict = {"chair_unit_text": text}
     if text is not None:
-        entries = [e for e in doctor.unit_path_entries(text) or [] if e.startswith("/")]
+        observed = chair_unit.read_chair_path(unit_file.parent)
+        facts["chair_unit_path"] = observed
+        entries = [e for e in doctor.unit_path_entries(observed.path) if e.startswith("/")] if observed else []
         facts["chair_unit_tools"] = {
             e: [n for n in doctor._UNIT_TOOLS if (Path(e) / n).is_file() and os.access(Path(e) / n, os.X_OK)]
             for e in entries
@@ -6139,13 +6143,18 @@ def _migrate_observe(locs) -> dict:
             seen[name] = listed
     record = _read_text_or_none(Path(locs.record))
     links = _migrate_cartridge_links(profile)
-    unit = _read_text_or_none(chair_service.unit_path(Path.home())) if sys.platform.startswith("linux") else None
+    linux = sys.platform.startswith("linux")
+    unit_file = chair_service.unit_path(Path.home())
+    unit = _read_text_or_none(unit_file) if linux else None
+    drop_ins = _migrate_chair_drop_ins(unit_file.parent) if linux else ()
     claude_on_path = shutil.which("claude") is not None
     return {
         "claude_on_path": claude_on_path,
         "marketplace": (_marketplace_listing() or {}).get("coxswain-cartridges"),
         "marketplace_plugins": _marketplace_plugins(),
         "chair_unit": unit,
+        "chair_unit_drop_ins": drop_ins,
+        "chair_active": bool(drop_ins) and _migrate_chair_active(),
         "entries": entries,
         "settings": {key: profile[key] for key in setup_migrate.SETTING_KEYS if key in profile},
         "home_record": record.strip() if record and record.strip() else None,
@@ -6279,6 +6288,8 @@ def _migrate_exec(step: dict, locs) -> str | None:
         return _migrate_git(step)
     if op == "chair_unit":
         return _migrate_chair_unit(locs)
+    if op == "chair_unit_dropin":
+        return _migrate_chair_unit_dropin(step)
     if op == "run":
         return _install_run(step)
     if op == "skip":
@@ -6296,6 +6307,43 @@ def _migrate_systemctl(*argv: str) -> subprocess.CompletedProcess | str:
         return subprocess.run(["systemctl", "--user", *argv], capture_output=True, text=True, check=False)
     except OSError as exc:
         return f"systemctl --user {' '.join(argv)}: {exc}"
+
+
+def _migrate_chair_drop_ins(unit_dir: Path) -> tuple[tuple[str, str], ...]:
+    """Edge. The `*.conf` drop-ins of the chair unit as (file name, text), by file name."""
+    texts = ((conf.name, _read_text_or_none(conf)) for conf in sorted((unit_dir / chair_unit.DROP_IN_DIR).glob("*.conf")))
+    return tuple((name, text) for name, text in texts if text is not None)
+
+
+def _migrate_chair_active() -> bool:
+    """Edge. Whether `systemctl --user is-active` says the chair service is running."""
+    active = _migrate_systemctl("is-active", chair_service.UNIT_NAME)
+    return not isinstance(active, str) and active.stdout.strip() == "active"
+
+
+def _migrate_chair_unit_dropin(step: dict) -> str | None:
+    """Edge. Rewrites the old checkout folders in the one drop-in the step names, reloads systemd and restarts the
+    chair only when the step says it was running. The unit file and other drop-ins are not touched."""
+    path = chair_service.unit_path(Path.home()).parent / chair_unit.DROP_IN_DIR / Path(step["dropin"]).name
+    text = _read_text_or_none(path)
+    if text is None:
+        print(f"chair unit: drop-in {path} is unreadable; left as is")
+        return None
+    path.write_text(setup_migrate.rewrite_dropin_path(text, tuple((o, n) for o, n in step["pairs"])), encoding="utf-8")
+    print(f"chair unit drop-in -> {path}")
+    reloaded = _migrate_systemctl("daemon-reload")
+    if isinstance(reloaded, str):
+        return reloaded
+    if reloaded.returncode != 0:
+        return f"systemctl --user daemon-reload exited {reloaded.returncode}: {reloaded.stderr.strip()}"
+    if not step["restart"]:
+        return None
+    restarted = _migrate_systemctl("restart", chair_service.UNIT_NAME)
+    if isinstance(restarted, str):
+        return restarted
+    if restarted.returncode != 0:
+        return f"systemctl --user restart {chair_service.UNIT_NAME} exited {restarted.returncode}: {restarted.stderr.strip()}"
+    return None
 
 
 def _migrate_chair_unit(locs) -> str | None:

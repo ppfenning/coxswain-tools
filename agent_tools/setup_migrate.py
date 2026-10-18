@@ -20,8 +20,13 @@ Observed layout, a dict with these keys:
 - `worktree_status`: checkout name to "clean" when `git worktree list` names no missing
   path. A checkout at its new path with any other status, or none, is repaired and verified
   again, because the planner cannot tell whether an earlier run finished that step.
-- `chair_unit`: the chair systemd unit file text, or None when there is none. A unit whose
-  `Environment=PATH=` line still names the old checkout root yields one last `chair_unit` step.
+- `chair_unit`: the chair systemd unit file text, or None when there is none. The effective PATH is read
+  across the unit file and `chair_unit_drop_ins` as `agent_tools.chair_unit.effective_path` reads it. When it
+  still names the old checkout root and comes from the unit file, the plan ends with one `chair_unit` step.
+- `chair_unit_drop_ins`: optional. The `(file name, text)` of each `*.conf` drop-in of the chair unit. When the
+  effective PATH comes from one of them, the plan ends with one `chair_unit_dropin` step naming that drop-in.
+- `chair_active`: optional. Whether the chair service was active when observed. It becomes the `restart` field
+  of the `chair_unit_dropin` step; absent means not active.
 
 - `install_bins`: optional. Where each editable install points, as `observe_install_bins` returns it.
   `coxswain-graphs` and `coxswain-tools` hold `source`, read from the checkout venv. `tool:coxswain-tools`
@@ -48,12 +53,13 @@ from __future__ import annotations
 
 import json
 import posixpath
+import re
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from agent_tools import repo_path, repo_path_migrate, setup_install
+from agent_tools import chair_unit, repo_path, repo_path_migrate, setup_install
 from agent_tools.home import Locations
 from agent_tools.repo_path_migrate import Change
 from agent_tools.setup_migrate_hosts import ObservedHost, is_migrated
@@ -80,6 +86,7 @@ OPS = frozenset(
         "worktree_repair",
         "verify",
         "chair_unit",
+        "chair_unit_dropin",
         "run",
     }
 )
@@ -252,16 +259,39 @@ def _marketplace_steps(observed: dict[str, Any], locs: Locations) -> tuple[list[
     return [*setup_install.marketplace_steps(target, registered), *installs], []
 
 
-PATH_PREFIX = "Environment=PATH="
+_PATH_LINE = re.compile(r'\s*Environment=\s*"?PATH=')
 
 
-def _chair_unit_steps(unit: str | None, old_root: str) -> list[Step]:
-    """One chair_unit step when the unit's PATH line still names `old_root/coxswain-`."""
-    lines = [line for line in (unit or "").splitlines() if line.startswith(PATH_PREFIX)]
-    if not any(old_root + "/coxswain-" in line for line in lines):
+def rewrite_dropin_path(text: str, pairs: Sequence[tuple[str, str]]) -> str:
+    """Drop-in text with each old checkout folder replaced by its new one, on `Environment=PATH=` lines only."""
+    olds = sorted({old for old, new in pairs if old != new}, key=len, reverse=True)
+    if not olds:
+        return text
+    news = dict(pairs)
+    folder = re.compile("(?:" + "|".join(re.escape(old) for old in olds) + r')(?=[/:"\s]|$)')
+
+    def line(raw: str) -> str:
+        return folder.sub(lambda m: news[m.group(0)], raw) if _PATH_LINE.match(raw) else raw
+
+    return "".join(map(line, text.splitlines(keepends=True)))
+
+
+def _chair_unit_steps(
+    unit: str | None,
+    drop_ins: Sequence[tuple[str, str]],
+    active: bool,
+    old_root: str,
+    pairs: Sequence[tuple[str, str]],
+) -> list[Step]:
+    """One step when the effective PATH still names `old_root/coxswain-`: the unit file regenerated, or its drop-in rewritten."""
+    seen = chair_unit.effective_path(unit, drop_ins)
+    if seen is None or old_root + "/coxswain-" not in seen.path:
         return []
-    why = "The chair systemd unit still names the old checkout root in its PATH, so it is regenerated."
-    return [_step("chair_unit", why)]
+    if seen.source == chair_unit.UNIT_NAME:
+        why = "The chair systemd unit still names the old checkout root in its PATH, so it is regenerated."
+        return [_step("chair_unit", why)]
+    why = "A chair unit drop-in still names the old checkout root in its PATH, so its old folders are rewritten."
+    return [_step("chair_unit_dropin", why, dropin=seen.source, pairs=[list(pair) for pair in pairs], restart=active)]
 
 
 def _venv_source(checkout: str, dist: str) -> str | None:
@@ -377,7 +407,13 @@ def migrate_plan(observed: dict[str, Any], locs: Locations) -> list[Step]:
         *market_runs,
     ]
     # The old root is the parent folder of the old coxswain-cartridges checkout.
-    unit = _chair_unit_steps(observed.get("chair_unit"), posixpath.dirname(pairs[CARTRIDGES][0]))
+    unit = _chair_unit_steps(
+        observed.get("chair_unit"),
+        tuple((name, text) for name, text in observed.get("chair_unit_drop_ins", ())),
+        bool(observed.get("chair_active", False)),
+        posixpath.dirname(pairs[CARTRIDGES][0]),
+        tuple(pairs.values()),
+    )
     if not body:
         return unit or [_step("skip", "Every checkout, link, setting and profile key is already final.")]
     return [*body, *_prints(observed.get("workspace"), pairs, locs), *market_notes, *unit]
@@ -393,7 +429,7 @@ def _detail(step: Step) -> str:
         return f"{step['key']} {step['old']} -> {step['new']}"
     if op in ("worktree_repair", "verify"):
         return " ".join(step["argv"])
-    return step.get("checkout") or step.get("item") or ""
+    return step.get("checkout") or step.get("item") or step.get("dropin") or ""
 
 
 def render_plan(steps: list[Step]) -> str:
