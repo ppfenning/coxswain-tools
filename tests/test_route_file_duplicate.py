@@ -15,6 +15,7 @@ def _store(monkeypatch):
 
 
 def _profile(tmp_path):
+    (tmp_path / "widget" / ".git").mkdir(parents=True)
     ws = tmp_path / "workspace"
     ws.mkdir()
     profile = tmp_path / "profile.yaml"
@@ -29,8 +30,9 @@ def _profile(tmp_path):
 
 
 def _file_intake(profile, title, *extra):
+    repo = profile.parent / "widget"
     return main(
-        ["route", "file", "--profile", str(profile), "--repo", "/repos/widget", "--title", title, "--intake", *extra]
+        ["route", "file", "--profile", str(profile), "--repo", str(repo), "--title", title, "--intake", *extra]
     )
 
 

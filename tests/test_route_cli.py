@@ -545,6 +545,13 @@ def test_on_a_sqlite_store_holding_only_local_leases_the_output_is_the_local_onl
     assert rows == _expected_status_rows(ws)
 
 
+def _widget(tmp_path):
+    """A repo folder `route file` accepts: it holds a `.git` directory."""
+    repo = tmp_path / "repos" / "widget"
+    (repo / ".git").mkdir(parents=True, exist_ok=True)
+    return str(repo)
+
+
 def _write_file_profile(tmp_path):
     ws = tmp_path / "workspace"
     ws.mkdir()
@@ -561,10 +568,10 @@ def _write_file_profile(tmp_path):
 
 def test_file_writes_initiative_files_at_expected_paths(tmp_path, capsys):
     profile, ws = _write_file_profile(tmp_path)
-    rc = main(["route", "file", "--profile", str(profile), "--repo", "/repos/widget", "--title", "Fix the thing"])
+    rc = main(["route", "file", "--profile", str(profile), "--repo", _widget(tmp_path), "--title", "Fix the thing"])
     out = capsys.readouterr().out
     assert rc == 0
-    expected = route.initiative_files("Fix the thing", "", "/repos/widget")
+    expected = route.initiative_files("Fix the thing", "", _widget(tmp_path))
     for rel, text in expected.items():
         assert (ws / rel).read_text(encoding="utf-8") == text
         assert str(ws / rel) in out
@@ -573,13 +580,13 @@ def test_file_writes_initiative_files_at_expected_paths(tmp_path, capsys):
 def test_file_intake_writes_the_intake_file_with_todays_date(tmp_path, capsys):
     profile, ws = _write_file_profile(tmp_path)
     expected_date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-    rc = main(["route", "file", "--profile", str(profile), "--repo", "/repos/widget", "--title", "Fix the thing", "--intake"])
+    rc = main(["route", "file", "--profile", str(profile), "--repo", _widget(tmp_path), "--title", "Fix the thing", "--intake"])
     out = capsys.readouterr().out
     assert rc == 0
     written = list((ws / "intake").glob("*.md"))
     assert len(written) == 1
     assert written[0].name.startswith(expected_date)
-    expected = route.intake_file("Fix the thing", "", "/repos/widget", expected_date)
+    expected = route.intake_file("Fix the thing", "", _widget(tmp_path), expected_date)
     [(rel, text)] = expected.items()
     assert (ws / rel).read_text(encoding="utf-8") == text
     assert str(ws / rel) in out
@@ -590,7 +597,7 @@ def test_file_intake_with_ids_sequence_writes_the_allocated_id(tmp_path, monkeyp
     with profile.open("a") as f:
         f.write("ids: sequence\n")
     monkeypatch.setattr(route, "allocate_intake_id", lambda: "I7")
-    rc = main(["route", "file", "--profile", str(profile), "--repo", "/repos/widget", "--title", "Fix the thing", "--intake"])
+    rc = main(["route", "file", "--profile", str(profile), "--repo", _widget(tmp_path), "--title", "Fix the thing", "--intake"])
     capsys.readouterr()
     assert rc == 0
     written = list((ws / "intake").glob("*.md"))
@@ -605,7 +612,7 @@ def test_file_refuses_an_existing_path_collision(tmp_path, capsys):
     target = ws / "work" / slug / "initiative.md"
     target.parent.mkdir(parents=True)
     target.write_text("already here\n")
-    rc = main(["route", "file", "--profile", str(profile), "--repo", "/repos/widget", "--title", "Fix the thing"])
+    rc = main(["route", "file", "--profile", str(profile), "--repo", _widget(tmp_path), "--title", "Fix the thing"])
     out = capsys.readouterr().out
     assert rc == 2
     assert str(target) in out
@@ -624,7 +631,7 @@ def test_file_from_intake_links_both_ways_retires_the_file_and_status_reports_de
     profile, ws = _write_file_profile(tmp_path)
     (ws / "intake").mkdir()
     intake_path = ws / "intake" / "2026-09-01-fix-thing.md"
-    intake_path.write_text("---\nid: fix-thing\ntitle: Fix the thing\nrepo: /repos/widget\n---\n\nDo it.\n")
+    intake_path.write_text(f"---\nid: fix-thing\ntitle: Fix the thing\nrepo: {_widget(tmp_path)}\n---\n\nDo it.\n")
     rc = main(["route", "file", "--profile", str(profile), "--from-intake", str(intake_path)])
     capsys.readouterr()
     assert rc == 0
@@ -645,6 +652,7 @@ def test_file_from_intake_writes_surfaces_from_real_backticked_files_under_repo(
     profile, ws = _write_file_profile(tmp_path)
     repo = tmp_path / "repos" / "widget"
     (repo / "agent_tools").mkdir(parents=True)
+    (repo / ".git").mkdir()
     (repo / "tests").mkdir()
     (repo / "agent_tools" / "schema.py").write_text("x")
     (repo / "tests" / "test_release.py").write_text("x")
@@ -671,7 +679,7 @@ def test_file_from_intake_reports_no_surfaces_when_no_backticked_token_resolves(
     (ws / "intake").mkdir()
     intake_path = ws / "intake" / "2026-09-01-fix-thing.md"
     intake_path.write_text(
-        "---\nid: fix-thing\ntitle: Fix the thing\nrepo: /repos/widget\n---\n\n"
+        f"---\nid: fix-thing\ntitle: Fix the thing\nrepo: {_widget(tmp_path)}\n---\n\n"
         "See `agent_tools/missing.py` for context.\n"
     )
     rc = main(["route", "file", "--profile", str(profile), "--from-intake", str(intake_path)])
@@ -688,7 +696,7 @@ def test_file_from_intake_uses_the_slug_field_over_the_title(tmp_path, capsys):
     (ws / "intake").mkdir()
     intake_path = ws / "intake" / "2026-09-01-fix-thing.md"
     intake_path.write_text(
-        "---\nid: fix-thing\ntitle: Fix the thing\nrepo: /repos/widget\nslug: named-slug\n---\n\nDo it.\n"
+        f"---\nid: fix-thing\ntitle: Fix the thing\nrepo: {_widget(tmp_path)}\nslug: named-slug\n---\n\nDo it.\n"
     )
     rc = main(["route", "file", "--profile", str(profile), "--from-intake", str(intake_path)])
     capsys.readouterr()
@@ -711,7 +719,7 @@ def test_status_reports_landed_once_the_linked_initiatives_one_task_is_done(tmp_
     profile, ws = _write_file_profile(tmp_path)
     (ws / "intake").mkdir()
     intake_path = ws / "intake" / "2026-09-01-fix-thing.md"
-    intake_path.write_text("---\nid: fix-thing\ntitle: Fix the thing\nrepo: /repos/widget\n---\n\nDo it.\n")
+    intake_path.write_text(f"---\nid: fix-thing\ntitle: Fix the thing\nrepo: {_widget(tmp_path)}\n---\n\nDo it.\n")
     rc = main(["route", "file", "--profile", str(profile), "--from-intake", str(intake_path)])
     capsys.readouterr()
     assert rc == 0
@@ -1822,7 +1830,7 @@ def _pull_setup(tmp_path, monkeypatch, listing, *, extra=(), mark_argv=None):
     monkeypatch.setattr(sources, "adapter_for", lambda _name: fake)
     profile, ws = _write_file_profile(tmp_path)
     with profile.open("a") as f:
-        f.write('sources: {"github": {"repos": ["a/b", "x/y"]}}\nrepo_map: {"a/b": "tools"}\n')
+        f.write(f'sources: {{"github": {{"repos": ["a/b", "x/y"]}}}}\nrepo_map: {{"a/b": "{_widget(tmp_path)}"}}\n')
     return profile, ws
 
 
