@@ -6637,16 +6637,23 @@ def _migrate_stale_lines(locs) -> list[str]:
 
 
 def _migrate_beat(locs) -> str:
-    """Edge. Beats for this machine as `cox host beat` does; `beat: ok`, or `beat: failed: <detail>; <rerun hint>`."""
+    """Edge. Beats for this machine through the installed `cox host beat`; `beat: ok`, or `beat: failed: <detail>; <rerun hint>`.
+
+    A subprocess, not an in-process call: the apply may have reinstalled cox editable from the moved checkout, which
+    removes the package this process imported from, so any lazy import here would fail."""
     hint = "run `cox host beat` on this machine"
+    cox = shutil.which("cox")
+    if cox is None:
+        return f"beat: failed: cox not on PATH; {hint}"
+    env = {**os.environ, "AGENT_TOOLS_PROFILE": str(locs.profile)}
     try:
-        argv = _beat_argv(_migrate_profile(locs), socket.gethostname())
-        code, output = store_cli.runner(_migrate_runs_dir(locs))(argv)
+        done = subprocess.run([cox, "host", "beat"], capture_output=True, text=True, timeout=120, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return f"beat: failed: {exc}; {hint}"
-    if code == 0:
+    if done.returncode == 0:
         return "beat: ok"
-    return f"beat: failed: store_cli exit {code}: {output.strip()}; {hint}"
+    detail = (done.stderr or done.stdout).strip()
+    return f"beat: failed: cox host beat exit {done.returncode}: {detail}; {hint}"
 
 
 def _migrate_finish_queue(ws: Path, store_mode: bool) -> tuple[list, dict[str, str]] | None:
