@@ -128,6 +128,36 @@ def test_auth_ok_checks_the_active_login_only():
     assert seen == [["gh", "auth", "status", "--active"]]
 
 
+def test_api_login_ok_is_true_when_the_api_names_a_login():
+    assert route_sync_gh.api_login_ok(lambda argv, **kw: _Result(returncode=0, stdout="octocat\n")) is True
+
+
+def test_api_login_ok_is_false_on_empty_stdout():
+    assert route_sync_gh.api_login_ok(lambda argv, **kw: _Result(returncode=0, stdout="")) is False
+
+
+def test_api_login_ok_is_false_on_nonzero_exit():
+    assert route_sync_gh.api_login_ok(lambda argv, **kw: _Result(returncode=1, stdout="octocat\n")) is False
+
+
+def test_api_login_ok_is_false_on_timeout():
+    def run(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 30)
+
+    assert route_sync_gh.api_login_ok(run) is False
+
+
+def test_api_login_ok_calls_gh_api_user_with_a_timeout():
+    seen = []
+
+    def run(argv, **kw):
+        seen.append((argv, kw))
+        return _Result(returncode=0, stdout="octocat\n")
+
+    route_sync_gh.api_login_ok(run)
+    assert seen == [(["gh", "api", "user", "--jq", ".login"], {"capture_output": True, "text": True, "timeout": 30})]
+
+
 def test_execute_resolves_real_node_ids_and_writes_back_the_new_issue(tmp_path):
     _write(tmp_path / "work" / "init1" / "build" / "task1.md",
            "---\ntitle: Do the thing\nstate: ready\n---\nbody\n")
