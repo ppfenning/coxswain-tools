@@ -113,6 +113,131 @@ def test_a_real_conflict_not_a_landed_duplicate_still_refuses_and_names_the_file
     assert _scratch_branch_gone(repo)
 
 
+def test_two_functions_appended_to_the_same_test_file_are_both_kept(tmp_path):
+    root = tmp_path / "repo"
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    for args in (["config", "user.email", "t@e"], ["config", "user.name", "t"]):
+        _git(root, *args)
+    (root / "tests").mkdir()
+    base = "def test_base():\n    assert True\n"
+
+    def commit_file(text, msg):
+        (root / "tests" / "test_x.py").write_text(text)
+        _git(root, "add", "-A")
+        _git(root, "commit", "-qm", msg)
+
+    commit_file(base, "init")
+    _git(root, "checkout", "-qb", "epic/init/ph")
+    commit_file(base + "\n\ndef test_phase():\n    assert True\n", "phase work")
+    _git(root, "checkout", "-q", "main")
+    commit_file(base + "\n\ndef test_main():\n    assert True\n", "main moves")
+
+    ok, detail = cli._execute_land_step(root, _STEP)
+    assert ok, detail
+    assert detail == "squashed epic/init/ph onto pr/init--ph; resolved: append-only in tests/test_x.py"
+    text = _git(root, "show", "pr/init--ph:tests/test_x.py")
+    assert "<<<<<<<" not in text and "=======" not in text
+    assert text.index("test_phase") < text.index("test_main")
+    assert _scratch_branch_gone(root)
+
+
+def _repo_with_test_file(tmp_path, name="test_x.py", body="def test_base():\n    assert True\n"):
+    root = tmp_path / "repo"
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    for args in (["config", "user.email", "t@e"], ["config", "user.name", "t"]):
+        _git(root, *args)
+    (root / "tests").mkdir()
+    (root / "tests" / name).write_text(body)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "init")
+    return root
+
+
+def _commit_on(root, branch, name, text, msg, create=False):
+    _git(root, "checkout", *(["-qb"] if create else ["-q"]), branch)
+    (root / "tests" / name).write_text(text)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", msg)
+    _git(root, "checkout", "-q", "main")
+
+
+def _refused(root, expect):
+    ok, detail = cli._execute_land_step(root, _STEP)
+    assert (ok, detail) == (False, f"squash of epic/init/ph conflicts in: {expect}")
+    assert _git(root, "branch", "--list", "pr/init--ph") == ""
+    assert _scratch_branch_gone(root)
+
+
+def test_main_deleting_a_test_file_the_branch_modified_is_not_an_append(tmp_path):
+    root = _repo_with_test_file(tmp_path)
+    _commit_on(root, "epic/init/ph", "test_x.py", "def test_base():\n    assert False\n", "phase edits", create=True)
+    _git(root, "rm", "-q", "tests/test_x.py")
+    _git(root, "commit", "-qm", "main deletes")
+    _refused(root, "tests/test_x.py")
+
+
+def test_a_json_file_under_tests_added_on_both_sides_is_refused(tmp_path):
+    root = _repo_with_test_file(tmp_path)
+    _commit_on(root, "epic/init/ph", "data.json", '{"a": 1}\n', "phase data", create=True)
+    _commit_on(root, "main", "data.json", '{"b": 2}\n', "main data")
+    _refused(root, "tests/data.json")
+
+
+def test_the_same_test_name_appended_on_both_sides_is_refused(tmp_path):
+    root = _repo_with_test_file(tmp_path)
+    base = "def test_base():\n    assert True\n"
+    _commit_on(root, "epic/init/ph", "test_x.py", base + "\n\ndef test_same():\n    assert 1\n", "phase", create=True)
+    _commit_on(root, "main", "test_x.py", base + "\n\ndef test_same():\n    assert 2\n", "main")
+    _refused(root, "tests/test_x.py")
+
+
+def test_a_squash_merge_conflict_in_appended_tests_is_resolved_with_the_suffix(tmp_path, monkeypatch):
+    """`main` is an ancestor of the branch, so no scratch merge runs; the pr worktree gets its own commit
+    appending to the same file just before the squash, which is what makes the squash merge itself conflict."""
+    root = _repo_with_test_file(tmp_path)
+    base = "def test_base():\n    assert True\n"
+    _commit_on(root, "epic/init/ph", "test_x.py", base + "\n\ndef test_phase():\n    assert True\n", "phase", create=True)
+    link_venv = cli._link_venv
+
+    def link_then_diverge(repo, wt):
+        link_venv(repo, wt)
+        (wt / "tests" / "test_x.py").write_text(base + "\n\ndef test_pr():\n    assert True\n")
+        _git(wt, "commit", "-qam", "pr worktree appends")
+
+    monkeypatch.setattr(cli, "_link_venv", link_then_diverge)
+    ok, detail = cli._execute_land_step(root, _STEP)
+    assert ok, detail
+    assert detail == "squashed epic/init/ph onto pr/init--ph; resolved: append-only in tests/test_x.py"
+    text = _git(root, "show", "pr/init--ph:tests/test_x.py")
+    assert "<<<<<<<" not in text
+    assert text.index("test_pr") < text.index("test_phase")
+
+
+CONFLICTED = "def test_a():\n    pass\n<<<<<<< HEAD\ndef test_b():\n    pass\n||||||| base\n=======\ndef test_c():\n    pass\n>>>>>>> theirs\n"
+
+
+def test_append_only_resolution_writes_nothing_unless_every_file_resolves(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src").mkdir()
+    for name in ("tests/a.py", "src/b.py"):
+        (tmp_path / name).write_text(CONFLICTED)
+    (tmp_path / "tests" / "plain.py").write_text("def test_p():\n    pass\n")
+    assert not cli._resolve_append_only(tmp_path, ["tests/a.py", "src/b.py"])
+    assert not cli._resolve_append_only(tmp_path, ["tests/a.py", "tests/plain.py"])
+    assert not cli._resolve_append_only(tmp_path, ["tests/a.py", "tests/missing.py"])
+    assert not cli._resolve_append_only(tmp_path, [])
+    assert (tmp_path / "tests" / "a.py").read_text() == CONFLICTED
+    assert (tmp_path / "src" / "b.py").read_text() == CONFLICTED
+
+
+def test_a_failed_stage_is_not_reported_as_resolved(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "a.py").write_text(CONFLICTED)
+    assert not cli._resolve_append_only(tmp_path, ["tests/a.py"])
+    assert "resolved" not in capsys.readouterr().out
+
+
 def test_a_branch_already_containing_main_squashes_without_a_scratch_worktree(tmp_path):
     root = tmp_path / "repo"
     sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
