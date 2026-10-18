@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import collections
 import contextlib
 import dataclasses
@@ -2008,6 +2009,42 @@ def _resolve_landed_conflicts(repo: Path, scratch_wt: Path, from_ref: str, branc
     return unresolved
 
 
+def _appended_python(name: str, text: str) -> str | None:
+    """`text` resolved to ours-then-theirs, only for a `.py` file that held a real conflict hunk and still
+    parses with no top-level name defined twice; None otherwise (no markers is a modify/delete, not an append)."""
+    resolved = land.resolve_add_add_conflicts(text) if name.endswith(".py") else None
+    if resolved is None or resolved == text:
+        return None
+    try:
+        tops = [n.name for n in ast.parse(resolved).body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    except (SyntaxError, ValueError):
+        return None
+    return resolved if len(tops) == len(set(tops)) else None
+
+
+def _resolve_append_only(wt: Path, paths: list[str]) -> bool:
+    """Edge. Resolve each conflicted `paths` file in `wt` to ours-then-theirs and stage it; all or nothing."""
+    if not land.append_only_paths(paths):
+        return False
+
+    def resolve(name: str) -> str | None:
+        try:
+            return _appended_python(name, (wt / name).read_text())
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    resolved = {name: resolve(name) for name in paths}
+    if any(text is None for text in resolved.values()):
+        return False
+    for name, text in resolved.items():
+        (wt / name).write_text(text)
+    staged = subprocess.run(["git", "-C", str(wt), "add", *sorted(resolved)], capture_output=True, text=True)
+    if staged.returncode != 0:
+        return False
+    print(f"resolved: append-only in {', '.join(sorted(resolved))}")
+    return True
+
+
 def _gather_worktree(repo: Path, step: dict) -> tuple[Path | None, str]:
     """The pr branch's land worktree for a gather step: made from `from` by the first step, reused by the rest."""
     wt = _land_worktree(repo, step["onto"])
@@ -2111,6 +2148,7 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         # `from`'s content matches content already reachable from `branch`'s tip, and squash that merge
         # commit instead - `branch` itself is never moved.
         squash_source = step["branch"]
+        appended: set[str] = set()
         ancestor = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", step["from"], step["branch"]],
                                   capture_output=True, text=True)
         if ancestor.returncode != 0:
@@ -2123,11 +2161,15 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             if sco.returncode != 0:
                 drop()
                 return False, sco.stderr.strip() or sco.stdout.strip()
-            smerge = subprocess.run(["git", "-C", str(scratch_wt), "merge", "--no-edit", step["from"]], capture_output=True, text=True)
+            smerge = subprocess.run(["git", "-C", str(scratch_wt), "-c", "merge.conflictStyle=diff3", "merge", "--no-edit", step["from"]],
+                                    capture_output=True, text=True)
             if smerge.returncode != 0:
                 conflicted = subprocess.run(["git", "-C", str(scratch_wt), "diff", "--name-only", "--diff-filter=U"],
                                             capture_output=True, text=True).stdout.split()
                 unresolved = _resolve_landed_conflicts(repo, scratch_wt, step["from"], branch_tip, conflicted)
+                if unresolved and _resolve_append_only(scratch_wt, unresolved):
+                    appended |= set(unresolved)
+                    unresolved = []
                 if unresolved:
                     subprocess.run(["git", "-C", str(scratch_wt), "merge", "--abort"], capture_output=True, text=True)
                     _remove_scratch_worktree(repo, scratch_branch)
@@ -2140,14 +2182,18 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
                     drop()
                     return False, commit.stderr.strip() or commit.stdout.strip()
             squash_source = scratch_branch
-        merge = subprocess.run(["git", "-C", str(wt), "merge", "--squash", squash_source], capture_output=True, text=True)
+        merge = subprocess.run(["git", "-C", str(wt), "-c", "merge.conflictStyle=diff3", "merge", "--squash", squash_source],
+                               capture_output=True, text=True)
         if squash_source != step["branch"]:
             _remove_scratch_worktree(repo, squash_source)
         if merge.returncode != 0:
             conflicted = subprocess.run(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"],
                                         capture_output=True, text=True).stdout.split()
-            drop()
-            return False, f"squash of {step['branch']} conflicts in: {', '.join(conflicted)}"
+            if _resolve_append_only(wt, conflicted):
+                appended |= set(conflicted)
+            else:
+                drop()
+                return False, f"squash of {step['branch']} conflicts in: {', '.join(conflicted)}"
         if not _git_out(wt, "diff", "--cached", "--name-only"):
             drop()
             return False, f"{step['branch']} adds nothing over {step['from']}"
@@ -2166,7 +2212,8 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             # instead of finding a pr branch that holds the un-generated tree and refusing on it.
             subprocess.run(["git", "-C", str(wt), "checkout", "-q", "--detach"], capture_output=True, text=True)
             subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
-        return (True, f"squashed {step['branch']} onto {step['onto']}") if ok else (False, detail)
+        suffix = f"; resolved: append-only in {', '.join(sorted(appended))}" if appended else ""
+        return (True, f"squashed {step['branch']} onto {step['onto']}{suffix}") if ok else (False, detail)
     if kind == "reuse_branch":
         wt = _land_worktree(repo, step["branch"])
         _remove_land_worktree(repo, step["branch"])
