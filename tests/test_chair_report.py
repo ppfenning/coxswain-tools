@@ -13,7 +13,7 @@ from agent_tools.chair_report import (
     partial_land_text,
     write_status,
 )
-from agent_tools.chair_watchdog import StatusLine, parse_status
+from agent_tools.chair_watchdog import StatusLine, idle, parse_status
 from agent_tools.notify import Notification
 
 NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
@@ -55,6 +55,25 @@ def test_status_line_round_trips_through_parse_status():
     assert "RUNAWAY b" in parsed.holds
     assert any(h.startswith("partial-land: ") for h in parsed.holds)
     assert len(parsed.holds) == 3
+
+
+def test_status_line_lanes_count_every_host():
+    hosts = [{"name": "a", "live_runs": 4, "capacity": 6}, {"name": "b", "live_runs": 6}]
+    facts = {**_facts(), "dispatch": {"max_in_flight": 4, "live_runs": 0, "hosts": hosts}}
+    assert format_status(facts, [], [], NOW).split(" | ")[1] == "lanes 10/10 (here 0/4)"
+
+
+def test_fleet_status_line_still_parses_and_idle_alert_fires():
+    hosts = [{"name": "a", "live_runs": 0, "capacity": 6}, {"name": "b", "live_runs": 0}]
+    facts = {**_facts(), "dispatch": {"max_in_flight": 4, "live_runs": 0, "hosts": hosts}}
+    hold = [{"kind": "needs_chair", "initiative": "epic-a", "cause": "harness"}]
+    line = format_status(facts, hold, [], NOW)
+    parsed = parse_status(line)
+    assert parsed is not None
+    assert (parsed.busy, parsed.total) == (0, 10)
+    alert = idle([(NOW, line)], NOW)
+    assert alert is not None
+    assert alert.title == "Lanes idle 30 min"
 
 
 def test_needs_chair_items_orders_runaway_first_and_partial_land_last():
