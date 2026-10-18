@@ -55,7 +55,7 @@ import json
 import posixpath
 import re
 import tomllib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -307,6 +307,45 @@ def _venv_source(checkout: str, dist: str) -> str | None:
     return None
 
 
+def _normalise(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _dist_name(requirement: str) -> str:
+    """The distribution name leading a requirement string; empty when it has none."""
+    found = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", requirement)
+    return found.group(1) if found else ""
+
+
+def venv_extras(groups: Mapping[str, Sequence[str]], installed: Collection[str]) -> list[str]:
+    """Sorted optional-dependency groups whose every distribution is installed, plus dev; a group naming none is skipped."""
+    present = {_normalise(name) for name in installed}
+    satisfied = [
+        group for group, dists in groups.items() if dists and all(_normalise(dist) in present for dist in dists)
+    ]
+    return sorted({*satisfied, "dev"})
+
+
+def _installed_names(checkout: str) -> set[str]:
+    """Edge. Distribution names from the dist-info folders of the checkout's .venv; raises OSError when there are none."""
+    folders = sorted(Path(checkout).glob(".venv/lib/python*/site-packages/*.dist-info"))
+    if not folders:
+        raise OSError(f"no dist-info folders under {checkout}/.venv")
+    return {folder.name.removesuffix(".dist-info").rpartition("-")[0] for folder in folders}
+
+
+def read_venv_extras(repo: str, checkout: str) -> list[str]:
+    """Edge. The extras `venv_extras` finds satisfied in `checkout`'s venv; ["dev"] and a printed note when unreadable."""
+    try:
+        data = tomllib.loads((Path(checkout) / "pyproject.toml").read_text())
+        table = data.get("project", {}).get("optional-dependencies", {})
+        groups = {group: [_dist_name(r) for r in reqs] for group, reqs in table.items()}
+        return venv_extras(groups, _installed_names(checkout))
+    except (OSError, ValueError, AttributeError, TypeError):
+        print(f"migrate: {repo} venv extras unknown; installed .[dev] only")
+        return ["dev"]
+
+
 def _receipt_entry(tool_dir: str, tool: str) -> dict[str, Any]:
     """Edge. The editable value and extras of `tool`'s uv receipt; None and [] when absent or unreadable."""
     absent: dict[str, Any] = {"editable": None, "extras": []}
@@ -346,8 +385,13 @@ def _tool_install(name: str, new: str, extras: list[str]) -> Step:
     )
 
 
-def _reinstall_steps(install_bins: dict[str, Any] | None, news: dict[str, str], locs: Locations) -> list[Step]:
-    """Eight run steps when any observed editable source differs from its checkout; none when all match or none was observed."""
+def _reinstall_steps(
+    install_bins: dict[str, Any] | None, news: dict[str, str], locs: Locations, where: Mapping[str, str]
+) -> list[Step]:
+    """Eight run steps when any observed editable source differs from its checkout; none when all match or none was observed.
+
+    `where` is the path each checkout sits at now, whose old venv names the extras to keep.
+    """
     if install_bins is None:
         return []
     tools_receipt = install_bins.get(f"tool:{TOOLS}") or {}
@@ -364,7 +408,9 @@ def _reinstall_steps(install_bins: dict[str, Any] | None, news: dict[str, str], 
     venvs = [
         {**step, "why": step["why"] + " because its editable source is not the checkout under the installs folder."}
         for name in REINSTALL_ORDER
-        for step in setup_install.venv_steps(name, locs.installs, news[CARTRIDGES], True)
+        for step in setup_install.venv_steps(
+            name, locs.installs, news[CARTRIDGES], True, read_venv_extras(name, where[name])
+        )
     ]
     return [
         *venvs,
@@ -398,11 +444,13 @@ def migrate_plan(observed: dict[str, Any], locs: Locations) -> list[Step]:
     user_home = posixpath.dirname(locs.config)
     pairs = {name: (_expand_all(entries[name]["old"], user_home), news[name]) for name in CHECKOUTS}
     market_runs, market_notes = _marketplace_steps(observed, locs)
+    # A checkout still a real directory at its old path has not moved yet, so its old venv is there.
+    where = {name: pairs[name][0] if entries[name].get("old_kind") == "dir" else news[name] for name in CHECKOUTS}
     body = [
         *(step for name in moved for step in verdicts[name][1]),
         *_link_steps(observed["cartridge_links"], locs),
         *(step for name in repaired for step in _repair_steps(name, news[name], worktrees[name])),
-        *_reinstall_steps(observed.get("install_bins"), news, locs),
+        *_reinstall_steps(observed.get("install_bins"), news, locs, where),
         *_setting_steps(observed.get("settings", {}), observed.get("home_record"), tuple(pairs.values()), locs),
         *market_runs,
     ]
