@@ -6492,6 +6492,65 @@ def _migrate_runs_dir(locs) -> Path:
     return Path(workspace if isinstance(workspace, str) else locs.workspaces).expanduser() / "runs"
 
 
+_OPERATOR_SUFFIXES = frozenset({".sh", ".py", ".zsh", ".service", ".timer", ".plist", ".conf"})
+_OPERATOR_MAX_BYTES = 1024 * 1024
+
+
+def _migrate_operator_dirs(locs) -> list[Path]:
+    """Edge. Folders searched flat for operator files: home, the user systemd folders, LaunchAgents, state and its `cox` sibling."""
+    home, state = Path.home(), Path(locs.state)
+    systemd = home / ".config" / "systemd" / "user"
+    drop_ins = sorted(p for p in systemd.iterdir() if p.is_dir() and p.name.endswith(".d")) if systemd.is_dir() else []
+    return [home, systemd, *drop_ins, home / "Library" / "LaunchAgents", state, state.parent / "cox"]
+
+
+def _migrate_operator_files(locs) -> dict[str, str]:
+    """Edge. Path to text for each regular file under 1 MiB with an operator suffix; unreadable files and missing folders are skipped."""
+    found: dict[str, str] = {}
+    for folder in _migrate_operator_dirs(locs):
+        try:
+            children = sorted(folder.iterdir())
+        except OSError:
+            continue
+        for path in children:
+            try:
+                if path.suffix not in _OPERATOR_SUFFIXES or path.is_symlink() or not path.is_file():
+                    continue
+                if path.stat().st_size >= _OPERATOR_MAX_BYTES:
+                    continue
+                found[str(path)] = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+    return found
+
+
+def _migrate_stale_lines(locs) -> list[str]:
+    """Edge. Lines for operator files still naming an old checkout; none when `migrate.json` is absent or names no old root."""
+    marker = _read_text_or_none(Path(locs.state) / "migrate.json")
+    try:
+        data = json.loads(marker) if marker is not None else None
+    except ValueError:
+        return []
+    old_root = data.get("old_root") if isinstance(data, dict) else None
+    if not isinstance(old_root, str) or not old_root:
+        return []
+    olds = tuple(os.path.join(old_root, name) for name in setup_migrate.CHECKOUTS)
+    return setup_migrate.stale_script_lines(_migrate_operator_files(locs), olds, str(Path.home()))
+
+
+def _migrate_beat(locs) -> str:
+    """Edge. Beats for this machine as `cox host beat` does; `beat: ok`, or `beat: failed: <detail>; <rerun hint>`."""
+    hint = "run `cox host beat` on this machine"
+    try:
+        argv = _beat_argv(_migrate_profile(locs), socket.gethostname())
+        code, output = store_cli.runner(_migrate_runs_dir(locs))(argv)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"beat: failed: {exc}; {hint}"
+    if code == 0:
+        return "beat: ok"
+    return f"beat: failed: store_cli exit {code}: {output.strip()}; {hint}"
+
+
 def _migrate_finish_queue(ws: Path, store_mode: bool) -> tuple[list, dict[str, str]] | None:
     """Edge. The queue rows (store mode) or the work files (file mode) `finish` rewrites; None when the store cannot be read."""
     from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
@@ -6632,6 +6691,9 @@ def _setup_migrate(a: argparse.Namespace) -> int:
                     failed += 1
                     break
                 print(f"host {step.host}: {step.op}: {text}")
+        for line in _migrate_stale_lines(locs):
+            print(line)
+        print(_migrate_beat(locs))
         print("verify with: cox setup doctor")
         return 1 if failed else 0
     finally:
@@ -10358,16 +10420,21 @@ def _package_version() -> str | None:
     return package_version()
 
 
-def _host_beat(a: argparse.Namespace) -> int:
-    profile, runs_dir, rc = _leader_runs_dir_or_refuse(a)
-    if rc is not None:
-        return rc
+def _beat_argv(profile: Mapping, name: str) -> list[str]:
+    """Edge. The store_cli argv that records a beat for `name` with this machine's versions and paths."""
     harness = str(Path(profile["harness_dir"]).expanduser()) if profile.get("harness_dir") else None
     workspace = str(Path(profile["workspace_dir"]).expanduser()) if profile.get("workspace_dir") else None
     versions = host_cmd.beat_versions(
         _run_local, _package_version(), harness, _cartridges_checkout(profile) or None, workspace, _host_repos(profile),
     )
-    return _host_store_write(a, host_cmd.beat_argv(a.name or socket.gethostname(), versions))
+    return host_cmd.beat_argv(name, versions)
+
+
+def _host_beat(a: argparse.Namespace) -> int:
+    profile, runs_dir, rc = _leader_runs_dir_or_refuse(a)
+    if rc is not None:
+        return rc
+    return _host_store_write(a, _beat_argv(profile, a.name or socket.gethostname()))
 
 
 def _parse_login_ok(text: str) -> bool | None:

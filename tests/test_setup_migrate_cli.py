@@ -66,6 +66,8 @@ def layout(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [])
     monkeypatch.setattr(cli.chair_read_lease, "read_lease", lambda runs_dir, now: dict(chair_read_lease.ABSENT))
     monkeypatch.setattr(cli.socket, "gethostname", lambda: "here")
+    monkeypatch.setattr(cli, "_migrate_beat", lambda locs: "beat: ok")  # never beat the real machine
+    monkeypatch.setattr(cli, "_migrate_operator_files", lambda locs: {})
     return types_ns(
         user=user,
         repos=repos,
@@ -128,6 +130,18 @@ def test_apply_moves_the_layout_and_leaves_nothing_dangling(layout, capsys):
     assert f"harness_dir: {layout.installs}/coxswain-graphs" in text
     assert str(layout.repos) not in text
     assert (layout.user / ".config" / "agent-tools" / "home").read_text().strip() == str(layout.installs.parent)
+
+
+def test_apply_lists_a_stale_script_then_the_beat_then_the_verify_line(layout, monkeypatch, capsys):
+    script = str(layout.user / "start.sh")
+    monkeypatch.setattr(cli, "_migrate_operator_files", lambda locs: {script: f"cd {layout.repos}/coxswain-tools\n"})
+    assert run(apply=True) == 0
+    lines = capsys.readouterr().out.rstrip().splitlines()
+    assert lines[-3:] == [
+        f"migrate: {script} still names {layout.repos}/coxswain-tools; edit it by hand",
+        "beat: ok",
+        "verify with: cox setup doctor",
+    ]
 
 
 def test_second_apply_has_nothing_to_do(layout, capsys):
