@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import types
 from pathlib import Path
 
 import pytest
@@ -1025,3 +1026,16 @@ def test_finish_stops_before_removing_links_when_the_board_export_fails(migrated
 def test_old_root_without_finish_is_refused(layout, capsys):
     assert run(old_root="/x") == 2
     assert "--old-root belongs to --finish" in capsys.readouterr().out
+
+
+def test_the_migrate_beat_runs_the_installed_cox_with_the_migrate_profile(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append((argv, kw["env"]["AGENT_TOOLS_PROFILE"]))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/cox")
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    assert cli._migrate_beat(types.SimpleNamespace(profile="/p/profile.yaml")) == "beat: ok"
+    assert calls == [(["/bin/cox", "host", "beat"], "/p/profile.yaml")]
