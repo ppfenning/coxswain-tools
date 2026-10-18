@@ -134,3 +134,39 @@ def test_healthy_tick_gives_nothing():
 def test_action_order_kept_and_repeated_key_once():
     events = events_from_tick({}, [STALLED, LOGIN, STRANDED, LOGIN, STRANDED])
     assert [e.key for e in events] == ["stall:run-9", "host_login:lane1", "needs_chair:init-a:stranded"]
+
+
+EMPTY_FACTS = {
+    "initiatives": [{"id": "init-a", "ready_tasks": []}],
+    "intake": [],
+    "approved": [],
+    "dispatch": {"max_in_flight": 2, "live_runs": 0, "hosts": [{"name": "lane1", "live_runs": 0}]},
+}
+QUEUE_EMPTY_BODY = "The lanes are idle: no ready task, intake, approved task or live run. File the next intake."
+
+
+def test_an_empty_queue_with_idle_lanes_gives_one_queue_empty_event():
+    (event,) = events_from_tick(EMPTY_FACTS, [])
+    assert (event.key, event.title, event.body) == ("queue_empty", "Queue empty", QUEUE_EMPTY_BODY)
+    assert events_from_tick({k: v for k, v in EMPTY_FACTS.items() if k != "approved"}, []) == [event]
+
+
+def test_each_thing_still_to_run_suppresses_queue_empty():
+    dispatch = EMPTY_FACTS["dispatch"]
+    suppressors = [
+        {"initiatives": [{"id": "init-a", "ready_tasks": [{"id": "t1"}]}]},
+        {"intake": [{"id": "i1"}]},
+        {"approved": [{"id": "t2"}]},
+        {"dispatch": {**dispatch, "live_runs": 1}},
+        {"dispatch": {**dispatch, "hosts": [{"name": "lane1", "live_runs": 1}]}},
+    ]
+    assert [events_from_tick({**EMPTY_FACTS, **s}, []) for s in suppressors] == [[]] * 5
+
+
+def test_missing_facts_never_fire_queue_empty():
+    for missing in ("initiatives", "intake", "dispatch"):
+        assert events_from_tick({k: v for k, v in EMPTY_FACTS.items() if k != missing}, []) == []
+
+
+def test_a_needs_chair_event_suppresses_queue_empty():
+    assert [e.key for e in events_from_tick(EMPTY_FACTS, [STRANDED])] == ["needs_chair:init-a:stranded"]
