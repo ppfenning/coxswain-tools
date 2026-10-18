@@ -499,6 +499,24 @@ def waiting_reported_from_actions(actions: Sequence[Row]) -> dict[str, str]:
     return reduce(_waiting_step, map(_action_doc, ordered), {})
 
 
+def pull_age_s(actions: Sequence[Row], now: datetime) -> float | None:
+    """Seconds from the newest `pull` row's `ts` to `now`; None when no row is a `pull` with a parseable `ts`."""
+    stamps = [
+        at
+        for doc in map(_action_doc, actions)
+        if doc.get("kind") == "pull"
+        if (at := _parsed_ts(doc.get("ts"), now)) is not None
+    ]
+    return (now - max(stamps)).total_seconds() if stamps else None
+
+
+def _parsed_ts(ts: object, now: datetime) -> datetime | None:
+    try:
+        return aligned(str(ts), now)
+    except ValueError:
+        return None
+
+
 def windowed_actions(load: Callable[[datetime], Sequence[Row]], now: datetime) -> Callable[[], tuple[Row, ...]]:
     """The `FactsDeps.actions` source for one gather: `load(now)` runs on the first call, and every later call returns the same rows."""
     cell: list[tuple[Row, ...]] = []  # the one localised mutation: filled by the first call, never changed after
@@ -1085,6 +1103,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "running": running_initiatives(live, items, repos) if deps.tickets is not None else [],
         "steer_streaks": steer_streaks_from_actions(action_rows),
         "waiting_reported": waiting_reported_from_actions(action_rows),
+        "pull_age_s": pull_age_s(action_rows, now),
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],

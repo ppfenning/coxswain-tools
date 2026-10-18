@@ -436,6 +436,7 @@ class Facts(TypedDict):
     steer_streaks: NotRequired[dict[str, int]]
     # Each initiative's newest waiting row as `<phase>|<quarantined>|<awaiting_land>`, until a later launch of it.
     waiting_reported: NotRequired[dict[str, str]]  # absent means {}
+    pull_age_s: NotRequired[float | None]  # seconds since the newest `pull` chair action; None or absent means no pull yet
     stranded: NotRequired[list[StrandedPhase]]  # phases with approved work not landed; absent means none
     phase_branches: NotRequired[list[PhaseBranch]]  # phase branches against main; absent means none
     idle_stall: IdleStallInputs  # idle-lanes stall inputs; a later task fills it
