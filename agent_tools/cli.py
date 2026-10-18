@@ -5743,7 +5743,7 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     facts.update(_chair_unit_facts())
     if profile is None:
         return facts
-    singles = [profile.get(k, "") for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir")]
+    singles = [profile.get(k, "") for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir", "umbrella_dir")]
     roots = list(profile.get("skills_roots") or [])
     # Every profile path is expanded ONCE, here; `paths_exist` keeps the raw
     # strings as keys (doctor.py's contract) but tests the expanded path.
@@ -5835,7 +5835,7 @@ def _doctor_store_rows(profile: dict | None) -> list[dict]:
 
 _DOCTOR_HOME_CHECKS = (
     "home root", "marketplace registered", "marketplace location", "old layout", "home paths", "home recorded",
-    "cartridge links",
+    "cartridge links", "lane host paths",
 )
 
 
@@ -5858,7 +5858,7 @@ def _doctor_home_rows(profile: dict | None) -> list[dict]:
     workspace = profile.get("workspace_dir")
     in_project = bool(source and workspace and Path(source).parent == Path(workspace).expanduser().parent)
     record = _read_text_or_none(Path(locs.record))
-    return doctor.home_rows(
+    rows = doctor.home_rows(
         locs,
         listing,
         Path(locs.home).is_dir(),
@@ -5873,6 +5873,7 @@ def _doctor_home_rows(profile: dict | None) -> list[dict]:
         harness_dir=profile.get("harness_dir") or "",
         user_home=str(Path.home()),
     )
+    return [*rows, doctor.lane_host_paths_row(_migrate_observe_hosts(locs))]
 
 
 def _setup_doctor(a: argparse.Namespace) -> int:
