@@ -439,12 +439,27 @@ def _expand_tilde(path: str, user_home: str) -> str:
 
 
 def _home_paths_row(
-    locations: Locations, skills_roots: Sequence[str], provider_profile: str, harness_dir: str, user_home: str
+    locations: Locations,
+    skills_roots: Sequence[str],
+    provider_profile: str,
+    harness_dir: str,
+    user_home: str,
+    workspace_dir: str = "",
 ) -> dict:
-    """Every path, tilde expanded against `user_home`, must sit under `<home>/`; text compare only."""
+    """Every path, tilde expanded against `user_home`, must sit under `<home>/`; text compare only.
+    The provider profile may also sit under `workspace_dir`, which is never moved; empty adds nothing."""
     prefix = f"{locations.home}/"
+    profile_prefixes = (prefix, *([f"{_expand_tilde(workspace_dir, user_home)}/"] if workspace_dir else []))
     offender = next(
-        (p for p in (*skills_roots, provider_profile, harness_dir) if not _expand_tilde(p, user_home).startswith(prefix)),
+        (
+            p
+            for p, allowed in (
+                *((s, (prefix,)) for s in skills_roots),
+                (provider_profile, profile_prefixes),
+                (harness_dir, (prefix,)),
+            )
+            if not _expand_tilde(p, user_home).startswith(allowed)
+        ),
         None,
     )
     if offender is None:
@@ -527,12 +542,14 @@ def home_rows(
     provider_profile: str = "",
     harness_dir: str = "",
     user_home: str = "",
+    workspace_dir: str = "",
 ) -> list[dict]:
     """Rows for the coxswain home: home root, marketplace registered, marketplace location, old layout,
     home paths, home recorded, cartridge links, and install bins when `install_bins` was gathered.
     `cartridge_links` maps link path to lexical target; its row is omitted when None unless the machine is unmigrated.
     `home_record` is the record text, None when absent: an unmigrated machine warns on old layout,
     home paths, home recorded and cartridge links. `user_home` expands a leading `~` in the path inputs.
+    `workspace_dir` is the profile's workspace folder, where a provider profile may also sit.
     The edge gathers every input; nothing here reads the filesystem, environment or clock."""
     root = [
         _home_root_row(locations, root_exists, root_writable),
@@ -550,7 +567,7 @@ def home_rows(
     return [
         *root,
         _legacy_layout_row(legacy_path),
-        _home_paths_row(locations, skills_roots, provider_profile, harness_dir, user_home),
+        _home_paths_row(locations, skills_roots, provider_profile, harness_dir, user_home, workspace_dir),
         _home_recorded_row(locations, home_record),
         *([] if cartridge_links is None else [_cartridge_links_row(locations, cartridge_links)]),
         *bins,

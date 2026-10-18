@@ -849,6 +849,18 @@ def test_home_paths_fail_naming_the_first_offender():
     assert (row["ok"], row["detail"]) == (False, "/elsewhere/a is not under /h")
 
 
+def test_home_paths_pass_for_a_provider_profile_under_the_workspace():
+    row = doctor._home_paths_row(
+        _LOCATIONS, ("/h/skills",), "/w/providers/claude-code.team.yaml", "/h/harness", "/u", "/w"
+    )
+    assert (row["check"], row["ok"]) == ("home paths", True)
+
+
+def test_home_paths_fail_for_a_provider_profile_under_neither_home_nor_workspace():
+    row = doctor._home_paths_row(_LOCATIONS, ("/h/skills",), "/elsewhere/p.yaml", "/h/harness", "/u", "/w")
+    assert (row["ok"], row["detail"]) == (False, "/elsewhere/p.yaml is not under /h")
+
+
 def test_home_recorded_passes_when_the_record_equals_the_home():
     row = _home()[5]
     assert (row["check"], row["ok"]) == ("home recorded", True)
