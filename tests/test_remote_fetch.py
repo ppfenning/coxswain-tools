@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import run_store
+from agent_tools import cli, run_store
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_fetch import (
     FetchError,
@@ -355,3 +355,27 @@ def test_fetch_run_reads_the_real_store_and_keeps_verify_when_a_task_is_approved
     _sqlite_store(tmp_path, monkeypatch, [("r1", "t1", _stored_row(False)), ("r1", "t2", _stored_row(True))])
     result, _ = _real_store_fetch(tmp_path)
     assert isinstance(result, FetchError) and result.step == "verify"
+
+
+def _wired_facts(monkeypatch, tmp_path, updated_at):
+    """`_store_approved_task_facts` for one approved row `t1` of run `r1`, started 20:00:00Z; returns (facts, set_state calls)."""
+    written = []
+    monkeypatch.setattr(cli, "_approved_store_rows", lambda records: [("p", "t1", {})])
+    monkeypatch.setattr(cli, "_initiative_of", lambda work_root, task: "x")
+    monkeypatch.setattr(cli.run_store, "run_started_at", lambda runs_dir, run_id: "2026-10-17T20:00:00+00:00")
+    monkeypatch.setattr(cli.run_store, "work_items", lambda runs_dir, initiative=None: [{"task_id": "t1", "state": "ready", "updated_at": updated_at}])
+    monkeypatch.setattr(cli.store_cli, "set_state", lambda *a, **k: written.append(a) or cli.store_cli.StateSet({"state": "approved"}))
+    return cli._store_approved_task_facts(tmp_path / "runs", tmp_path / "work", "r1", {}, "tester"), written
+
+
+def test_fetch_keeps_the_state_of_a_task_updated_after_the_run_started(tmp_path, monkeypatch, capsys):
+    facts, written = _wired_facts(monkeypatch, tmp_path, "2026-10-17T20:38:12Z")
+    assert (facts, written) == ([], [])
+    assert capsys.readouterr().out == "fetch: t1 kept ready, changed after run r1 started\n"
+
+
+def test_fetch_writes_the_state_of_a_task_updated_before_the_run_started(tmp_path, monkeypatch, capsys):
+    facts, written = _wired_facts(monkeypatch, tmp_path, "2026-10-17T19:00:00Z")
+    assert facts == [{"id": "t1", "initiative": "x", "phase": "p", "run": "r1"}]
+    assert [a[2:5] for a in written] == [("t1", "approved", "tester")]
+    assert capsys.readouterr().out == ""

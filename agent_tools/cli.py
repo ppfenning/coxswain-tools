@@ -5068,9 +5068,14 @@ def _store_approved_task_facts(
     approved; each fact carries `run = run_id` so a `land_phase` planned from it names a run. A row whose
     initiative cannot be found, or whose compare-and-set the store refuses, contributes no fact."""
     facts = []
+    started = run_store.run_started_at(runs_dir, run_id)
     for phase, task, _record in _approved_store_rows(records):
         initiative = _initiative_of(work_root, task)
         if initiative is None:
+            continue
+        row = next((r for r in run_store.work_items(runs_dir, initiative) if r.get("task_id") == task), None)
+        if row is not None and remote_fetch.changed_after_start(row.get("updated_at"), started):
+            print(f"fetch: {task} kept {row.get('state')}, changed after run {run_id} started")
             continue
         moved = land.set_state_stop(store_cli.set_state(runs_dir, initiative, task, "approved", by, expected="ready")) is None
         if moved:

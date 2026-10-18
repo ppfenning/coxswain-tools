@@ -198,6 +198,21 @@ def connect_readonly(runs_dir: Path) -> Any | None:
     return None if opened is None else opened[0]
 
 
+def run_started_at(runs_dir: Path, run_id: str) -> str | None:
+    """Edge. `runs.started_at` text for `run_id`; None with no store, no row, a null value or an unreadable store."""
+    opened = _open(runs_dir)
+    if opened is None:
+        return None
+    conn, token = opened
+    try:
+        row = conn.execute(_sql("SELECT started_at FROM runs WHERE run_id = {p}", token), (run_id,)).fetchone()
+    except _db_errors():
+        return None
+    finally:
+        conn.close()
+    return None if row is None or row["started_at"] is None else str(row["started_at"])
+
+
 def _lease_name(run_id: str) -> str:
     # mirrors graphs `harness/run_lease.lease_name`: the lease is per prefix, so `x-3` and `x-4` share `runs:x`
     return "runs:" + re.sub(r"-\d+$", "", run_id)
