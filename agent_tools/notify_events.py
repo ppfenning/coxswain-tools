@@ -73,12 +73,38 @@ def _is_dependency_wait(action: Mapping) -> bool:
     return isinstance(cause, str) and (cause.startswith("waiting on ") or cause in SELF_CLEARING_CAUSES)
 
 
+QUEUE_EMPTY = Event(
+    "needs_chair",
+    "queue_empty",
+    "Queue empty",
+    "The lanes are idle: no ready task, intake, approved task or live run. File the next intake.",
+)
+
+
+def _queue_is_empty(facts: Mapping, events: Sequence[Event]) -> bool:
+    """True only when every fact is present and empty: facts["dispatch"] holds the local live_runs and a hosts list; approved may be absent."""
+    initiatives, intake, dispatch = facts.get("initiatives"), facts.get("intake"), facts.get("dispatch")
+    if initiatives is None or intake is None or not isinstance(dispatch, Mapping) or "live_runs" not in dispatch:
+        return False
+    hosts = dispatch.get("hosts")
+    return (
+        not events
+        and not any(i.get("ready_tasks") for i in initiatives)
+        and not intake
+        and not facts.get("approved")
+        and dispatch["live_runs"] == 0
+        and hosts is not None
+        and all(h.get("live_runs") == 0 for h in hosts)
+    )
+
+
 def events_from_tick(facts: Mapping, actions: Sequence[Mapping]) -> list[Event]:
-    """Events in first-seen key order, one per key, the first action that carries a remedy winning; facts is unused."""
+    """Events in first-seen key order, one per key, the first action that carries a remedy winning; queue_empty comes last, when facts show nothing left to run."""
     chosen: dict[str, tuple[Mapping, Event]] = {}
     for a in (a for a in actions if a.get("kind") == "needs_chair" and not _is_dependency_wait(a)):
         e = _event(a)
         held = chosen.get(e.key)
         if held is None or (_remedy_line(a) and not _remedy_line(held[0])):
             chosen[e.key] = (a, e)
-    return [e for _, e in chosen.values()]
+    built = [e for _, e in chosen.values()]
+    return [*built, QUEUE_EMPTY] if _queue_is_empty(facts, built) else built
