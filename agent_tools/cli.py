@@ -9645,11 +9645,15 @@ def _chair_run(a: argparse.Namespace) -> int:
     return _chair_once_exit(last[0]) if a.once else 0
 
 
+def _chair_default_environment_file() -> str | None:
+    garage = Path("~/.config/agent-tools/garage.env").expanduser()
+    return str(garage) if garage.is_file() else None
+
+
 def _chair_service_environment_file(a: argparse.Namespace) -> str | None:
     if a.environment_file:
         return os.path.abspath(Path(a.environment_file).expanduser())
-    garage = Path("~/.config/agent-tools/garage.env").expanduser()
-    return str(garage) if garage.is_file() else None
+    return _chair_default_environment_file()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -9659,9 +9663,20 @@ class _ChairUnitRefusal:
     message: str
 
 
-def _chair_unit_text(label: str, interval: int | str, env_file: str | None, profile_path: Path) -> str | _ChairUnitRefusal:
-    """Edge-light. The unit text for these arguments, or the refusal; install and `setup migrate` both build it here.
-    It reads PATH, the profile, the env file and where `cox` is, and writes and prints nothing."""
+@dataclasses.dataclass(frozen=True)
+class _ChairUnitInputs:
+    """The absolute, systemd-safe values a chair unit is built from."""
+
+    cox: str
+    workspace_dir: str
+    profile: str
+    path: str
+    env_file: str | None
+
+
+def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Path) -> _ChairUnitInputs | _ChairUnitRefusal:
+    """Edge-light. Resolves cox, the profile, PATH and the env file, or says why not; writes and prints nothing.
+    A `label` of None means the unit has none, so there is no label to check."""
     cox = shutil.which("cox")
     if cox is None:
         return _ChairUnitRefusal("chair service: cox is not on PATH")
@@ -9686,7 +9701,7 @@ def _chair_unit_text(label: str, interval: int | str, env_file: str | None, prof
     values = {
         "cox": os.path.abspath(cox),
         "workspace_dir": os.path.abspath(Path(profile["workspace_dir"]).expanduser()),
-        "--label": label,
+        **({"--label": label} if label is not None else {}),
         "--profile": os.path.abspath(profile_path),
         **({"--environment-file": env_file} if env_file is not None else {}),
         "PATH": unit_path_value,
@@ -9702,9 +9717,16 @@ def _chair_unit_text(label: str, interval: int | str, env_file: str | None, prof
         return _ChairUnitRefusal(
             f"chair service: {env_file} has export lines ({numbers}) that EnvironmentFile= may skip; pass --environment-file with NAME=value lines"
         )
+    return _ChairUnitInputs(values["cox"], values["workspace_dir"], values["--profile"], unit_path_value, env_file)
+
+
+def _chair_unit_text(label: str, interval: int | str, env_file: str | None, profile_path: Path) -> str | _ChairUnitRefusal:
+    """Edge-light. The unit text for these arguments, or the refusal; install and `setup migrate` both build it here."""
+    resolved = _chair_unit_inputs(label, env_file, profile_path)
+    if isinstance(resolved, _ChairUnitRefusal):
+        return resolved
     return chair_service.unit_text(
-        values["cox"], values["workspace_dir"], values["--label"], interval, env_file, values["--profile"],
-        unit_path_value,
+        resolved.cox, resolved.workspace_dir, label, interval, env_file, resolved.profile, resolved.path,
     )
 
 
@@ -9962,8 +9984,69 @@ def _chair_attach(
     return 1 if verdict.kind == "none" else 0
 
 
+def _watchdog_paths(platform: str, home: Path) -> list[Path]:
+    """The files a watchdog timer lives in on this platform."""
+    if platform == "darwin":
+        return [home / "Library" / "LaunchAgents" / chair_service.WATCHDOG_PLIST_NAME]
+    unit_dir = chair_service.unit_path(home).parent
+    return [unit_dir / chair_service.WATCHDOG_SERVICE_NAME, unit_dir / chair_service.WATCHDOG_TIMER_NAME]
+
+
+def _watchdog_install_plan(platform: str, home: Path, resolved: _ChairUnitInputs, minutes: int) -> list[tuple[Path, str]]:
+    """Each file to write, in `_watchdog_paths` order, with its text."""
+    if platform == "darwin":
+        texts = [chair_service.watchdog_plist_text(resolved.cox, resolved.profile, resolved.path, minutes)]
+    else:
+        texts = [
+            chair_service.watchdog_service_text(resolved.cox, resolved.profile, resolved.path, resolved.env_file),
+            chair_service.watchdog_timer_text(minutes),
+        ]
+    return list(zip(_watchdog_paths(platform, home), texts, strict=True))
+
+
+def _watchdog_activation_lines(platform: str, plist: Path) -> list[str]:
+    """Text for the user to run; nothing here is executed."""
+    if platform == "darwin":
+        return [f"launchctl bootstrap gui/$(id -u) {plist}"]
+    return ["systemctl --user daemon-reload", f"systemctl --user enable --now {chair_service.WATCHDOG_TIMER_NAME}"]
+
+
+def _chair_watchdog_install(a: argparse.Namespace) -> int:
+    """Edge. Writes the watchdog timer files and prints the lines that activate them; runs no launchd or systemd tool."""
+    if a.interval_minutes < 1:
+        print("refusing: --interval-minutes must be at least 1")
+        return 2
+    resolved = _chair_unit_inputs(None, _chair_default_environment_file(), _profile_path(a))
+    if isinstance(resolved, _ChairUnitRefusal):
+        print(resolved.message)
+        return 2
+    plan = _watchdog_install_plan(sys.platform, Path.home(), resolved, a.interval_minutes)
+    for path, text in plan:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(path)
+    print("\n".join(_watchdog_activation_lines(sys.platform, plan[0][0])))
+    return 0
+
+
+def _chair_watchdog_uninstall() -> int:
+    """Edge. Removes the watchdog timer files that exist; runs no launchd or systemd tool."""
+    # The platform's own paths, so uninstall undoes exactly what install wrote on this machine.
+    present = [p for p in _watchdog_paths(sys.platform, Path.home()) if p.exists()]
+    for path in present:
+        path.unlink()
+        print(f"removed {path}")
+    if not present:
+        print("no watchdog timer installed")
+    return 0
+
+
 def _chair_watchdog(a: argparse.Namespace) -> int:
     """Edge. One check of the chair lease and status rows; the notify state file is the one `chair run` uses."""
+    if a.install:
+        return _chair_watchdog_install(a)
+    if a.uninstall:
+        return _chair_watchdog_uninstall()
     profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
@@ -10065,12 +10148,17 @@ CHAIR_COMMANDS = [
             commands.Arg(("--stale-minutes",), {"type": int, "default": 10, "help": "minutes without a lease beat before the loop is down (default: 10)"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print each alert and push nothing"}),
             commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--install",), {"action": "store_true", "help": "write the timer files and print the lines that activate them; runs nothing itself"}),
+            commands.Arg(("--uninstall",), {"action": "store_true", "help": "remove the timer files this platform's install wrote"}),
+            commands.Arg(("--interval-minutes",), {"type": int, "default": 5, "help": "minutes between checks in the installed timer (default: 5)"}),
         ),
         "agent_tools.cli:_chair_watchdog", False, (),
+        exclusive=("--install", "--uninstall"),
         description=(
             "A one-shot check meant for a five-minute timer.\n"
             "It reads only the store and exits 0 whether or not it pushed.\n"
-            "It exits 1 only when the store cannot be read."
+            "It exits 1 only when the store cannot be read.\n"
+            "--install and --uninstall only write or remove files: no check runs and no launchd or systemd tool does."
         ),
     ),
     commands.Command(
