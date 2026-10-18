@@ -1,6 +1,6 @@
 """An intake's decompose runs as DecomposeRun values, oldest first."""
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,18 @@ LINT_REFUSAL_MARKER = "initiative-decompose failed:"  # the reach lint's refusal
 
 def refusal_line(log: str) -> str | None:
     return next((line for line in log.splitlines() if any(m in line for m in REFUSAL_MARKERS)), None)
+
+
+def refusal_reason(log: str) -> str | None:
+    """The refusal line, plus the next line after ` — ` when that line is non-empty and not indented."""
+    line = refusal_line(log)
+    if line is None:
+        return None
+    lines = log.splitlines()
+    following = lines[lines.index(line) + 1 :][:1]
+    if following and following[0] and not following[0][0].isspace():
+        return f"{line} — {following[0]}"
+    return line
 
 
 def log_wrote_items(run_id: str, log: str) -> bool | None:
@@ -91,3 +103,17 @@ def read_decompose_runs(runs_dir: Path, intake_id: str) -> list[DecomposeRun]:
         wrote = verdict if exited and verdict is not None else run.wrote_items
         out.append(replace(run, wrote_items=wrote, refusal_line=refusal))
     return out
+
+
+def _read_log(runs_dir: Path, run_id: str) -> str | None:
+    try:
+        return (runs_dir / f"{run_id}.log").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def decompose_refusals(runs_dir: Path, run_ids: Iterable[str]) -> dict[str, str]:
+    """Edge. Run id to its refusal reason; a missing or unreadable log, or one with no refusal, is left out."""
+    texts = {run_id: _read_log(runs_dir, run_id) for run_id in run_ids}
+    reasons = {run_id: refusal_reason(text) for run_id, text in texts.items() if text is not None}
+    return {run_id: reason for run_id, reason in reasons.items() if reason is not None}
