@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import plistlib
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,49 @@ def test_unit_text_renders_one_path_line_only_when_given_a_path() -> None:
     with_path = chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, None, path="/a:/b")
     assert with_path.splitlines().count("Environment=PATH=/a:/b") == 1
     assert "Environment=" not in chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, None)
+
+
+def test_watchdog_names_are_the_files_and_label_the_edge_reuses() -> None:
+    assert chair_service.WATCHDOG_SERVICE_NAME == "coxswain-chair-watchdog.service"
+    assert chair_service.WATCHDOG_TIMER_NAME == "coxswain-chair-watchdog.timer"
+    assert chair_service.WATCHDOG_PLIST_LABEL == "coxswain-chair-watchdog"
+    assert chair_service.WATCHDOG_PLIST_NAME == "coxswain-chair-watchdog.plist"
+
+
+def test_watchdog_service_text_runs_the_oneshot_watchdog_with_the_profile() -> None:
+    lines = chair_service.watchdog_service_text("/usr/local/bin/cox", "/p.yaml", "/a:/b", "/h/garage.env").splitlines()
+    assert "Type=oneshot" in lines
+    assert "ExecStart=/usr/local/bin/cox chair watchdog --profile /p.yaml" in lines
+    assert "Environment=PATH=/a:/b" in lines
+    assert "EnvironmentFile=-/h/garage.env" in lines
+
+
+def test_watchdog_service_text_without_an_environment_file_has_no_such_line() -> None:
+    assert "EnvironmentFile" not in chair_service.watchdog_service_text("/usr/local/bin/cox", "/p.yaml", "/a:/b", None)
+
+
+def test_watchdog_timer_text_uses_the_given_minutes() -> None:
+    lines = chair_service.watchdog_timer_text(7).splitlines()
+    assert "OnBootSec=7min" in lines
+    assert "OnUnitActiveSec=7min" in lines
+    assert lines.index("[Timer]") < lines.index("Unit=coxswain-chair-watchdog.service") < lines.index("[Install]")
+    assert lines.index("[Install]") < lines.index("WantedBy=timers.target")
+
+
+def test_watchdog_plist_text_carries_label_arguments_interval_and_path() -> None:
+    parsed = plistlib.loads(chair_service.watchdog_plist_text("/usr/local/bin/cox", "/p.yaml", "/a:/b", 7).encode())
+    assert parsed == {
+        "Label": "coxswain-chair-watchdog",
+        "ProgramArguments": ["/usr/local/bin/cox", "chair", "watchdog", "--profile", "/p.yaml"],
+        "StartInterval": 420,
+        "EnvironmentVariables": {"PATH": "/a:/b"},
+    }
+
+
+def test_watchdog_plist_text_escapes_xml_special_characters() -> None:
+    text = chair_service.watchdog_plist_text("/bin/cox", "/p.yaml", "/a&b:/c<d", 5)
+    assert "<string>/a&amp;b:/c&lt;d</string>" in text
+    assert plistlib.loads(text.encode())["EnvironmentVariables"] == {"PATH": "/a&b:/c<d"}
 
 
 def test_unit_args_round_trips_unit_text() -> None:
