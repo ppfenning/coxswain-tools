@@ -9,7 +9,11 @@ Observed layout, a dict with these keys:
 - `entries`: for each of coxswain-cartridges, coxswain-graphs and coxswain-tools, a dict
   with `old` (the old path), `old_kind` and `new_kind` (each one of absent, dir,
   symlink, file) and `old_target` (where the old path points when it is a symlink).
-  The new path is never observed. It is the checkout's name under `Locations.installs`.
+  The new path is never observed. It is the checkout's name under `Locations.installs`. A symlink entry
+  may also hold `target_git`, true only when its target is a real directory with git metadata. A symlink
+  to such a target, with the new path absent, plans a move of the target (not the link) and two links to
+  the new path. `old_target` may be absolute or relative to the folder of `old`. Without `target_git` the
+  entry refuses as before.
 - `workspace`: a dict with `path`. The workspace is registered by location and is
   never moved, so the planner only reports where it stays.
 - `settings`: profile field to its current value, a string or a list of strings. `repo_map` is the one
@@ -112,6 +116,17 @@ def _refuse(name: str, reason: str) -> Step:
     return _step("refuse", f"{name} {reason}, so nothing is moved.", checkout=name)
 
 
+def _linked_target(entry: dict[str, Any], new: str) -> str | None:
+    """The git checkout a symlinked old path points at, when it can be moved to `new`; else None."""
+    old, target = entry.get("old", ""), entry.get("old_target")
+    if entry.get("old_kind") != "symlink" or entry.get("new_kind", "absent") != "absent":
+        return None
+    if not entry.get("target_git") or not target:
+        return None
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(old), target))
+    return None if resolved in (new, posixpath.normpath(old)) else resolved
+
+
 def _checkout(name: str, entry: dict[str, Any] | None, new: str) -> tuple[str, tuple[Step, ...]]:
     """Classify one checkout as moved (steps remain), final (none) or refuse."""
     if not entry or "old" not in entry:
@@ -133,6 +148,22 @@ def _checkout(name: str, entry: dict[str, Any] | None, new: str) -> tuple[str, t
         return "refuse", (_refuse(name, f"is absent at {old} and at {new}"),)
     if old_kind == "symlink" and new_kind == "dir" and entry.get("old_target") == new:
         return "final", ()
+    if (target := _linked_target(entry, new)) is not None:
+        return "moved", (
+            _step(
+                "move",
+                f"{name} is a link, so its target belongs under the installs folder of the home.",
+                src=target,
+                dst=new,
+            ),
+            link,
+            _step(
+                "symlink",
+                f"The old spelling {target} stays reachable through a link to the new path.",
+                path=target,
+                target=new,
+            ),
+        )
     return "refuse", (_refuse(name, f"has {old_kind} at {old} and {new_kind} at {new}, which no step can reconcile"),)
 
 
@@ -512,7 +543,13 @@ def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequ
     pairs = {name: (_expand_all(entries[name]["old"], user_home), news[name]) for name in CHECKOUTS}
     market_runs, market_notes = _marketplace_steps(observed, locs)
     # A checkout still a real directory at its old path has not moved yet, so its old venv is there.
-    where = {name: pairs[name][0] if entries[name].get("old_kind") == "dir" else news[name] for name in CHECKOUTS}
+    # A linked checkout's venv is at its link target until the move runs.
+    where = {
+        name: pairs[name][0]
+        if entries[name].get("old_kind") == "dir"
+        else _linked_target(entries[name], news[name]) or news[name]
+        for name in CHECKOUTS
+    }
     body = [
         *(step for name in moved for step in verdicts[name][1]),
         *_link_steps(observed["cartridge_links"], locs),

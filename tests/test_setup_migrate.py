@@ -277,6 +277,73 @@ def test_old_symlink_elsewhere_or_dangling_refuses():
         assert ops(migrate_plan(with_entry(final_layout(), TOOLS, bad), LOCS)) == ["refuse"]
 
 
+def linked_entry(target="/u/repos/tools", target_git=True):
+    return {**entry(TOOLS, "symlink", "absent", target), "target_git": target_git}
+
+
+def test_link_to_bare_name_plans_target_move_two_links_then_reinstall():
+    steps = migrate_plan(with_entry(old_layout(), TOOLS, linked_entry()), LOCS)
+    new = f"{NEW}/{TOOLS}"
+    assert steps[4:7] == [
+        {
+            "op": "move",
+            "src": "/u/repos/tools",
+            "dst": new,
+            "why": f"{TOOLS} is a link, so its target belongs under the installs folder of the home.",
+        },
+        {
+            "op": "symlink",
+            "path": f"/u/repos/{TOOLS}",
+            "target": new,
+            "why": f"{TOOLS} stays reachable at its old path through a link to the new one.",
+        },
+        {
+            "op": "symlink",
+            "path": "/u/repos/tools",
+            "target": new,
+            "why": "The old spelling /u/repos/tools stays reachable through a link to the new path.",
+        },
+    ]
+    assert ops(steps) == (
+        ["move", "symlink"] * 2
+        + ["move", "symlink", "symlink"]
+        + ["symlink"] * 2
+        + ["worktree_repair", "verify"] * 3
+        + ["run"] * 8
+        + ["rewrite_profile_key"] * 3
+        + ["rewrite_setting"]
+        + ["print"] * 2
+    )
+
+
+def test_relative_link_target_is_resolved_against_the_link_folder():
+    steps = migrate_plan(with_entry(old_layout(), TOOLS, linked_entry("tools")), LOCS)
+    assert of(steps, "move")[-1]["src"] == "/u/repos/tools"
+
+
+def test_applying_the_linked_plan_leaves_both_spellings_resolving():
+    observed = with_entry(old_layout(), TOOLS, linked_entry())
+    fs, resolves = simulate(migrate_plan(observed, LOCS), {**model(observed), "/u/repos/tools": ("dir",)})
+    assert fs["/u/repos/tools"] == fs[f"/u/repos/{TOOLS}"] == ("symlink", f"{NEW}/{TOOLS}")
+    assert all(resolves(path) for path, node in fs.items() if node[0] == "symlink")
+
+
+@pytest.mark.parametrize("target_git", [False, None])
+def test_link_to_a_target_that_is_not_a_git_checkout_still_refuses(target_git):
+    bad = {**linked_entry(target_git=target_git)}
+    steps = migrate_plan(with_entry(old_layout(), TOOLS, bad), LOCS)
+    assert ops(steps) == ["refuse"]
+    assert steps[0]["why"] == (
+        f"{TOOLS} has symlink at /u/repos/{TOOLS} and absent at {NEW}/{TOOLS}, which no step can reconcile, "
+        "so nothing is moved."
+    )
+
+
+def test_link_whose_target_is_the_new_path_never_plans_a_self_move():
+    steps = migrate_plan(with_entry(old_layout(), TOOLS, linked_entry(f"{NEW}/{TOOLS}")), LOCS)
+    assert ops(steps) == ["refuse"]
+
+
 def test_crash_between_move_and_link_emits_exactly_the_symlink():
     steps = migrate_plan(with_entry(final_layout(), GRAPHS, crashed_entry(GRAPHS)), LOCS)
     assert of(steps, "symlink") == [
