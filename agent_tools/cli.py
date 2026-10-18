@@ -1118,7 +1118,12 @@ def _runs_stop(a: argparse.Namespace) -> int:
 
 
 def _runs_triage(a: argparse.Namespace) -> int:
-    code, out = runs_triage.run(a.task_id, a.json)
+    runs_dir = None
+    if a.profile or _profile_path(a).exists():
+        _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+        if refuse_rc is not None:
+            return refuse_rc
+    code, out = runs_triage.run(a.task_id, a.json, runs_dir=runs_dir, repo=Path(a.repo).expanduser())
     print(out)
     return code
 
@@ -7824,8 +7829,14 @@ RUNS_COMMANDS = [
     ),
     commands.Command(
         "triage", "runs", "print a quarantined task's facts; reads the store and git only, makes no model call",
-        (commands.Arg(("task_id",)), commands.Arg(("--json",), {"action": "store_true"})),
+        (
+            commands.Arg(("task_id",)),
+            commands.Arg(("--json",), {"action": "store_true"}),
+            commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--repo",), {"default": ".", "metavar": "PATH", "help": "the task's git repository (default: the current directory)"}),
+        ),
         "agent_tools.cli:_runs_triage", False, (),
+        defaults={"profile": None},
     ),
 ]
 
