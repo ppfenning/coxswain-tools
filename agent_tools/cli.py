@@ -6608,10 +6608,12 @@ def _setup_migrate(a: argparse.Namespace) -> int:
             if refusals:
                 print("\n".join(refusals))
                 return 1
-            state = Path(locs.state)
-            state.mkdir(parents=True, exist_ok=True)
-            (state / "migrate.json").write_text(
-                json.dumps({"old_root": _migrate_old_root(_migrate_profile(locs), locs), "new_root": locs.installs}), encoding="utf-8")
+            old_root = _migrate_old_root(_migrate_profile(locs), locs)
+            if old_root != locs.installs:  # a re-run after the move must keep the marker that names the real old root
+                state = Path(locs.state)
+                state.mkdir(parents=True, exist_ok=True)
+                (state / "migrate.json").write_text(
+                    json.dumps({"old_root": old_root, "new_root": locs.installs}), encoding="utf-8")
         if any(step["op"] == "run" for step in plan):
             _load_lazy_modules()  # the reinstall replaces this tool's own environment, so import everything first
         for number, step in enumerate(plan, 1):

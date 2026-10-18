@@ -287,6 +287,8 @@ def _chair_unit_steps(
     seen = chair_unit.effective_path(unit, drop_ins)
     if seen is None or old_root + "/coxswain-" not in seen.path:
         return []
+    if not any(old != new for old, new in pairs):  # after the move the old root is the installs folder: nothing to rewrite
+        return []
     if seen.source == chair_unit.UNIT_NAME:
         why = "The chair systemd unit still names the old checkout root in its PATH, so it is regenerated."
         return [_step("chair_unit", why)]

@@ -787,6 +787,14 @@ def test_already_migrated_dropin_path_plans_nothing():
     assert migrate_plan(observed, LOCS) == migrate_plan(old_layout(), LOCS)
 
 
+def test_a_migrated_machine_with_its_path_in_a_drop_in_plans_only_the_skip():
+    # every setting already names the installs folder, so each checkout is observed at its new path
+    migrated = DROP_IN.replace("/u/repos", NEW)
+    at_new = {name: {**final_entry(name), "old": f"{NEW}/{name}"} for name in CHECKOUTS}
+    observed = {**final_layout(), "entries": at_new, "chair_unit": BARE_UNIT, "chair_unit_drop_ins": [("10-path.conf", migrated)]}
+    assert [step["op"] for step in migrate_plan(observed, LOCS)] == ["skip"]
+
+
 def test_a_later_dropin_overrides_an_old_unit_path_so_the_unit_is_not_regenerated():
     observed = {
         **old_layout(),
