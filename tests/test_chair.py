@@ -17,6 +17,12 @@ from agent_tools import chair, store_cli
 from agent_tools.cli import _retaken_chair, main
 
 
+@pytest.fixture(autouse=True)
+def _files_store(tmp_path, monkeypatch):
+    """Pin the store URL to a files store so no test reads $AGENT_TOOLS_PROFILE; a postgres test overrides it."""
+    monkeypatch.setattr(store_cli, "_store_url", lambda runs_dir: str(pathlib.Path(runs_dir) / "cox.db"))
+
+
 class _FakeClock:
     def __init__(self) -> None:
         self.ticks = 0
@@ -167,6 +173,70 @@ def test_lease_verdict_maps_each_result_to_an_action():
     assert chair.lease_verdict(store_cli.LeaseRefused(None, None)) == ("refused", "chair: the store lease was refused")
     assert chair.lease_verdict(store_cli.LeaseError("exit 2: bad")) == ("fallback", "chair: warning: store lease failed (exit 2: bad); using the lock file only")
     assert chair.lease_verdict(store_cli.NotAvailable()) == ("fallback", "chair: warning: no harness found; using the lock file only")
+
+
+_PG = "postgresql://u@h/db"
+
+
+def test_lease_verdict_refuses_a_postgres_store_on_a_lease_error():
+    assert chair.lease_verdict(store_cli.LeaseError("exit 2: bad"), _PG) == (
+        "refused",
+        "chair: cannot reach the store lease (exit 2: bad); not taking the chair",
+    )
+
+
+def test_lease_verdict_refuses_a_postgres_store_on_a_released_answer():
+    assert chair.lease_verdict(store_cli.LeaseReleased(), _PG) == (
+        "refused",
+        "chair: cannot reach the store lease (the lease answered released, not granted); not taking the chair",
+    )
+
+
+def test_lease_verdict_refuses_a_postgres_store_with_no_harness():
+    assert chair.lease_verdict(store_cli.NotAvailable(), _PG) == (
+        "refused",
+        "chair: cannot reach the store lease (no harness found); not taking the chair",
+    )
+
+
+def test_lease_verdict_still_falls_back_on_the_files_store():
+    warning = "chair: warning: store lease failed (exit 2: bad); using the lock file only"
+    assert chair.lease_verdict(store_cli.LeaseError("exit 2: bad"), "/runs/cox.db") == ("fallback", warning)
+
+
+def test_claim_on_a_postgres_store_with_an_exit_2_returns_the_refusal(tmp_path, monkeypatch, capsys):
+    _harness(monkeypatch, 2, json.dumps({"error": "unreadable store"}))
+    monkeypatch.setattr(store_cli, "_store_url", lambda runs_dir: _PG)
+
+    line = chair.acquire_lease(tmp_path, "chair-test", 1, "h")
+
+    assert line.startswith("chair: cannot reach the store lease (")
+    assert capsys.readouterr().err == ""
+    assert not (tmp_path / chair.LEASE_FILENAME).exists()
+
+
+def test_renew_of_a_held_lease_on_a_postgres_store_warns_and_keeps_the_chair(tmp_path, monkeypatch, capsys):
+    (tmp_path / chair.LEASE_FILENAME).write_text(json.dumps({"holder": _HOLDER, "epoch": 7}))
+    _harness(monkeypatch, 2, json.dumps({"error": "unreadable store"}))
+    monkeypatch.setattr(store_cli, "_store_url", lambda runs_dir: _PG)
+
+    assert chair.renew_lease(tmp_path, "chair-test", 1, "h") == ""
+
+    assert "warning: store lease failed" in capsys.readouterr().err
+    assert json.loads((tmp_path / chair.LEASE_FILENAME).read_text()) == {"holder": _HOLDER, "epoch": 7}
+
+
+def test_take_on_a_postgres_store_with_an_unreachable_lease_is_refused_and_writes_no_lock(tmp_path, monkeypatch, capsys):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n")
+    monkeypatch.setattr(store_cli, "_store_url", lambda runs_dir: _PG)
+    monkeypatch.setattr(store_cli, "lease_acquire", lambda *args, **kwargs: store_cli.LeaseError("exit 2: bad"))
+
+    rc = main(["route", "chair", "take", "--profile", str(profile), "--label", "bob", "--pid", str(os.getpid())])
+
+    assert rc == 2
+    assert capsys.readouterr().out == "chair: cannot reach the store lease (exit 2: bad); not taking the chair\n"
+    assert chair.read(tmp_path / "runs") is None
 
 
 def test_claim_with_no_lease_held_acquires_and_stores_the_epoch(tmp_path, monkeypatch):

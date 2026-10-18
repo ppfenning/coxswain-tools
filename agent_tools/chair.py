@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from agent_tools import store_cli
+from agent_tools import store_cli, store_dialect
 
 __all__ = [
     "CHAIR_FILENAME",
@@ -264,17 +264,25 @@ def lease_holder(session: str, pid: int, host: str) -> str:
     return f"{session}@{host}:{pid}"
 
 
-def lease_verdict(result: store_cli.LeaseResult) -> tuple[str, str]:
-    """Pure. ("granted" | "refused" | "fallback", line). A refusal is a foreign holder; a lease error or a missing harness falls back to the lock file with a warning."""
+def lease_verdict(result: store_cli.LeaseResult, store_url: str | None = None) -> tuple[str, str]:
+    """Pure. ("granted" | "refused" | "fallback", line). An error, a released answer or no harness refuses on a postgres `store_url` and falls back to the lock file otherwise."""
     if isinstance(result, store_cli.LeaseGranted):
         return "granted", ""
     if isinstance(result, store_cli.LeaseRefused):
         return "refused", f"chair: held by {result.holder} (store lease)" if result.holder else "chair: the store lease was refused"
+    shared = store_url is not None and store_dialect.is_postgres(store_url)
     if isinstance(result, store_cli.LeaseError):
-        return "fallback", f"chair: warning: store lease failed ({result.detail}); using the lock file only"
-    if isinstance(result, store_cli.LeaseReleased):
-        return "fallback", "chair: warning: store lease answered released, not granted; using the lock file only"
-    return "fallback", "chair: warning: no harness found; using the lock file only"
+        detail = result.detail
+        warning = f"chair: warning: store lease failed ({detail}); using the lock file only"
+    elif isinstance(result, store_cli.LeaseReleased):
+        detail = "the lease answered released, not granted"
+        warning = "chair: warning: store lease answered released, not granted; using the lock file only"
+    else:
+        detail = "no harness found"
+        warning = "chair: warning: no harness found; using the lock file only"
+    if shared:
+        return "refused", f"chair: cannot reach the store lease ({detail}); not taking the chair"
+    return "fallback", warning
 
 
 def _lease_path(runs_dir: Path) -> Path:
@@ -299,13 +307,13 @@ def _write_lease(runs_dir: Path, holder: str, epoch: int) -> None:
 
 
 def acquire_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = DEFAULT_LEASE_TTL_SECONDS, steal: bool = False) -> str:
-    """Edge. The refusal line when another holder has a live lease, else "". A missing harness or a lease error warns on stderr and returns "", so the lock file alone governs. `steal` takes a held lease at a higher epoch."""
+    """Edge. The refusal line when another holder has a live lease, else "". On a postgres store a lease error, a released answer or a missing harness also returns a refusal line, because the lock file cannot see a chair on another machine. On the files store they warn on stderr and return "", so the lock file alone governs. `steal` takes a held lease at a higher epoch. `cox chair take` shares this function and refuses the same way."""
     holder = lease_holder(session, pid, host)
     result = store_cli.lease_acquire(runs_dir, LEASE_NAME, holder, ttl, steal)
     if isinstance(result, store_cli.LeaseGranted):
         _write_lease(runs_dir, holder, result.epoch)
         return ""
-    verdict, line = lease_verdict(result)
+    verdict, line = lease_verdict(result, store_cli._store_url(Path(runs_dir)))
     if verdict == "refused":
         return line
     _lease_path(runs_dir).unlink(missing_ok=True)
@@ -315,7 +323,9 @@ def acquire_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = 
 
 def renew_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = DEFAULT_LEASE_TTL_SECONDS) -> str:
     """Edge. The refusal line when the lease is lost to another holder, else "". With no sidecar (a chair taken before
-    the lease existed, or one that fell back to the lock file), the beat tries to acquire it instead."""
+    the lease existed, or one that fell back to the lock file), the beat tries to acquire it instead. A held lease that
+    cannot be renewed warns and keeps the chair even on a postgres store, so one store blip does not abandon a chair
+    that is mid-land. Only acquiring refuses."""
     holder = lease_holder(session, pid, host)
     lease = _read_lease(runs_dir, holder)
     if lease is None:
