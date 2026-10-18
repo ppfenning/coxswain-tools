@@ -724,6 +724,66 @@ def test_absent_chair_unit_yields_no_chair_unit_step():
     assert steps == migrate_plan(old_layout(), LOCS)
 
 
+BARE_UNIT = "[Service]\nExecStart=/usr/bin/cox chair run\n"
+DROP_IN = "[Service]\nEnvironment=PATH=/u/repos/coxswain-tools/.venv/bin:/u/repos/coxswain-graphs/.venv/bin:/usr/bin\n"
+
+
+def dropin_observed(**extra):
+    return {**old_layout(), "chair_unit": BARE_UNIT, "chair_unit_drop_ins": [("10-path.conf", DROP_IN)], **extra}
+
+
+def test_pure_rewrite_changes_only_the_old_folders_on_path_lines():
+    text = (
+        '[Service]\nEnvironment="OTHER=/u/repos/coxswain-tools"\n'
+        "Environment=PATH=/u/repos/coxswain-tools/.venv/bin:/u/repos/coxswain-tools-x/bin:/usr/bin\n"
+    )
+    pairs = (("/u/repos/coxswain-tools", f"{NEW}/coxswain-tools"),)
+    assert setup_migrate.rewrite_dropin_path(text, pairs) == (
+        '[Service]\nEnvironment="OTHER=/u/repos/coxswain-tools"\n'
+        f"Environment=PATH={NEW}/coxswain-tools/.venv/bin:/u/repos/coxswain-tools-x/bin:/usr/bin\n"
+    )
+
+
+def test_dropin_only_path_with_old_folders_plans_a_rewrite_targeting_the_drop_in():
+    steps = migrate_plan(dropin_observed(), LOCS)
+    assert not of(steps, "chair_unit")
+    (step,) = of(steps, "chair_unit_dropin")
+    assert steps[-1] is step
+    assert step["dropin"] == "10-path.conf"
+    assert step["restart"] is False
+    assert ["/u/repos/coxswain-tools", f"{NEW}/coxswain-tools"] in step["pairs"]
+    assert steps[:-1] == migrate_plan(old_layout(), LOCS)
+
+
+def test_active_service_plans_the_restart_and_inactive_does_not():
+    assert of(migrate_plan(dropin_observed(chair_active=True), LOCS), "chair_unit_dropin")[0]["restart"] is True
+    assert of(migrate_plan(dropin_observed(chair_active=False), LOCS), "chair_unit_dropin")[0]["restart"] is False
+
+
+def test_unit_only_plan_is_unchanged_when_drop_ins_are_present_but_do_not_set_path():
+    observed = {**old_layout(), "chair_unit": unit_text("/u/repos"), "chair_unit_drop_ins": [("a.conf", "[Service]\n")]}
+    assert migrate_plan(observed, LOCS) == migrate_plan({**old_layout(), "chair_unit": unit_text("/u/repos")}, LOCS)
+    assert of(migrate_plan(observed, LOCS), "chair_unit")[0] == {
+        "op": "chair_unit",
+        "why": "The chair systemd unit still names the old checkout root in its PATH, so it is regenerated.",
+    }
+
+
+def test_already_migrated_dropin_path_plans_nothing():
+    migrated = DROP_IN.replace("/u/repos", NEW)
+    observed = dropin_observed(chair_unit_drop_ins=[("10-path.conf", migrated)])
+    assert migrate_plan(observed, LOCS) == migrate_plan(old_layout(), LOCS)
+
+
+def test_a_later_dropin_overrides_an_old_unit_path_so_the_unit_is_not_regenerated():
+    observed = {
+        **old_layout(),
+        "chair_unit": unit_text("/u/repos"),
+        "chair_unit_drop_ins": [("10-path.conf", unit_text(NEW))],
+    }
+    assert migrate_plan(observed, LOCS) == migrate_plan(old_layout(), LOCS)
+
+
 def test_checkout_linked_but_not_repaired_resumes_with_repair_and_verify_not_a_skip():
     stale = {**final_layout(), "worktree_status": {CART: "clean", GRAPHS: "stale", TOOLS: "clean"}}
     steps = migrate_plan(stale, LOCS)
@@ -871,7 +931,7 @@ def test_module_imports_only_standard_library_and_home():
         if isinstance(node, (ast.Import, ast.ImportFrom))
         for alias in (node.names if isinstance(node, ast.Import) else [None])
     }
-    assert imported <= {"__future__", "collections", "json", "pathlib", "posixpath", "tomllib", "typing", "agent_tools"}
+    assert imported <= {"__future__", "collections", "json", "pathlib", "posixpath", "re", "tomllib", "typing", "agent_tools"}
     assert "agent_tools.home" in {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
 
 
