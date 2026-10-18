@@ -700,6 +700,18 @@ def test_phase_plan_refuses_a_local_branch_that_diverges_from_the_open_pr_head()
                       "reason": "local branch pr/x--seams at def differs from open pull request #7 head abc"}]
 
 
+def test_append_only_paths_all_under_tests():
+    assert land.append_only_paths(["tests/test_a.py", "tests/sub/test_b.py"]) is True
+
+
+def test_append_only_paths_mixed_with_a_non_test_path():
+    assert land.append_only_paths(["tests/test_a.py", "agent_tools/land.py"]) is False
+
+
+def test_append_only_paths_empty():
+    assert land.append_only_paths([]) is False
+
+
 def test_phase_pr_title_renders_id_phase_and_title():
     assert land.phase_pr_title("I412", "t1", "Widget") == "epic I412: t1 - Widget"
 
