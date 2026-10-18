@@ -643,6 +643,18 @@ def test_observed_extras_are_carried_into_each_tool_install():
     assert [s["argv"][-1] for s in installs] == [f"{NEW}/{TOOLS}", f"{NEW}/{CART}[x,y]"]
 
 
+def test_venv_extras_returns_only_fully_installed_groups():
+    traces = {"traces": ["pyarrow", "Duck_DB"]}
+    assert setup_migrate.venv_extras(traces, {"pyarrow", "duck.db"}) == ["dev", "traces"]
+    assert setup_migrate.venv_extras(traces, {"pyarrow"}) == ["dev"]
+    assert setup_migrate.venv_extras({"postgres": ["psycopg"]}, set()) == ["dev"]
+
+
+def test_unreadable_venv_prints_the_unknown_line_and_defaults_to_dev(tmp_path, capsys):
+    assert setup_migrate.read_venv_extras(GRAPHS, str(tmp_path / "missing")) == ["dev"]
+    assert capsys.readouterr().out == "migrate: coxswain-graphs venv extras unknown; installed .[dev] only\n"
+
+
 def locs_at(installs):
     return Locations(
         home=LOCS.home,
