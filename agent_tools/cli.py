@@ -6111,7 +6111,18 @@ def _migrate_entry(root: str, name: str, locs) -> dict:
     if old == new:  # the profile already names the installs folder, so the old path is no longer known
         return {"old": str(old), "old_kind": "symlink", "new_kind": _migrate_kind(new), "old_target": str(new)}
     target = os.readlink(old) if old.is_symlink() else None
-    return {"old": str(old), "old_kind": _migrate_kind(old), "new_kind": _migrate_kind(new), "old_target": target}
+    return {
+        "old": str(old),
+        "old_kind": _migrate_kind(old),
+        "new_kind": _migrate_kind(new),
+        "old_target": target,
+        "target_git": _migrate_target_git(old),
+    }
+
+
+def _migrate_target_git(old: Path) -> bool:
+    """Edge. True when `old` is a symlink whose target is a directory holding a .git entry."""
+    return old.is_symlink() and (old / ".git").exists() and old.resolve().is_dir()
 
 
 def _migrate_worktrees(checkout: Path) -> list[str] | None:
@@ -6189,7 +6200,8 @@ def _migrate_observe(locs) -> dict:
     seen = {}
     for name, entry in entries.items():
         new, old = Path(locs.installs) / name, Path(entry["old"])
-        where = new if _migrate_kind(new) == "dir" else old if _migrate_kind(old) == "dir" else None
+        linked = old if entry.get("target_git") else None  # a link to a git checkout: git reads it through the link
+        where = new if _migrate_kind(new) == "dir" else old if _migrate_kind(old) == "dir" else linked
         listed = _migrate_worktrees(where) if where is not None else None
         if listed is not None:
             seen[name] = listed

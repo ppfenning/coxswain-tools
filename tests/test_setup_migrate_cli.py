@@ -618,6 +618,40 @@ def test_a_bare_command_prints_the_reinstall_steps_and_runs_none(layout, monkeyp
     assert events == []
 
 
+def link_install(layout, git_checkout=True):
+    """A 0.40 install: coxswain-tools is a symlink to the bare-name tools checkout."""
+    (layout.repos / "coxswain-tools").rename(layout.repos / "tools")
+    if not git_checkout:
+        shutil.rmtree(layout.repos / "tools" / ".git")
+    (layout.repos / "coxswain-tools").symlink_to("tools")
+
+
+def test_a_link_to_a_git_checkout_moves_the_target_and_links_both_names(layout, monkeypatch, tmp_path, capsys):
+    events = []
+    uv_recorder(monkeypatch, tmp_path, events)
+    link_install(layout)
+    new = layout.installs / "coxswain-tools"
+    assert run(dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert f"move {layout.repos}/tools -> {new}" in out
+    assert f"symlink {layout.repos}/coxswain-tools -> {new}" in out
+    assert f"symlink {layout.repos}/tools -> {new}" in out
+    assert (layout.repos / "tools" / ".git").is_dir() and events == []
+    assert run(apply=True) == 0
+    assert (new / ".git").is_dir()
+    for name in ("coxswain-tools", "tools"):
+        assert (layout.repos / name).is_symlink() and (layout.repos / name).resolve() == new.resolve()
+    assert events == reinstall_calls(layout.installs)
+
+
+def test_a_link_to_a_directory_that_is_not_a_git_checkout_refuses_and_moves_nothing(layout, capsys):
+    link_install(layout, git_checkout=False)
+    before = tree(layout.repos)
+    assert run(apply=True) == 1
+    assert "FAILED step 1 refuse" in capsys.readouterr().out
+    assert tree(layout.repos) == before and not (layout.installs / "coxswain-tools").exists()
+
+
 def test_uv_tool_dir_is_none_when_uv_fails_or_is_missing(monkeypatch):
     def missing(argv, **kw):
         raise FileNotFoundError("uv")
