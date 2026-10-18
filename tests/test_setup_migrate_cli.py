@@ -867,6 +867,68 @@ def test_finish_rerun_has_nothing_to_do(migrated, capsys):
     assert capsys.readouterr().out.strip() == "finish: nothing to do"
 
 
+@pytest.fixture
+def umbrella(layout, monkeypatch):
+    """The three-checkout layout plus the umbrella checkout beside the tools checkout, every host already migrated."""
+    (layout.repos / "coxswain-cartridges" / "provider.yaml").write_text("# files mode\n")
+    monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: [host()])
+    (layout.repos / "coxswain").mkdir()
+    git("init", "-q", cwd=layout.repos / "coxswain")
+    return layout
+
+
+def umbrella_steps(plan):
+    return [s for s in plan if any(str(s.get(k, "")).endswith("/coxswain") for k in ("src", "dst", "path", "link", "target"))]
+
+
+def test_observe_reports_the_umbrella_like_the_other_checkouts(umbrella):
+    locs = cli.home_paths.resolve_here()
+    observed = cli._migrate_observe(locs)
+    entries = observed["entries"]
+    assert entries["coxswain"].keys() == entries["coxswain-tools"].keys()
+    assert entries["coxswain"]["old"] == str(umbrella.repos / "coxswain")
+    assert (entries["coxswain"]["old_kind"], entries["coxswain"]["new_kind"]) == ("dir", "absent")
+    steps = umbrella_steps(cli.setup_migrate.migrate_plan(observed, locs))
+    assert [s["op"] for s in steps] == ["move", "symlink"]
+    assert (steps[0]["src"], steps[0]["dst"]) == (str(umbrella.repos / "coxswain"), str(umbrella.installs / "coxswain"))
+
+
+def test_an_absent_umbrella_is_not_observed(layout):
+    locs = cli.home_paths.resolve_here()
+    assert "coxswain" not in cli._migrate_observe(locs)["entries"]
+
+
+def test_a_folder_named_coxswain_does_not_move_the_old_root(layout):
+    locs = cli.home_paths.resolve_here()
+    odd = {"skills_roots": [str(layout.user / ".config" / "coxswain" / "skills")], "harness_dir": f"{layout.repos}/coxswain-graphs"}
+    assert cli._migrate_old_root(odd, locs) == str(layout.repos)
+
+
+def test_a_final_umbrella_layout_has_nothing_to_do(umbrella):
+    assert run(apply=True) == 0
+    locs = cli.home_paths.resolve_here()
+    assert umbrella_steps(cli.setup_migrate.migrate_plan(cli._migrate_observe(locs), locs)) == []
+
+
+def test_apply_links_the_umbrella_and_only_finish_removes_the_link(umbrella, capsys):
+    assert run(apply=True) == 0
+    link = umbrella.repos / "coxswain"
+    assert link.is_symlink() and os.readlink(link) == str(umbrella.installs / "coxswain")
+    capsys.readouterr()
+    assert run(finish=True, apply=True) == 0
+    assert f"finish: remove {link}" in capsys.readouterr().out
+    assert not link.exists() and (umbrella.installs / "coxswain").is_dir()
+
+
+def test_finish_keeps_a_real_directory_at_the_umbrella_old_path(umbrella, capsys):
+    assert run(apply=True) == 0
+    (umbrella.repos / "coxswain").unlink()
+    (umbrella.repos / "coxswain").mkdir()
+    capsys.readouterr()
+    assert run(finish=True, apply=True) == 0
+    assert f"finish: kept {umbrella.repos}/coxswain: a real directory" in capsys.readouterr().out
+
+
 def test_finish_refuses_to_mix_with_hosts(layout, capsys):
     before = tree(layout.user)
     assert run(finish=True, apply=True, hosts=True) == 2

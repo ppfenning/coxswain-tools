@@ -6169,6 +6169,23 @@ def _migrate_cartridge_links(profile: Mapping) -> dict | None:
     return {str(p): os.readlink(p) for p in sorted(found) if p.is_symlink()}
 
 
+def _migrate_checkouts() -> tuple[str, ...]:
+    """Pure. The checkout names the migration looks at: the required ones, then the optional umbrella once."""
+    return tuple(dict.fromkeys((*setup_migrate.CHECKOUTS, setup_migrate.UMBRELLA)))
+
+
+def _migrate_entries(root: str, locs) -> dict:
+    """Edge. One entry per checkout. The umbrella is optional, so it is left out when nothing sits at its old or final path."""
+    entries = {name: _migrate_entry(root, name, locs) for name in _migrate_checkouts()}
+    return {
+        name: e
+        for name, e in entries.items()
+        if name in setup_migrate.CHECKOUTS
+        or e["new_kind"] != "absent"
+        or (e["old_kind"] != "absent" and Path(e["old"]) != Path(locs.installs) / name)
+    }
+
+
 def _migrate_old_root(profile: Mapping, locs) -> str | None:
     """Pure. The folder holding the old checkouts: the parent of the first checkout-named path component in a
     profile setting that lies outside the installs folder, else the installs folder when every setting is already
@@ -6179,7 +6196,7 @@ def _migrate_old_root(profile: Mapping, locs) -> str | None:
         for value in raw
         if isinstance(value, str)
         for p in [Path(value).expanduser(), *Path(value).expanduser().parents]
-        if p.name in setup_migrate.CHECKOUTS
+        if p.name in setup_migrate.CHECKOUTS and p.name != setup_migrate.UMBRELLA  # "coxswain" also names config and state folders
     ]
     outside = [r for r in roots if r != locs.installs]
     return (outside or roots or [None])[0]
@@ -6218,7 +6235,7 @@ def _migrate_observe(locs) -> dict:
     the installs folder no old path is recorded anywhere, so each checkout is reported as a link to its new path."""
     profile = _migrate_profile(locs)
     root = _migrate_old_root(profile, locs)
-    entries = {name: _migrate_entry(root, name, locs) for name in setup_migrate.CHECKOUTS} if root else {}
+    entries = _migrate_entries(root, locs) if root else {}
     seen = {}
     for name, entry in entries.items():
         new, old = Path(locs.installs) / name, Path(entry["old"])
@@ -6615,7 +6632,7 @@ def _migrate_stale_lines(locs) -> list[str]:
     old_root = data.get("old_root") if isinstance(data, dict) else None
     if not isinstance(old_root, str) or not old_root:
         return []
-    olds = tuple(os.path.join(old_root, name) for name in setup_migrate.CHECKOUTS)
+    olds = tuple(os.path.join(old_root, name) for name in _migrate_checkouts())
     return setup_migrate.stale_script_lines(_migrate_operator_files(locs), olds, str(Path.home()))
 
 
@@ -6676,6 +6693,20 @@ def _migrate_finish_edge(ws: Path, store_mode: bool, home: str, locs) -> setup_m
     )
 
 
+def _migrate_links(old_root: str, home: str) -> tuple:
+    """Edge. What sits at each old checkout path, the umbrella's compatibility link included."""
+    seen = setup_migrate.observe_links(old_root, home)
+    root = repo_path.expand(old_root, home) if old_root.startswith("~") else old_root
+    named = {link.name for link in seen}
+    extra = tuple(
+        setup_migrate.LinkFact(name, path, _migrate_kind(Path(path)), os.readlink(path) if Path(path).is_symlink() else None)
+        for name in _migrate_checkouts()
+        if name not in named
+        for path in [os.path.join(root, name)]
+    )
+    return (*seen, *extra)
+
+
 def _migrate_finish(a: argparse.Namespace, locs) -> int:
     """Edge. `--finish`: rewrite the queue's old-root paths, then remove the old-path links. Plans unless `--apply`."""
     home = os.path.expanduser("~")
@@ -6702,7 +6733,7 @@ def _migrate_finish(a: argparse.Namespace, locs) -> int:
         setup_migrate.migrate_plan(_migrate_observe(locs), locs),
         _doctor_home_rows(_migrate_profile(locs)),
         _migrate_observe_hosts(locs), rows, files,
-        setup_migrate.observe_links(old_root, home) if old_root else (),
+        _migrate_links(old_root, home) if old_root else (),
     )
     try:
         result = setup_migrate.finish(facts, a.apply and not a.dry_run, _migrate_finish_edge(ws, store_mode, home, locs))
@@ -6742,7 +6773,7 @@ def _setup_migrate(a: argparse.Namespace) -> int:
     holder = f"migrate@{socket.gethostname()}:{os.getpid()}"
     try:
         if _migrate_needs_preflight(plan, host_plan, a.hosts):
-            taken = _migrate_acquire(runs_dir, [observed["entries"][name]["old"] for name in setup_migrate.CHECKOUTS if name in observed["entries"]], holder)
+            taken = _migrate_acquire(runs_dir, [observed["entries"][name]["old"] for name in _migrate_checkouts() if name in observed["entries"]], holder)
             lanes, chair_lease, host_rows = _migrate_read_holders(runs_dir, socket.gethostname())
             refusals = setup_migrate.preflight_refusals(tuple(o for o, _ in taken), lanes, socket.gethostname(), chair_lease, host_rows)
             if refusals:
