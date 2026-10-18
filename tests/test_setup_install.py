@@ -99,6 +99,33 @@ def test_venv_steps_graphs_installs_the_cartridges_checkout_editable():
     ]
 
 
+def test_venv_steps_names_the_extras_comma_joined_in_brackets():
+    steps = venv_steps("coxswain-tools", INSTALLS, CARTRIDGES, False, extras=("dev", "postgres", "live"))
+    assert steps[1]["argv"] == ["uv", "pip", "install", "-q", "-e", ".[dev,postgres,live]"]
+
+
+def test_venv_steps_without_extras_equals_the_pre_change_steps():
+    assert venv_steps("coxswain-tools", INSTALLS, CARTRIDGES, False) == [
+        {
+            "op": "run",
+            "argv": ["uv", "venv", "-q"],
+            "cwd": f"{INSTALLS}/coxswain-tools",
+            "why": "coxswain-tools has no virtualenv yet",
+        },
+        {
+            "op": "run",
+            "argv": ["uv", "pip", "install", "-q", "-e", ".[dev]"],
+            "cwd": f"{INSTALLS}/coxswain-tools",
+            "why": "install coxswain-tools and its dev extras",
+        },
+    ]
+
+
+def test_venv_steps_graphs_keeps_the_cartridges_install_with_extras_set():
+    steps = venv_steps("coxswain-graphs", INSTALLS, CARTRIDGES, True, extras=("dev", "postgres"))
+    assert steps[1]["argv"] == ["uv", "pip", "install", "-q", "-e", ".[dev,postgres]", "-e", CARTRIDGES]
+
+
 def test_install_plan_venv_steps_are_the_venv_steps_output():
     runs = [s for s in _plan() if s["op"] == "run"]
     assert runs[2:4] == venv_steps("coxswain-graphs", INSTALLS, CARTRIDGES, False)

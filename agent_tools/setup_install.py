@@ -18,6 +18,8 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from agent_tools.home import Locations
 
 REPOS = ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools")
@@ -86,8 +88,13 @@ def profile_text(
     return "\n".join(lines) + "\n"
 
 
-def venv_steps(repo: str, installs: str, cartridges_dir: str, clear: bool) -> list:
-    """The venv step then the editable dev install for `installs/repo`.
+_DEFAULT_EXTRAS = ("dev",)
+
+
+def venv_steps(
+    repo: str, installs: str, cartridges_dir: str, clear: bool, extras: Sequence[str] = _DEFAULT_EXTRAS
+) -> list:
+    """The venv step then the editable install of `installs/repo` with `extras`.
     `clear` adds `--clear -q` to the venv step; the graphs repo also installs
     `cartridges_dir` editable."""
     cwd = f"{installs}/{repo}"
@@ -97,11 +104,11 @@ def venv_steps(repo: str, installs: str, cartridges_dir: str, clear: bool) -> li
     else:
         venv = {"op": "run", "argv": ["uv", "venv", "-q"], "cwd": cwd,
                 "why": f"{repo} has no virtualenv yet"}
-    install_argv = ["uv", "pip", "install", "-q", "-e", ".[dev]"]
+    groups = ",".join(extras)
+    install_argv = ["uv", "pip", "install", "-q", "-e", f".[{groups}]"]
     if repo == "coxswain-graphs":
         install_argv = install_argv + ["-e", cartridges_dir]
-    install = {"op": "run", "argv": install_argv, "cwd": cwd,
-               "why": f"install {repo} and its dev extras"}
+    install = {"op": "run", "argv": install_argv, "cwd": cwd, "why": f"install {repo} and its {groups} extras"}
     return [venv, install]
 
 
