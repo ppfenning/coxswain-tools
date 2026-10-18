@@ -76,7 +76,7 @@ cox runs stop RUN_ID [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   stop a
 cox runs pause RUN_ID [--reason REASON] [--runs-dir RUNS_DIR] [--json]   mark a run paused in the store
 cox runs resume RUN_ID [--runs-dir RUNS_DIR] [--json]   mark a paused run resumed in the store
 cox runs move RUN_ID --to TO [--reason REASON] [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   stop a run at its node boundary and relaunch it on another host
-cox runs triage TASK_ID [--json]   print a quarantined task's facts; reads the store and git only, makes no model call
+cox runs triage TASK_ID [--json] [--profile PROFILE] [--repo PATH]   print a quarantined task's facts; reads the store and git only, makes no model call
 cox courier send REF --to TO --note NOTE [--profile PROFILE]   append a bus entry naming a courier reference
 cox courier inbox [--label LABEL] [--profile PROFILE]   list this label's unacknowledged bus entries
 cox courier ack ID [--profile PROFILE]   acknowledge one bus entry by id
