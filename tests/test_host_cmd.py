@@ -289,6 +289,35 @@ def test_cox_host_add_runs_store_cli_host_upsert_with_the_holder_label(tmp_path,
     assert capsys.readouterr().out == '{"name": "host-a"}\n'
 
 
+def test_beat_name_refusal_allows_an_omitted_name():
+    assert host_cmd.beat_name_refusal(None, "mac.local") is None
+
+
+def test_beat_name_refusal_allows_the_hostname_itself():
+    assert host_cmd.beat_name_refusal("mac.local", "mac.local") is None
+
+
+def test_beat_name_refusal_allows_the_short_form_of_a_dotted_hostname():
+    assert host_cmd.beat_name_refusal("mac", "mac.local") is None
+
+
+def test_beat_name_refusal_refuses_a_different_name_with_both_names_in_the_text():
+    assert host_cmd.beat_name_refusal("jarvis", "mac.local") == (
+        "refusing: cox host beat records this machine (mac.local), not jarvis; run cox host beat on jarvis itself"
+    )
+
+
+def test_cox_host_beat_for_another_machine_exits_2_and_never_calls_the_store(monkeypatch, capsys):
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: "mac.local")
+    monkeypatch.setattr(cli.store_cli, "runner", lambda runs_dir: (lambda argv: seen.append(argv) or (0, "{}")))
+    assert cli._host_beat(argparse.Namespace(name="jarvis")) == 2
+    assert capsys.readouterr().out == (
+        "refusing: cox host beat records this machine (mac.local), not jarvis; run cox host beat on jarvis itself\n"
+    )
+    assert seen == []
+
+
 def test_cox_host_add_refuses_a_non_default_weight_before_calling_the_store(tmp_path, monkeypatch, capsys):
     (tmp_path / "ws").mkdir()
     profile = tmp_path / "profile.yaml"
