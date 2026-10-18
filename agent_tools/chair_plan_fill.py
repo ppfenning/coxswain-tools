@@ -25,6 +25,9 @@ class HostEnv(NamedTuple):
 
 _NO_ENV = HostEnv({}, frozenset())
 
+# Seconds: the minimum gap between pulls.
+PULL_MIN_AGE_S = 600
+
 
 def _required_capabilities(initiative: InitiativeFacts) -> frozenset[str]:
     return frozenset(cap for task in initiative["ready_tasks"] for cap in task.get("requires", []))
@@ -218,6 +221,7 @@ def _wants_pull(facts: Facts, lanes_left: int) -> bool:
         and facts["sources_configured"]
         and not has_ready
         and not facts["intake"]
+        and (facts.get("pull_age_s") is None or facts["pull_age_s"] >= PULL_MIN_AGE_S)
     )
 
 
