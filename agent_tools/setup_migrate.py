@@ -12,7 +12,8 @@ Observed layout, a dict with these keys:
   The new path is never observed. It is the checkout's name under `Locations.installs`.
 - `workspace`: a dict with `path`. The workspace is registered by location and is
   never moved, so the planner only reports where it stays.
-- `settings`: profile field to its current value, a string or a list of strings.
+- `settings`: profile field to its current value, a string or a list of strings. `repo_map` is the one
+  mapping, owner/name to checkout path, and is present only when the profile holds a mapping.
 - `home_record`: the current text of the home record, or None when it is absent.
 - `cartridge_links`: each workspace base and local link to its current lexical target.
 - `worktrees`: checkout name to the list of its worktree paths. Required for every
@@ -44,6 +45,10 @@ Observed layout, a dict with these keys:
 
 Settings may hold tilde-form paths. They are expanded against the user home, taken as the
 parent of `Locations.config`, before they are compared with the checkout paths.
+
+A `repo_map` value is rewritten only when it equals an old checkout path exactly, in its absolute, tilde
+or `home_spellings` form. `home_spellings` are other absolute spellings of the user home, such as the
+path-parity home; the caller reads them from the environment and passes them in.
 
 Every step is a dict with `op`, a one-sentence `why`, and the fields of its op. The
 planner emits no step that deletes or replaces a real directory.
@@ -91,6 +96,8 @@ OPS = frozenset(
     }
 )
 SETTING_KEYS = ("skills_roots", "provider_profile", "harness_dir")
+# Not in SETTING_KEYS: its value is a mapping, which the string and list helpers below do not handle.
+REPO_MAP_KEY = "repo_map"
 WORKTREES_CLEAN = "no worktree names a missing path"
 FINISH_HINT = "run cox setup migrate --finish once every host has migrated."
 FINISH_NO_ROOT = "finish: no old root known; pass --old-root"
@@ -165,10 +172,33 @@ def _expand_all(value: Any, user_home: str) -> Any:
     return value
 
 
+def _old_spellings(old: str, user_home: str, home_spellings: Sequence[str]) -> frozenset[str]:
+    """Every spelling of an old absolute checkout path: itself, its tilde form and each other home's form."""
+    home = user_home.rstrip("/")
+    if not old.startswith(home + "/"):
+        return frozenset({old})
+    rest = old[len(home) :]
+    return frozenset({old, "~" + rest, *(spelling.rstrip("/") + rest for spelling in home_spellings)})
+
+
+def _remap_repo_map(
+    repo_map: Mapping[str, Any], pairs: tuple[tuple[str, str], ...], user_home: str, home_spellings: Sequence[str]
+) -> dict[str, Any]:
+    """A new map in the same key order; a value equal to an old checkout path becomes its path under the installs folder."""
+    new_for = {spelling: new for old, new in pairs for spelling in _old_spellings(old, user_home, home_spellings)}
+    return {key: new_for.get(value, value) if isinstance(value, str) else value for key, value in repo_map.items()}
+
+
 def _setting_steps(
-    settings: dict[str, Any], home_record: str | None, pairs: tuple[tuple[str, str], ...], locs: Locations
+    settings: dict[str, Any],
+    home_record: str | None,
+    pairs: tuple[tuple[str, str], ...],
+    locs: Locations,
+    home_spellings: Sequence[str] = (),
 ) -> list[Step]:
     user_home = posixpath.dirname(locs.config)
+    repo_map = settings.get(REPO_MAP_KEY)
+    mapped = _remap_repo_map(repo_map, pairs, user_home, home_spellings) if isinstance(repo_map, Mapping) else None
     keys = [
         _step(
             "rewrite_profile_key",
@@ -180,6 +210,16 @@ def _setting_steps(
         for key in SETTING_KEYS
         if key in settings and (new := _remap(expanded := _expand_all(settings[key], user_home), pairs)) != expanded
     ]
+    if mapped is not None and mapped != dict(repo_map):
+        keys.append(
+            _step(
+                "rewrite_profile_key",
+                f"{REPO_MAP_KEY} still names the old checkout folders.",
+                key=REPO_MAP_KEY,
+                old=dict(repo_map),
+                new=mapped,
+            )
+        )
     record = (
         []
         if home_record == locs.home
@@ -421,8 +461,9 @@ def _reinstall_steps(
     ]
 
 
-def migrate_plan(observed: dict[str, Any], locs: Locations) -> list[Step]:
-    """Ordered steps for the remaining migration; one skip when none remain, only refuses when any checkout refuses."""
+def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequence[str] = ()) -> list[Step]:
+    """Ordered steps for the remaining migration; one skip when none remain, only refuses when any checkout refuses.
+    `home_spellings` are extra absolute spellings of the user home that a repo_map value may use."""
     entries = observed.get("entries", {})
     news = {name: posixpath.join(locs.installs, name) for name in CHECKOUTS}
     verdicts = {name: _checkout(name, entries.get(name), news[name]) for name in CHECKOUTS}
@@ -453,7 +494,9 @@ def migrate_plan(observed: dict[str, Any], locs: Locations) -> list[Step]:
         *_link_steps(observed["cartridge_links"], locs),
         *(step for name in repaired for step in _repair_steps(name, news[name], worktrees[name])),
         *_reinstall_steps(observed.get("install_bins"), news, locs, where),
-        *_setting_steps(observed.get("settings", {}), observed.get("home_record"), tuple(pairs.values()), locs),
+        *_setting_steps(
+            observed.get("settings", {}), observed.get("home_record"), tuple(pairs.values()), locs, home_spellings
+        ),
         *market_runs,
     ]
     # The old root is the parent folder of the old coxswain-cartridges checkout.

@@ -165,6 +165,51 @@ def test_cartridges_dir_and_workspace_fields_are_not_rewritten():
     assert keys == ["skills_roots", "provider_profile", "harness_dir"]
 
 
+PARITY_HOME = "/srv/u"
+REPO_MAP_OLD = {
+    "o/other-a": "/srv/elsewhere/other-a",
+    "o/coxswain-cartridges": f"/u/repos/{CART}",
+    "o/other-b": "/u/repos/not-a-checkout",
+    "o/coxswain-graphs": f"~/repos/{GRAPHS}",
+    "o/other-c": "~/repos/other-c",
+    "o/coxswain-tools": f"{PARITY_HOME}/repos/{TOOLS}",
+}
+REPO_MAP_NEW = {
+    **REPO_MAP_OLD,
+    "o/coxswain-cartridges": f"{NEW}/{CART}",
+    "o/coxswain-graphs": f"{NEW}/{GRAPHS}",
+    "o/coxswain-tools": f"{NEW}/{TOOLS}",
+}
+
+
+def repo_map_steps(repo_map, spellings=(PARITY_HOME,)):
+    settings = OLD_SETTINGS if repo_map is None else {**OLD_SETTINGS, "repo_map": repo_map}
+    steps = migrate_plan(layout(old_entry, settings, OLD_LINKS, None, OLD_BINS), LOCS, spellings)
+    return [s for s in of(steps, "rewrite_profile_key") if s["key"] == "repo_map"]
+
+
+def test_repo_map_rewrites_only_checkout_entries_and_keeps_order():
+    given = dict(REPO_MAP_OLD)
+    (step,) = repo_map_steps(given)
+    assert step["new"] == REPO_MAP_NEW
+    assert list(step["new"]) == list(REPO_MAP_OLD)
+    assert step["old"] == REPO_MAP_OLD
+    assert given == REPO_MAP_OLD
+
+
+def test_repo_map_parity_spelling_needs_the_home_spelling_argument():
+    (step,) = repo_map_steps(REPO_MAP_OLD, spellings=())
+    assert step["new"] == {**REPO_MAP_NEW, "o/coxswain-tools": f"{PARITY_HOME}/repos/{TOOLS}"}
+
+
+def test_repo_map_already_final_plans_no_step():
+    assert repo_map_steps(REPO_MAP_NEW) == []
+
+
+def test_repo_map_absent_plans_no_step():
+    assert repo_map_steps(None) == []
+
+
 def test_half_moved_layout_resumes_with_remaining_steps_only():
     half = with_entry(with_entry(old_layout(), CART, final_entry(CART)), GRAPHS, crashed_entry(GRAPHS))
     steps = migrate_plan({**half, "worktree_status": {CART: "clean"}}, LOCS)
