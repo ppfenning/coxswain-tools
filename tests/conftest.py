@@ -25,23 +25,6 @@ def strip_ansi(text: str) -> str:
     return _ANSI.sub("", text)
 
 
-def pytest_addoption(parser):
-    parser.addoption(
-        "--regen", action="store_true",
-        help="rewrite the help fixtures before the run, instead of only comparing",
-    )
-
-
-def pytest_configure(config):
-    # A harness build node may run pytest but not the generators, so this is how a build that
-    # changes a command refreshes its snapshots: `pytest --regen`, then the snapshot tests compare as usual.
-    if not config.getoption("--regen"):
-        return
-    import test_cli_help_snapshot
-
-    test_cli_help_snapshot._write()
-
-
 @pytest.fixture(autouse=True)
 def _fresh_store_url():
     """run_store caches the store URL per process; each test starts without it."""
