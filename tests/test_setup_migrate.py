@@ -29,6 +29,7 @@ from agent_tools.setup_migrate import (
     remove_link,
     render_plan,
     resolve_old_root,
+    stale_script_lines,
 )
 from agent_tools.setup_migrate_hosts import ObservedHost
 
@@ -1079,3 +1080,27 @@ def test_preflight_orders_leases_lanes_chair_host_row():
         "the chair",
         "host box1",
     ]
+
+
+OLD_TOOLS = "/u/src/coxswain-tools"
+STALE_LINE = f"migrate: run.sh still names {OLD_TOOLS}; edit it by hand"
+
+
+def test_stale_script_lines_absolute_form():
+    assert stale_script_lines({"run.sh": f"bash {OLD_TOOLS}/run.sh"}, [OLD_TOOLS], "/u") == [STALE_LINE]
+
+
+def test_stale_script_lines_tilde_form():
+    assert stale_script_lines({"run.sh": "cd ~/src/coxswain-tools"}, [OLD_TOOLS], "/u") == [STALE_LINE]
+
+
+def test_stale_script_lines_home_variable_form():
+    assert stale_script_lines({"run.sh": 'cd "$HOME/src/coxswain-tools"'}, [OLD_TOOLS], "/u") == [STALE_LINE]
+
+
+def test_stale_script_lines_prefix_only_sibling_is_not_a_match():
+    assert stale_script_lines({"run.sh": f"{OLD_TOOLS}-old/x"}, [OLD_TOOLS], "/u") == []
+
+
+def test_stale_script_lines_no_match_is_empty():
+    assert stale_script_lines({"run.sh": "echo hello"}, [OLD_TOOLS], "/u") == []

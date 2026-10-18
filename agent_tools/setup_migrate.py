@@ -181,6 +181,30 @@ def _old_spellings(old: str, user_home: str, home_spellings: Sequence[str]) -> f
     return frozenset({old, "~" + rest, *(spelling.rstrip("/") + rest for spelling in home_spellings)})
 
 
+def _script_spellings(old: str, user_home: str) -> tuple[str, ...]:
+    """The absolute path, then its tilde and $HOME forms when it lies under the home folder."""
+    home = user_home.rstrip("/")
+    if not old.startswith(home + "/"):
+        return (old,)
+    rest = old[len(home) :]
+    return (old, "~" + rest, "$HOME" + rest)
+
+
+def _names(text: str, spelling: str) -> bool:
+    """True when the spelling ends at end of text, a slash, whitespace, a quote or a colon."""
+    return re.search(re.escape(spelling) + r"""(?=\Z|[/\s'":])""", text) is not None
+
+
+def stale_script_lines(files: Mapping[str, str], old_checkouts: Sequence[str], user_home: str) -> list[str]:
+    """One line per file and old checkout the file still names, files in name order, checkouts as given."""
+    return [
+        f"migrate: {name} still names {old}; edit it by hand"
+        for name in sorted(files)
+        for old in old_checkouts
+        if any(_names(files[name], spelling) for spelling in _script_spellings(old, user_home))
+    ]
+
+
 def _remap_repo_map(
     repo_map: Mapping[str, Any], pairs: tuple[tuple[str, str], ...], user_home: str, home_spellings: Sequence[str]
 ) -> dict[str, Any]:
