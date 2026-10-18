@@ -105,3 +105,43 @@ def test_edge_leaves_out_an_initiative_whose_pid_is_alive_despite_an_expired_lea
 
 def test_edge_reports_an_initiative_whose_pid_is_dead_with_an_expired_lease(tmp_path):
     assert _gathered_with_pid(tmp_path, 99999999) == [{"initiative": "i", "run": "i-decompose-1"}]
+
+
+def test_refusals_set_refusal_only_on_the_entry_for_its_run():
+    facts = empty_decompose_facts(
+        decomposed={"a": "a-1", "b": "b-1", "c": "c-1"},
+        live=set(),
+        item_counts={"a": 0, "b": 0, "c": 0},
+        refusals={"b-1": "initiative-decompose failed: no reach"},
+    )
+    assert facts == [
+        {"initiative": "a", "run": "a-1"},
+        {"initiative": "b", "run": "b-1", "refusal": "initiative-decompose failed: no reach"},
+        {"initiative": "c", "run": "c-1"},
+    ]
+
+
+def test_refusals_argument_and_default_are_not_mutated():
+    refusals = {"i-1": "initiative-decompose failed: x"}
+    empty_decompose_facts(decomposed={"i": "i-1"}, live=set(), item_counts={"i": 0}, refusals=refusals)
+    assert refusals == {"i-1": "initiative-decompose failed: x"}
+    assert empty_decompose_facts(decomposed={"i": "i-1"}, live=set(), item_counts={"i": 0}) == [
+        {"initiative": "i", "run": "i-1"}
+    ]
+
+
+def test_gather_facts_carries_the_log_refusal_into_the_entry(tmp_path):
+    (tmp_path / "i-decompose-1.log").write_text("initiative-decompose failed: reach lint\nmissing surfaces\n")
+    deps = replace(
+        _deps(),
+        runs_dir=lambda: str(tmp_path),
+        decomposed_intake=lambda: {"i": "i-decompose-1"},
+        item_counts=lambda: {"i": 0},
+    )
+    assert gather_facts(deps, NOW)["empty_decompose"] == [
+        {
+            "initiative": "i",
+            "run": "i-decompose-1",
+            "refusal": "initiative-decompose failed: reach lint — missing surfaces",
+        }
+    ]
