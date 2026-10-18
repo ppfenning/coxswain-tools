@@ -229,6 +229,37 @@ def test_fully_moved_layout_is_a_single_skip():
     assert render_plan(steps) == "1. skip - Every checkout, link, setting and profile key is already final."
 
 
+UMBRELLA = "coxswain"
+
+
+def with_umbrella(observed, umbrella_entry):
+    return {
+        **with_entry(observed, UMBRELLA, umbrella_entry),
+        "worktrees": {**observed["worktrees"], UMBRELLA: []},
+        "worktree_status": {**observed["worktree_status"], UMBRELLA: "clean"},
+    }
+
+
+def test_umbrella_beside_tools_plans_a_move_and_a_link():
+    steps = migrate_plan(with_umbrella(old_layout(), old_entry(UMBRELLA)), LOCS)
+    bare = [{k: v for k, v in s.items() if k != "why"} for s in steps]
+    old, new = f"/u/repos/{UMBRELLA}", f"{NEW}/{UMBRELLA}"
+    assert {"op": "move", "src": old, "dst": new} in bare
+    assert {"op": "symlink", "path": old, "target": new} in bare
+    assert "refuse" not in ops(steps)
+
+
+def test_umbrella_under_installs_plans_nothing_for_it():
+    steps = migrate_plan(with_umbrella(final_layout(), final_entry(UMBRELLA)), LOCS)
+    assert steps == [{"op": "skip", "why": "Every checkout, link, setting and profile key is already final."}]
+
+
+def test_no_umbrella_plans_nothing_for_it_and_does_not_refuse():
+    absent = with_entry(old_layout(), UMBRELLA, entry(UMBRELLA, "absent", "absent"))
+    assert migrate_plan(absent, LOCS) == migrate_plan(old_layout(), LOCS)
+    assert "refuse" not in ops(migrate_plan(old_layout(), LOCS))
+
+
 def test_unfinished_settings_alone_are_not_a_skip():
     steps = migrate_plan({**final_layout(), "home_record": None}, LOCS)
     assert ops(steps)[:1] == ["rewrite_setting"]

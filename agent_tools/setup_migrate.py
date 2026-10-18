@@ -79,6 +79,8 @@ CARTRIDGES = "coxswain-cartridges"
 GRAPHS = "coxswain-graphs"
 TOOLS = "coxswain-tools"
 CHECKOUTS = (CARTRIDGES, GRAPHS, TOOLS)
+# Optional: planned only on a host where it is present at its old or final path.
+UMBRELLA = "coxswain"
 # uv tool receipt folder for each tool install, keyed by the checkout it installs.
 TOOL_RECEIPTS = {TOOLS: "coxswain-tools", CARTRIDGES: "agent-cartridges"}
 # Order of the venv steps: tools, graphs, cartridges.
@@ -516,22 +518,34 @@ def _reinstall_steps(
     ]
 
 
+def _planned(entries: Mapping[str, Any]) -> tuple[str, ...]:
+    """The required checkouts, plus the umbrella when it is present at its old or final path."""
+    umbrella = entries.get(UMBRELLA)
+    present = (
+        bool(umbrella)
+        and "old" in umbrella
+        and (umbrella.get("old_kind", "absent") != "absent" or umbrella.get("new_kind", "absent") != "absent")
+    )
+    return (*CHECKOUTS, UMBRELLA) if present else CHECKOUTS
+
+
 def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequence[str] = ()) -> list[Step]:
     """Ordered steps for the remaining migration; one skip when none remain, only refuses when any checkout refuses.
     `home_spellings` are extra absolute spellings of the user home that a repo_map value may use."""
     entries = observed.get("entries", {})
-    news = {name: posixpath.join(locs.installs, name) for name in CHECKOUTS}
-    verdicts = {name: _checkout(name, entries.get(name), news[name]) for name in CHECKOUTS}
-    refusals = [step for name in CHECKOUTS if verdicts[name][0] == "refuse" for step in verdicts[name][1]]
+    names = _planned(entries)
+    news = {name: posixpath.join(locs.installs, name) for name in names}
+    verdicts = {name: _checkout(name, entries.get(name), news[name]) for name in names}
+    refusals = [step for name in names if verdicts[name][0] == "refuse" for step in verdicts[name][1]]
     if refusals:
         return refusals
     if "cartridge_links" not in observed:
         why = "The workspace cartridge links were not observed, so their state is unknown and nothing is moved."
         return [_step("refuse", why, checkout="cartridge_links")]
-    moved = [name for name in CHECKOUTS if verdicts[name][0] == "moved"]
+    moved = [name for name in names if verdicts[name][0] == "moved"]
     worktrees = observed.get("worktrees", {})
     status = observed.get("worktree_status", {})
-    repaired = [name for name in CHECKOUTS if name in moved or status.get(name) != "clean"]
+    repaired = [name for name in names if name in moved or status.get(name) != "clean"]
     unseen = [
         _refuse(name, "needs its worktrees repaired but their paths were not observed")
         for name in repaired
@@ -540,7 +554,7 @@ def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequ
     if unseen:
         return unseen
     user_home = posixpath.dirname(locs.config)
-    pairs = {name: (_expand_all(entries[name]["old"], user_home), news[name]) for name in CHECKOUTS}
+    pairs = {name: (_expand_all(entries[name]["old"], user_home), news[name]) for name in names}
     market_runs, market_notes = _marketplace_steps(observed, locs)
     # A checkout still a real directory at its old path has not moved yet, so its old venv is there.
     # A linked checkout's venv is at its link target until the move runs.
@@ -548,7 +562,7 @@ def migrate_plan(observed: dict[str, Any], locs: Locations, home_spellings: Sequ
         name: pairs[name][0]
         if entries[name].get("old_kind") == "dir"
         else _linked_target(entries[name], news[name]) or news[name]
-        for name in CHECKOUTS
+        for name in names
     }
     body = [
         *(step for name in moved for step in verdicts[name][1]),
