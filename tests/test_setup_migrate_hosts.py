@@ -33,6 +33,13 @@ def test_is_migrated_is_true_when_every_checkout_sits_under_installs():
     assert is_migrated(LINUX_MIGRATED) is True
 
 
+def test_a_folder_inside_a_checkout_under_installs_counts_as_migrated():
+    inside = {"coxswain-cartridges": "/home/user/.local/share/coxswain/installs/coxswain-cartridges/providers"}
+    old = {"coxswain-cartridges": "/home/user/repos/coxswain-cartridges/providers"}
+    assert is_migrated(ObservedHost(**{**LINUX_MIGRATED.__dict__, "checkouts": inside})) is True
+    assert is_migrated(ObservedHost(**{**LINUX_MIGRATED.__dict__, "checkouts": old})) is False
+
+
 def test_is_migrated_is_false_when_a_checkout_sits_outside_installs():
     assert is_migrated(MAC_OLD) is False
 

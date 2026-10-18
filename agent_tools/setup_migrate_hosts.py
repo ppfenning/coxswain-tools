@@ -37,9 +37,10 @@ class Step:
 
 
 def is_migrated(host: ObservedHost) -> bool:
-    """Reports a checkout, and every reported path sits directly under a folder named installs."""
+    """Reports a checkout, and every reported path lies inside a folder named installs: a checkout directly under it, or
+    a folder inside such a checkout (a lane host reports `coxswain-cartridges/providers` among its repos)."""
     return bool(host.checkouts) and all(
-        posixpath.basename(posixpath.dirname(path)) == "installs" for path in host.checkouts.values()
+        "installs" in posixpath.dirname(path).split("/") for path in host.checkouts.values()
     )
 
 
