@@ -302,8 +302,8 @@ def test_beat_name_refusal_allows_the_short_form_of_a_dotted_hostname():
 
 
 def test_beat_name_refusal_refuses_a_different_name_with_both_names_in_the_text():
-    assert host_cmd.beat_name_refusal("jarvis", "mac.local") == (
-        "refusing: cox host beat records this machine (mac.local), not jarvis; run cox host beat on jarvis itself"
+    assert host_cmd.beat_name_refusal("builder", "mac.local") == (
+        "refusing: cox host beat records this machine (mac.local), not builder; run cox host beat on builder itself"
     )
 
 
@@ -311,9 +311,9 @@ def test_cox_host_beat_for_another_machine_exits_2_and_never_calls_the_store(mon
     seen: list[list[str]] = []
     monkeypatch.setattr(cli.socket, "gethostname", lambda: "mac.local")
     monkeypatch.setattr(cli.store_cli, "runner", lambda runs_dir: (lambda argv: seen.append(argv) or (0, "{}")))
-    assert cli._host_beat(argparse.Namespace(name="jarvis")) == 2
+    assert cli._host_beat(argparse.Namespace(name="builder")) == 2
     assert capsys.readouterr().out == (
-        "refusing: cox host beat records this machine (mac.local), not jarvis; run cox host beat on jarvis itself\n"
+        "refusing: cox host beat records this machine (mac.local), not builder; run cox host beat on builder itself\n"
     )
     assert seen == []
 
