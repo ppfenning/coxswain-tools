@@ -4795,7 +4795,11 @@ def _route_launch(a: argparse.Namespace) -> int:
         needs = {"idea": a.idea, "initiative_id": a.initiative_id}
         if getattr(a, "task_ids", None):
             needs["task_ids"] = a.task_ids
-        env_repo = ""
+        # Without the intake's repo the decompose seats could read only the workspace and planned blind.
+        idea_repo = idea_fields.get("repo")
+        if isinstance(idea_repo, str) and idea_repo:
+            needs["repo"] = repo_path.expand(idea_repo, os.path.expanduser("~")) if host is None else idea_repo
+        env_repo = needs.get("repo", "")
     else:  # cos
         already = _refuse_if_already_running(runs_dir, "cos")
         if already is not None:
