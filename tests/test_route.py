@@ -509,6 +509,14 @@ def test_harness_argv_omits_task_ids_for_decompose_when_absent():
     assert "--task-ids" not in argv
 
 
+def test_harness_argv_passes_the_intake_repo_to_a_decompose():
+    profile = route.parse_profile(VALID_PROFILE)
+    argv = route.harness_argv(
+        profile, "decompose", "myidea-1", idea="/intake/myidea.md", initiative_id="myidea", repo="/repos/widget",
+    )
+    assert argv[-4:] == ["--repo", "/repos/widget", "--workdir", "/home/user/workspace"]
+
+
 def test_harness_argv_builds_the_rescue_command_line():
     profile = route.parse_profile(VALID_PROFILE)
     rescue = route.harness_argv(

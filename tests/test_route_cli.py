@@ -980,6 +980,29 @@ def test_launch_decompose_starts_the_harness_detached_with_the_recorded_argv(tmp
     assert argv == expected[1:]
 
 
+def test_launch_decompose_hands_the_harness_the_intake_repo(tmp_path, capsys):
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir(parents=True)
+    repo = tmp_path / "widget"
+    idea = ws / "intake" / "2026-10-19-read-the-repo.md"
+    idea.write_text(f"---\nid: read-the-repo\ntitle: Read the repo\nrepo: {repo}\n---\n\nBody\n")
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main([
+        "route", "launch", "decompose",
+        "--profile", str(profile),
+        "--idea", str(idea),
+        "--initiative-id", "read-the-repo",
+    ])
+    assert rc == 0
+    recorded = harness_dir / "recorded_argv.json"
+    assert _wait_for(recorded)
+    argv = json.loads(recorded.read_text())
+    assert argv[argv.index("--repo") + 1] == str(repo)
+
+
 def test_launch_decompose_writes_initiative_md_from_the_idea_before_launching(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
